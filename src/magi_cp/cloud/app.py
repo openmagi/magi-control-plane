@@ -88,6 +88,12 @@ class CompileReq(BaseModel):
     prior_turns: list[PriorTurnIn] | None = Field(default=None, max_length=20)
 
 
+# v2.0-W7: verifier payload cap (regex DoS defense). 20K is plenty for any
+# realistic filing-time payload and tight enough that pathological regex
+# inputs can't push past the deterministic-time budget.
+MAX_VERIFIER_PAYLOAD_BYTES = 20_000
+
+
 # v1.2-W3: generic verifier dispatch.
 class VerifyDispatchReq(BaseModel):
     # The verifier's input_schema is verifier-specific — we accept any dict
@@ -95,6 +101,17 @@ class VerifyDispatchReq(BaseModel):
     payload: dict = Field(..., description="opaque payload passed to verifier.run()")
     matter: str = Field(default="generic", min_length=1, max_length=128)
     doc_id: str = Field(default="generic", min_length=1, max_length=128)
+
+    def model_post_init(self, _ctx) -> None:
+        # Pydantic v2: enforce payload's serialized size after construction.
+        # JSON encoding is cheap relative to the regex pass that would follow.
+        import json as _json
+        encoded = _json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_VERIFIER_PAYLOAD_BYTES:
+            raise ValueError(
+                f"verifier payload too large: {len(encoded)} > "
+                f"{MAX_VERIFIER_PAYLOAD_BYTES} bytes"
+            )
 
 
 # ── middlewares ──────────────────────────────────────────────────────
@@ -349,6 +366,7 @@ def create_app(
         v = verifier_registry.get_by_step(step)
         if v is None:
             raise HTTPException(404, f"no verifier registered for step {step!r}")
+        tenant_id = getattr(request.state, "tenant_id", "default")
         try:
             verdict = v.run(req.payload)
         except Exception as e:
@@ -357,7 +375,7 @@ def create_app(
                 ledger.append(matter=req.matter,
                               body={"step": step, "verdict": "deny",
                                     "doc_id": req.doc_id, "error": str(e)[:200]},
-                              token="")
+                              token="", tenant_id=tenant_id)
             return {"verdict": "deny", "token": None,
                     "reasons": [f"verifier error: {type(e).__name__}"]}
         if verdict.status == "pass":
@@ -365,6 +383,7 @@ def create_app(
                 result = _issue_token(
                     req.matter, req.doc_id, "pass",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
+                    tenant_id=tenant_id,
                 )
             result["reasons"] = list(verdict.reasons)
             return result
@@ -373,6 +392,7 @@ def create_app(
                 result = _issue_token(
                     req.matter, req.doc_id, "review",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
+                    tenant_id=tenant_id,
                 )
             result["reasons"] = list(verdict.reasons)
             return result
@@ -382,12 +402,13 @@ def create_app(
                           body={"step": step, "verdict": "deny",
                                 "doc_id": req.doc_id,
                                 "reasons": list(verdict.reasons)},
-                          token="")
+                          token="", tenant_id=tenant_id)
         return {"verdict": "deny", "token": None,
                 "reasons": list(verdict.reasons)}
 
-    @app.post("/citation_verify", dependencies=[Depends(require_api_key)])
-    async def citation_verify(req: VerifyReq) -> dict:
+    @app.post("/citation_verify", dependencies=[Depends(require_tenant_auth)])
+    async def citation_verify(req: VerifyReq, request: Request) -> dict:
+        tenant_id = getattr(request.state, "tenant_id", "default")
         # corpus_override total size cap (defense in depth on top of body limit)
         if req.corpus_override:
             total = sum(len(k) + len(v) for k, v in req.corpus_override.items())
@@ -407,7 +428,8 @@ def create_app(
         if doc.verdict == "pass":
             async with chain_lock:
                 return _issue_token(req.matter, req.doc_id, "pass",
-                                     ledger=ledger, keystore=ks, kid=kid)
+                                     ledger=ledger, keystore=ks, kid=kid,
+                                     tenant_id=tenant_id)
         if doc.verdict == "review":
             # Score `review` citations with NLI advisory so HITL reviewers see
             # entailment/contradiction signals. Pure advisory — does not change
@@ -424,12 +446,13 @@ def create_app(
             item = hitl.enqueue(
                 matter=req.matter, doc_id=req.doc_id, reason="citation_review",
                 payload={"citations": review_payload},
+                tenant_id=tenant_id,
             )
             async with chain_lock:
                 ledger.append(matter=req.matter,
                               body={"step": "citation_verify", "verdict": "review",
                                     "doc_id": req.doc_id, "hitl_id": item.id},
-                              token="")
+                              token="", tenant_id=tenant_id)
             return {"verdict": "review", "token": None, "hitl_id": item.id,
                     "citations": _citations_summary(doc)}
         # deny
@@ -437,7 +460,7 @@ def create_app(
             ledger.append(matter=req.matter,
                           body={"step": "citation_verify", "verdict": "deny",
                                 "doc_id": req.doc_id},
-                          token="")
+                          token="", tenant_id=tenant_id)
         return {"verdict": "deny", "token": None,
                 "citations": _citations_summary(doc)}
 
@@ -504,13 +527,17 @@ def create_app(
                           token="")
         return {"verdict": "rejected", "token": None, "hitl_id": item_id}
 
-    @app.get("/ledger", dependencies=[Depends(require_api_key)])
-    def list_ledger(since_id: int = 0, limit: int = 100, include_body: bool = False) -> dict:
-        """M2: paginated + body redacted by default; chain_ok always over FULL chain."""
+    @app.get("/ledger", dependencies=[Depends(require_tenant_auth)])
+    def list_ledger(request: Request, since_id: int = 0, limit: int = 100,
+                     include_body: bool = False) -> dict:
+        """Per-tenant ledger view. chain_ok validates the GLOBAL chain (so
+        cross-tenant tampering is still detectable), but `entries` is scoped
+        to the requesting tenant."""
         limit = max(1, min(int(limit), 1000))
-        all_entries = ledger.list_all()
-        chain_ok = ledger.verify_chain()
-        page = [e for e in all_entries if e.id > since_id][:limit]
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        tenant_entries = ledger.list_by_tenant(tenant_id)
+        chain_ok = ledger.verify_chain()   # global integrity, not per-tenant
+        page = [e for e in tenant_entries if e.id > since_id][:limit]
         return {"chain_ok": chain_ok,
                 "next_since_id": page[-1].id if page else since_id,
                 "entries": [
@@ -541,6 +568,7 @@ def _citations_summary(doc) -> list[dict]:
 def _issue_token(matter: str, doc_id: str, verdict: str, *,
                  ledger: LedgerRepo, keystore: KeyStore, kid: str,
                  step: str = "citation_verify",
+                 tenant_id: str = "default",
                  extra: dict | None = None) -> dict:
     now = int(time.time())
     # L2: extras are *base*; protected fields go LAST so they always win.
@@ -560,7 +588,8 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
         "kid": kid,
     }
     token = sign_token(body, keystore.load_private())
-    entry = ledger.append(matter=matter, body=body, token=token)
+    entry = ledger.append(matter=matter, body=body, token=token,
+                           tenant_id=tenant_id)
     return {"verdict": verdict, "token": token, "exp": body["exp"],
             "kid": kid, "ledger_h": entry.h}
 

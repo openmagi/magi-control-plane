@@ -192,12 +192,18 @@ class TestAuthRequired:
     def test_hitl_list_without_key_401(self, client):
         assert client.get("/hitl").status_code == 401
 
-    def test_unset_env_fails_closed_503(self, app, monkeypatch):
+    def test_unset_env_with_no_db_key_returns_401(self, app, monkeypatch):
+        """v2.0-W6a: env key unset + no DB-issued keys → fail-closed as 401.
+
+        (Pre-multi-tenant this was 503 "auth not configured", but tenant DB
+        keys can now serve auth even when MAGI_CP_API_KEY is empty. The
+        invariant is fail-closed; either status carries that meaning.)
+        """
         monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
         c = TestClient(app)
         r = c.post("/citation_verify", json={"matter": "M", "doc_id": "D", "citations": []},
                    headers={"X-Api-Key": "anything"})
-        assert r.status_code == 503
+        assert r.status_code == 401
 
     def test_wrong_key_401(self, client):
         r = client.post("/citation_verify",
@@ -329,12 +335,15 @@ class TestDocHashBinding:
 class Test503Redact:
     """Round-2 review: 503 must not echo env var name."""
 
-    def test_503_does_not_leak_env_name(self, app, monkeypatch):
+    def test_auth_failure_does_not_leak_env_name(self, app, monkeypatch):
+        """Whatever status the auth failure returns (401 in v2.0, 503 in v1),
+        the response body MUST NOT echo any MAGI_CP_* env var name —
+        enumeration would let a probe map the configuration surface."""
         monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
         c = TestClient(app)
         r = c.post("/citation_verify", json={"matter": "M", "doc_id": "D", "citations": []},
                    headers={"X-Api-Key": "x"})
-        assert r.status_code == 503
+        assert r.status_code in (401, 503)   # fail-closed; either is correct
         assert "MAGI_CP" not in r.text
 
 

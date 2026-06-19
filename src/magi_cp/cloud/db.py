@@ -40,11 +40,19 @@ class LedgerEntry(Base):
     and retries against the new tail. asyncio.Lock is a within-process
     fast-path on top of this DB-level invariant.
 
-    Genesis row has prev="" — declared as UNIQUE("" allowed once)
+    Genesis row has prev="" — declared as UNIQUE("" allowed once).
+
+    v2.0-W6a Phase 2: `tenant_id` scopes the chain VIEW per tenant. The
+    underlying chain remains globally append-only (cross-tenant tampering
+    still detectable), but reads filter by tenant_id so tenant A cannot see
+    tenant B's entries.
     """
     __tablename__ = "ledger_entry"
     id: Mapped[int] = mapped_column(BigInt, primary_key=True, autoincrement=True)
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), index=True, nullable=False, default="default",
+    )
     matter: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     prev: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     body: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -65,6 +73,10 @@ class HitlItem(Base):
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     ts_created: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ts_decided: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # v2.0-W6a Phase 2: scope queue items to their owning tenant.
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), index=True, nullable=False, default="default",
+    )
     matter: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -103,6 +115,10 @@ def make_engine(dsn: str = "sqlite:///./magi-cp.sqlite") -> Engine:
 
 
 def init_schema(engine: Engine) -> None:
+    # Lazy import so tenants module registers its tables (Tenant, ApiKey)
+    # on Base.metadata before create_all runs. Without this import,
+    # init_schema would only create ledger_entry + hitl_item.
+    from . import tenants as _tenants_module  # noqa: F401
     Base.metadata.create_all(engine)
 
 
@@ -122,13 +138,18 @@ class LedgerRepo:
         self.engine = engine
 
     def append(self, *, matter: str, body: dict, token: str,
-               max_retries: int = 5) -> LedgerEntry:
+               max_retries: int = 5,
+               tenant_id: str = "default") -> LedgerEntry:
         """Append a new entry to the global hash chain.
 
         Race protection: UNIQUE(prev) constraint at DB level. If two writers
         race against the same tail, one commits, the other hits IntegrityError
         and retries against the fresh tail. Works across uvicorn workers and
         K8s replicas — the asyncio.Lock in the API layer is just a fast path.
+
+        v2.0-W6a Phase 2: `tenant_id` scopes per-tenant VIEWS via list_by_tenant.
+        The chain remains globally append-only — `prev` still links across
+        tenants so cross-tenant tampering is still detectable by verify_chain.
         """
         from sqlalchemy.exc import IntegrityError
         for attempt in range(max_retries):
@@ -136,7 +157,8 @@ class LedgerRepo:
                 last = s.scalar(select(LedgerEntry).order_by(LedgerEntry.id.desc()).limit(1))
                 prev = last.h if last else ""
                 entry = LedgerEntry(
-                    ts=int(time.time()), matter=matter, prev=prev,
+                    ts=int(time.time()), tenant_id=tenant_id,
+                    matter=matter, prev=prev,
                     body=body, token=token, h=_chain_hash(prev, body, token),
                 )
                 s.add(entry)
@@ -157,6 +179,16 @@ class LedgerRepo:
             rows = list(s.scalars(select(LedgerEntry).order_by(LedgerEntry.id)))
             for r in rows:
                 s.expunge(r)
+            return rows
+
+    def list_by_tenant(self, tenant_id: str) -> list[LedgerEntry]:
+        """Per-tenant ledger view. Order preserved (by id ascending)."""
+        with Session(self.engine) as s:
+            rows = list(s.scalars(
+                select(LedgerEntry).where(LedgerEntry.tenant_id == tenant_id)
+                .order_by(LedgerEntry.id)
+            ))
+            for r in rows: s.expunge(r)
             return rows
 
     def list_by_matter(self, matter: str) -> list[LedgerEntry]:
@@ -184,10 +216,19 @@ class HitlRepo:
     def __init__(self, engine: Engine):
         self.engine = engine
 
-    def enqueue(self, *, matter: str, doc_id: str, reason: str, payload: dict) -> HitlItem:
+    def enqueue(self, *, matter: str, doc_id: str, reason: str, payload: dict,
+                tenant_id: str = "default") -> HitlItem:
+        # Mirror tenant_id into the payload too — the dashboard reads the
+        # payload to render and our HITL detail endpoint already returns
+        # the payload verbatim, so this gives reviewer dashboards a stable
+        # filter key without an API change.
+        scoped_payload = {**payload, "tenant_id": tenant_id}
         with Session(self.engine) as s:
-            item = HitlItem(ts_created=int(time.time()), matter=matter, doc_id=doc_id,
-                            reason=reason, payload=payload, status=HitlStatus.pending)
+            item = HitlItem(ts_created=int(time.time()),
+                            tenant_id=tenant_id,
+                            matter=matter, doc_id=doc_id,
+                            reason=reason, payload=scoped_payload,
+                            status=HitlStatus.pending)
             s.add(item); s.commit(); s.refresh(item); s.expunge(item)
             return item
 
@@ -201,6 +242,17 @@ class HitlRepo:
         with Session(self.engine) as s:
             rows = list(s.scalars(
                 select(HitlItem).where(HitlItem.status == HitlStatus.pending)
+                .order_by(HitlItem.id)
+            ))
+            for r in rows: s.expunge(r)
+            return rows
+
+    def list_pending_by_tenant(self, tenant_id: str) -> list[HitlItem]:
+        with Session(self.engine) as s:
+            rows = list(s.scalars(
+                select(HitlItem)
+                .where(HitlItem.status == HitlStatus.pending,
+                        HitlItem.tenant_id == tenant_id)
                 .order_by(HitlItem.id)
             ))
             for r in rows: s.expunge(r)

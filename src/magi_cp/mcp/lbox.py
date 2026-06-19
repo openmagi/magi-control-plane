@@ -12,8 +12,12 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 OC = "clawy"
-SEARCH_URL = "http://www.law.go.kr/DRF/lawSearch.do"
-SERVICE_URL = "http://www.law.go.kr/DRF/lawService.do"
+# v2.0-W7: HTTPS to defeat path-MITM injecting fake judgments. law.go.kr
+# supports HTTPS; the http://… form auto-redirects to https://… on the
+# server, but we explicitly request HTTPS so a downgrade attacker cannot
+# silently strip the redirect.
+SEARCH_URL = "https://www.law.go.kr/DRF/lawSearch.do"
+SERVICE_URL = "https://www.law.go.kr/DRF/lawService.do"
 TIMEOUT = 20
 
 _BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
