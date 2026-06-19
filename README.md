@@ -2,7 +2,7 @@
 
 > agent-governance control plane — for Claude Code first, agent-agnostic by design.
 >
-> 2026-06-19. MVP build in progress. spike(`../magi-cp-spike/`) validated all tech thesis;
+> 2026-06-19. v1.1 alpha (5 wired verifiers + NL→IR compile + /presets catalog).
 > spec = `../docs/plans/2026-06-18-magi-control-plane-v0-plan.md §8`; build plan =
 > `../docs/plans/2026-06-19-magi-control-plane-mvp-build.md`.
 
@@ -13,46 +13,121 @@ Beachhead: Korean legal filing (citation existence + verbatim verification + par
 
 Three layers:
 - **Local** (OSS-able): `magi-cp` CLI, CC hook helper, MCP server. Verify-only — no signing keys.
-- **Cloud** (paid SaaS): policy authority, Ed25519 signer, tamper-evident ledger, HITL queue, dashboard.
+- **Cloud** (paid SaaS): policy authority, Ed25519 signer, tamper-evident ledger, HITL queue, dashboard, NL→IR authoring.
 - **Floor**: managed-settings + plugin = users can't disable. *Subscription expiry = fail-closed*.
 
 ## Quick start (dev)
 ```bash
 make install          # editable install + dev deps
-make test             # pytest
-make cloud-dev        # start cloud API
+make test             # pytest (325 Python tests)
+make cloud-dev        # start cloud API on :8787  (factory → registry-wired + builtins)
 make build-plugin     # compile policies/*.json → plugin/managed-settings.json
 ```
 
+The cloud is reachable at `http://127.0.0.1:8787`. `GET /healthz` is public; everything else
+needs a key (see § Environment variables).
+
+## v1.1 highlights
+- **Verifier registry + 5 wired verifiers** — `citation_verify`, `privilege_scan`,
+  `source_allowlist`, `structured_output`, `prompt_injection_screen`. Each implements
+  the `Verifier` protocol (`name`, `step`, `category`, `enforcement`, `description`,
+  `input_schema`, `run`) and dispatches via `Verdict { status: pass|review|deny, reasons }`.
+- **MCP auto-exposure** — every registered verifier surfaces as an MCP tool;
+  `magi-cp mcp` serves the same 5 + legacy `verify_citations` / `lbox_fetch`.
+- **/presets catalog** — `GET /presets` (no auth) merges live registry ("enforcing")
+  with a 38-entry vendor catalog from magi-agent ("preview"). Honest labels: 5 wired,
+  33 surfaced for parity with magi-agent's customize tab but NOT enforced here.
+- **NL→IR compiler** — `POST /policies/compile` (admin key, requires LLM provider env)
+  runs a 3-gate authoring flow: LLM compile → critic LLM review → human approve via
+  `PUT /policies/{id}`. Compile **never auto-persists**. Substrate defences: nonce-guarded
+  `<UNTRUSTED>` fence, evidence-friction precheck, server-side Policy schema validation
+  on the compiled IR.
+
+## Environment variables
+| Var | Required by | Purpose |
+|---|---|---|
+| `MAGI_CP_API_KEY` | cloud (citation_verify, ledger) | tenant data-plane key |
+| `MAGI_CP_HITL_API_KEY` | cloud (HITL queue) | reviewer key |
+| `MAGI_CP_ADMIN_API_KEY` | cloud (policies CRUD + compile) | admin key |
+| `MAGI_CP_KEY_DIR` | cloud | Ed25519 keypair dir (default `~/.magi-cp/cloud`) |
+| `MAGI_CP_DSN` | cloud | SQLAlchemy DSN (default `sqlite:///./magi-cp.sqlite`) |
+| `MAGI_CP_POLICY_STORE` | cloud | path to policies.json (default `~/.magi-cp/policies.json`) |
+| `MAGI_CP_LLM_COMPILER` | cloud `/policies/compile` | `mod.path:factory` returning an `LlmProvider` |
+| `MAGI_CP_LLM_REVIEWER` | cloud `/policies/compile` | distinct provider for the critic gate |
+| `MAGI_CP_CLOUD_URL` | local CLI + dashboard | default `http://127.0.0.1:8787` |
+| `MAGI_CP_LOCAL_DIR` | local gate/emit | WAL + tokens dir (default `~/.magi-cp/local`) |
+
+Without `MAGI_CP_LLM_COMPILER` + `MAGI_CP_LLM_REVIEWER`, `/policies/compile` returns
+**503 LLM providers not configured** — by design, no shipped provider impl in v1.1.
+
+## Curl recipes
+**See the catalog (5 wired + 38 preview):**
+```bash
+curl -s http://127.0.0.1:8787/presets | jq '.presets | length, (map(select(.enforcement == "enforcing")) | length)'
+```
+
+**Author a policy directly (no LLM):**
+```bash
+curl -s -X PUT http://127.0.0.1:8787/policies/legal-filing/v1 \
+  -H "X-Admin-Api-Key: $MAGI_CP_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{
+    "policy": {
+      "id": "legal-filing/v1", "version": "0.1",
+      "description": "Korean legal filing",
+      "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
+      "sentinel_re": "FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
+      "requires": [{"step": "citation_verify", "verdict": "pass"}],
+      "on_missing": "deny", "on_signature_invalid": "deny"
+    },
+    "source": "platform"
+  }'
+```
+
+**Pull the compiled managed-settings JSON (what Claude Code consumes):**
+```bash
+curl -s http://127.0.0.1:8787/policies/legal-filing/v1/compiled \
+  -H "X-Admin-Api-Key: $MAGI_CP_ADMIN_API_KEY" | jq .managed_settings
+```
+
+**NL→IR compile (requires LLM providers wired):**
+```bash
+curl -s -X POST http://127.0.0.1:8787/policies/compile \
+  -H "X-Admin-Api-Key: $MAGI_CP_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"nl": "법원 filing 시 인용을 결정론으로 검증하고 미통과는 차단"}' \
+  | jq '{ir, review, schema_issues}'
+```
+
 ## Layout
-- `src/magi_cp/verifier/`  — citation verifier (3-way verdict, SourceResolver protocol)
+- `src/magi_cp/verifier/`  — Verifier protocol + registry, 5 wired verifiers
 - `src/magi_cp/policy/`    — Policy IR + deterministic compiler (LLM-free)
+- `src/magi_cp/llm/`       — LlmProvider Protocol + FakeLlmProvider (for tests)
 - `src/magi_cp/evidence/`  — Ed25519 sign/verify, hash-chain ledger, local WAL
-- `src/magi_cp/cloud/`     — FastAPI: `/citation_verify` `/hitl` `/pubkey` `/ledger`
+- `src/magi_cp/cloud/`     — FastAPI: `/citation_verify` `/hitl` `/pubkey` `/ledger` `/policies` `/policies/compile` `/presets`
 - `src/magi_cp/local/`     — CC hook gate + emit (CLI entry points)
-- `src/magi_cp/mcp/`       — stdio MCP server: `verify_citations`, `lbox_fetch`
+- `src/magi_cp/mcp/`       — stdio MCP server: registry-aware, auto-exposes wired verifiers
 - `plugin/`                — `.claude-plugin` bundle (managed-settings is build target)
-- `web/`                   — Next.js dashboard (HITL queue + audit)
+- `web/`                   — Next.js dashboard: HITL queue + audit + policies + presets
 - `tests/`                 — pytest
-
-## Status: P7 complete (alpha)
-- [x] P0 directory/skeleton
-- [x] P1 core port from spike (TDD, 49 tests)
-- [x] P2 MCP server (verify_citations + lbox_fetch, 9 tests)
-- [x] P3 cloud API (FastAPI + Docker, 35 tests; security-hardened over 2 rounds)
-- [x] P4 CC plugin bundle (managed-settings + gate shim, 13 tests)
-- [x] P5 HITL + Next.js dashboard (14 vitest)
-- [x] P6 NLI advisory (8 tests)
-- [x] P7 E2E + 3-perspective review (5 E2E tests)
-
-Test totals: **123 Python + 14 web = 137**. See `magi-cp-spike/` for the
-pre-MVP spike that validated the core thesis. See `SECURITY.md` for v0
-deferments before partner pilot.
 
 ## CLI surface (after `pip install -e .`)
 - `magi-cp gate` — PreToolUse hook reader (stdin JSON in, exit + JSON out)
 - `magi-cp emit --matter --doc-id …` — request citation_verify, cache in WAL
 - `magi-cp await-approval --hitl-id N` — poll until HITL decides, write token to WAL
 - `magi-cp compile <policy.json> <out.json>` — Policy IR → managed-settings
-- `magi-cp cloud` — run FastAPI cloud server (dev)
-- `magi-cp mcp` — stdio MCP server
+- `magi-cp cloud` — run FastAPI cloud server (registry-wired)
+- `magi-cp mcp` — stdio MCP server (registry-wired)
+
+## Status
+v1.1 alpha — **325 Python + 69 web = 394 tests**. Reviewed across security, integration,
+and "what would break in a demo" angles; all findings folded back.
+
+Honest gaps before partner pilot (tracked as v1.2):
+- No shipped LLM provider implementation — operator wires their own via env (see above).
+- `/policies/compile` is curl-only — UI page deferred to v1.2.
+- 4 of 5 wired verifiers (privilege_scan/source_allowlist/structured_output/prompt_injection_screen)
+  reach Claude Code only through MCP; they have no dedicated HTTP dispatch endpoint yet.
+  Only `citation_verify` has a specialized HTTP path (kept that way for the NLI + ledger
+  binding it needs).
+
+See `SECURITY.md` for v0 deferments before partner pilot and the threat model that
+shapes the cloud's auth + key rotation story.

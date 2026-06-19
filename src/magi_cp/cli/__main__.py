@@ -13,15 +13,18 @@ from __future__ import annotations
 import sys
 
 
-def _help() -> int:
+def _help(*, explicit: bool) -> int:
+    """Print usage. Exit code: 0 when user asked for it, 2 on bad/missing args."""
     print(__doc__, file=sys.stderr)
-    return 2
+    return 0 if explicit else 2
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] in ("-h", "--help"):
-        return _help()
+    if argv and argv[0] in ("-h", "--help"):
+        return _help(explicit=True)
+    if not argv:
+        return _help(explicit=False)
     cmd, rest = argv[0], argv[1:]
     if cmd == "gate":
         from ..local.gate import cli as gate_cli

@@ -35,10 +35,12 @@ from ..policy import (
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
+from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
 from .policy_store import PolicyStore
 from .db import HitlRepo, HitlStatus, LedgerRepo, init_schema, make_engine
 from .keys import KeyStore
+from .presets_catalog import vendor_catalog
 
 
 TOKEN_TTL_SECONDS = 600   # short, refreshable. License expiry = fail-closed.
@@ -72,6 +74,18 @@ class VerifyReq(BaseModel):
 class DecideReq(BaseModel):
     approver: str = Field(..., min_length=1, max_length=256)
     note: str | None = Field(default=None, max_length=2_000)
+
+
+# v1.1-PD: NL→IR compile + review.
+class PriorTurnIn(BaseModel):
+    role: str = Field(..., pattern=r"^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=10_000)
+
+
+class CompileReq(BaseModel):
+    # Bounded so a runaway NL can't pin LLM tokens or push past the body cap.
+    nl: str = Field(..., min_length=1, max_length=20_000)
+    prior_turns: list[PriorTurnIn] | None = Field(default=None, max_length=20)
 
 
 # ── middlewares ──────────────────────────────────────────────────────
@@ -171,6 +185,9 @@ def create_app(
     dsn: str | None = None,
     nli_classifier: EntailmentClassifier | None = None,
     policy_store_path: str | None = None,
+    verifier_registry: "VerifierRegistry | None" = None,
+    llm_compiler: "object | None" = None,
+    llm_reviewer: "object | None" = None,
 ) -> FastAPI:
     ks = keystore or KeyStore(dir=os.environ.get("MAGI_CP_KEY_DIR",
                                                   str(Path.home() / ".magi-cp" / "cloud")))
@@ -202,14 +219,83 @@ def create_app(
     app.state.keystore = ks
     app.state.engine = engine
     app.state.kid = kid
+    app.state.verifier_registry = verifier_registry
 
     @app.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok"}
 
+    @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
+    def policies_compile(req: "CompileReq") -> dict:
+        """Authoring gate 1+2 — NL→IR compile + critic review.
+
+        Returns {"ir": {...}, "review": {"ok": bool, "issues": [...]}}.
+        NEVER persists. Gate 3 (human approval) is the dashboard editing the
+        IR if needed and calling PUT /policies/{id}.
+        """
+        if llm_compiler is None or llm_reviewer is None:
+            raise HTTPException(
+                503, "LLM providers not configured on this deployment",
+            )
+        from .nl_compiler import PrecheckError, compile_with_review
+        try:
+            return compile_with_review(
+                compiler=llm_compiler,
+                reviewer=llm_reviewer,
+                nl=req.nl,
+                prior_turns=[t.model_dump() for t in (req.prior_turns or [])],
+            )
+        except PrecheckError as e:
+            raise HTTPException(422, f"precheck: {e}") from e
+        except ValueError as e:
+            # compiler parse error — operator's prompt or model produced
+            # something non-JSON. 422 because the input could be reformulated.
+            raise HTTPException(422, str(e)) from e
+
     @app.get("/pubkey")
     def get_pubkey() -> dict:
         return {"kid": kid, "pubkey_pem": pubkey_pem}
+
+    @app.get("/presets")
+    def get_presets() -> dict:
+        """Merge live VerifierRegistry (wired) + vendored magi-agent catalog
+        (preview). Read-only, no auth — operator-facing overview, no secrets.
+
+        Sort: 5 wired first (operator sees what they have), then vendor
+        entries alphabetical by id.
+        """
+        wired: list[dict] = []
+        seen_ids: set[str] = set()
+        if verifier_registry is not None:
+            for v in verifier_registry.all():
+                # Catalog ID = step with underscores → hyphens (magi-agent style).
+                # The step (not the name) is the policy-IR binding key, so basing
+                # the public ID on step keeps `/presets` ID stable across name
+                # renames like the legacy verify_citations alias.
+                pid = v.step.replace("_", "-")
+                wired.append({
+                    "id": pid,
+                    "category": v.category,
+                    "description": v.description,
+                    "enforcement": v.enforcement.value,
+                    "step": v.step,
+                })
+                seen_ids.add(pid)
+        vendor = sorted(
+            (
+                {
+                    "id": vp.id,
+                    "category": vp.category,
+                    "description": vp.description,
+                    "enforcement": "preview",
+                    "step": None,
+                }
+                for vp in vendor_catalog()
+                if vp.id not in seen_ids   # wired ID shadows vendor entry
+            ),
+            key=lambda p: p["id"],
+        )
+        return {"presets": wired + vendor}
 
     @app.post("/citation_verify", dependencies=[Depends(require_api_key)])
     async def citation_verify(req: VerifyReq) -> dict:
@@ -553,6 +639,57 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         return {"id": policy_id, "enabled": body.enabled}
 
 
+def _resolve_llm_provider_from_env(env_var: str) -> "object | None":
+    """Load an LlmProvider via a dotted import path in env.
+
+    Format: `MAGI_CP_LLM_COMPILER=mypkg.module:factory_callable`. The callable
+    receives no args and must return something conforming to LlmProvider.
+    Returns None when the env var is unset — keeps /policies/compile honest
+    about its 503 path (and the test suite stays hermetic).
+    """
+    spec = os.environ.get(env_var)
+    if not spec:
+        return None
+    if ":" not in spec:
+        raise RuntimeError(
+            f"{env_var} must be 'module.path:callable', got {spec!r}"
+        )
+    mod_path, _, attr = spec.partition(":")
+    import importlib
+    try:
+        mod = importlib.import_module(mod_path)
+    except Exception as e:
+        raise RuntimeError(f"{env_var}: failed to import {mod_path}: {e}") from e
+    if not hasattr(mod, attr):
+        raise RuntimeError(f"{env_var}: {mod_path} has no attribute {attr!r}")
+    factory = getattr(mod, attr)
+    return factory()
+
+
+def _build_production_app() -> FastAPI:
+    """Construct the app with all v1.1 wirings.
+
+    Test code constructs apps directly via create_app(...) with explicit
+    overrides; this is for the deployed `magi-cp-cloud` binary so /presets
+    surfaces the live registry, MCP sees the same verifiers, and
+    /policies/compile is reachable when LLM providers are configured.
+
+    LLM provider wiring: an operator points
+        MAGI_CP_LLM_COMPILER=mypkg.module:factory
+        MAGI_CP_LLM_REVIEWER=mypkg.module:factory
+    at any callable returning an LlmProvider. Unset → /policies/compile 503.
+    """
+    from ..verifier.builtins import register_builtins
+    from ..verifier.protocol import VerifierRegistry
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    return create_app(
+        verifier_registry=reg,
+        llm_compiler=_resolve_llm_provider_from_env("MAGI_CP_LLM_COMPILER"),
+        llm_reviewer=_resolve_llm_provider_from_env("MAGI_CP_LLM_REVIEWER"),
+    )
+
+
 def run() -> None:  # pragma: no cover
     import uvicorn
-    uvicorn.run(create_app(), host="127.0.0.1", port=8787)
+    uvicorn.run(_build_production_app(), host="127.0.0.1", port=8787)

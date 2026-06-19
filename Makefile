@@ -26,7 +26,7 @@ build-plugin:
 	python3 -m magi_cp.policy.compiler policies/legal_filing_v1.json plugin/managed-settings.json
 
 cloud-dev:
-	uvicorn magi_cp.cloud.app:app --reload --port 8787
+	uvicorn --factory magi_cp.cloud.app:_build_production_app --reload --port 8787
 
 clean:
 	rm -rf .pytest_cache **/__pycache__ build dist *.egg-info

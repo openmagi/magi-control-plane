@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from ..verifier import Citation, verify_document
 from ..verifier.sources import SourceResolver
+from ..verifier.protocol import VerifierRegistry
 from .lbox import fetch_by_case_number
 
 
@@ -139,6 +140,33 @@ TOOLS: list[Tool] = [
 _TOOL_BY_NAME = {t.name: t for t in TOOLS}
 
 
+class _UnknownTool(KeyError):
+    """Dispatch miss across both legacy and registry maps."""
+
+
+class _RegistryToolAdapter:
+    """Wraps a Verifier so it behaves like a legacy Tool.
+
+    The verifier's run() returns a Verdict, which we serialize as the JSON
+    payload the MCP client receives. Reasons are flattened to a list so the
+    wire format stays uniform across verifiers.
+    """
+
+    def __init__(self, verifier) -> None:
+        self._v = verifier
+
+    def spec(self) -> dict:
+        return {
+            "name": self._v.name,
+            "description": self._v.description,
+            "inputSchema": self._v.input_schema,
+        }
+
+    def call(self, arguments: dict) -> dict:
+        verdict = self._v.run(arguments or {})
+        return {"status": verdict.status, "reasons": list(verdict.reasons)}
+
+
 # ── JSON-RPC 2.0 server ─────────────────────────────────────────────
 def _ok(req_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -149,6 +177,41 @@ def _err(req_id: Any, code: int, message: str) -> dict:
 
 
 class Server:
+    """Stdio MCP server.
+
+    The server is registry-aware: pass a populated VerifierRegistry to expose
+    every registered verifier as an MCP tool alongside the legacy tools. Without
+    a registry, only the legacy tools are served (backward compat).
+    """
+
+    def __init__(self, registry: VerifierRegistry | None = None) -> None:
+        self._legacy = _TOOL_BY_NAME
+        self._registry_tools: dict[str, "_RegistryToolAdapter"] = {}
+        if registry is not None:
+            for v in registry.all():
+                if v.name in self._legacy:
+                    raise ValueError(
+                        f"verifier name collision with legacy tool: {v.name!r} "
+                        f"(rename verifier to avoid shadowing)"
+                    )
+                self._registry_tools[v.name] = _RegistryToolAdapter(v)
+
+    def _all_tool_specs(self) -> list[dict]:
+        specs = [
+            {"name": t.name, "description": t.description, "inputSchema": t.input_schema}
+            for t in TOOLS
+        ]
+        for adapter in self._registry_tools.values():
+            specs.append(adapter.spec())
+        return specs
+
+    def _dispatch(self, name: str, arguments: dict) -> dict:
+        if name in self._legacy:
+            return self._legacy[name].handler(arguments)
+        if name in self._registry_tools:
+            return self._registry_tools[name].call(arguments)
+        raise _UnknownTool(name)
+
     def _handle(self, req: dict) -> dict | None:
         method = req.get("method")
         rid = req.get("id")
@@ -165,18 +228,13 @@ class Server:
             elif method == "notifications/initialized" or method == "initialized":
                 return None  # client→server notification
             elif method == "tools/list":
-                result = {
-                    "tools": [
-                        {"name": t.name, "description": t.description, "inputSchema": t.input_schema}
-                        for t in TOOLS
-                    ]
-                }
+                result = {"tools": self._all_tool_specs()}
             elif method == "tools/call":
                 name = params.get("name")
-                tool = _TOOL_BY_NAME.get(name)
-                if tool is None:
+                try:
+                    payload = self._dispatch(name, params.get("arguments") or {})
+                except _UnknownTool:
                     return _err(rid, -32602, f"unknown tool: {name!r}")
-                payload = tool.handler(params.get("arguments") or {})
                 result = {
                     "content": [{
                         "type": "text",
@@ -213,7 +271,15 @@ class Server:
 
 
 def main() -> int:  # pragma: no cover (CLI entry)
-    Server().serve()
+    # Production: surface the same 5 wired verifiers via MCP that the cloud
+    # /presets advertises and /citation_verify dispatches. Without this,
+    # `magi-cp-mcp` would only serve the legacy verify_citations/lbox_fetch
+    # tools — a silent regression vs the v1.1 catalog.
+    from ..verifier.builtins import register_builtins
+    from ..verifier.protocol import VerifierRegistry
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    Server(registry=reg).serve()
     return 0
 
 

@@ -184,6 +184,30 @@ export const cloud = {
       method: "PATCH", keyType: "admin",
       body: JSON.stringify({ enabled }),
     }),
+
+  /** Read-only preset catalog — backend has no auth requirement on /presets. */
+  listPresets: async (): Promise<PresetEntry[]> => {
+    const r = await fetch(`${_cloudUrl()}/presets`, {
+      method: "GET",
+      cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!r.ok) {
+      console.error(`cloud ${r.status} /presets`)
+      throw new Error(`cloud ${r.status}`)
+    }
+    const d = await r.json() as { presets: PresetEntry[] }
+    return d.presets
+  },
+}
+
+export type PresetEntry = {
+  id: string
+  category: "ANSWER" | "FACT" | "CODING" | "TASK" | "OUTPUT"
+          | "RESEARCH" | "MEMORY" | "SECURITY"
+  description: string
+  enforcement: "enforcing" | "always-on" | "preview" | "capability"
+  step: string | null
 }
 
 function _encId(id: string): string {

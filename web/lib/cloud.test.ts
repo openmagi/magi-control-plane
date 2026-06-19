@@ -128,4 +128,40 @@ describe("cloud client", () => {
       expect(e.message).not.toContain("MAGI_CP")
     }
   })
+
+  // ── v1.1: presets catalog (no auth) ────────────────────────────────
+  it("listPresets sends NO auth header", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ presets: [] }), { status: 200 }) as any
+    })
+    await cloud.listPresets()
+    expect(String(captured.url)).toBe("http://test/presets")
+    const h = new Headers(captured.init?.headers || {})
+    expect(h.get("X-Api-Key")).toBeNull()
+    expect(h.get("X-Admin-Api-Key")).toBeNull()
+    expect(h.get("X-Hitl-Api-Key")).toBeNull()
+  })
+
+  it("listPresets returns the presets array", async () => {
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ presets: [
+        { id: "citation-verify", category: "FACT", description: "x",
+          enforcement: "enforcing", step: "citation_verify" },
+        { id: "answer-quality", category: "ANSWER", description: "y",
+          enforcement: "preview", step: null },
+      ] }),
+      { status: 200 }) as any)
+    const r = await cloud.listPresets()
+    expect(r).toHaveLength(2)
+    expect(r[0].id).toBe("citation-verify")
+    expect(r[0].enforcement).toBe("enforcing")
+    expect(r[1].step).toBeNull()
+  })
+
+  it("listPresets propagates 5xx as cloud N", async () => {
+    global.fetch = vi.fn(async () => new Response("", { status: 503 }) as any)
+    await expect(cloud.listPresets()).rejects.toThrow("cloud 503")
+  })
 })

@@ -13,6 +13,7 @@ services:
     environment:
       MAGI_CP_HITL_API_KEY: "${MAGI_CP_HITL_API_KEY:?HITL API key required — set in .env}"
       MAGI_CP_API_KEY: "${MAGI_CP_API_KEY:?cloud API key required — set in .env}"
+      MAGI_CP_ADMIN_API_KEY: "${MAGI_CP_ADMIN_API_KEY:?admin API key required (policy CRUD) — set in .env}"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2).status==200 else 1)"]
       interval: 10s
