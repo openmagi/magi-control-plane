@@ -88,6 +88,15 @@ class CompileReq(BaseModel):
     prior_turns: list[PriorTurnIn] | None = Field(default=None, max_length=20)
 
 
+# v1.2-W3: generic verifier dispatch.
+class VerifyDispatchReq(BaseModel):
+    # The verifier's input_schema is verifier-specific — we accept any dict
+    # and let the verifier handle shape errors with a deny verdict.
+    payload: dict = Field(..., description="opaque payload passed to verifier.run()")
+    matter: str = Field(default="generic", min_length=1, max_length=128)
+    doc_id: str = Field(default="generic", min_length=1, max_length=128)
+
+
 # ── middlewares ──────────────────────────────────────────────────────
 class MaxBodyMiddleware(BaseHTTPMiddleware):
     """413 on Content-Length OR by accumulating a streamed/chunked body."""
@@ -297,6 +306,62 @@ def create_app(
         )
         return {"presets": wired + vendor}
 
+    @app.post("/verify/{step}", dependencies=[Depends(require_api_key)])
+    async def verify_dispatch(step: str, req: VerifyDispatchReq) -> dict:
+        """Generic verifier dispatch — any registered verifier other than
+        citation_verify (which keeps its specialized NLI+ledger path).
+
+        Pass: signed token + ledger entry.
+        Deny: no token, ledger entry records the deny.
+        Review: signed token with hitl flag in body so the gate routes to HITL.
+        """
+        if verifier_registry is None:
+            raise HTTPException(503, "verifier registry not configured")
+        if step == "citation_verify":
+            raise HTTPException(
+                409,
+                "use POST /citation_verify for citation_verify (specialized path)",
+            )
+        v = verifier_registry.get_by_step(step)
+        if v is None:
+            raise HTTPException(404, f"no verifier registered for step {step!r}")
+        try:
+            verdict = v.run(req.payload)
+        except Exception as e:
+            # Verifier blew up on a malformed payload → treat as deny, record.
+            async with chain_lock:
+                ledger.append(matter=req.matter,
+                              body={"step": step, "verdict": "deny",
+                                    "doc_id": req.doc_id, "error": str(e)[:200]},
+                              token="")
+            return {"verdict": "deny", "token": None,
+                    "reasons": [f"verifier error: {type(e).__name__}"]}
+        if verdict.status == "pass":
+            async with chain_lock:
+                result = _issue_token(
+                    req.matter, req.doc_id, "pass",
+                    ledger=ledger, keystore=ks, kid=kid, step=step,
+                )
+            result["reasons"] = list(verdict.reasons)
+            return result
+        if verdict.status == "review":
+            async with chain_lock:
+                result = _issue_token(
+                    req.matter, req.doc_id, "review",
+                    ledger=ledger, keystore=ks, kid=kid, step=step,
+                )
+            result["reasons"] = list(verdict.reasons)
+            return result
+        # deny
+        async with chain_lock:
+            ledger.append(matter=req.matter,
+                          body={"step": step, "verdict": "deny",
+                                "doc_id": req.doc_id,
+                                "reasons": list(verdict.reasons)},
+                          token="")
+        return {"verdict": "deny", "token": None,
+                "reasons": list(verdict.reasons)}
+
     @app.post("/citation_verify", dependencies=[Depends(require_api_key)])
     async def citation_verify(req: VerifyReq) -> dict:
         # corpus_override total size cap (defense in depth on top of body limit)
@@ -448,6 +513,7 @@ def _citations_summary(doc) -> list[dict]:
 
 def _issue_token(matter: str, doc_id: str, verdict: str, *,
                  ledger: LedgerRepo, keystore: KeyStore, kid: str,
+                 step: str = "citation_verify",
                  extra: dict | None = None) -> dict:
     now = int(time.time())
     # L2: extras are *base*; protected fields go LAST so they always win.
@@ -457,7 +523,7 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
         raise HTTPException(500, f"protected field clash: {leaked}")
     body = {
         **base,
-        "step": "citation_verify",
+        "step": step,
         "matter": matter,
         "doc_hash": doc_id,
         "verdict": verdict,

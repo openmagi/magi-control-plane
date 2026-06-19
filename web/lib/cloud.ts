@@ -185,6 +185,14 @@ export const cloud = {
       body: JSON.stringify({ enabled }),
     }),
 
+  /** Compile a NL description to a Policy IR + critic review + schema issues. */
+  compilePolicy: (nl: string, priorTurns?: Array<{ role: "user" | "assistant"; content: string }>):
+    Promise<CompileResult> =>
+    _fetch<CompileResult>("/policies/compile", {
+      method: "POST", keyType: "admin",
+      body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
+    }),
+
   /** Read-only preset catalog — backend has no auth requirement on /presets. */
   listPresets: async (): Promise<PresetEntry[]> => {
     const r = await fetch(`${_cloudUrl()}/presets`, {
@@ -199,6 +207,12 @@ export const cloud = {
     const d = await r.json() as { presets: PresetEntry[] }
     return d.presets
   },
+}
+
+export type CompileResult = {
+  ir: Record<string, unknown>
+  review: { ok: boolean; issues: string[] }
+  schema_issues: string[]
 }
 
 export type PresetEntry = {

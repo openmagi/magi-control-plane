@@ -58,7 +58,18 @@ needs a key (see § Environment variables).
 | `MAGI_CP_LOCAL_DIR` | local gate/emit | WAL + tokens dir (default `~/.magi-cp/local`) |
 
 Without `MAGI_CP_LLM_COMPILER` + `MAGI_CP_LLM_REVIEWER`, `/policies/compile` returns
-**503 LLM providers not configured** — by design, no shipped provider impl in v1.1.
+**503 LLM providers not configured**. v1.2 ships two reference providers (no SDK dep):
+
+```bash
+# Anthropic (default model: claude-sonnet-4-6)
+export ANTHROPIC_API_KEY=sk-ant-…
+export MAGI_CP_LLM_COMPILER=magi_cp.llm.anthropic_provider:anthropic_default
+# Use OpenAI as the reviewer for diversity (recommended over same-model self-review)
+export OPENAI_API_KEY=sk-…
+export MAGI_CP_LLM_REVIEWER=magi_cp.llm.openai_provider:openai_default
+```
+
+Override the model with `ANTHROPIC_MODEL=…` or `OPENAI_MODEL=…`.
 
 ## Curl recipes
 **See the catalog (5 wired + 38 preview):**
@@ -97,6 +108,16 @@ curl -s -X POST http://127.0.0.1:8787/policies/compile \
   | jq '{ir, review, schema_issues}'
 ```
 
+**Run a wired verifier directly (any step except citation_verify, which has its own route):**
+```bash
+curl -s -X POST http://127.0.0.1:8787/verify/privilege_scan \
+  -H "X-Api-Key: $MAGI_CP_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"payload": {"text": "[CONFIDENTIAL DRAFT] do not file yet"}, "matter": "M1", "doc_id": "D1"}' \
+  | jq '{verdict, reasons, token}'
+```
+
+Verdicts: `pass` → token issued; `deny` → no token (ledger records); `review` → token with review flag for HITL routing.
+
 ## Layout
 - `src/magi_cp/verifier/`  — Verifier protocol + registry, 5 wired verifiers
 - `src/magi_cp/policy/`    — Policy IR + deterministic compiler (LLM-free)
@@ -118,16 +139,25 @@ curl -s -X POST http://127.0.0.1:8787/policies/compile \
 - `magi-cp mcp` — stdio MCP server (registry-wired)
 
 ## Status
-v1.1 alpha — **325 Python + 69 web = 394 tests**. Reviewed across security, integration,
+v1.2 alpha — **347 Python + 72 web = 419 tests**. Reviewed across security, integration,
 and "what would break in a demo" angles; all findings folded back.
 
-Honest gaps before partner pilot (tracked as v1.2):
-- No shipped LLM provider implementation — operator wires their own via env (see above).
-- `/policies/compile` is curl-only — UI page deferred to v1.2.
-- 4 of 5 wired verifiers (privilege_scan/source_allowlist/structured_output/prompt_injection_screen)
-  reach Claude Code only through MCP; they have no dedicated HTTP dispatch endpoint yet.
-  Only `citation_verify` has a specialized HTTP path (kept that way for the NLI + ledger
-  binding it needs).
+What landed in v1.2 on top of v1.1:
+- **Real LLM providers** — `magi_cp.llm.anthropic_provider` and `openai_provider`
+  (no SDK dep; httpx direct). Wire via env (see above). Mix-and-match: Anthropic
+  compiler + OpenAI critic for diversity.
+- **Generic verifier dispatch** — `POST /verify/{step}` routes any registered verifier
+  through the same token + ledger flow as `/citation_verify` (which keeps its specialized
+  NLI path). Operators can now exercise privilege_scan / source_allowlist /
+  structured_output / prompt_injection_screen directly from HTTP, not only via MCP.
+- **/policies/compile UI** — `/policies/compile` page (textarea + IR/review/schema_issues
+  render + "Edit & save" handoff to `/policies/new?draft=…` for prefilled save).
+
+**NLI advisory is intentionally citation-only.** The entailment classifier scores
+"does the quote follow from the source text" — a question only `citation_verify` actually
+asks. Forcing NLI onto regex verifiers (privilege/injection) or URL/JSON verifiers
+(source/structured) would either be a no-op or push false-positives by trying to extract
+semantic meaning from a deterministic-by-design check. Not a gap; a deliberate scope.
 
 See `SECURITY.md` for v0 deferments before partner pilot and the threat model that
 shapes the cloud's auth + key rotation story.

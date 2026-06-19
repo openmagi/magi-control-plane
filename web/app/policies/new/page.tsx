@@ -50,21 +50,32 @@ async function saveNewPolicy(formData: FormData) {
   redirect(`/policies/${encodeURI(draft.id)}?msg=saved`)
 }
 
+function _parseDraftQuery(draft: string | undefined): import("@/lib/policy-builder").PolicyDraft | null {
+  if (!draft) return null
+  try {
+    const obj = JSON.parse(decodeURIComponent(draft))
+    if (typeof obj !== "object" || !obj) return null
+    return obj as import("@/lib/policy-builder").PolicyDraft
+  } catch { return null }
+}
+
 export default function NewPolicyPage({
   searchParams,
-}: { searchParams: { err?: string } }) {
+}: { searchParams: { err?: string; draft?: string } }) {
   // Use the allowlist; unknown ?err= codes silently drop (no reflected text).
   const flash = resolveFlash(undefined, searchParams.err)
+  // v1.2-W1: /policies/compile hands off via ?draft=<encoded IR>. Prefill if present.
+  const initial = _parseDraftQuery(searchParams.draft)
   return (
     <>
       <p><Link href="/policies">← Policies</Link></p>
-      <h1>New policy</h1>
+      <h1>New policy {initial && <span className="muted" style={{ fontSize: 12 }}>(prefilled from /compile)</span>}</h1>
       {flash?.kind === "error" && (
         <div className="card" role="alert" aria-live="assertive">
           <span className="tag deny">{flash.text}</span>
         </div>
       )}
-      <PolicyBuilder submitAction={saveNewPolicy} />
+      <PolicyBuilder submitAction={saveNewPolicy} initial={initial} />
     </>
   )
 }
