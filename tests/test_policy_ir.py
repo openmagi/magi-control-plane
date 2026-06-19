@@ -57,8 +57,35 @@ def test_load_policy_rejects_unsupported_event(tmp_path):
 
 
 def test_load_policy_rejects_unknown_on_missing(tmp_path):
+    # v1: "xyzzy" is not a legal decision label at all.
     with pytest.raises(ValueError, match="on_missing"):
+        load_policy(_write_policy(tmp_path, {"on_missing": "xyzzy"}))
+
+
+def test_load_policy_rejects_illegal_matrix_combination(tmp_path):
+    """v1 _LEGAL matrix: PreToolUse × Bash × log is not in the matrix."""
+    with pytest.raises(ValueError, match="illegal combination"):
         load_policy(_write_policy(tmp_path, {"on_missing": "log"}))
+
+
+# ── v1-P6 review fixes: server-side id pattern enforcement ──────────
+@pytest.mark.parametrize("bad_id,reason", [
+    # Pattern check fires first for most malformed inputs
+    ("../etc/passwd", "must match"),    # leading "." disallowed (must start [A-Za-z0-9])
+    ("..foo", "must match"),
+    ("foo bar", "must match"),
+    ("foo?bar", "must match"),
+    ("foo<script>", "must match"),
+    ("/abs", "must match"),
+    # Pattern allows these; the dedicated checks reject them
+    ("foo/compiled", "must not end"),
+    ("foo/enabled", "must not end"),
+    ("foo/..bar/x", "must not contain"),  # passes pattern but contains ..
+    ("", "required"),
+])
+def test_load_policy_rejects_bad_id(tmp_path, bad_id, reason):
+    with pytest.raises(ValueError, match=reason):
+        load_policy(_write_policy(tmp_path, {"id": bad_id}))
 
 
 def test_compiler_rejects_duplicate_policy_ids(tmp_path):

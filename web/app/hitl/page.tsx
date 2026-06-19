@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { cloud, type HitlItem } from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
 import { revalidatePath } from "next/cache"
@@ -71,7 +72,7 @@ function ItemCard({ item }: { item: HitlItem }) {
   return (
     <div className="card">
       <div>
-        <strong>#{item.id}</strong>{" "}
+        <Link href={`/hitl/${item.id}`}><strong>#{item.id}</strong></Link>{" "}
         <code>matter={item.matter}</code>{" "}
         <code>doc={item.doc_id}</code>
         <div className="muted" style={{ wordBreak: "break-word" }}>

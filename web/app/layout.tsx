@@ -12,7 +12,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="topbar">
           <Link href="/">magi-control-plane</Link>
-          <nav>
+          <nav aria-label="primary">
+            <Link href="/policies">Policies</Link>
             <Link href="/hitl">Review queue</Link>
             <Link href="/ledger">Audit</Link>
           </nav>

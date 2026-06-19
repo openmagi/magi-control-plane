@@ -9,24 +9,32 @@ const _cloudUrl = (): string =>
 
 const FETCH_TIMEOUT_MS = 5000
 
-function _hitlKey(): string {
-  const k = process.env.MAGI_CP_HITL_API_KEY
-  if (!k) throw new Error("MAGI_CP_HITL_API_KEY not set on dashboard server")
+/** Sentinel for missing-key. Mapped to a generic user-facing string by errMsg();
+ * the actual env var name is logged to stderr only (never sent to browser). */
+export class CloudConfigError extends Error {
+  constructor() { super("cloud config error") }
+}
+
+function _readKey(envVar: string): string {
+  const k = process.env[envVar]
+  if (!k) {
+    console.error(`dashboard server: ${envVar} not set`)
+    throw new CloudConfigError()
+  }
   return k
 }
 
-function _apiKey(): string {
-  const k = process.env.MAGI_CP_API_KEY
-  if (!k) throw new Error("MAGI_CP_API_KEY not set on dashboard server")
-  return k
-}
+function _hitlKey(): string { return _readKey("MAGI_CP_HITL_API_KEY") }
+function _apiKey(): string { return _readKey("MAGI_CP_API_KEY") }
+function _adminKey(): string { return _readKey("MAGI_CP_ADMIN_API_KEY") }
 
 async function _fetch<T>(
   path: string,
-  init: RequestInit & { keyType: "api" | "hitl" },
+  init: RequestInit & { keyType: "api" | "hitl" | "admin" },
 ): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.keyType === "hitl") headers.set("X-Hitl-Api-Key", _hitlKey())
+  else if (init.keyType === "admin") headers.set("X-Admin-Api-Key", _adminKey())
   else headers.set("X-Api-Key", _apiKey())
   headers.set("Content-Type", "application/json")
   const r = await fetch(`${_cloudUrl()}${path}`, {
@@ -40,6 +48,23 @@ async function _fetch<T>(
     throw new Error(`cloud ${r.status}`)
   }
   return r.json() as Promise<T>
+}
+
+export type HitlDetail = {
+  id: number
+  matter: string
+  doc_id: string
+  reason: string
+  payload: HitlItem["payload"]
+  status: "pending" | "approved" | "rejected"
+  approver: string | null
+  note: string | null
+  ts_created: number
+  ts_decided: number | null
+  ledger_context: Array<{
+    id: number; ts: number; h: string; prev: string;
+    body: Record<string, unknown>
+  }>
 }
 
 export type HitlItem = {
@@ -72,13 +97,60 @@ export type LedgerPage = {
   entries: LedgerEntry[]
 }
 
+export type PolicyTrigger = {
+  host: string
+  event: string
+  matcher: string
+}
+
+export type PolicyEvidenceReq = { step: string; verdict: string }
+
+export type PolicyBody = {
+  id: string
+  description: string
+  version: string
+  trigger: PolicyTrigger
+  sentinel_re: string
+  requires: PolicyEvidenceReq[]
+  on_missing: string
+  on_signature_invalid: string
+  gate_binary: string
+}
+
+export type PolicyListItem = {
+  id: string
+  description: string
+  source: string
+  enabled: boolean
+  trigger: { event: string; matcher: string }
+  enforcement: string   // "deterministic-gate" | "observe-only" | "log-only"
+}
+
+export type PolicyDetail = {
+  id: string
+  source: string
+  enabled: boolean
+  policy: PolicyBody
+  enforcement: string
+  compiled_sha256: string
+}
+
+export type CompiledManagedSettings = {
+  managed_settings: Record<string, unknown>
+  sha256: string
+}
+
 type HitlListResp = { items: HitlItem[] }
 type DecideResp = { verdict?: string; token?: string | null; hitl_id?: number }
+type PolicyListResp = { items: PolicyListItem[] }
 
 export const cloud = {
   listHitl: (): Promise<HitlItem[]> =>
     _fetch<HitlListResp>("/hitl", { method: "GET", keyType: "hitl" })
       .then(d => d.items),
+
+  getHitlDetail: (id: number): Promise<HitlDetail> =>
+    _fetch<HitlDetail>(`/hitl/${id}/detail`, { method: "GET", keyType: "hitl" }),
 
   approve: (id: number, approver: string, note?: string): Promise<DecideResp> =>
     _fetch<DecideResp>(`/hitl/${id}/approve`, {
@@ -95,4 +167,27 @@ export const cloud = {
   ledger: (sinceId: number = 0, limit: number = 100): Promise<LedgerPage> =>
     _fetch<LedgerPage>(`/ledger?since_id=${sinceId}&limit=${limit}`,
                        { method: "GET", keyType: "api" }),
+
+  listPolicies: (): Promise<PolicyListItem[]> =>
+    _fetch<PolicyListResp>("/policies", { method: "GET", keyType: "admin" })
+      .then(d => d.items),
+
+  getPolicy: (id: string): Promise<PolicyDetail> =>
+    _fetch<PolicyDetail>(`/policies/${_encId(id)}`, { method: "GET", keyType: "admin" }),
+
+  getCompiled: (id: string): Promise<CompiledManagedSettings> =>
+    _fetch<CompiledManagedSettings>(`/policies/${_encId(id)}/compiled`,
+                                     { method: "GET", keyType: "admin" }),
+
+  setEnabled: (id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> =>
+    _fetch(`/policies/${_encId(id)}/enabled`, {
+      method: "PATCH", keyType: "admin",
+      body: JSON.stringify({ enabled }),
+    }),
 }
+
+function _encId(id: string): string {
+  // Defensive: encode each segment so weird chars never reach the cloud raw.
+  return id.split("/").map(encodeURIComponent).join("/")
+}
+

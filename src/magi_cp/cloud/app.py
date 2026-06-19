@@ -21,7 +21,6 @@ import asyncio
 import hashlib
 import os
 import time
-from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -30,9 +29,14 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
+from ..policy import (
+    EvidenceReq, Policy, PolicyOverride, ResolvedPolicySet, Trigger,
+    compile_to_managed_settings,
+)
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
 from ..verifier.sources import DictResolver
+from .policy_store import PolicyStore
 from .db import HitlRepo, HitlStatus, LedgerRepo, init_schema, make_engine
 from .keys import KeyStore
 
@@ -156,12 +160,17 @@ def require_hitl_key(x_hitl_api_key: str | None = Header(default=None)) -> None:
     _check_key("MAGI_CP_HITL_API_KEY", x_hitl_api_key)
 
 
+def require_admin_key(x_admin_api_key: str | None = Header(default=None)) -> None:
+    _check_key("MAGI_CP_ADMIN_API_KEY", x_admin_api_key)
+
+
 # ── factory ──────────────────────────────────────────────────────────
 def create_app(
     *,
     keystore: KeyStore | None = None,
     dsn: str | None = None,
     nli_classifier: EntailmentClassifier | None = None,
+    policy_store_path: str | None = None,
 ) -> FastAPI:
     ks = keystore or KeyStore(dir=os.environ.get("MAGI_CP_KEY_DIR",
                                                   str(Path.home() / ".magi-cp" / "cloud")))
@@ -171,6 +180,8 @@ def create_app(
     init_schema(engine)
     ledger = LedgerRepo(engine)
     hitl = HitlRepo(engine)
+    policy_store = PolicyStore(path=policy_store_path or os.environ.get(
+        "MAGI_CP_POLICY_STORE", str(Path.home() / ".magi-cp" / "policies.json")))
 
     # cache pubkey + derive kid (key id)
     pubkey_pem = ks.public_pem()
@@ -178,6 +189,8 @@ def create_app(
 
     # H1: chain-head serialization
     chain_lock = asyncio.Lock()
+    # v1: policy mutation serialization — prevents lost-update race on /policies PUT|PATCH.
+    policy_lock = asyncio.Lock()
 
     app = FastAPI(title="magi-control-plane cloud", version="0.0.1")
     # Order matters: outer → inner. Body cap first, then rate limit, then CORS.
@@ -253,6 +266,29 @@ def create_app(
         return {"verdict": "deny", "token": None,
                 "citations": _citations_summary(doc)}
 
+    @app.get("/hitl/{item_id}/detail", dependencies=[Depends(require_hitl_key)])
+    def get_hitl_detail(item_id: int) -> dict:
+        item = hitl.get(item_id)
+        if item is None:
+            raise HTTPException(404, f"hitl item {item_id} not found")
+        # Pull ledger entries for this matter so reviewers see context (the
+        # citation_verify=review entry + neighbors). Body redacted by default
+        # for general /ledger; here we include because the reviewer is gated.
+        ctx_entries = []
+        for e in ledger.list_by_matter(item.matter):
+            ctx_entries.append({
+                "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
+                "body": e.body,
+            })
+        return {
+            "id": item.id, "matter": item.matter, "doc_id": item.doc_id,
+            "reason": item.reason, "payload": item.payload,
+            "status": item.status.value,
+            "approver": item.approver, "note": item.note,
+            "ts_created": item.ts_created, "ts_decided": item.ts_decided,
+            "ledger_context": ctx_entries,
+        }
+
     @app.get("/hitl", dependencies=[Depends(require_hitl_key)])
     def list_hitl() -> dict:
         return {"items": [
@@ -309,6 +345,9 @@ def create_app(
                     for e in page
                 ]}
 
+    # ── /policies CRUD (v1) ──────────────────────────────────────
+    _attach_policy_routes(app, policy_store, policy_lock)
+
     return app
 
 
@@ -345,6 +384,173 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
     entry = ledger.append(matter=matter, body=body, token=token)
     return {"verdict": verdict, "token": token, "exp": body["exp"],
             "kid": kid, "ledger_h": entry.h}
+
+
+def _enforcement_label(policy: Policy) -> str:
+    """Short human label for the enforcement character of a policy.
+
+    v1 surface: simple mapping. Future v1.x will use the matrix to label each
+    rule individually (deterministic-gate / advisory / log-only).
+    """
+    if policy.trigger.event == "PreToolUse" and policy.on_missing in ("deny", "ask"):
+        return "deterministic-gate"
+    if policy.trigger.event == "PostToolUse":
+        return "observe-only"
+    return "log-only"
+
+
+def _serialize_policy_for_api(p: Policy) -> dict:
+    return {
+        "id": p.id,
+        "description": p.description,
+        "version": p.version,
+        "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                    "matcher": p.trigger.matcher},
+        "sentinel_re": p.sentinel_re,
+        "requires": [{"step": r.step, "verdict": r.verdict} for r in p.requires],
+        "on_missing": p.on_missing,
+        "on_signature_invalid": p.on_signature_invalid,
+        "gate_binary": p.gate_binary,
+    }
+
+
+def _deserialize_policy_from_api(d: dict) -> Policy:
+    return Policy(
+        id=d["id"], description=d.get("description", ""),
+        version=d.get("version", "0.1"),
+        trigger=Trigger(**d["trigger"]),
+        sentinel_re=d["sentinel_re"],
+        requires=[EvidenceReq(**r) for r in d["requires"]],
+        on_missing=d.get("on_missing", "deny"),
+        on_signature_invalid=d.get("on_signature_invalid", "deny"),
+        gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
+    )
+
+
+def _compile_with_sha(policy: Policy) -> tuple[dict, str]:
+    import json as _json
+    ms = compile_to_managed_settings([policy])
+    blob = _json.dumps(ms, ensure_ascii=False, indent=2, sort_keys=True)
+    return ms, hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# Derive the source regex from SOURCE_PRECEDENCE so the two cannot drift.
+from ..policy.precedence import SOURCE_PRECEDENCE as _SP
+_SOURCE_REGEX = "^(" + "|".join(_SP) + ")$"
+
+
+class PolicyIn(BaseModel):
+    """Request body for PUT /policies/{id}. Loose at the boundary; validation
+    runs in Policy.__post_init__ via the matrix."""
+    # Mirror Policy._validate_id at the boundary so pydantic rejects with a
+    # 422 (not a 400 from the matrix layer) on obviously bad inputs.
+    id: str = Field(..., min_length=1, max_length=128,
+                     pattern=r"^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$")
+    description: str = Field(default="", max_length=2000)
+    version: str = Field(default="0.1", max_length=32)
+    trigger: dict
+    sentinel_re: str = Field(..., min_length=1, max_length=2000)
+    requires: list[dict]
+    on_missing: str = Field(default="deny")
+    on_signature_invalid: str = Field(default="deny")
+    gate_binary: str = Field(default="/usr/local/bin/magi-gate.sh", max_length=1000)
+
+
+class PutPolicyReq(BaseModel):
+    policy: PolicyIn
+    source: str = Field(..., pattern=_SOURCE_REGEX)
+    enabled: bool = True
+
+
+class PatchEnabledReq(BaseModel):
+    enabled: bool
+
+
+_RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
+
+
+def _attach_policy_routes(app: FastAPI, store: PolicyStore,
+                           policy_lock: asyncio.Lock) -> None:
+
+    @app.get("/policies", dependencies=[Depends(require_admin_key)])
+    def list_policies() -> dict:
+        items = []
+        for ov in store.load():
+            items.append({
+                "id": ov.policy.id,
+                "description": ov.policy.description,
+                "source": ov.source,
+                "enabled": ov.enabled,
+                "trigger": {"event": ov.policy.trigger.event,
+                            "matcher": ov.policy.trigger.matcher},
+                "enforcement": _enforcement_label(ov.policy),
+            })
+        return {"items": items}
+
+    # Order matters: more specific (/compiled, /enabled) before the catch-all
+    # {policy_id:path} so FastAPI matches them first.
+    @app.get("/policies/{policy_id:path}/compiled",
+             dependencies=[Depends(require_admin_key)])
+    def get_compiled(policy_id: str) -> dict:
+        for ov in store.load():
+            if ov.policy.id == policy_id:
+                ms, sha = _compile_with_sha(ov.policy)
+                return {"managed_settings": ms, "sha256": sha}
+        raise HTTPException(404, f"policy {policy_id!r} not found")
+
+    @app.get("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
+    def get_policy(policy_id: str) -> dict:
+        for ov in store.load():
+            if ov.policy.id == policy_id:
+                _, sha = _compile_with_sha(ov.policy)
+                return {
+                    "id": ov.policy.id,
+                    "source": ov.source,
+                    "enabled": ov.enabled,
+                    "policy": _serialize_policy_for_api(ov.policy),
+                    "enforcement": _enforcement_label(ov.policy),
+                    "compiled_sha256": sha,
+                }
+        raise HTTPException(404, f"policy {policy_id!r} not found")
+
+    @app.put("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
+    async def put_policy(policy_id: str, body: PutPolicyReq) -> dict:
+        if body.policy.id != policy_id:
+            raise HTTPException(400, "id mismatch between url and body")
+        if any(policy_id.endswith(s) for s in _RESERVED_ID_SUFFIXES):
+            raise HTTPException(400, f"policy id must not end in {_RESERVED_ID_SUFFIXES}")
+        try:
+            policy = _deserialize_policy_from_api(body.policy.model_dump())
+        except ValueError as e:
+            # Matrix violation or any other __post_init__ failure
+            raise HTTPException(400, str(e))
+        async with policy_lock:
+            existing = store.load()
+            existing = [ov for ov in existing if ov.policy.id != policy_id]
+            existing.append(PolicyOverride(policy=policy, source=body.source,  # type: ignore[arg-type]
+                                            enabled=body.enabled))
+            store.save(existing)
+        return {"id": policy.id, "source": body.source, "enabled": body.enabled}
+
+    @app.patch("/policies/{policy_id:path}/enabled",
+               dependencies=[Depends(require_admin_key)])
+    async def patch_enabled(policy_id: str, body: PatchEnabledReq) -> dict:
+        async with policy_lock:
+            existing = store.load()
+            found = False
+            new_list: list[PolicyOverride] = []
+            for ov in existing:
+                if ov.policy.id == policy_id:
+                    found = True
+                    new_list.append(PolicyOverride(
+                        policy=ov.policy, source=ov.source, enabled=body.enabled,
+                    ))
+                else:
+                    new_list.append(ov)
+            if not found:
+                raise HTTPException(404, f"policy {policy_id!r} not found")
+            store.save(new_list)
+        return {"id": policy_id, "enabled": body.enabled}
 
 
 def run() -> None:  # pragma: no cover

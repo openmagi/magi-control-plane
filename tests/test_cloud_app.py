@@ -375,6 +375,35 @@ class TestUniquePrev:
                 s.commit()
 
 
+class TestHitlDetail:
+    """v1-P5: HITL detail endpoint returns payload + ledger context."""
+
+    def test_detail_requires_hitl_key(self, client):
+        r = client.get("/hitl/1/detail")
+        assert r.status_code == 401
+
+    def test_detail_404_for_unknown_id(self, client):
+        r = client.get("/hitl/9999/detail", headers=HITL_HEADERS)
+        assert r.status_code == 404
+
+    def test_detail_returns_payload_and_ledger_context(self, client):
+        r = client.post("/citation_verify", json={
+            "matter": "M1", "doc_id": "D9", "document": "",
+            "citations": [MISQUOTE_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        hitl_id = r.json()["hitl_id"]
+        d = client.get(f"/hitl/{hitl_id}/detail", headers=HITL_HEADERS).json()
+        assert d["id"] == hitl_id
+        assert d["matter"] == "M1"
+        assert d["doc_id"] == "D9"
+        assert d["status"] == "pending"
+        assert d["payload"]["citations"][0]["ref"] == MISQUOTE_CITE["ref"]
+        ctx = d["ledger_context"]
+        assert len(ctx) >= 1
+        assert any(e["body"].get("verdict") == "review" for e in ctx)
+
+
 class TestNliIntegration:
     """P6: review verdict가 NLI classifier 주입 시 advisory score 받음."""
 

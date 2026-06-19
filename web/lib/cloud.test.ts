@@ -66,15 +66,66 @@ describe("cloud client", () => {
     expect(JSON.parse(captured.init.body)).toEqual({ approver: "p@firm.example", note: "ok" })
   })
 
-  it("missing api key on server throws clearly", async () => {
+  it("missing api key on server throws sentinel (no env name leak)", async () => {
     delete process.env.MAGI_CP_API_KEY
     global.fetch = vi.fn() as any
-    await expect(cloud.ledger()).rejects.toThrow(/MAGI_CP_API_KEY/)
+    await expect(cloud.ledger()).rejects.toThrow("cloud config error")
+    // critical: env var name MUST NOT appear in the user-facing message
+    try { await cloud.ledger() } catch (e: any) {
+      expect(e.message).not.toContain("MAGI_CP")
+    }
   })
 
-  it("missing hitl key on server throws clearly", async () => {
+  it("missing hitl key on server throws sentinel", async () => {
     delete process.env.MAGI_CP_HITL_API_KEY
     global.fetch = vi.fn() as any
-    await expect(cloud.listHitl()).rejects.toThrow(/MAGI_CP_HITL_API_KEY/)
+    await expect(cloud.listHitl()).rejects.toThrow("cloud config error")
+  })
+
+  // ── v1: policies CRUD via X-Admin-Api-Key ─────────────────────────
+  it("listPolicies uses X-Admin-Api-Key", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ items: [] }), { status: 200 }) as any
+    })
+    await cloud.listPolicies()
+    expect(String(captured.url)).toBe("http://test/policies")
+    expect(captured.init.headers.get("X-Admin-Api-Key")).toBe("admin-test")
+    expect(captured.init.headers.get("X-Api-Key")).toBeNull()
+    expect(captured.init.headers.get("X-Hitl-Api-Key")).toBeNull()
+  })
+
+  it("getCompiled returns managed_settings + sha", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ managed_settings: { allowManagedHooksOnly: true }, sha256: "deadbeef" }),
+      { status: 200 }) as any)
+    const r = await cloud.getCompiled("legal-filing/v1")
+    expect(r.sha256).toBe("deadbeef")
+    expect(r.managed_settings.allowManagedHooksOnly).toBe(true)
+  })
+
+  it("setEnabled PATCHes /enabled", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ id: "x", enabled: false }), { status: 200 }) as any
+    })
+    await cloud.setEnabled("x", false)
+    expect(String(captured.url)).toBe("http://test/policies/x/enabled")
+    expect(captured.init.method).toBe("PATCH")
+    expect(JSON.parse(captured.init.body)).toEqual({ enabled: false })
+  })
+
+  it("missing admin key on server throws sentinel (no env name leak)", async () => {
+    delete process.env.MAGI_CP_ADMIN_API_KEY
+    global.fetch = vi.fn() as any
+    await expect(cloud.listPolicies()).rejects.toThrow("cloud config error")
+    try { await cloud.listPolicies() } catch (e: any) {
+      expect(e.message).not.toContain("MAGI_CP")
+    }
   })
 })

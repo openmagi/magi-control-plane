@@ -42,6 +42,18 @@ verb. Operator with DB access can still rewrite the tail. Pre-beta: write
 periodic Ed25519-signed checkpoints to S3 with object-lock so external
 auditors can pin progress.
 
+## Admin key scope (v1)
+`X-Admin-Api-Key` / `MAGI_CP_ADMIN_API_KEY` gates all `/policies` CRUD
+endpoints (list, get, compiled, put, patch-enabled). It is a **third shared
+key**, distinct from:
+  - `X-Api-Key` / `MAGI_CP_API_KEY` — verifier surface (`/citation_verify`, `/ledger`)
+  - `X-Hitl-Api-Key` / `MAGI_CP_HITL_API_KEY` — review surface (`/hitl/*`)
+
+Fail-closed if env unset (503 with no env name leak). v0 caveat: a single
+shared key per role, not per-operator. Pre-beta plan: bind admin actions to
+per-operator JWT and record the principal in the ledger entry that writes
+each policy change (parallels the Approver identity section).
+
 ## Local pubkey cache trust anchor
 The local gate (`magi-cp gate`) caches the cloud's public verify key at
 `$MAGI_CP_LOCAL_DIR/pubkey-<kid>.pem`. v0 mitigations: files are written
@@ -53,13 +65,20 @@ plugin installer using a managed-settings-bundled pubkey pin. Until then,
 do not deploy with `MAGI_CP_CLOUD_URL=http://...` outside loopback.
 
 ## Dashboard front-door auth
-The `web/` Next.js dashboard has **no app-level auth gate** on `/hitl`
-server actions (`approve`/`reject`). Anyone who can reach the dashboard
-port can submit approvals; the server attaches the shared
-`X-Hitl-Api-Key` on their behalf. v0 acceptable only when the dashboard
-is bound to **localhost or a private VPN** with reviewer-only access.
-Pre-beta: SSO / WebAuthn + per-reviewer JWT bound to the `approver` field.
-This subsumes the "Approver identity" section's network-side assumption.
+The `web/` Next.js dashboard has **no app-level auth gate** on ANY of its
+mutating server actions:
+- `/hitl` server actions `approve` / `reject` (v0)
+- `/policies` server action `toggleEnabled` (v1)
+- future v1.x policy builder writes
+
+Anyone who can reach the dashboard port can submit any of these; the server
+attaches the appropriate shared key (`X-Hitl-Api-Key` for hitl,
+`X-Admin-Api-Key` for policies) on their behalf. v0/v1 acceptable only when
+the dashboard is bound to **localhost or a private VPN** with operator-only
+access. Pre-beta: SSO / WebAuthn + per-operator JWT, with the verified
+principal bound into the `approver` field (hitl) and into the ledger entry
+that records each policy change (policies). Cross-reference the
+"Approver identity" and "Admin key scope" sections.
 
 ## Dispatch_verdict not extracted
 `/citation_verify` interleaves verifier + HITL dispatch + ledger + token issue.
