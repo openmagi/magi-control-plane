@@ -1,0 +1,26 @@
+{
+  "_magi_policies": [
+    {
+      "description": "한국 법률 송무 filing: 인용검증 증거 없으면 file_court 차단",
+      "id": "legal-filing/v1",
+      "version": "0.1"
+    }
+  ],
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/usr/local/bin/magi-gate.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "default"
+  }
+}

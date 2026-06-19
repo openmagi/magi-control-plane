@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "magi": {
+      "command": "magi-cp-mcp",
+      "args": [],
+      "description": "magi-control-plane verifier + law.go.kr adapter"
+    }
+  }
+}

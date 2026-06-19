@@ -1,0 +1,17 @@
+{
+  "id": "legal-filing/v1",
+  "version": "0.1",
+  "description": "한국 법률 송무 filing: 인용검증 증거 없으면 file_court 차단",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "Bash"
+  },
+  "sentinel_re": "FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
+  "requires": [
+    { "step": "citation_verify", "verdict": "pass" }
+  ],
+  "on_missing": "deny",
+  "on_signature_invalid": "deny",
+  "gate_binary": "/usr/local/bin/magi-gate.sh"
+}

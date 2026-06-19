@@ -1,0 +1,11 @@
+{
+  "name": "magi-control-plane",
+  "version": "0.0.1",
+  "description": "Governance control plane for Claude Code — deterministic policy enforcement + cryptographic audit trail.",
+  "homepage": "https://github.com/openmagi/magi-control-plane",
+  "category": "governance",
+  "claude_code_min_version": "2.0.0",
+  "managed_settings": "managed-settings.json",
+  "mcp_servers": "mcp/server-config.json",
+  "post_install_hint": "Set MAGI_CP_CLOUD_URL + MAGI_CP_API_KEY in env. Reload Claude Code."
+}

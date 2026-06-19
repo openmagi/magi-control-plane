@@ -1,0 +1,33 @@
+services:
+  cloud:
+    build: .
+    ports: ["8787:8787"]
+    volumes:
+      - magi-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    environment:
+      MAGI_CP_HITL_API_KEY: "${MAGI_CP_HITL_API_KEY:?HITL API key required — set in .env}"
+      MAGI_CP_API_KEY: "${MAGI_CP_API_KEY:?cloud API key required — set in .env}"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # postgres는 베타 직전 활성화 (multi-node = PG 필수, SELECT FOR UPDATE 활용).
+  # postgres:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+  #     POSTGRES_DB: magi
+  #   volumes:
+  #     - pg-data:/var/lib/postgresql/data
+
+volumes:
+  magi-data:
+  # pg-data:
