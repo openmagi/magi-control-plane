@@ -187,6 +187,26 @@ def require_admin_key(x_admin_api_key: str | None = Header(default=None)) -> Non
     _check_key("MAGI_CP_ADMIN_API_KEY", x_admin_api_key)
 
 
+def require_tenant_auth(
+    request: Request, x_api_key: str | None = Header(default=None),
+) -> None:
+    """Multi-tenant aware data-plane auth.
+
+    Recognises:
+      - Legacy `MAGI_CP_API_KEY` env value → synthetic `default` tenant.
+      - DB-issued `mcp_…` keys hashed in `api_keys` table → joined tenant.
+
+    Sets `request.state.tenant_id` for downstream endpoints to scope queries.
+    """
+    from .tenants import authenticate_request
+    engine = request.app.state.engine
+    auth = authenticate_request(engine, x_api_key)
+    if auth is None:
+        raise HTTPException(401, "invalid or missing api key")
+    request.state.tenant_id = auth.tenant_id
+    request.state.api_key_id = auth.api_key_id
+
+
 # ── factory ──────────────────────────────────────────────────────────
 def create_app(
     *,
@@ -235,12 +255,15 @@ def create_app(
         return {"status": "ok"}
 
     @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
-    def policies_compile(req: "CompileReq") -> dict:
+    async def policies_compile(req: "CompileReq") -> dict:
         """Authoring gate 1+2 — NL→IR compile + critic review.
 
         Returns {"ir": {...}, "review": {"ok": bool, "issues": [...]}}.
         NEVER persists. Gate 3 (human approval) is the dashboard editing the
         IR if needed and calling PUT /policies/{id}.
+
+        v2.0-W5: runs via asyncio.to_thread so the sync httpx-based providers
+        don't block the FastAPI event loop during the 5–60s LLM call.
         """
         if llm_compiler is None or llm_reviewer is None:
             raise HTTPException(
@@ -248,7 +271,8 @@ def create_app(
             )
         from .nl_compiler import PrecheckError, compile_with_review
         try:
-            return compile_with_review(
+            return await asyncio.to_thread(
+                compile_with_review,
                 compiler=llm_compiler,
                 reviewer=llm_reviewer,
                 nl=req.nl,
@@ -306,8 +330,8 @@ def create_app(
         )
         return {"presets": wired + vendor}
 
-    @app.post("/verify/{step}", dependencies=[Depends(require_api_key)])
-    async def verify_dispatch(step: str, req: VerifyDispatchReq) -> dict:
+    @app.post("/verify/{step}", dependencies=[Depends(require_tenant_auth)])
+    async def verify_dispatch(step: str, req: VerifyDispatchReq, request: Request) -> dict:
         """Generic verifier dispatch — any registered verifier other than
         citation_verify (which keeps its specialized NLI+ledger path).
 
@@ -498,6 +522,9 @@ def create_app(
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
     _attach_policy_routes(app, policy_store, policy_lock)
+
+    # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
+    _attach_admin_tenant_routes(app, engine)
 
     return app
 
@@ -703,6 +730,122 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 raise HTTPException(404, f"policy {policy_id!r} not found")
             store.save(new_list)
         return {"id": policy_id, "enabled": body.enabled}
+
+
+def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
+    """HMAC-authenticated admin routes for tenant/key lifecycle.
+
+    Called by clawy's Stripe webhook (on subscription start/cancel/etc) and by
+    the clawy dashboard's "create API key" button (server action → HMAC POST).
+    Auth is HMAC-SHA256 over the raw request body — caller signs with the
+    shared `MAGI_CP_ADMIN_HMAC_SECRET` env var.
+
+    No bearer token: webhooks fire from many IPs, HMAC over body is the safer
+    surface (replay-resistant + body-tamper-resistant in one check).
+    """
+    from .tenants import ApiKeyRepo, TenantRepo
+
+    async def require_hmac(request: Request) -> bytes:
+        import hmac as _hmac, hashlib as _hashlib
+        secret = os.environ.get("MAGI_CP_ADMIN_HMAC_SECRET")
+        if not secret:
+            raise HTTPException(503, "admin hmac not configured")
+        body = await request.body()
+        presented = request.headers.get("x-magi-signature") or ""
+        expected = _hmac.new(
+            secret.encode("utf-8"), body, _hashlib.sha256,
+        ).hexdigest()
+        if not _hmac.compare_digest(presented, expected):
+            raise HTTPException(401, "invalid admin signature")
+        return body
+
+    class _CreateTenantIn(BaseModel):
+        tenant_id: str = Field(..., min_length=1, max_length=64,
+                                pattern=r"^[A-Za-z0-9_\-:]+$")
+        plan: str = Field(default="free", max_length=32)
+        expires_at: int | None = None
+
+    class _SuspendIn(BaseModel):
+        reason: str = Field(..., min_length=1, max_length=128)
+
+    @app.post("/admin/tenants")
+    async def admin_create_tenant(request: Request) -> dict:
+        await require_hmac(request)
+        # Parse body after HMAC verification — guards against any
+        # parsing-side timing channel.
+        try:
+            data = await request.json()
+        except Exception:
+            raise HTTPException(422, "invalid JSON body")
+        try:
+            payload = _CreateTenantIn(**data)
+        except Exception as e:
+            raise HTTPException(422, f"invalid payload: {e}")
+        repo = TenantRepo(engine)
+        # Idempotent: if tenant exists, return current record. The webhook
+        # caller (clawy) might retry on transient failures.
+        existing = repo.get(payload.tenant_id)
+        if existing is not None:
+            return {"id": existing.id, "status": existing.status,
+                    "plan": existing.plan, "expires_at": existing.expires_at}
+        t = repo.create(
+            tenant_id=payload.tenant_id, plan=payload.plan,
+            expires_at=payload.expires_at,
+        )
+        return {"id": t.id, "status": t.status, "plan": t.plan,
+                "expires_at": t.expires_at}
+
+    @app.post("/admin/tenants/{tenant_id}/suspend")
+    async def admin_suspend_tenant(tenant_id: str, request: Request) -> dict:
+        await require_hmac(request)
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        try:
+            payload = _SuspendIn(**data)
+        except Exception:
+            raise HTTPException(422, "reason is required")
+        repo = TenantRepo(engine)
+        try:
+            repo.suspend(tenant_id, reason=payload.reason)
+        except KeyError:
+            raise HTTPException(404, f"tenant {tenant_id!r} not found")
+        t = repo.get(tenant_id)
+        return {"id": t.id, "status": t.status}
+
+    @app.post("/admin/tenants/{tenant_id}/reactivate")
+    async def admin_reactivate_tenant(tenant_id: str, request: Request) -> dict:
+        await require_hmac(request)
+        repo = TenantRepo(engine)
+        try:
+            repo.reactivate(tenant_id)
+        except KeyError:
+            raise HTTPException(404, f"tenant {tenant_id!r} not found")
+        t = repo.get(tenant_id)
+        return {"id": t.id, "status": t.status}
+
+    @app.post("/admin/tenants/{tenant_id}/keys")
+    async def admin_issue_key(tenant_id: str, request: Request) -> dict:
+        await require_hmac(request)
+        tenant_repo = TenantRepo(engine)
+        if tenant_repo.get(tenant_id) is None:
+            raise HTTPException(404, f"tenant {tenant_id!r} not found")
+        issued = ApiKeyRepo(engine).issue(tenant_id=tenant_id)
+        # Cleartext returned ONCE — caller (clawy dashboard) shows once.
+        return {"id": issued.id, "tenant_id": issued.tenant_id,
+                "api_key": issued.cleartext, "prefix": issued.prefix}
+
+    @app.post("/admin/tenants/{tenant_id}/keys/{key_id}/revoke")
+    async def admin_revoke_key(tenant_id: str, key_id: int,
+                                request: Request) -> dict:
+        await require_hmac(request)
+        repo = ApiKeyRepo(engine)
+        try:
+            repo.revoke(key_id)
+        except KeyError:
+            raise HTTPException(404, f"key {key_id} not found")
+        return {"id": key_id, "revoked": True}
 
 
 def _resolve_llm_provider_from_env(env_var: str) -> "object | None":

@@ -138,9 +138,34 @@ Verdicts: `pass` → token issued; `deny` → no token (ledger records); `review
 - `magi-cp cloud` — run FastAPI cloud server (registry-wired)
 - `magi-cp mcp` — stdio MCP server (registry-wired)
 
+## Pre-flight LIVE smoke (run once before your first demo)
+```bash
+# 1. Set real API keys
+export ANTHROPIC_API_KEY=sk-ant-…
+export OPENAI_API_KEY=sk-…
+
+# 2. Hit both providers + run end-to-end NL→IR compile
+python -m scripts.smoke_live_llm
+
+# 3. Start the cloud (separate terminal)
+make cloud-dev
+
+# 4. Test the bash-gate pipeline against a fake corpus
+export MAGI_CP_API_KEY=$(uuidgen)
+magi-cp emit --matter M1 --doc-id D1 \
+  --quote "test quote text" --ref "test ref" \
+  --corpus-override '{"X":"test quote text body"}'
+# Then trigger a PreToolUse hook with FILE_COURT_M1_D1 in the command —
+# the gate reads the WAL token and ALLOWs. Without it: DENY.
+```
+
+Confirms: real LLM round-trip works, models exist, JSON parses, gate↔cloud↔WAL token flow live.
+
 ## Status
-v1.2 alpha — **347 Python + 72 web = 419 tests**. Reviewed across security, integration,
-and "what would break in a demo" angles; all findings folded back.
+v2.0 ga-candidate — **355 Python + 72 web = 427 tests**. LLM providers hardened against
+live-API failure modes (error-body extraction, max_tokens truncation, 429 retry,
+finish_reason=length, response_format=json_object, asyncio.to_thread). Reviewed across
+security, integration, "what would break in a demo" + 2026-06 live API spec angles.
 
 What landed in v1.2 on top of v1.1:
 - **Real LLM providers** — `magi_cp.llm.anthropic_provider` and `openai_provider`
