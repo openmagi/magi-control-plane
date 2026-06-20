@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { revalidatePath } from "next/cache"
 import { cloud, type CompileResult } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
+import { SubmitButton } from "@/components/SubmitButton"
 
 export const dynamic = "force-dynamic"
 
@@ -45,7 +46,11 @@ function CompileForm({ nl }: { nl?: string }) {
                 }}
                 placeholder="e.g. 법원 filing 시 인용을 결정론으로 검증하고 미통과는 차단하라" />
       <div style={{ marginTop: 10 }}>
-        <button className="primary" type="submit">Compile</button>
+        <SubmitButton
+          label="Compile"
+          pendingLabel="Compiling"
+          progressHint="LLM compiler + critic LLM running — typically 5–20s. Don't refresh."
+        />
       </div>
     </form>
   )

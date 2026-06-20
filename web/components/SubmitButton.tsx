@@ -28,7 +28,9 @@ export function SubmitButton({
 }) {
   const { pending } = useFormStatus()
   return (
-    <>
+    // div, not a Fragment: ensures the hint sits BELOW the button even when
+    // the parent <form> uses display:flex (it does, via globals.css).
+    <div style={{ display: "block", width: "100%" }}>
       <button
         type="submit"
         className={className}
@@ -39,7 +41,7 @@ export function SubmitButton({
         {pending ? (
           <>
             {pendingLabel}
-            <span aria-hidden className="dots-anim" style={{ marginLeft: 6 }}>
+            <span aria-hidden style={{ marginLeft: 6 }}>
               <Dot delay={0} />
               <Dot delay={150} />
               <Dot delay={300} />
@@ -54,12 +56,12 @@ export function SubmitButton({
           role="status"
           aria-live="polite"
           className="muted"
-          style={{ marginTop: 10, fontSize: 12 }}
+          style={{ marginTop: 8, fontSize: 12 }}
         >
           {progressHint}
         </div>
       )}
-    </>
+    </div>
   )
 }
 

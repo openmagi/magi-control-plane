@@ -2,6 +2,7 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { cloud, type PresetEntry } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
+import { SubmitButton } from "@/components/SubmitButton"
 
 export const dynamic = "force-dynamic"
 
@@ -164,7 +165,11 @@ function VerifyForm({
       </label>
 
       <div style={{ marginTop: 12 }}>
-        <button type="submit" className="primary">Run verifier</button>
+        <SubmitButton
+          label="Run verifier"
+          pendingLabel="Running"
+          progressHint="Dispatching to the verifier; signing token + appending to ledger."
+        />
       </div>
 
       <p className="muted" style={{ marginTop: 10, fontSize: 11 }}>

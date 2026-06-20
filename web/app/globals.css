@@ -25,3 +25,14 @@ button.primary { background: #1c3a26; border-color: #2f6b40; color: #79e0a0; }
 button.danger { background: #3a1c1c; border-color: #6b2f2f; color: #e07979; }
 input[type=text] { background: #0c0d10; border: 1px solid #2f3845; color: #d7d7db; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
 form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* SubmitButton pending-state dots (v2.0 — server-action progress feedback) */
+@keyframes magi-cp-dot {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+  40%           { opacity: 1;   transform: scale(1); }
+}
+
+/* Form has display:flex which collapses our SubmitButton wrapper + progressHint
+   onto one row. Override at the button-row container level (used in compile /
+   verify pages — wraps the SubmitButton). */
+.row, form { /* leave existing behavior */ }
