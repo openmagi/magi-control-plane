@@ -1,8 +1,26 @@
+import type { Metadata } from "next"
 import Link from "next/link"
 import { getLocale, getT } from "@/lib/i18n/server"
 import { Badge, Button, Card, CardHeader } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
+
+export const metadata: Metadata = {
+  title: "Claude Code를 변호사가 안심하고 쓸 수 있게 — magi-control-plane",
+  description:
+    "Claude Code의 모든 도구 호출을 정책으로 게이트하고, 위·변조 불가능한 감사 원장에 봉인합니다. 한국 로펌을 위한 비공개 알파 파일럿 — 무료.",
+  openGraph: {
+    title: "magi-control-plane — Claude Code 거버넌스 게이트 (Alpha)",
+    description:
+      "Claude Code 워크플로 변경 없음. 정책 위반 호출은 차단, 통과한 호출은 모두 Ed25519 서명 + 해시 체인 원장에 기록.",
+    type: "website",
+    locale: "ko_KR",
+    alternateLocale: "en_US",
+  },
+  twitter: { card: "summary_large_image" },
+  alternates: { canonical: "/welcome" },
+  robots: { index: true, follow: true },
+}
 
 /**
  * Public marketing landing for the alpha pilot.
