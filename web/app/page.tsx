@@ -1,4 +1,8 @@
 import { cloud } from "@/lib/cloud"
+import { getIntl, getT } from "@/lib/i18n/server"
+import {
+  Badge, ErrorState, KPI, PageHeader,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
@@ -6,47 +10,64 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-export default async function Home() {
-  let summary: { pending: number; chainOk: boolean; ledgerHeight: number; err?: string }
+type Summary = {
+  pending: number
+  chainOk: boolean
+  ledgerEntries: number
+  err?: string
+}
+
+async function loadSummary(): Promise<Summary> {
   try {
+    // Fetch a large page of the ledger so we can show the actual entry count.
+    // The cloud's /ledger endpoint returns at most `limit` rows; we walk
+    // forward only as far as needed for the KPI display (cap at 1000).
     const [hitl, ledger] = await Promise.all([
       cloud.listHitl(),
-      cloud.ledger(0, 1),
+      cloud.ledger(0, 1000),
     ])
-    summary = {
+    return {
       pending: hitl.length,
       chainOk: ledger.chain_ok,
-      ledgerHeight: ledger.next_since_id,
+      ledgerEntries: ledger.entries.length,
     }
   } catch (e: unknown) {
-    summary = { pending: 0, chainOk: false, ledgerHeight: 0, err: errMsg(e) }
+    return { pending: 0, chainOk: false, ledgerEntries: 0, err: errMsg(e) }
   }
+}
+
+export default async function Home() {
+  const { t } = await getT()
+  const { nf } = await getIntl()
+  const summary = await loadSummary()
+
   return (
     <>
-      <h1>Overview</h1>
+      <PageHeader title={t("overview.title")} />
       {summary.err ? (
-        <div className="card">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted" style={{ marginTop: 8 }}>see server logs</p>
-        </div>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       ) : (
-        <div className="row">
-          <div className="card" style={{ flex: 1 }}>
-            <div className="muted">Pending review</div>
-            <div style={{ fontSize: 28 }}>{summary.pending}</div>
-          </div>
-          <div className="card" style={{ flex: 1 }}>
-            <div className="muted">Audit chain</div>
-            <div style={{ fontSize: 28 }}>
-              {summary.chainOk
-                ? <span className="tag ok">OK</span>
-                : <strong style={{ color: "#e07979" }}>BROKEN</strong>}
-            </div>
-          </div>
-          <div className="card" style={{ flex: 1 }}>
-            <div className="muted">Ledger height</div>
-            <div style={{ fontSize: 28 }}>{summary.ledgerHeight}</div>
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <KPI
+            label={t("overview.pendingReview")}
+            value={nf.format(summary.pending)}
+          />
+          <KPI
+            label={t("overview.auditChain")}
+            value={
+              summary.chainOk
+                ? <Badge variant="ok">{t("overview.auditChainOk")}</Badge>
+                : <Badge variant="deny">{t("overview.auditChainBroken")}</Badge>
+            }
+          />
+          <KPI
+            label={t("overview.ledgerEntries")}
+            value={nf.format(summary.ledgerEntries)}
+          />
         </div>
       )}
     </>

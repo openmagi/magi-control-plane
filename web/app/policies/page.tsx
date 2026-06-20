@@ -4,6 +4,10 @@ import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { resolveFlash, codeForError } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
+import { getIntl, getT } from "@/lib/i18n/server"
+import {
+  Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
@@ -16,7 +20,6 @@ async function toggleEnabled(formData: FormData) {
     redirect("/policies?err=invalid_id")
   }
   const enabled = formData.get("enabled") === "true"
-  // Confirm step: disabling a deterministic-gate policy requires explicit confirm.
   const requireConfirm = formData.get("require_confirm") === "1"
   const confirmed = formData.get("confirmed") === "1"
   if (requireConfirm && !enabled && !confirmed) {
@@ -32,71 +35,108 @@ async function toggleEnabled(formData: FormData) {
 }
 
 function EnforcementBadge({ kind }: { kind: string }) {
-  const cls = kind === "deterministic-gate" ? "tag ok"
-            : kind === "observe-only" ? "tag review"
-            : "tag"
-  return <span className={cls}>{kind}</span>
+  if (kind === "deterministic-gate") return <Badge variant="ok">{kind}</Badge>
+  if (kind === "observe-only")        return <Badge variant="review">{kind}</Badge>
+  return <Badge>{kind}</Badge>
 }
 
-function PolicyCard({ item, confirmDisableFor }:
-                    { item: PolicyListItem; confirmDisableFor: string | null }) {
+function PolicyCard(
+  { item, t, confirmDisableFor }: {
+    item: PolicyListItem
+    confirmDisableFor: string | null
+    t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+  },
+) {
   const isHighStakes = item.enforcement === "deterministic-gate"
   const showConfirm = confirmDisableFor === item.id
+
   return (
-    <div className="card">
-      <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <div style={{ flex: 1, minWidth: 280, overflowWrap: "anywhere" }}>
-          <Link href={`/policies/${encodeURI(item.id)}`}>
-            <code style={{ fontSize: 14 }}>{item.id}</code>
+    <Card className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <Link
+            href={`/policies/${encodeURI(item.id)}`}
+            className="hover:no-underline"
+          >
+            <Code className="text-sm">{item.id}</Code>
           </Link>
-          <div className="muted" style={{ marginTop: 4, wordBreak: "break-word" }}>
-            {item.description || "(no description)"}
-          </div>
-          <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>
-            trigger: <code>{item.trigger.event}</code> ·{" "}
-            <code>{item.trigger.matcher}</code> · source: <code>{item.source}</code>
-          </div>
+          <p className="mt-2 text-sm text-[var(--color-text-secondary)] line-clamp-3 break-words">
+            {item.description || "—"}
+          </p>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+        <div className="flex flex-col items-end gap-1.5">
           <EnforcementBadge kind={item.enforcement} />
           {item.enabled
-            ? <span className="tag ok" aria-hidden="true">enabled</span>
-            : <span className="tag deny" aria-hidden="true">disabled</span>}
-          {showConfirm ? (
-            <form action={toggleEnabled} style={{ gap: 4 }}>
-              <input type="hidden" name="id" value={item.id} />
-              <input type="hidden" name="enabled" value="false" />
-              <input type="hidden" name="confirmed" value="1" />
-              <span className="muted" style={{ fontSize: 11 }}>Disable enforcement?</span>
-              <button className="danger" type="submit"
-                      aria-label={`Confirm disable of policy ${item.id}`}>
-                Confirm disable
-              </button>
-              <Link href="/policies" className="muted">cancel</Link>
-            </form>
-          ) : (
-            <form action={toggleEnabled}>
-              <input type="hidden" name="id" value={item.id} />
-              <input type="hidden" name="enabled" value={item.enabled ? "false" : "true"} />
-              {isHighStakes && item.enabled && (
-                <input type="hidden" name="require_confirm" value="1" />
-              )}
-              <button type="submit"
-                      aria-pressed={item.enabled}
-                      aria-label={`${item.enabled ? "Disable" : "Enable"} policy ${item.id}`}>
-                {item.enabled ? "Disable" : "Enable"}
-              </button>
-            </form>
-          )}
+            ? <Badge variant="ok">{t("policies.enabled")}</Badge>
+            : <Badge variant="deny">{t("policies.disabled")}</Badge>}
         </div>
       </div>
-    </div>
+
+      <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
+        <span>{t("policies.trigger")}: <Code>{item.trigger.event}</Code> · <Code>{item.trigger.matcher}</Code></span>
+        <span>{t("policies.source")}: <Code>{item.source}</Code></span>
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-2 justify-end">
+        {showConfirm ? (
+          <form action={toggleEnabled} className="flex flex-wrap items-center gap-2">
+            <input type="hidden" name="id" value={item.id} />
+            <input type="hidden" name="enabled" value="false" />
+            <input type="hidden" name="confirmed" value="1" />
+            <span className="text-xs text-[var(--color-review-fg)]">
+              {t("policies.confirmDisable.body")}
+            </span>
+            <Button
+              type="submit"
+              variant="danger"
+              size="sm"
+              aria-label={`${t("policies.confirmDisable.confirm")} — ${item.id}`}
+            >
+              {t("policies.confirmDisable.confirm")}
+            </Button>
+            <Link
+              href="/policies"
+              className="text-xs text-[var(--color-text-tertiary)] hover:no-underline px-2 py-1"
+            >
+              {t("common.cancel")}
+            </Link>
+          </form>
+        ) : (
+          <form action={toggleEnabled}>
+            <input type="hidden" name="id" value={item.id} />
+            <input
+              type="hidden"
+              name="enabled"
+              value={item.enabled ? "false" : "true"}
+            />
+            {isHighStakes && item.enabled && (
+              <input type="hidden" name="require_confirm" value="1" />
+            )}
+            <Button
+              type="submit"
+              variant={item.enabled ? "secondary" : "primary"}
+              size="sm"
+              aria-pressed={item.enabled}
+              aria-label={
+                item.enabled
+                  ? `${t("policies.disable")} — ${item.id}`
+                  : `${t("policies.enable")} — ${item.id}`
+              }
+            >
+              {item.enabled ? t("policies.disable") : t("policies.enable")}
+            </Button>
+          </form>
+        )}
+      </div>
+    </Card>
   )
 }
 
 export default async function PoliciesPage({
   searchParams,
 }: { searchParams: { msg?: string; err?: string; confirm_disable?: string } }) {
+  const { t } = await getT()
+  const { nf } = await getIntl()
   let items: PolicyListItem[]
   let err: string | null = null
   try { items = await cloud.listPolicies() }
@@ -106,35 +146,60 @@ export default async function PoliciesPage({
 
   return (
     <>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h1>{err ? "Policies (unavailable)" : `Policies (${items.length})`}</h1>
-        <Link href="/policies/new"><button className="primary">+ New policy</button></Link>
-      </div>
+      <PageHeader
+        title={err ? t("policies.titleUnavailable") : t("policies.title")}
+        description={
+          !err && items.length > 0
+            ? t("policies.count", { n: nf.format(items.length) })
+            : undefined
+        }
+        actions={
+          <Link href="/policies/new">
+            <Button variant="primary" size="md">
+              {t("policies.newPolicy")}
+            </Button>
+          </Link>
+        }
+      />
+
       {flash?.kind === "ok" && (
-        <div className="card" role="status" aria-live="polite">
-          <span className="tag ok">{flash.text}</span>
-        </div>
+        <Card role="status" aria-live="polite" tone="status" className="mb-3">
+          <Badge variant="ok">{flash.text}</Badge>
+        </Card>
       )}
       {flash?.kind === "error" && (
-        <div className="card" role="alert" aria-live="assertive">
-          <span className="tag deny">{flash.text}</span>
-        </div>
+        <ErrorState status={flash.text} title={flash.text} severity="error" />
       )}
       {err && (
-        <div className="card" role="alert">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted">see server logs</p>
-        </div>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       )}
-      {items.length === 0 && !err && (
-        <div className="card muted">
-          No policies yet. Add one via the cloud admin API
-          (<code>PUT /policies/{`{id}`}</code>) — UI policy builder coming soon.
-        </div>
+      {!err && items.length === 0 && (
+        <EmptyState
+          title={t("policies.empty.title")}
+          body={t("policies.empty.body")}
+          action={
+            <Link href="/policies/compile">
+              <Button variant="primary">{t("policies.empty.cta")}</Button>
+            </Link>
+          }
+        />
       )}
-      {items.map(item =>
-        <PolicyCard key={item.id} item={item}
-                    confirmDisableFor={searchParams.confirm_disable ?? null} />
+
+      {items.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+          {items.map(item =>
+            <PolicyCard
+              key={item.id}
+              item={item}
+              confirmDisableFor={searchParams.confirm_disable ?? null}
+              t={t}
+            />
+          )}
+        </div>
       )}
     </>
   )
