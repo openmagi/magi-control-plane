@@ -208,8 +208,36 @@ magi-cp emit --matter M1 --doc-id D1 \
 
 Confirms: real LLM round-trip works, models exist, JSON parses, gate↔cloud↔WAL token flow live.
 
+## Dashboard (v2.1 polish)
+
+The dashboard at `web/` was refactored with the Magi design system in
+`design-system/magi-control-plane/`:
+
+- **Tokens-only theming** — colors, typography, spacing, motion are
+  CSS variables (Tailwind v4 reads them via `@theme`), so the whole
+  surface re-themes from one file (`web/app/globals.css`).
+- **Vendored primitives** — `Button`, `Badge`, `Card`, `Input`,
+  `Textarea`, `Select`, `Code`, `CodeBlock`, `KPI`, `EmptyState`,
+  `ErrorState`, `Skeleton`, `CopyButton`, `PageHeader`, `NavBar`,
+  `LangSelect`, `SubmitButton` under `web/components/ui/`.
+- **i18n** — Korean default + English switcher (cookie + server
+  action). Dictionary at `web/lib/i18n/dict.ts`; pages call `getT()`
+  for translations and `getIntl()` for number/date formatters.
+- **Accessibility** — skip link, focus-visible rings, aria-current on
+  nav, mobile drawer (`<768px`), Pretendard Variable + Inter pairing,
+  `prefers-reduced-motion` collapses animations.
+- **Korea-first formatting** — `Intl.NumberFormat("ko-KR")` and
+  `Intl.DateTimeFormat("ko-KR", { dateStyle, timeStyle, timeZone:
+  "UTC" })` everywhere.
+
+Run the dashboard:
+
+```bash
+cd web && npm install && npm run dev  # http://127.0.0.1:3787
+```
+
 ## Status
-v2.0 ga-candidate — **355 Python + 72 web = 427 tests**. LLM providers hardened against
+v2.1 ga-candidate — **426 Python + 72 web = 498 tests**. LLM providers hardened against
 live-API failure modes (error-body extraction, max_tokens truncation, 429 retry,
 finish_reason=length, response_format=json_object, asyncio.to_thread). Reviewed across
 security, integration, "what would break in a demo" + 2026-06 live API spec angles.
