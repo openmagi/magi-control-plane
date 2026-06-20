@@ -14,6 +14,7 @@ export default async function NavBarShell() {
     { href: "/presets",          label: t("nav.presets") },
     { href: "/hitl",             label: t("nav.reviewQueue") },
     { href: "/ledger",           label: t("nav.audit") },
+    { href: "/setup",            label: t("setup.title") },
   ]
   return (
     <NavBarClient

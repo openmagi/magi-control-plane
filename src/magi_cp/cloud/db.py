@@ -128,6 +128,7 @@ def init_schema(engine: Engine) -> None:
     # on Base.metadata before create_all runs. Without this import,
     # init_schema would only create ledger_entry + hitl_item.
     from . import tenants as _tenants_module  # noqa: F401
+    from . import signups as _signups_module  # noqa: F401
     Base.metadata.create_all(engine)
 
 

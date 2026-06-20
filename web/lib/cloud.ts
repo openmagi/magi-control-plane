@@ -222,6 +222,50 @@ export const cloud = {
       }),
     }),
 
+  /** Submit a public alpha-pilot signup. No auth — backend rate-limits per IP. */
+  signup: async (input: {
+    email: string
+    firm?: string
+    role?: string
+    use_case?: string
+    referrer?: string
+  }): Promise<{ id: number; status: string }> => {
+    const r = await fetch(`${_cloudUrl()}/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!r.ok) {
+      console.error(`cloud ${r.status} /signup`)
+      throw new Error(`cloud ${r.status}`)
+    }
+    return r.json()
+  },
+
+  /** Fetch the calling tenant's identity. Used by /setup. */
+  getMyTenant: (apiKey: string): Promise<{
+    id: string
+    status: string
+    plan: string
+    expires_at: number | null
+    synthetic: boolean
+  }> => {
+    return fetch(`${_cloudUrl()}/tenants/me`, {
+      method: "GET",
+      headers: { "X-Api-Key": apiKey },
+      cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    }).then(async r => {
+      if (!r.ok) {
+        console.error(`cloud ${r.status} /tenants/me`)
+        throw new Error(`cloud ${r.status}`)
+      }
+      return r.json()
+    })
+  },
+
   /** Read-only preset catalog — backend has no auth requirement on /presets. */
   listPresets: async (): Promise<PresetEntry[]> => {
     const r = await fetch(`${_cloudUrl()}/presets`, {

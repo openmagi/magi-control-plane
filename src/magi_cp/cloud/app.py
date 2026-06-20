@@ -76,6 +76,18 @@ class DecideReq(BaseModel):
     note: str | None = Field(default=None, max_length=2_000)
 
 
+# v2.1-D2: alpha-signup intake (public POST /signup)
+_EMAIL_RE = r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$"
+
+
+class SignupReq(BaseModel):
+    email: str = Field(..., min_length=3, max_length=256, pattern=_EMAIL_RE)
+    firm: str = Field(default="", max_length=256)
+    role: str = Field(default="", max_length=64)
+    use_case: str = Field(default="", max_length=2_000)
+    referrer: str = Field(default="", max_length=256)
+
+
 # v1.1-PD: NL→IR compile + review.
 class PriorTurnIn(BaseModel):
     role: str = Field(..., pattern=r"^(user|assistant)$")
@@ -315,6 +327,76 @@ def create_app(
             "pubkey_pem": ks.public_pem(),
             "keys": ks.public_pem_map(),
         }
+
+    # ── v2.1-D2: signup + me + admin signup list ─────────────────
+    @app.post("/signup")
+    def post_signup(req: SignupReq, request: Request) -> dict:
+        """Public alpha-pilot signup. No auth — anyone with a valid email
+        can apply. A trivial per-IP rate limit caps spam: ≤3 entries per IP
+        per hour. The operator pulls the list out-of-band and provisions
+        a tenant via /admin/tenants when qualified."""
+        from .signups import SignupRepo
+        repo = SignupRepo(engine)
+        ip = request.client.host if request.client else ""
+        # Per-IP cap: 3 entries / hour
+        window_start = int(time.time()) - 3600
+        recent = repo.count_recent_by_ip(ip, window_start) if ip else 0
+        if recent >= 3:
+            raise HTTPException(429, "too many signups from this address")
+        rec = repo.submit(
+            email=req.email, firm=req.firm, role=req.role,
+            use_case=req.use_case, referrer=req.referrer,
+            source_ip=ip,
+        )
+        return {"id": rec.id, "status": rec.status}
+
+    @app.get("/tenants/me", dependencies=[Depends(require_tenant_auth)])
+    def get_my_tenant(request: Request) -> dict:
+        """Authenticated user fetches their own tenant info — used by the
+        /setup wizard. Returns just enough for the dashboard to render
+        identity + plan + active status; no other tenants' data."""
+        from .tenants import TenantRepo
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        if tenant_id == "default":
+            return {"id": "default", "status": "active", "plan": "free",
+                    "expires_at": None, "synthetic": True}
+        t = TenantRepo(engine).get(tenant_id)
+        if t is None:
+            raise HTTPException(404, "tenant not found")
+        return {
+            "id": t.id, "status": t.status, "plan": t.plan,
+            "expires_at": t.expires_at, "synthetic": False,
+        }
+
+    @app.get("/admin/signups", dependencies=[Depends(require_admin_key)])
+    def admin_list_signups(status: str | None = None,
+                            limit: int = 200) -> dict:
+        """Admin view: paginated, newest-first. Use status=pending to triage."""
+        from .signups import SignupRepo
+        rows = SignupRepo(engine).list(
+            status=status, limit=max(1, min(int(limit), 1000)),
+        )
+        return {"items": [
+            {
+                "id": r.id, "ts_created": r.ts_created, "email": r.email,
+                "firm": r.firm, "role": r.role, "use_case": r.use_case,
+                "referrer": r.referrer, "source_ip": r.source_ip,
+                "status": r.status, "notes": r.notes,
+            } for r in rows
+        ]}
+
+    @app.post("/admin/signups/{signup_id}/status",
+              dependencies=[Depends(require_admin_key)])
+    def admin_update_signup(signup_id: int, status: str = "approved",
+                             notes: str = "") -> dict:
+        """Mark a signup as approved/rejected and stash a note. Provisioning
+        the actual tenant + key is a separate step (POST /admin/tenants)."""
+        from .signups import SignupRepo
+        try:
+            SignupRepo(engine).update_status(signup_id, status=status, notes=notes)
+        except KeyError:
+            raise HTTPException(404, "signup not found")
+        return {"id": signup_id, "status": status}
 
     @app.get("/presets")
     def get_presets() -> dict:
