@@ -370,6 +370,89 @@ class TestCompileWithReview:
         registry_issues = [i for i in result["schema_issues"] if "registry" in i.lower()]
         assert registry_issues == []
 
+
+# ── registry → system prompt injection (root-cause fix) ─────────────
+class TestSystemPromptStepInjection:
+    """When a registry is passed, the compiler's system prompt SHOULD include
+    the wired step names so the LLM picks from them instead of hallucinating
+    plausible-but-wrong names like 'partner_approval_verifier'.
+
+    Without injection the LLM has no way to know what step names are valid —
+    our schema_issues check catches it, but the operator still has to
+    hand-fix the IR. Injecting the list at prompt time removes that round-trip.
+    """
+
+    def test_compile_with_registry_lists_wired_steps_in_system_prompt(self):
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        p = FakeLlmProvider([VALID_IR_JSON])
+        compile_nl_to_ir(p, nl="법원 filing 시 인용 검증 강제",
+                         verifier_registry=reg)
+        system_msg = next(m for m in p.last_messages if m["role"] == "system")
+        # Every wired step name appears verbatim in the system prompt
+        for step in ("citation_verify", "privilege_scan", "source_allowlist",
+                     "structured_output", "prompt_injection_screen"):
+            assert step in system_msg["content"], (
+                f"wired step {step!r} not in system prompt; LLM would still "
+                f"hallucinate. Excerpt: {system_msg['content'][:400]}"
+            )
+
+    def test_compile_without_registry_does_not_inject(self):
+        """Backwards-compat: no registry → no injection → system prompt unchanged."""
+        p = FakeLlmProvider([VALID_IR_JSON])
+        compile_nl_to_ir(p, nl="법원 filing 정책")
+        system_msg = next(m for m in p.last_messages if m["role"] == "system")
+        # Old prompt content stays; no wired-step list
+        assert "privilege_scan" not in system_msg["content"]
+        assert "source_allowlist" not in system_msg["content"]
+
+    def test_compile_with_review_threads_registry_to_compiler(self):
+        """End-to-end: compile_with_review(registry=...) makes BOTH
+        compile_nl_to_ir AND _server_side_validate see the registry."""
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        compiler = FakeLlmProvider([VALID_IR_JSON])
+        reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
+        compile_with_review(
+            compiler=compiler, reviewer=reviewer,
+            nl="법원 filing 시 인용 검증 강제",
+            verifier_registry=reg,
+        )
+        compiler_system = next(
+            m for m in compiler.last_messages if m["role"] == "system"
+        )
+        assert "citation_verify" in compiler_system["content"]
+        # Reviewer doesn't need the step list (its job is semantic review,
+        # not step-name selection) — but it must still be called.
+        assert reviewer.calls == 1
+
+    def test_injection_is_inside_system_not_user_message(self):
+        """The wired step list goes in the SYSTEM instruction, not in the
+        user-fenced section — otherwise an attacker could leak its position
+        and confuse the model about what's trusted."""
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        p = FakeLlmProvider([VALID_IR_JSON])
+        compile_nl_to_ir(p, nl="법원 filing", verifier_registry=reg)
+        user_msg = next(m for m in p.last_messages if m["role"] == "user")
+        # The literal step names should NOT leak into the fenced user content
+        # (otherwise prompt-injection mitigations get weaker)
+        assert "citation_verify" not in user_msg["content"], (
+            "step list bled into user message; keep it in system only"
+        )
+
     def test_orchestrator_review_ok_false_does_not_block_return(self):
         """Reviewer disagreement is REPORTED, not enforced. The human (gate 3)
         sees both IR and reviewer feedback and decides whether to apply."""
