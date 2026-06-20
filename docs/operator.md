@@ -39,24 +39,22 @@ The dashboard frontend deploys separately (Vercel-style) and reads
    - Real firm? (gmail-only addresses go to `rejected` unless firm name resolves)
    - Use case names a real Claude Code workflow they're already running?
    - Geography KO/JP-adjacent (alpha is KR-first; English-only ROW = waitlist)
-3. Approve → click "승인 / Approve" with a one-line note.
-4. **Provision the tenant + API key** (separate manual step until automated):
-
-```bash
-# In any shell with fly access:
-fly ssh console -C "magi-cp keys provision \
-  --tenant-id $(uuidgen | tr A-Z a-z) \
-  --plan alpha \
-  --email <applicant_email>"
-# emits: tenant_id, api_key (mcp_…), key_id
-```
-
-5. Email the applicant the `mcp_…` key + a link to
+3. Approve → click "승인 / Approve" with the **"provision"** checkbox
+   left checked (default). The dashboard:
+   1. POSTs `/admin/signups/N/status?status=approved&notes=…` (admin key)
+   2. POSTs `/admin/tenants` (HMAC) with a derived `tenant_id` from the
+      applicant's email (alphanumeric + 4 random chars, idempotent)
+   3. POSTs `/admin/tenants/{tenant_id}/keys` (HMAC) → cleartext `mcp_…`
+   4. Displays the cleartext key in a short-lived (10 min, HttpOnly)
+      banner — copy it now, the backend never re-emits it
+4. Email the applicant the `mcp_…` key + a link to
    `https://cloud.openmagi.ai/welcome` + `https://cloud.openmagi.ai/docs/install`.
 
-> The provisioning step will be inlined into the `/admin/signups` approve
-> button after the first 10 manual approvals — by then the workflow is
-> stable enough to wire.
+> Prereqs for the one-click flow: the dashboard process needs **both**
+> `MAGI_CP_ADMIN_API_KEY` AND `MAGI_CP_ADMIN_HMAC_SECRET` env vars set;
+> the cloud already has these from `magi-cp-secrets`. If the HMAC secret
+> is missing, the dashboard falls back to approval-only and you must
+> provision manually via `fly ssh console -C "magi-cp keys provision …"`.
 
 ## 3. Key rotation (planned quarterly)
 

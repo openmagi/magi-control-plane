@@ -1,8 +1,10 @@
 import { cloud, CloudConfigError, type Signup } from "@/lib/cloud"
 import { getIntl, getT } from "@/lib/i18n/server"
 import { revalidatePath } from "next/cache"
+import { cookies } from "next/headers"
+import { redirect } from "next/navigation"
 import {
-  Badge, Card, EmptyState, ErrorState, PageHeader,
+  Badge, Card, CodeBlock, CopyButton, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -11,14 +13,56 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
+const PROVISIONED_COOKIE = "magi-cp-provisioned"
+
+function _tenantIdFromEmail(email: string): string {
+  // Stable, URL-safe, alphanumeric-and-hyphen per backend regex.
+  // Local-part + first 6 chars of domain + 4 random — collisions handled
+  // by the backend's idempotent /admin/tenants endpoint.
+  const local = (email.split("@")[0] || "tenant").toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 18)
+  const domain = (email.split("@")[1] || "x").toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 8)
+  const rand = Math.floor(Math.random() * 0xffff).toString(36).padStart(4, "0")
+  return `${local}-${domain}-${rand}`
+}
+
 async function decideAction(formData: FormData) {
   "use server"
   const signupId = Number(formData.get("signupId"))
   const status = String(formData.get("status")) as "approved" | "rejected"
   const notes = String(formData.get("notes") ?? "")
+  const email = String(formData.get("email") ?? "")
+  const provision = formData.get("provision") === "1"
   if (!signupId || !["approved", "rejected"].includes(status)) return
+
   await cloud.decideSignup(signupId, status, notes)
+
+  if (status === "approved" && provision && email) {
+    const tenantId = _tenantIdFromEmail(email)
+    try {
+      const out = await cloud.provisionTenant(tenantId, "alpha")
+      // Stash the cleartext key in a short-lived cookie so the next render
+      // shows it ONCE. Backend never re-emits it.
+      const c = await cookies()
+      c.set(PROVISIONED_COOKIE, JSON.stringify({
+        signupId, email, tenantId: out.tenantId,
+        apiKey: out.apiKey, keyId: out.keyId, prefix: out.prefix,
+      }), { httpOnly: true, sameSite: "lax", maxAge: 600, path: "/admin/signups" })
+    } catch (e) {
+      const c = await cookies()
+      c.set(PROVISIONED_COOKIE, JSON.stringify({
+        signupId, email, error: errMsg(e),
+      }), { httpOnly: true, sameSite: "lax", maxAge: 60, path: "/admin/signups" })
+    }
+  }
   revalidatePath("/admin/signups")
+  redirect("/admin/signups")
+}
+
+async function dismissProvisioned() {
+  "use server"
+  const c = await cookies()
+  c.delete(PROVISIONED_COOKIE)
+  redirect("/admin/signups")
 }
 
 type FilterStatus = "pending" | "approved" | "rejected" | "all"
@@ -76,9 +120,58 @@ export default async function AdminSignupsPage({
     )
   }
 
+  const ck = await cookies()
+  const provisioned = ck.get(PROVISIONED_COOKIE)?.value
+    ? (JSON.parse(ck.get(PROVISIONED_COOKIE)!.value) as {
+        signupId: number; email: string; tenantId?: string;
+        apiKey?: string; keyId?: number; prefix?: string; error?: string
+      })
+    : null
+
   return (
     <>
       <PageHeader title={labels.title} description={labels.desc} />
+
+      {provisioned && (
+        <Card tone={provisioned.error ? "alert" : "status"} className="mb-4">
+          {provisioned.error ? (
+            <>
+              <div className="text-sm font-medium text-[var(--color-text-primary)] mb-2">
+                {locale === "ko"
+                  ? `프로비저닝 실패 — ${provisioned.email}`
+                  : `Provisioning failed — ${provisioned.email}`}
+              </div>
+              <p className="text-sm text-[var(--color-text-secondary)]">{provisioned.error}</p>
+            </>
+          ) : (
+            <>
+              <div className="text-sm font-medium text-[var(--color-text-primary)] mb-2">
+                {locale === "ko"
+                  ? `프로비저닝 완료 — ${provisioned.email}`
+                  : `Provisioned — ${provisioned.email}`}
+              </div>
+              <dl className="text-xs space-y-1 mb-3">
+                <div><span className="text-[var(--color-text-tertiary)]">tenant_id:</span> <code className="font-mono">{provisioned.tenantId}</code></div>
+                <div><span className="text-[var(--color-text-tertiary)]">key_id:</span> <code className="font-mono">{provisioned.keyId}</code></div>
+              </dl>
+              <div className="text-xs text-[var(--color-text-tertiary)] mb-2">
+                {locale === "ko"
+                  ? "이 키는 다시 표시되지 않습니다. 지금 신청자에게 이메일로 전달하세요."
+                  : "This key is not shown again. Email it to the applicant now."}
+              </div>
+              <div className="flex items-center gap-2">
+                <CodeBlock maxHeight="auto" className="flex-1">{provisioned.apiKey}</CodeBlock>
+                <CopyButton value={provisioned.apiKey ?? ""} />
+              </div>
+            </>
+          )}
+          <form action={dismissProvisioned} className="mt-3">
+            <button type="submit" className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] cursor-pointer">
+              {locale === "ko" ? "닫기" : "Dismiss"}
+            </button>
+          </form>
+        </Card>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <span className="text-sm text-[var(--color-text-tertiary)]">{labels.filter}:</span>
@@ -140,29 +233,38 @@ export default async function AdminSignupsPage({
               </dl>
 
               {s.status === "pending" && (
-                <form action={decideAction} className="mt-4 flex flex-wrap items-end gap-2">
+                <form action={decideAction} className="mt-4 space-y-2">
                   <input type="hidden" name="signupId" value={s.id} />
-                  <input
-                    name="notes"
-                    placeholder={labels.notesPh}
-                    className="flex-1 min-w-[180px] h-9 px-3 text-sm rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-surface-overlay)] text-[var(--color-text-secondary)]"
-                  />
-                  <button
-                    type="submit"
-                    name="status"
-                    value="approved"
-                    className="h-9 px-3 text-sm rounded-md border border-[var(--color-pass-fg)] text-[var(--color-pass-fg)] hover:bg-[var(--color-pass-bg)] cursor-pointer"
-                  >
-                    {labels.approve}
-                  </button>
-                  <button
-                    type="submit"
-                    name="status"
-                    value="rejected"
-                    className="h-9 px-3 text-sm rounded-md border border-[var(--color-deny-fg)] text-[var(--color-deny-fg)] hover:bg-[var(--color-deny-bg)] cursor-pointer"
-                  >
-                    {labels.reject}
-                  </button>
+                  <input type="hidden" name="email" value={s.email} />
+                  <div className="flex flex-wrap items-end gap-2">
+                    <input
+                      name="notes"
+                      placeholder={labels.notesPh}
+                      className="flex-1 min-w-[180px] h-9 px-3 text-sm rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-surface-overlay)] text-[var(--color-text-secondary)]"
+                    />
+                    <button
+                      type="submit"
+                      name="status"
+                      value="approved"
+                      className="h-9 px-3 text-sm rounded-md border border-[var(--color-pass-fg)] text-[var(--color-pass-fg)] hover:bg-[var(--color-pass-bg)] cursor-pointer"
+                    >
+                      {labels.approve}
+                    </button>
+                    <button
+                      type="submit"
+                      name="status"
+                      value="rejected"
+                      className="h-9 px-3 text-sm rounded-md border border-[var(--color-deny-fg)] text-[var(--color-deny-fg)] hover:bg-[var(--color-deny-bg)] cursor-pointer"
+                    >
+                      {labels.reject}
+                    </button>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
+                    <input type="checkbox" name="provision" value="1" defaultChecked />
+                    {locale === "ko"
+                      ? "승인 시 테넌트 + API 키 동시 프로비저닝 (HMAC 시크릿 필요)"
+                      : "On approve: provision tenant + issue API key (needs HMAC secret)"}
+                  </label>
                 </form>
               )}
             </Card>

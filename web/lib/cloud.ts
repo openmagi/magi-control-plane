@@ -27,6 +27,31 @@ function _readKey(envVar: string): string {
 function _hitlKey(): string { return _readKey("MAGI_CP_HITL_API_KEY") }
 function _apiKey(): string { return _readKey("MAGI_CP_API_KEY") }
 function _adminKey(): string { return _readKey("MAGI_CP_ADMIN_API_KEY") }
+function _hmacSecret(): string { return _readKey("MAGI_CP_ADMIN_HMAC_SECRET") }
+
+/** HMAC-signed admin POST (tenant create / key issue / suspend / etc).
+ *
+ * Backend contract (cloud.app._attach_admin_tenant_routes.require_hmac):
+ *   x-magi-signature = hex(hmac_sha256(MAGI_CP_ADMIN_HMAC_SECRET, body))
+ * Body MUST be the exact bytes signed; pass JSON-serialised once and reuse.
+ */
+async function _hmacPost<T>(path: string, body: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+  const crypto = await import("node:crypto")
+  const raw = JSON.stringify(body)
+  const sig = crypto.createHmac("sha256", _hmacSecret()).update(raw).digest("hex")
+  const r = await fetch(`${_cloudUrl()}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-magi-signature": sig },
+    body: raw,
+    cache: "no-store",
+    signal: AbortSignal.timeout(timeoutMs ?? FETCH_TIMEOUT_MS),
+  })
+  if (!r.ok) {
+    console.error(`cloud ${r.status} ${path}: ${await r.text().catch(() => "")}`)
+    throw new Error(`cloud ${r.status}`)
+  }
+  return r.json() as Promise<T>
+}
 
 async function _fetch<T>(
   path: string,
@@ -283,6 +308,32 @@ export const cloud = {
     return _fetch(`/admin/signups/${signupId}/status${qs}`, {
       method: "POST", keyType: "admin",
     })
+  },
+
+  /** Create tenant (HMAC). Idempotent — returns current state if exists. */
+  createTenant: (tenantId: string, plan: string = "alpha",
+                 expiresAt: number | null = null): Promise<{
+    id: string; status: string; plan: string; expires_at: number | null
+  }> =>
+    _hmacPost("/admin/tenants", { tenant_id: tenantId, plan, expires_at: expiresAt }),
+
+  /** Issue API key for an existing tenant (HMAC). Cleartext key in response
+   * is shown ONCE — operator must hand it to applicant immediately. */
+  issueKey: (tenantId: string): Promise<{
+    id: number; tenant_id: string; api_key: string; prefix: string
+  }> =>
+    _hmacPost(`/admin/tenants/${encodeURIComponent(tenantId)}/keys`, {}),
+
+  /** Provision a tenant + first API key in one operator click. Combines
+   * createTenant + issueKey. Used by the /admin/signups approve action. */
+  provisionTenant: async (tenantId: string, plan: string = "alpha"): Promise<{
+    tenantId: string; apiKey: string; keyId: number; prefix: string
+  }> => {
+    await cloud.createTenant(tenantId, plan)
+    const key = await cloud.issueKey(tenantId)
+    return {
+      tenantId, apiKey: key.api_key, keyId: key.id, prefix: key.prefix,
+    }
   },
 
   /** Read-only preset catalog — backend has no auth requirement on /presets. */
