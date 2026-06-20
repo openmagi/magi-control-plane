@@ -1,6 +1,7 @@
 import "./globals.css"
 import type { Metadata, Viewport } from "next"
-import NavBar from "@/components/ui/NavBar"
+import NavBarShell from "@/components/ui/NavBarShell"
+import { getT } from "@/lib/i18n/server"
 
 export const metadata: Metadata = {
   title: {
@@ -18,13 +19,11 @@ export const viewport: Viewport = {
   // explicitly DO NOT disable zoom — accessibility (rule violation if maximumScale=1)
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const { locale, t } = await getT()
   return (
-    // lang="ko" until /i18n is wired (D1.3). next/font preload is delegated
-    // to CDN @font-face for Pretendard + system Inter fallback in globals.css.
-    <html lang="ko" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <head>
-        {/* CDN preconnect for the Pretendard variable font */}
         <link
           rel="preconnect"
           href="https://cdn.jsdelivr.net"
@@ -33,13 +32,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <a className="skip-link" href="#main-content">
-          Skip to main content
+          {t("nav.skipToMain")}
         </a>
-        <NavBar />
+        <NavBarShell />
         <main
           id="main-content"
           tabIndex={-1}
-          className="px-5 py-5 mx-auto outline-none"
+          className="px-5 py-6 mx-auto outline-none"
           style={{ maxWidth: "var(--content-max)" }}
         >
           {children}
