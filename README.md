@@ -137,6 +137,25 @@ Verdicts: `pass` → token issued; `deny` → no token (ledger records); `review
 - `magi-cp compile <policy.json> <out.json>` — Policy IR → managed-settings
 - `magi-cp cloud` — run FastAPI cloud server (registry-wired)
 - `magi-cp mcp` — stdio MCP server (registry-wired)
+- `magi-cp keys rotate|list|revoke` — Ed25519 signing key lifecycle (W7b)
+
+## Key rotation (W7b)
+KeyStore manages N keypairs under `MAGI_CP_KEY_DIR` (default
+`~/.magi-cp/cloud`); the file `ACTIVE` names the current signing kid.
+`/pubkey` returns a `{kid: pem}` map so clients can verify tokens signed by
+any current key, not just the active one.
+
+Recommended cron (daily):
+```bash
+magi-cp keys rotate          # mint new active kid; old keys keep verifying
+# wait at least TOKEN_TTL_SECONDS (600s) for in-flight tokens to expire
+magi-cp keys list            # find non-active kids
+magi-cp keys revoke <old>    # delete the old keypair
+```
+
+Legacy single-keypair deploys (one `ed25519_*.pem` pair in `MAGI_CP_KEY_DIR`)
+are auto-migrated to the multi-key layout on first cloud boot — no manual
+step required.
 
 ## Pre-flight LIVE smoke (run once before your first demo)
 ```bash

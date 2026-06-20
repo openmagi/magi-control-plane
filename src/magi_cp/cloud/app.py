@@ -304,7 +304,16 @@ def create_app(
 
     @app.get("/pubkey")
     def get_pubkey() -> dict:
-        return {"kid": kid, "pubkey_pem": pubkey_pem}
+        """v2.0-W7b: multi-key aware. `kid` and `pubkey_pem` describe the
+        ACTIVE signing key (back-compat with single-key clients). `keys` is
+        a {kid: pubkey_pem} map of every key the cloud will verify against,
+        so clients holding a token signed by a prior (rotated-out) key can
+        still verify until that key is revoked."""
+        return {
+            "kid": ks.active_kid(),
+            "pubkey_pem": ks.public_pem(),
+            "keys": ks.public_pem_map(),
+        }
 
     @app.get("/presets")
     def get_presets() -> dict:
