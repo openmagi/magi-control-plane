@@ -279,6 +279,97 @@ class TestCompileWithReview:
         # operator-warning. Either appearing is fine.
         assert result["schema_issues"]   # non-empty
 
+    def test_orchestrator_step_not_in_registry_is_flagged(self):
+        """When a verifier registry is provided, every requires[].step must
+        map to a registered verifier. LLMs commonly hallucinate step names
+        like 'partner_approval_check' or 'citation_verifier' (typo of the
+        real 'citation_verify') — schema_issues must call this out so the
+        human reviewer doesn't ship a 404-bound policy.
+        """
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        bad_ir = json.dumps({
+            **json.loads(VALID_IR_JSON),
+            "requires": [{"step": "partner_approval_check", "verdict": "pass"}],
+        })
+        compiler = FakeLlmProvider([bad_ir])
+        reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
+        result = compile_with_review(
+            compiler=compiler, reviewer=reviewer,
+            nl="금융 거래 시 partner approval 미통과면 차단",
+            verifier_registry=reg,
+        )
+        assert any(
+            "partner_approval_check" in i and "registry" in i.lower()
+            for i in result["schema_issues"]
+        ), result["schema_issues"]
+
+    def test_orchestrator_step_typo_of_real_step_flagged(self):
+        """The exact bug seen in production: LLM emitted 'citation_verifier'
+        (extra 'r') instead of the wired 'citation_verify'. Catch it."""
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        bad_ir = json.dumps({
+            **json.loads(VALID_IR_JSON),
+            "requires": [{"step": "citation_verifier", "verdict": "pass"}],
+        })
+        compiler = FakeLlmProvider([bad_ir])
+        reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
+        result = compile_with_review(
+            compiler=compiler, reviewer=reviewer,
+            nl="법원 filing 시 인용 검증을 강제하라",
+            verifier_registry=reg,
+        )
+        flagged = [i for i in result["schema_issues"] if "citation_verifier" in i]
+        assert flagged, result["schema_issues"]
+        # Hint should suggest the nearest valid step name to help the human.
+        assert any("citation_verify" in i for i in flagged), flagged
+
+    def test_orchestrator_valid_step_is_silent(self):
+        """When every step matches a wired verifier, no registry issue is
+        added — schema_issues stays empty for well-formed IRs."""
+        from magi_cp.verifier.protocol import VerifierRegistry
+        from magi_cp.verifier.builtins import register_builtins
+
+        reg = VerifierRegistry()
+        register_builtins(reg)
+
+        compiler = FakeLlmProvider([VALID_IR_JSON])
+        reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
+        result = compile_with_review(
+            compiler=compiler, reviewer=reviewer,
+            nl="법원 filing 시 인용 검증 강제",
+            verifier_registry=reg,
+        )
+        # VALID_IR_JSON uses step="citation_verify" which IS in the registry
+        registry_issues = [i for i in result["schema_issues"] if "registry" in i.lower()]
+        assert registry_issues == []
+
+    def test_orchestrator_no_registry_skips_check(self):
+        """If the caller doesn't pass a registry, the step check is skipped —
+        backward compat with the existing API surface."""
+        bad_ir = json.dumps({
+            **json.loads(VALID_IR_JSON),
+            "requires": [{"step": "bogus_step", "verdict": "pass"}],
+        })
+        compiler = FakeLlmProvider([bad_ir])
+        reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
+        result = compile_with_review(
+            compiler=compiler, reviewer=reviewer,
+            nl="법원 filing 정책 만들어줘",
+        )
+        # No registry passed — so no registry-related schema issue
+        registry_issues = [i for i in result["schema_issues"] if "registry" in i.lower()]
+        assert registry_issues == []
+
     def test_orchestrator_review_ok_false_does_not_block_return(self):
         """Reviewer disagreement is REPORTED, not enforced. The human (gate 3)
         sees both IR and reviewer feedback and decides whether to apply."""

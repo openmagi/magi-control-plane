@@ -42,14 +42,43 @@ def _tmp_store_path():
     return f.name
 
 
-def _client(*, llm_compiler=None, llm_reviewer=None):
+def _client(*, llm_compiler=None, llm_reviewer=None, verifier_registry=None):
     app = create_app(
         dsn="sqlite:///:memory:",
         policy_store_path=_tmp_store_path(),
         llm_compiler=llm_compiler,
         llm_reviewer=llm_reviewer,
+        verifier_registry=verifier_registry,
     )
     return TestClient(app)
+
+
+def test_endpoint_flags_step_not_in_registry():
+    """The endpoint, when wired with a real VerifierRegistry, surfaces
+    'step not in registry' in schema_issues — the LIVE-discovered bug
+    where 'citation_verifier' silently passed because the step name
+    wasn't checked against the registry."""
+    from magi_cp.verifier.protocol import VerifierRegistry
+    from magi_cp.verifier.builtins import register_builtins
+    reg = VerifierRegistry()
+    register_builtins(reg)
+
+    bad_ir = json.dumps({
+        **json.loads(VALID_IR_JSON),
+        "requires": [{"step": "partner_approval_check", "verdict": "pass"}],
+    })
+    c = _client(
+        llm_compiler=FakeLlmProvider([bad_ir]),
+        llm_reviewer=FakeLlmProvider([json.dumps({"ok": True, "issues": []})]),
+        verifier_registry=reg,
+    )
+    r = c.post("/policies/compile",
+               headers={"X-Admin-Api-Key": "test-admin-key"},
+               json={"nl": "금융 거래 시 partner approval 미통과면 차단"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert any("partner_approval_check" in i and "registry" in i.lower()
+               for i in body["schema_issues"]), body["schema_issues"]
 
 
 def test_endpoint_requires_admin_key():

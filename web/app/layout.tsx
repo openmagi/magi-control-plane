@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <nav aria-label="primary">
             <Link href="/policies">Policies</Link>
             <Link href="/policies/compile">Compile</Link>
+            <Link href="/verify">Verify</Link>
             <Link href="/presets">Presets</Link>
             <Link href="/hitl">Review queue</Link>
             <Link href="/ledger">Audit</Link>

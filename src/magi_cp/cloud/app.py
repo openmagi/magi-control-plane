@@ -294,6 +294,7 @@ def create_app(
                 reviewer=llm_reviewer,
                 nl=req.nl,
                 prior_turns=[t.model_dump() for t in (req.prior_turns or [])],
+                verifier_registry=verifier_registry,
             )
         except PrecheckError as e:
             raise HTTPException(422, f"precheck: {e}") from e

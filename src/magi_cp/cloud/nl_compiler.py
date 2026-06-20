@@ -230,13 +230,63 @@ def review_ir(
 
 
 # ── orchestrator ────────────────────────────────────────────────────
-def _server_side_validate(ir: dict[str, Any]) -> list[str]:
+def _registry_issues(
+    ir: dict[str, Any],
+    registry: "object | None",
+) -> list[str]:
+    """For each requires[].step, check the verifier registry. Without a
+    registry, this returns []. With one, every step the IR binds to must
+    resolve to a registered verifier — otherwise the policy 404s at runtime
+    when the gate dispatches.
+
+    Suggests the nearest existing step name when possible (LLM typos like
+    `citation_verifier` for `citation_verify` are the most common case).
+    """
+    if registry is None:
+        return []
+    import difflib
+    try:
+        known_steps = sorted({v.step for v in registry.all()})   # type: ignore[attr-defined]
+    except Exception:
+        return []   # treat malformed registry as "no registry" to stay non-fatal
+    issues: list[str] = []
+    for r in (ir.get("requires") or []):
+        if not isinstance(r, dict):
+            continue
+        step = r.get("step")
+        if not isinstance(step, str) or not step:
+            continue
+        if step in known_steps:
+            continue
+        hint = difflib.get_close_matches(step, known_steps, n=1, cutoff=0.6)
+        if hint:
+            issues.append(
+                f"step {step!r} is not in the verifier registry — would 404 at "
+                f"runtime; did you mean {hint[0]!r}?"
+            )
+        else:
+            issues.append(
+                f"step {step!r} is not in the verifier registry — would 404 at "
+                f"runtime (registered steps: {known_steps})"
+            )
+    return issues
+
+
+def _server_side_validate(
+    ir: dict[str, Any],
+    registry: "object | None" = None,
+) -> list[str]:
     """Run Policy.__post_init__ checks BEFORE handing IR to the human reviewer.
 
-    Catches the case where a malicious NL induced the compiler LLM to emit a
-    permissive IR (empty requires, on_missing=allow, illegal matrix combo,
-    bad regex) that a careless human might rubber-stamp. The output is a list
-    of human-readable issues; an empty list means schema-clean.
+    Catches the case where a malicious or sloppy NL induced the compiler LLM
+    to emit a permissive IR (empty requires, on_missing=allow, illegal matrix
+    combo, bad regex) that a careless human might rubber-stamp. The output is
+    a list of human-readable issues; an empty list means schema-clean.
+
+    `registry`, when supplied, adds runtime-dispatch checks: every
+    `requires[].step` must resolve to a registered verifier. Without it,
+    the LLM can hallucinate plausible-but-nonexistent step names and the
+    policy ships broken (silent 404 at gate time).
 
     This complements (does NOT replace) the LLM reviewer — schema check is
     deterministic; reviewer is semantic.
@@ -263,6 +313,7 @@ def _server_side_validate(ir: dict[str, Any]) -> list[str]:
         issues.append("warning: on_missing=allow weakens the gate to log-only")
     if not (ir.get("requires") or []):
         issues.append("warning: empty requires — gate has nothing to enforce")
+    issues.extend(_registry_issues(ir, registry))
     return issues
 
 
@@ -272,6 +323,7 @@ def compile_with_review(
     reviewer: LlmProvider,
     nl: str,
     prior_turns: list[dict[str, str]] | None = None,
+    verifier_registry: "object | None" = None,
 ) -> dict[str, Any]:
     """Run both gates and return both results. NEVER persists.
 
@@ -279,6 +331,10 @@ def compile_with_review(
     self-review is rejected at runtime to defend against self-confirmation.
     A separate model family is strongly recommended in production but not
     enforced (callers cannot introspect provider identity).
+
+    `verifier_registry`, when passed, also flags any requires[].step that
+    isn't registered (catches the LLM hallucinating step names that would
+    silently 404 at gate dispatch). Optional for backwards-compat.
 
     The caller (dashboard / admin API) decides whether to surface the
     {ir, review, schema_issues} bundle to a human (gate 3) and the human
@@ -291,7 +347,7 @@ def compile_with_review(
         )
     ir = compile_nl_to_ir(compiler, nl=nl, prior_turns=prior_turns)
     verdict = review_ir(reviewer, ir=ir, original_nl=nl)
-    schema_issues = _server_side_validate(ir)
+    schema_issues = _server_side_validate(ir, verifier_registry)
     return {"ir": ir, "review": verdict, "schema_issues": schema_issues}
 
 

@@ -30,7 +30,7 @@ function _adminKey(): string { return _readKey("MAGI_CP_ADMIN_API_KEY") }
 
 async function _fetch<T>(
   path: string,
-  init: RequestInit & { keyType: "api" | "hitl" | "admin" },
+  init: RequestInit & { keyType: "api" | "hitl" | "admin"; timeoutMs?: number },
 ): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.keyType === "hitl") headers.set("X-Hitl-Api-Key", _hitlKey())
@@ -39,7 +39,7 @@ async function _fetch<T>(
   headers.set("Content-Type", "application/json")
   const r = await fetch(`${_cloudUrl()}${path}`, {
     ...init, headers, cache: "no-store",
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(init.timeoutMs ?? FETCH_TIMEOUT_MS),
   })
   if (!r.ok) {
     // Do not echo cloud response body to callers — could include details
@@ -185,12 +185,41 @@ export const cloud = {
       body: JSON.stringify({ enabled }),
     }),
 
-  /** Compile a NL description to a Policy IR + critic review + schema issues. */
+  /** Compile a NL description to a Policy IR + critic review + schema issues.
+   *
+   * Long timeout: the compile path runs two sequential LLM calls (compiler +
+   * critic) which routinely take 5–20s. The default 5s fetch budget is for
+   * fast endpoints only; this needs a much wider window. */
   compilePolicy: (nl: string, priorTurns?: Array<{ role: "user" | "assistant"; content: string }>):
     Promise<CompileResult> =>
     _fetch<CompileResult>("/policies/compile", {
       method: "POST", keyType: "admin",
+      timeoutMs: 90_000,
       body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
+    }),
+
+  /** Generic verifier dispatch — produces a signed token on pass/review. */
+  verifyDispatch: (
+    step: string,
+    payload: Record<string, unknown>,
+    matter?: string,
+    docId?: string,
+  ): Promise<{
+    verdict: "pass" | "review" | "deny" | "error";
+    token: string | null;
+    reasons: string[];
+    exp?: number;
+    kid?: string;
+    ledger_h?: string;
+    hitl_id?: number;
+  }> =>
+    _fetch("/verify/" + encodeURIComponent(step), {
+      method: "POST", keyType: "api",
+      body: JSON.stringify({
+        payload,
+        matter: matter ?? "dashboard",
+        doc_id: docId ?? "dashboard",
+      }),
     }),
 
   /** Read-only preset catalog — backend has no auth requirement on /presets. */
