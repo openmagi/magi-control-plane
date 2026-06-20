@@ -206,4 +206,102 @@ describe("cloud client", () => {
     global.fetch = vi.fn(async () => new Response("", { status: 503 }) as any)
     await expect(cloud.compilePolicy("x")).rejects.toThrow("cloud 503")
   })
+
+  // ── v2.1-D5: admin signup + provisioning ────────────────────────────
+  it("listSignups passes filter as query param and X-Admin-Api-Key", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({ items: [] }), { status: 200 }) as any
+    })
+    await cloud.listSignups("pending")
+    expect(captured.url).toBe("http://test/admin/signups?status=pending&limit=500")
+    expect(captured.init.headers.get("X-Admin-Api-Key")).toBe("admin-test")
+  })
+
+  it("decideSignup sends status + notes as query params (backend contract)", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response("{}", { status: 200 }) as any
+    })
+    await cloud.decideSignup(42, "approved", "looks legit")
+    expect(captured.url).toBe("http://test/admin/signups/42/status?status=approved&notes=looks%20legit")
+    expect(captured.init.method).toBe("POST")
+  })
+
+  it("createTenant signs body with HMAC and sends x-magi-signature", async () => {
+    process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret-xxxx"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({
+        id: "acme-co-abcd", status: "active", plan: "alpha", expires_at: null,
+      }), { status: 200 }) as any
+    })
+    const out = await cloud.createTenant("acme-co-abcd", "alpha")
+    expect(captured.url).toBe("http://test/admin/tenants")
+    expect(captured.init.headers["x-magi-signature"]).toBeTruthy()
+    const body = JSON.parse(captured.init.body)
+    expect(body.tenant_id).toBe("acme-co-abcd")
+    expect(body.plan).toBe("alpha")
+    expect(body.expires_at).toBeNull()
+    const crypto = await import("node:crypto")
+    const expected = crypto.createHmac("sha256", "shared-secret-xxxx")
+      .update(captured.init.body).digest("hex")
+    expect(captured.init.headers["x-magi-signature"]).toBe(expected)
+    expect(out.id).toBe("acme-co-abcd")
+  })
+
+  it("issueKey HMACs an empty body and returns cleartext key", async () => {
+    process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({
+        id: 7, tenant_id: "t-1", api_key: "mcp_secret-once", prefix: "mcp_secre",
+      }), { status: 200 }) as any
+    })
+    const out = await cloud.issueKey("t-1")
+    expect(captured.url).toBe("http://test/admin/tenants/t-1/keys")
+    expect(captured.init.body).toBe("{}")
+    expect(out.api_key).toBe("mcp_secret-once")
+  })
+
+  it("provisionTenant chains createTenant + issueKey", async () => {
+    process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret"
+    const responses = [
+      new Response(JSON.stringify({ id: "t-1", status: "active", plan: "alpha", expires_at: null }), { status: 200 }),
+      new Response(JSON.stringify({ id: 9, tenant_id: "t-1", api_key: "mcp_abc", prefix: "mcp_abc" }), { status: 200 }),
+    ]
+    const urls: string[] = []
+    global.fetch = vi.fn(async (url: any) => {
+      urls.push(String(url))
+      return responses.shift() as any
+    })
+    const out = await cloud.provisionTenant("t-1", "alpha")
+    expect(urls).toEqual([
+      "http://test/admin/tenants",
+      "http://test/admin/tenants/t-1/keys",
+    ])
+    expect(out.apiKey).toBe("mcp_abc")
+    expect(out.tenantId).toBe("t-1")
+  })
+
+  it("signup posts JSON to /signup with no auth header", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({ id: 1, status: "pending" }), { status: 200 }) as any
+    })
+    await cloud.signup({ email: "x@firm.kr", firm: "Firm" })
+    expect(captured.url).toBe("http://test/signup")
+    expect(captured.init.method).toBe("POST")
+    // Public endpoint — no admin/api/hitl keys leak in
+    const headersObj = captured.init.headers
+    expect(headersObj["X-Admin-Api-Key"]).toBeUndefined()
+    expect(headersObj["X-Api-Key"]).toBeUndefined()
+  })
 })
