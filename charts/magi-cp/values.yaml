@@ -1,0 +1,73 @@
+# magi-cp helm values — production defaults.
+
+image:
+  repository: ghcr.io/openmagi/magi-control-plane
+  tag: ""                    # overrides Chart.appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 2              # multi-node: PG is required (see below)
+
+# Service-account / image-pull secrets
+imagePullSecrets: []
+serviceAccount:
+  create: true
+  name: ""
+
+# Where the Ed25519 keypair + policy store live. PVC for single-replica;
+# external KMS-backed solution for multi-replica.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""           # cluster default
+
+# Postgres connection — when replicaCount > 1 this MUST be set
+postgres:
+  dsn: ""                    # e.g. postgresql+psycopg2://magi:***@pg-host:5432/magi
+
+# Required API keys (placed in a sealed-secret / external-secret in prod;
+# never commit cleartext to values.yaml). Helm reads from a pre-created
+# Secret named `magi-cp-secrets` by default.
+secretRef:
+  name: magi-cp-secrets
+  # Expected keys: MAGI_CP_API_KEY, MAGI_CP_HITL_API_KEY, MAGI_CP_ADMIN_API_KEY,
+  # MAGI_CP_ADMIN_HMAC_SECRET, ANTHROPIC_API_KEY (optional), OPENAI_API_KEY (optional)
+
+# LLM provider wiring. Point at the env-driven factories (W2).
+llm:
+  compiler: ""               # e.g. magi_cp.llm.anthropic_provider:anthropic_default
+  reviewer: ""               # e.g. magi_cp.llm.openai_provider:openai_default
+
+# Networking
+service:
+  type: ClusterIP
+  port: 8787
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  tlsSecretName: ""
+
+# Resource limits (tune per replica)
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Pod security
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Prometheus ServiceMonitor (W8b)
+serviceMonitor:
+  enabled: false
+  namespace: ""              # defaults to release namespace
+  interval: 30s

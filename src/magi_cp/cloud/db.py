@@ -21,6 +21,15 @@ from sqlalchemy import (
     BigInteger, Index, Integer, JSON, Enum as SAEnum, Engine, String, Text,
     UniqueConstraint, create_engine, event, select, text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
+
+# v2.0-W8a: prefer PostgreSQL's JSONB (binary, indexable) over generic JSON
+# when running on PG. JSON variant fallback covers SQLite + MySQL dev paths.
+# Existing data in the JSON column reads correctly under JSONB after migration
+# (PG silently converts on read; explicit `ALTER COLUMN … TYPE jsonb USING
+# … ::jsonb` is the right step for production migrations from older
+# deploys — out of scope here since init_schema is create-all).
+JsonCol = JSON().with_variant(JSONB, "postgresql")
 
 # SQLite needs INTEGER (its ROWID alias) for autoincrement; Postgres needs BIGINT.
 # This variant covers both: BIGINT on Postgres/MySQL, INTEGER on SQLite.
@@ -55,7 +64,7 @@ class LedgerEntry(Base):
     )
     matter: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     prev: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    body: Mapped[dict] = mapped_column(JSON, nullable=False)
+    body: Mapped[dict] = mapped_column(JsonCol, nullable=False)
     token: Mapped[str] = mapped_column(Text, nullable=False)
     h: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     __table_args__ = (UniqueConstraint("prev", name="uq_ledger_prev"),)
@@ -80,7 +89,7 @@ class HitlItem(Base):
     matter: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonCol, nullable=False)
     # native_enum=False: store as VARCHAR + CHECK so future status additions
     # are 1-line migrations (Postgres native ENUM is painful to ALTER).
     status: Mapped[HitlStatus] = mapped_column(

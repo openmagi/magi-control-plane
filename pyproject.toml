@@ -17,8 +17,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
 nli = ["transformers>=4.40", "torch>=2.2"]
+# v2.0-W8a: Postgres driver for multi-node / HA deploys. SQLite is the default
+# single-node DSN; install with `pip install -e .[postgres]` to switch.
+postgres = ["psycopg2-binary>=2.9"]
+# v2.0-W8b: production observability (structured logs + Prometheus metrics).
+observability = ["structlog>=24", "prometheus-client>=0.20"]
 
 [project.scripts]
 magi-cp                = "magi_cp.cli.__main__:main"

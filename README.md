@@ -157,6 +157,34 @@ Legacy single-keypair deploys (one `ed25519_*.pem` pair in `MAGI_CP_KEY_DIR`)
 are auto-migrated to the multi-key layout on first cloud boot — no manual
 step required.
 
+## Production deploy
+
+**Single-node Docker**: `docker compose up -d` runs the cloud on SQLite + a
+PVC volume. Sufficient for the alpha pilot.
+
+**Multi-node Kubernetes**: `helm install magi-cp charts/magi-cp -f my-values.yaml`.
+Required values for HA:
+- `replicaCount > 1`
+- `postgres.dsn` set to your Postgres cluster (see `pyproject.toml`'s
+  `[postgres]` extra — `pip install -e .[postgres]` adds the driver)
+- `secretRef.name` pointing at a Secret with all `MAGI_CP_*` keys
+- `llm.compiler` / `llm.reviewer` set to provider factory paths
+- `serviceMonitor.enabled: true` if running kube-prometheus
+
+**Backup** (`scripts/backup.sh <out-dir>`) tar-balls the keypair dir + policy
+store + database snapshot (SQLite `.backup` or `pg_dump`). Optionally pipes
+through `age` when `MAGI_CP_BACKUP_RECIPIENT` is set.
+
+**Observability**:
+- `pip install -e .[observability]` enables structlog (JSON to stderr) and
+  exposes `/metrics` (Prometheus exposition). Both are no-ops without the
+  extra.
+- Counters: `magi_cp_verify_total{step,verdict,tenant_id}`,
+  `magi_cp_compile_total{review_ok}`, `magi_cp_ledger_append_total{tenant_id,verdict}`,
+  `magi_cp_hitl_enqueue_total{tenant_id}`
+- Histograms: `magi_cp_verify_latency_seconds{step}`,
+  `magi_cp_compile_latency_seconds`
+
 ## Pre-flight LIVE smoke (run once before your first demo)
 ```bash
 # 1. Set real API keys

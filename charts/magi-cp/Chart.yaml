@@ -1,0 +1,10 @@
+apiVersion: v2
+name: magi-cp
+description: magi-control-plane cloud — terminal-gate governance over Claude Code.
+type: application
+version: 0.1.0
+appVersion: "2.0.0"
+home: https://github.com/openmagi/magi-control-plane
+maintainers:
+  - name: OpenMagi
+    email: support@openmagi.ai

@@ -358,6 +358,30 @@ def create_app(
 
     @app.post("/verify/{step}", dependencies=[Depends(require_tenant_auth)])
     async def verify_dispatch(step: str, req: VerifyDispatchReq, request: Request) -> dict:
+        # W8b: per-request metric timing.
+        from .observability import get_metric
+        _t0 = time.perf_counter()
+        result: dict = {"verdict": "error", "token": None}
+        tid_for_metric = getattr(request.state, "tenant_id", "default")
+        try:
+            result = await _verify_dispatch_impl(step, req, request)
+            return result
+        finally:
+            _vt = get_metric("verify_total")
+            if _vt is not None:
+                try:
+                    _vt.labels(step=step, verdict=result.get("verdict", "error"),
+                                tenant_id=tid_for_metric).inc()
+                except Exception:
+                    pass
+            _vl = get_metric("verify_latency_seconds")
+            if _vl is not None:
+                try:
+                    _vl.labels(step=step).observe(time.perf_counter() - _t0)
+                except Exception:
+                    pass
+
+    async def _verify_dispatch_impl(step: str, req: VerifyDispatchReq, request: Request) -> dict:
         """Generic verifier dispatch — any registered verifier other than
         citation_verify (which keeps its specialized NLI+ledger path).
 
@@ -914,7 +938,7 @@ def _resolve_llm_provider_from_env(env_var: str) -> "object | None":
 
 
 def _build_production_app() -> FastAPI:
-    """Construct the app with all v1.1 wirings.
+    """Construct the app with all v1.1+ wirings.
 
     Test code constructs apps directly via create_app(...) with explicit
     overrides; this is for the deployed `magi-cp-cloud` binary so /presets
@@ -925,16 +949,24 @@ def _build_production_app() -> FastAPI:
         MAGI_CP_LLM_COMPILER=mypkg.module:factory
         MAGI_CP_LLM_REVIEWER=mypkg.module:factory
     at any callable returning an LlmProvider. Unset → /policies/compile 503.
+
+    v2.0-W8b: configures structlog (JSON to stderr) and exposes /metrics
+    on the same listener. Both are no-ops when the [observability] extra
+    isn't installed.
     """
     from ..verifier.builtins import register_builtins
     from ..verifier.protocol import VerifierRegistry
+    from .observability import attach_metrics, configure_structlog
+    configure_structlog()
     reg = VerifierRegistry()
     register_builtins(reg)
-    return create_app(
+    app = create_app(
         verifier_registry=reg,
         llm_compiler=_resolve_llm_provider_from_env("MAGI_CP_LLM_COMPILER"),
         llm_reviewer=_resolve_llm_provider_from_env("MAGI_CP_LLM_REVIEWER"),
     )
+    attach_metrics(app)
+    return app
 
 
 def run() -> None:  # pragma: no cover
