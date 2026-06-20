@@ -235,6 +235,7 @@ const KO_RAW = {
   "setup.tryDashboard": "대시보드 열기",
   "setup.tryCompile": "정책 컴파일",
   "setup.tryVerify": "verifier 호출",
+  "admin.signups.errNoKey": "관리자 API 키가 설정되지 않았습니다 (MAGI_CP_ADMIN_API_KEY).",
 } as const
 
 const KO: Record<keyof typeof KO_RAW, string> = KO_RAW
@@ -450,6 +451,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "setup.tryDashboard": "Open dashboard",
   "setup.tryCompile": "Compile a policy",
   "setup.tryVerify": "Run a verifier",
+  "admin.signups.errNoKey": "Admin API key not configured (MAGI_CP_ADMIN_API_KEY).",
 }
 
 const DICT: Record<Locale, Record<keyof typeof KO_RAW, string>> = { ko: KO, en: EN }
