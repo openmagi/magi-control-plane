@@ -1,38 +1,289 @@
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; font-family: -apple-system, system-ui, sans-serif; background: #0c0d10; color: #d7d7db; }
-a { color: #6db8ff; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #20232a; background: #14161b; }
-.topbar nav { display: flex; gap: 18px; }
-main { padding: 20px; max-width: 1200px; margin: 0 auto; }
-h1 { font-size: 20px; margin: 0 0 14px; }
-h2 { font-size: 16px; margin: 24px 0 8px; color: #c0c0c8; }
-.card { background: #14161b; border: 1px solid #20232a; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
-.muted { color: #7c8390; font-size: 12px; }
-.row { display: flex; gap: 14px; align-items: center; }
-.row > * { min-width: 0; }
-.tag { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #20232a; color: #aab; }
-.tag.ok { background: #1c3a26; color: #79e0a0; }
-.tag.review { background: #3a2f1c; color: #e0c279; }
-.tag.deny, .tag.missing { background: #3a1c1c; color: #e07979; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #20232a; }
-th { color: #aab; font-weight: 500; }
-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: #c0c0c8; }
-button { background: #1d2530; color: #d7d7db; border: 1px solid #2f3845; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-button:hover { background: #2a3340; }
-button.primary { background: #1c3a26; border-color: #2f6b40; color: #79e0a0; }
-button.danger { background: #3a1c1c; border-color: #6b2f2f; color: #e07979; }
-input[type=text] { background: #0c0d10; border: 1px solid #2f3845; color: #d7d7db; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+@import "tailwindcss";
 
-/* SubmitButton pending-state dots (v2.0 — server-action progress feedback) */
+/* ── Pretendard (Korean) — variable font from jsDelivr ──────────────── */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/PretendardVariable.min.woff2") format("woff2-variations");
+}
+
+/* ── Design tokens (semantic; Tailwind v4 reads via @theme) ───────────
+   Layout: dark by default; light mode deferred. Names match
+   design-system/magi-control-plane/pages/dashboard.md §2.1. */
+@theme {
+  /* surfaces */
+  --color-surface-base:    #0c0d10;
+  --color-surface-raised:  #14161b;
+  --color-surface-overlay: #1c1f26;
+  --color-surface-input:   #0a0b0e;
+
+  /* borders */
+  --color-border-subtle: #20232a;
+  --color-border-strong: #2f3845;
+  --color-border-focus:  #6db8ff;
+
+  /* text */
+  --color-text-primary:    #e8e9ed;
+  --color-text-secondary:  #c0c0c8;
+  --color-text-tertiary:   #8b929d;
+  --color-text-disabled:   #5b6270;
+  --color-text-on-accent:  #0c0d10;
+
+  /* semantic status */
+  --color-pass-fg:    #79e0a0;
+  --color-pass-bg:    #1c3a26;
+  --color-review-fg:  #e0c279;
+  --color-review-bg:  #3a2f1c;
+  --color-deny-fg:    #e07979;
+  --color-deny-bg:    #3a1c1c;
+  --color-info-fg:    #6db8ff;
+  --color-info-bg:    #1c2a3a;
+
+  /* accent (CTA) */
+  --color-accent:       #22c55e;
+  --color-accent-hover: #16a34a;
+  --color-accent-press: #15803d;
+
+  /* typography */
+  --font-sans: "Inter", "Pretendard Variable", "Pretendard", "Noto Sans KR",
+               -apple-system, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-xs: 11px;     --text-xs--line-height: 16px;
+  --text-sm: 13px;     --text-sm--line-height: 20px;
+  --text-base: 14px;   --text-base--line-height: 22px;
+  --text-md: 16px;     --text-md--line-height: 24px;
+  --text-lg: 18px;     --text-lg--line-height: 28px;
+  --text-xl: 24px;     --text-xl--line-height: 32px;
+  --text-2xl: 32px;    --text-2xl--line-height: 40px;
+
+  /* radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* shadows (dark-friendly) */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.4);
+  --shadow-lg: 0 12px 24px rgba(0,0,0,0.5);
+
+  /* motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* layout */
+  --header-height: 56px;
+  --sidebar-width: 240px;
+  --content-max: 1280px;
+}
+
+/* ── Base reset + global feel ─────────────────────────────────────── */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--color-surface-base);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";  /* Inter SS01 + alternate digit */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    text-size-adjust: 100%;
+  }
+  body {
+    min-height: 100dvh;
+  }
+
+  a {
+    color: var(--color-info-fg);
+    text-decoration: none;
+  }
+  a:hover { text-decoration: underline; }
+  a:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* All interactive elements get a visible focus ring */
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
+  /* Hide focus ring only when interaction is mouse */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  code, pre {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-text-secondary);
+  }
+  code { translate: no; }  /* every <code> opts out of auto-translation */
+
+  /* Touch-friendly targets on mobile */
+  button, a, [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Screen-reader-only utility */
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Skip-to-main link: visible only when focused */
+  .skip-link {
+    position: absolute;
+    top: -100px; left: 12px;
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    padding: 8px 12px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    z-index: 50;
+    font-size: var(--text-sm);
+  }
+  .skip-link:focus-visible {
+    top: 12px;
+  }
+}
+
+/* ── Motion (honor prefers-reduced-motion) ──────────────────────── */
 @keyframes magi-cp-dot {
   0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
   40%           { opacity: 1;   transform: scale(1); }
 }
 
-/* Form has display:flex which collapses our SubmitButton wrapper + progressHint
-   onto one row. Override at the button-row container level (used in compile /
-   verify pages — wraps the SubmitButton). */
-.row, form { /* leave existing behavior */ }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ── Legacy class compatibility (incrementally remove as pages migrate) ──
+   The dashboard pages still use these class names from v2.0. They get
+   token-backed implementations so a partial migration looks consistent.
+   Pages refactored to vendored components in D1.4–D1.6 drop these. */
+@layer components {
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-raised);
+    height: var(--header-height);
+  }
+  .topbar nav { display: flex; gap: 18px; align-items: center; }
+
+  .card {
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .muted { color: var(--color-text-tertiary); font-size: var(--text-xs); }
+  .row { display: flex; gap: 14px; align-items: center; }
+  .row > * { min-width: 0; }
+
+  .tag {
+    font-size: var(--text-xs);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-overlay);
+    color: var(--color-text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .tag.ok      { background: var(--color-pass-bg);   color: var(--color-pass-fg); }
+  .tag.review  { background: var(--color-review-bg); color: var(--color-review-fg); }
+  .tag.deny,
+  .tag.missing { background: var(--color-deny-bg);   color: var(--color-deny-fg); }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--color-border-subtle); }
+  th { color: var(--color-text-tertiary); font-weight: 500; }
+  td { font-variant-numeric: tabular-nums; }
+
+  /* Form controls — only used by legacy pages until D1.4 lands */
+  button {
+    background: var(--color-surface-overlay);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
+    padding: 6px 12px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out), opacity 180ms var(--ease-out);
+  }
+  button:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--color-surface-overlay) 70%, white 8%);
+    border-color: var(--color-border-focus);
+  }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  button.primary {
+    background: var(--color-accent);
+    border-color: var(--color-accent-hover);
+    color: var(--color-text-on-accent);
+  }
+  button.primary:hover:not(:disabled) {
+    background: var(--color-accent-hover);
+    border-color: var(--color-accent-press);
+  }
+  button.danger {
+    background: var(--color-deny-bg);
+    border-color: var(--color-deny-fg);
+    color: var(--color-deny-fg);
+  }
+  input[type=text],
+  input[type=email],
+  input[type=number],
+  input[type=password],
+  textarea,
+  select {
+    background: var(--color-surface-input);
+    border: 1px solid var(--color-border-strong);
+    color: var(--color-text-primary);
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+  }
+  select { color: var(--color-text-primary); background-color: var(--color-surface-input); }
+
+  /* Forms: legacy pages used `display: flex` on every form which broke
+     SubmitButton + hint stacking. Scope it to a class instead so newly
+     written forms use normal block layout. */
+  form.legacy-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+}
