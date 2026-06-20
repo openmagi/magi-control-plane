@@ -1,19 +1,47 @@
 "use client"
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import {
   DEFAULT_DRAFT, validateDraft, previewManagedSettings,
   type PolicyDraft, type EventKind, type Decision,
 } from "@/lib/policy-builder"
+import {
+  Button, Card, CardHeader, CodeBlock, Input, Select, Textarea,
+} from "@/components/ui"
 
 type Props = {
-  /** Server action that POSTs the draft to the cloud. */
   submitAction: (formData: FormData) => Promise<void> | void
-  /** Pre-fill (for editing); when null/undefined, use DEFAULT_DRAFT. */
   initial?: PolicyDraft | null
+  /** Known wired verifier steps (datalist) — drives compiler-step guessing UX. */
+  wiredSteps?: string[]
+  labels: {
+    irFields: string
+    compiledPreview: string
+    compiledPreviewHint: string
+    id: string
+    description: string
+    triggerEvent: string
+    triggerMatcher: string
+    onMissing: string
+    sentinelRe: string
+    sentinelReHint: string
+    requires: string
+    addRequirement: string
+    removeRequirement: string
+    source: string
+    save: string
+    saving: string
+    fixIssues: (n: number) => string
+    unsavedWarning: string
+    placeholderId: string
+    placeholderMatcher: string
+  }
 }
 
-export default function PolicyBuilder({ submitAction, initial }: Props) {
+export default function PolicyBuilder({
+  submitAction, initial, wiredSteps = [], labels,
+}: Props) {
   const [draft, setDraft] = useState<PolicyDraft>(initial ?? DEFAULT_DRAFT)
+  const [submitted, setSubmitted] = useState(false)
   const [pending, startTransition] = useTransition()
 
   const errors = useMemo(() => validateDraft(draft), [draft])
@@ -28,6 +56,22 @@ export default function PolicyBuilder({ submitAction, initial }: Props) {
     catch { return "(preview error)" }
   }, [draft])
 
+  // Warn before navigating away with unsaved changes
+  const dirty = useMemo(
+    () => JSON.stringify(draft) !== JSON.stringify(initial ?? DEFAULT_DRAFT),
+    [draft, initial],
+  )
+  useEffect(() => {
+    if (!dirty || submitted) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = labels.unsavedWarning
+      return labels.unsavedWarning
+    }
+    window.addEventListener("beforeunload", handler)
+    return () => window.removeEventListener("beforeunload", handler)
+  }, [dirty, submitted, labels.unsavedWarning])
+
   function update<K extends keyof PolicyDraft>(k: K, v: PolicyDraft[K]) {
     setDraft(d => ({ ...d, [k]: v }))
   }
@@ -39,158 +83,217 @@ export default function PolicyBuilder({ submitAction, initial }: Props) {
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (errors.length > 0) return
-    // Build FormData from the actual form so all named inputs flow through
-    // (including <select name="source">). Then add the serialized draft.
+    setSubmitted(true)
+    if (errors.length > 0) {
+      // focus first error
+      const first = errors[0]?.field
+      if (first) {
+        const el = document.getElementById(`pb-${first}`)
+        if (el) (el as HTMLElement).focus()
+      }
+      return
+    }
     const fd = new FormData(e.currentTarget)
     fd.set("draft_json", JSON.stringify(draft))
     startTransition(() => { submitAction(fd) })
   }
 
-  const labelStyle: React.CSSProperties = {
-    display: "flex", flexDirection: "column", gap: 4, marginBottom: 12,
-    fontSize: 12,
-  }
-  const errLine = (field: string) => errorByField.get(field) ? (
-    <span role="alert" style={{ color: "#e07979", fontSize: 11 }}>
-      {errorByField.get(field)}
-    </span>
-  ) : null
-
   return (
-    <form onSubmit={onSubmit} style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-      gap: 18,
-    }}>
-      <section className="card">
-        <h2>IR fields</h2>
+    <form
+      onSubmit={onSubmit}
+      className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+    >
+      <Card className="space-y-4">
+        <h2 className="text-md font-semibold m-0">{labels.irFields}</h2>
 
-        <label style={labelStyle}>
-          <span className="muted">id</span>
-          <input type="text" value={draft.id}
-                 onChange={e => update("id", e.target.value)}
-                 placeholder="legal-filing/v1" required maxLength={128}
-                 aria-invalid={!!errorByField.get("id")}
-                 aria-describedby="err-id" />
-          <span id="err-id">{errLine("id")}</span>
-        </label>
+        <Input
+          id="pb-id"
+          label={labels.id}
+          value={draft.id}
+          onChange={e => update("id", e.target.value)}
+          placeholder={labels.placeholderId}
+          required
+          maxLength={128}
+          spellCheck={false}
+          autoComplete="off"
+          error={errorByField.get("id")}
+        />
 
-        <label style={labelStyle}>
-          <span className="muted">description</span>
-          <input type="text" value={draft.description}
-                 onChange={e => update("description", e.target.value)}
-                 maxLength={2000} />
-        </label>
+        <Input
+          id="pb-description"
+          label={labels.description}
+          value={draft.description}
+          onChange={e => update("description", e.target.value)}
+          maxLength={2000}
+          autoComplete="off"
+        />
 
-        <label style={labelStyle}>
-          <span className="muted">trigger.event</span>
-          <select value={draft.trigger.event}
-                  onChange={e => updateTrigger("event", e.target.value as EventKind)}>
-            <option value="PreToolUse">PreToolUse</option>
-            <option value="PostToolUse">PostToolUse</option>
-            <option value="Stop">Stop</option>
-          </select>
-        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Select
+            id="pb-trigger-event"
+            label={labels.triggerEvent}
+            value={draft.trigger.event}
+            onChange={e => updateTrigger("event", e.target.value as EventKind)}
+            options={[
+              { value: "PreToolUse",  label: "PreToolUse"  },
+              { value: "PostToolUse", label: "PostToolUse" },
+              { value: "Stop",        label: "Stop"        },
+            ]}
+          />
+          <Input
+            id="pb-trigger-matcher"
+            label={labels.triggerMatcher}
+            value={draft.trigger.matcher}
+            onChange={e => updateTrigger("matcher", e.target.value)}
+            placeholder={labels.placeholderMatcher}
+            required
+            spellCheck={false}
+            autoComplete="off"
+            error={errorByField.get("matrix")}
+          />
+        </div>
 
-        <label style={labelStyle}>
-          <span className="muted">trigger.matcher</span>
-          <input type="text" value={draft.trigger.matcher}
-                 onChange={e => updateTrigger("matcher", e.target.value)}
-                 placeholder="Bash | mcp__court__file | *" required />
-        </label>
+        <Select
+          id="pb-on-missing"
+          label={labels.onMissing}
+          value={draft.on_missing}
+          onChange={e => update("on_missing", e.target.value as Decision)}
+          options={[
+            { value: "deny",  label: "deny"  },
+            { value: "ask",   label: "ask"   },
+            { value: "log",   label: "log"   },
+            { value: "allow", label: "allow" },
+          ]}
+          error={errorByField.get("matrix")}
+        />
 
-        <label style={labelStyle}>
-          <span className="muted">on_missing (decision)</span>
-          <select value={draft.on_missing}
-                  onChange={e => update("on_missing", e.target.value as Decision)}>
-            <option value="deny">deny</option>
-            <option value="ask">ask</option>
-            <option value="log">log</option>
-            <option value="allow">allow</option>
-          </select>
-          {errLine("matrix")}
-        </label>
+        <Textarea
+          id="pb-sentinel_re"
+          label={labels.sentinelRe}
+          helper={labels.sentinelReHint}
+          rows={3}
+          value={draft.sentinel_re}
+          onChange={e => update("sentinel_re", e.target.value)}
+          required
+          maxLength={2000}
+          spellCheck={false}
+          autoComplete="off"
+          monospace
+          error={errorByField.get("sentinel_re")}
+        />
 
-        <label style={labelStyle}>
-          <span className="muted">sentinel_re (must contain ?P&lt;matter&gt; and ?P&lt;doc_id&gt;)</span>
-          <input type="text" value={draft.sentinel_re}
-                 onChange={e => update("sentinel_re", e.target.value)}
-                 required maxLength={2000}
-                 aria-invalid={!!errorByField.get("sentinel_re")}
-                 aria-describedby="err-sentinel"
-                 style={{ fontFamily: "ui-monospace, monospace" }} />
-          <span id="err-sentinel">{errLine("sentinel_re")}</span>
-        </label>
-
-        <fieldset style={{ border: "1px solid #20232a", borderRadius: 6, padding: 8, marginBottom: 12 }}>
-          <legend className="muted" style={{ fontSize: 11 }}>requires (evidence)</legend>
-          {draft.requires.map((r, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
-              <input type="text" value={r.step} placeholder="step"
-                     onChange={e => {
-                       const next = [...draft.requires]
-                       next[i] = { ...r, step: e.target.value }
-                       update("requires", next)
-                     }} />
-              <input type="text" value={r.verdict} placeholder="verdict"
-                     onChange={e => {
-                       const next = [...draft.requires]
-                       next[i] = { ...r, verdict: e.target.value }
-                       update("requires", next)
-                     }} />
-              {draft.requires.length > 1 && (
-                <button type="button" className="danger"
-                        aria-label={`Remove requires row ${i + 1}`}
-                        onClick={() => {
-                          const next = draft.requires.filter((_, j) => j !== i)
-                          update("requires", next)
-                        }}>×</button>
-              )}
-            </div>
-          ))}
-          <button type="button"
-                  onClick={() => update("requires",
-                    [...draft.requires, { step: "", verdict: "pass" }])}>
-            + add requirement
-          </button>
-          {errLine("requires")}
+        <fieldset className="border border-[var(--color-border-subtle)] rounded-md p-3">
+          <legend className="text-xs text-[var(--color-text-tertiary)] px-1">
+            {labels.requires}
+          </legend>
+          <div className="space-y-2">
+            {draft.requires.map((r, i) => (
+              <div key={i} className="flex flex-wrap items-center gap-2">
+                <input
+                  list="pb-wired-steps"
+                  className="h-9 px-3 text-sm rounded-md min-w-[160px] flex-1 bg-[var(--color-surface-input)] border border-[var(--color-border-strong)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                  type="text"
+                  value={r.step}
+                  placeholder="step"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={e => {
+                    const next = [...draft.requires]
+                    next[i] = { ...r, step: e.target.value }
+                    update("requires", next)
+                  }}
+                />
+                <input
+                  className="h-9 px-3 text-sm rounded-md w-24 bg-[var(--color-surface-input)] border border-[var(--color-border-strong)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                  type="text"
+                  value={r.verdict}
+                  placeholder="verdict"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={e => {
+                    const next = [...draft.requires]
+                    next[i] = { ...r, verdict: e.target.value }
+                    update("requires", next)
+                  }}
+                />
+                {draft.requires.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    aria-label={`${labels.removeRequirement} ${i + 1}`}
+                    onClick={() => {
+                      const next = draft.requires.filter((_, j) => j !== i)
+                      update("requires", next)
+                    }}
+                  >
+                    ×
+                  </Button>
+                )}
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                update("requires",
+                  [...draft.requires, { step: "", verdict: "pass" }])
+              }
+            >
+              + {labels.addRequirement}
+            </Button>
+            {wiredSteps.length > 0 && (
+              <datalist id="pb-wired-steps">
+                {wiredSteps.map(s => <option key={s} value={s} />)}
+              </datalist>
+            )}
+            {errorByField.get("requires") && (
+              <p role="alert" className="text-xs text-[var(--color-deny-fg)]">
+                {errorByField.get("requires")}
+              </p>
+            )}
+          </div>
         </fieldset>
 
-        <label style={labelStyle}>
-          <span className="muted">source</span>
-          <select name="source" defaultValue="org">
-            <option value="platform">platform</option>
-            <option value="org">org</option>
-            <option value="bot">bot</option>
-            <option value="user">user</option>
-            <option value="session">session</option>
-          </select>
-        </label>
+        <Select
+          id="pb-source"
+          name="source"
+          label={labels.source}
+          defaultValue="org"
+          options={[
+            { value: "platform", label: "platform" },
+            { value: "org",      label: "org"      },
+            { value: "bot",      label: "bot"      },
+            { value: "user",     label: "user"     },
+            { value: "session",  label: "session"  },
+          ]}
+        />
 
-        <button type="submit" className="primary" disabled={errors.length > 0 || pending}
-                aria-disabled={errors.length > 0 || pending}>
-          {pending ? "Saving…" : "Save policy"}
-        </button>
-        {errors.length > 0 && (
-          <p role="status" className="muted" style={{ marginTop: 6 }}>
-            Fix {errors.length} validation issue{errors.length === 1 ? "" : "s"} above to enable Save.
-          </p>
-        )}
-      </section>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={pending}
+            aria-busy={pending}
+          >
+            {pending ? `${labels.saving}…` : labels.save}
+          </Button>
+          {submitted && errors.length > 0 && (
+            <span role="status" className="text-xs text-[var(--color-deny-fg)]">
+              {labels.fixIssues(errors.length)}
+            </span>
+          )}
+        </div>
+      </Card>
 
-      <section className="card">
-        <h2>Compiled preview</h2>
-        <p className="muted" style={{ fontSize: 11 }}>
-          Live mirror of what the cloud compiler will emit. The cloud is
-          authoritative; this is for authoring UX only.
-        </p>
-        <pre style={{
-          background: "#0c0d10", border: "1px solid #20232a", borderRadius: 6,
-          padding: 12, overflow: "auto", fontSize: 12, lineHeight: 1.4,
-          maxHeight: "60vh",
-        }}>{preview}</pre>
-      </section>
+      <Card>
+        <CardHeader
+          title={labels.compiledPreview}
+          subtitle={labels.compiledPreviewHint}
+        />
+        <CodeBlock maxHeight="60vh">{preview}</CodeBlock>
+      </Card>
     </form>
   )
 }
