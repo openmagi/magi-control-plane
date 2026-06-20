@@ -1,9 +1,14 @@
-# fly.io single-node deployment template for the alpha pilot.
+# fly.io single-node deployment template — ALTERNATIVE PATH.
 #
-# Why fly.io for the alpha:
-#   - One-command Korea-region (nrt) deploy
+# The openmagi.ai alpha pilot deploys on K8s (charts/magi-cp/) + Vercel
+# (web/) — see README "Hosting" and docs/operator.md. This fly.toml is
+# kept for external contributors / solo self-hosters who don't have K8s
+# infra and just want a one-command deploy.
+#
+# Why fly.io for that fallback case:
+#   - One-command Korea-region (nrt) deploy, no ops infra
 #   - Built-in HTTPS via Let's Encrypt — zero cert-manager config
-#   - $0/month for the smallest VM (we're free alpha, so the math works)
+#   - $0/month for the smallest VM
 #   - Volume support for the keypair dir + SQLite store
 #
 # Initial deploy:

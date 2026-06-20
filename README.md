@@ -238,22 +238,58 @@ cd web && npm install && npm run dev  # http://127.0.0.1:3787
 
 ## Hosting
 
-Two reference deploys ship with the repo:
+The app splits into two surfaces; the production deploy puts them on
+two hostnames behind one user-facing URL.
 
-**Fly.io (single-node alpha)** — quickest path; runs in Korea-adjacent region (Tokyo, `nrt`).
+| Component | Hostname | Runtime | Why |
+|-----------|----------|---------|-----|
+| Next.js dashboard (`web/`) | `cloud.openmagi.ai` | **Vercel** | Server actions, ISR, edge i18n, preview deploys |
+| Python FastAPI cloud (`src/magi_cp/cloud/`) | `api.openmagi.ai` | **Kubernetes** (`charts/magi-cp/`) | Long-running, Ed25519 keypair on PVC, 5–20s LLM compile, no cold-start tolerance |
+
+The dashboard reads `MAGI_CP_PUBLIC_CLOUD_URL=https://api.openmagi.ai`
+from its Vercel env; the gate's runtime URL ends up pointing there via
+the `/api/install-config` endpoint that `install.sh` consults.
+
+### Primary deploy — K8s (`charts/magi-cp/`)
+
 ```bash
-cd deploy && fly launch --copy-config --no-deploy --name magi-cp
-fly secrets set MAGI_CP_API_KEY=… MAGI_CP_ADMIN_API_KEY=… ANTHROPIC_API_KEY=… OPENAI_API_KEY=…
-fly vol create magi_data --region nrt --size 3
-fly deploy
-fly cert add cloud.openmagi.ai
+helm install magi-cp ./charts/magi-cp \
+  -f charts/magi-cp/examples/production-values.yaml \
+  --namespace magi-cp --create-namespace
 ```
 
-**Kubernetes (multi-replica)** — `charts/magi-cp/` with a worked
-`examples/production-values.yaml`. cert-manager Issuers in
-`charts/magi-cp/examples/cert-manager-issuer.yaml`. Multi-replica requires
-Postgres (set `postgres.dsn`). NGINX hardening + security headers ship
-default-ON when `ingress.hardening.enabled: true`.
+cert-manager `ClusterIssuer`s in `charts/magi-cp/examples/cert-manager-issuer.yaml`.
+Multi-replica needs Postgres (set `postgres.dsn`). NGINX hardening +
+security headers default-ON via `ingress.hardening.enabled: true`.
+Point `api.openmagi.ai` at the Ingress LoadBalancer IP.
+
+### Dashboard — Vercel
+
+```bash
+cd web && vercel --prod
+# Vercel env vars (mirror these from the K8s magi-cp-secrets Secret):
+#   MAGI_CP_PUBLIC_SITE_URL  = https://cloud.openmagi.ai
+#   MAGI_CP_PUBLIC_CLOUD_URL = https://api.openmagi.ai
+#   MAGI_CP_API_KEY, MAGI_CP_HITL_API_KEY, MAGI_CP_ADMIN_API_KEY
+#   MAGI_CP_ADMIN_HMAC_SECRET
+```
+
+Point `cloud.openmagi.ai` CNAME → `cname.vercel-dns.com`.
+
+### Alternative — fly.io single-node (no K8s, no Vercel)
+
+For external contributors or solo self-hosters without ops infra,
+`deploy/fly.toml` brings up the FastAPI cloud on fly.io in the Tokyo
+region (Korea-adjacent). The dashboard then either lives on the same
+fly.io app or runs locally. Not used by the openmagi.ai alpha pilot;
+kept so the OSS install path works for non-K8s users.
+
+```bash
+cd deploy && fly launch --copy-config --no-deploy --name magi-cp
+fly secrets set MAGI_CP_API_KEY=… MAGI_CP_ADMIN_API_KEY=… …
+fly vol create magi_data --region nrt --size 3
+fly deploy && fly cert add api.openmagi.ai
+```
 
 ## Onboarding (alpha pilot UX)
 
