@@ -124,7 +124,30 @@ export default async function SetupPage({
             </form>
           </Card>
 
-          <h2 className="text-md font-semibold mb-3">{t("setup.steps.title")}</h2>
+          {/* Recommended path — single curl|bash command */}
+          <Card className="mb-3 border-[var(--color-border-focus)]">
+            <div className="flex items-center gap-2 mb-2">
+              <Badge variant="ok">{t("setup.quickstart.recommended")}</Badge>
+              <div className="text-sm font-medium">{t("setup.quickstart.title")}</div>
+            </div>
+            <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+              {t("setup.quickstart.body")}
+            </p>
+            <CodeBlock maxHeight="auto">{
+`curl -fsSL ${process.env.MAGI_CP_PUBLIC_CLOUD_URL || "https://cloud.openmagi.ai"}/install.sh \\
+  | bash -s -- ${storedKey ?? "mcp_YOUR_KEY"}`
+            }</CodeBlock>
+            <p className="text-xs text-[var(--color-text-tertiary)] mt-3">
+              {t("setup.quickstart.detail")}
+            </p>
+          </Card>
+
+          <details className="mb-3">
+            <summary className="cursor-pointer text-sm text-[var(--color-text-secondary)] mb-3">
+              {t("setup.manual.toggle")}
+            </summary>
+
+          <h2 className="text-md font-semibold mb-3 mt-4">{t("setup.steps.title")}</h2>
 
           {/* Step 1 — cloud URL */}
           <Card className="mb-3">
@@ -199,6 +222,7 @@ echo FILE_COURT_M1_D1`
               </Link>
             </div>
           </Card>
+          </details>
         </>
       )}
     </>
