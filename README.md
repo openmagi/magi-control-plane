@@ -236,8 +236,38 @@ Run the dashboard:
 cd web && npm install && npm run dev  # http://127.0.0.1:3787
 ```
 
+## Hosting
+
+Two reference deploys ship with the repo:
+
+**Fly.io (single-node alpha)** — quickest path; runs in Korea-adjacent region (Tokyo, `nrt`).
+```bash
+cd deploy && fly launch --copy-config --no-deploy --name magi-cp
+fly secrets set MAGI_CP_API_KEY=… MAGI_CP_ADMIN_API_KEY=… ANTHROPIC_API_KEY=… OPENAI_API_KEY=…
+fly vol create magi_data --region nrt --size 3
+fly deploy
+fly cert add cloud.openmagi.ai
+```
+
+**Kubernetes (multi-replica)** — `charts/magi-cp/` with a worked
+`examples/production-values.yaml`. cert-manager Issuers in
+`charts/magi-cp/examples/cert-manager-issuer.yaml`. Multi-replica requires
+Postgres (set `postgres.dsn`). NGINX hardening + security headers ship
+default-ON when `ingress.hardening.enabled: true`.
+
+## Onboarding (alpha pilot UX)
+
+- `/signup` — public application form; per-IP rate-limited (3/hour). Lands
+  in the `alpha_signups` table; operator triages via
+  `GET /admin/signups`.
+- `/setup` — applicant pastes their `mcp_…` key; the dashboard validates
+  against `/tenants/me`, then walks through a four-step install with
+  `managed-settings.json` + `magi-gate.sh` download buttons.
+- `/legal/terms` + `/legal/privacy` — bilingual ToS + PIPA-aligned privacy
+  policy. Footer links exposed on every page.
+
 ## Status
-v2.1 ga-candidate — **426 Python + 72 web = 498 tests**. LLM providers hardened against
+v2.1 ga-candidate — **437 Python + 72 web = 509 tests**. LLM providers hardened against
 live-API failure modes (error-body extraction, max_tokens truncation, 429 retry,
 finish_reason=length, response_format=json_object, asyncio.to_thread). Reviewed across
 security, integration, "what would break in a demo" + 2026-06 live API spec angles.

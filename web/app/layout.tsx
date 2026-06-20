@@ -1,6 +1,7 @@
 import "./globals.css"
 import type { Metadata, Viewport } from "next"
 import NavBarShell from "@/components/ui/NavBarShell"
+import Footer from "@/components/ui/Footer"
 import { getT } from "@/lib/i18n/server"
 
 export const metadata: Metadata = {
@@ -43,6 +44,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         >
           {children}
         </main>
+        <Footer />
       </body>
     </html>
   )

@@ -1,0 +1,63 @@
+# Reference production values for kubernetes deploys behind a public hostname.
+# Apply with:
+#   helm install magi-cp ../charts/magi-cp -f production-values.yaml \
+#     --namespace magi-cp --create-namespace
+
+image:
+  repository: ghcr.io/openmagi/magi-control-plane
+  tag: ""                  # uses Chart.appVersion
+
+replicaCount: 2
+
+# Postgres required when replicaCount > 1
+postgres:
+  dsn: "postgresql+psycopg2://magi:CHANGE_ME@pg-primary.magi-cp.svc.cluster.local:5432/magi"
+
+# Public hostname
+ingress:
+  enabled: true
+  className: nginx
+  host: cloud.openmagi.ai
+  clusterIssuer: letsencrypt-prod
+  hardening:
+    enabled: true
+    rateLimitRpsPerIp: 30
+    maxBodySize: "256k"
+    securityHeaders: true
+
+# LLM providers — env-driven factories
+llm:
+  compiler: "magi_cp.llm.anthropic_provider:anthropic_default"
+  reviewer: "magi_cp.llm.openai_provider:openai_default"
+
+# Prometheus scrape
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+# Resource sizing for a 2-replica + PG deploy
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+# Persistence: each replica gets its own PVC for the keypair dir (still
+# shared via the secret + KMS in a real deploy — see SECURITY.md for the
+# multi-replica key story).
+persistence:
+  enabled: true
+  size: 1Gi
+
+# Pre-create this Secret in the namespace before helm install:
+#   kubectl -n magi-cp create secret generic magi-cp-secrets \
+#     --from-literal=MAGI_CP_API_KEY=$(uuidgen) \
+#     --from-literal=MAGI_CP_HITL_API_KEY=$(uuidgen) \
+#     --from-literal=MAGI_CP_ADMIN_API_KEY=$(uuidgen) \
+#     --from-literal=MAGI_CP_ADMIN_HMAC_SECRET=$(python3 -c 'import secrets;print(secrets.token_hex(32))') \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-… \
+#     --from-literal=OPENAI_API_KEY=sk-…
+secretRef:
+  name: magi-cp-secrets

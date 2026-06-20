@@ -47,6 +47,19 @@ ingress:
   className: nginx
   host: ""
   tlsSecretName: ""
+  # cert-manager integration. When `clusterIssuer` is set, the Ingress is
+  # annotated with cert-manager.io/cluster-issuer so the TLS secret is
+  # provisioned automatically. Leaving it empty keeps the chart compatible
+  # with deployments that pre-provision TLS via a different controller.
+  clusterIssuer: ""
+  # extra ingress annotations (merged with cert-manager + nginx hardening)
+  annotations: {}
+  # extra hardening: per-rule rate limits, security headers
+  hardening:
+    enabled: true
+    rateLimitRpsPerIp: 30
+    maxBodySize: "256k"
+    securityHeaders: true
 
 # Resource limits (tune per replica)
 resources:

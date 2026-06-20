@@ -1,0 +1,36 @@
+# Apply this once per cluster to provision Let's Encrypt certificates.
+# After applying, set `ingress.clusterIssuer: letsencrypt-prod` in your
+# magi-cp helm values and `ingress.host: cloud.openmagi.ai`.
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: kevin@openmagi.ai
+    privateKeySecretRef:
+      name: letsencrypt-prod-account
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+
+---
+# Staging issuer — use this first to verify the pipeline without hitting
+# Let's Encrypt's rate limits. After it succeeds, switch to letsencrypt-prod.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: kevin@openmagi.ai
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
