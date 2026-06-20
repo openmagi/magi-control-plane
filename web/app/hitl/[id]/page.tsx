@@ -2,34 +2,40 @@ import Link from "next/link"
 import { cloud, type HitlDetail } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
 import { fmtUtc } from "@/lib/format"
+import { getT } from "@/lib/i18n/server"
+import {
+  Badge, Card, Code, ErrorState, PageHeader,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
 function StatusTag({ s }: { s: string }) {
-  const cls = s === "approved" ? "tag ok"
-            : s === "rejected" ? "tag deny"
-            : "tag review"
-  return <span className={cls}>{s}</span>
+  const variant = s === "approved" ? "ok"
+                : s === "rejected" ? "deny"
+                : "review"
+  return <Badge variant={variant}>{s}</Badge>
+}
+
+const CITATION_VARIANTS: Record<string, "ok" | "review" | "deny" | "default"> = {
+  ok:      "ok",
+  review:  "review",
+  missing: "deny",
 }
 
 function CitationStatusTag({ s }: { s: string }) {
-  const cls = s === "ok" ? "tag ok"
-            : s === "review" ? "tag review"
-            : s === "missing" ? "tag deny"
-            : "tag"
-  return <span className={cls}>{s}</span>
+  return <Badge variant={CITATION_VARIANTS[s] ?? "default"}>{s}</Badge>
 }
 
 function NliTag({ label, score }: { label?: string; score?: number }) {
-  if (!label) return <span className="muted">—</span>
-  const cls = label === "entailment" ? "tag ok"
-            : label === "contradiction" ? "tag deny"
-            : "tag review"
+  if (!label) return <span className="text-[var(--color-text-tertiary)]">—</span>
+  const variant = label === "entailment" ? "ok"
+                : label === "contradiction" ? "deny"
+                : "review"
   return (
     <span>
-      <span className={cls}>{label}</span>
+      <Badge variant={variant}>{label}</Badge>
       {typeof score === "number" && (
-        <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+        <span className="ml-2 text-xs text-[var(--color-text-tertiary)]">
           {score.toFixed(2)}
         </span>
       )}
@@ -40,14 +46,18 @@ function NliTag({ label, score }: { label?: string; score?: number }) {
 export default async function HitlDetailPage({
   params,
 }: { params: { id: string } }) {
+  const { t } = await getT()
   const id = Number(params.id)
   if (!Number.isInteger(id) || id <= 0) {
     return (
       <>
-        <p><Link href="/hitl">← Review queue</Link></p>
-        <div className="card" role="alert">
-          <span className="tag deny">invalid id</span>
-        </div>
+        <p className="mb-3">
+          <Link href="/hitl" className="text-sm">{t("hitl.detail.back")}</Link>
+        </p>
+        <ErrorState
+          status={t("hitl.invalidId")}
+          title={t("hitl.invalidId")}
+        />
       </>
     )
   }
@@ -60,22 +70,28 @@ export default async function HitlDetailPage({
   if (errCode === "not_found") {
     return (
       <>
-        <p><Link href="/hitl">← Review queue</Link></p>
-        <div className="card" role="alert">
-          <span className="tag deny">review item not found</span>
-          <p className="muted">#{id}</p>
-        </div>
+        <p className="mb-3">
+          <Link href="/hitl" className="text-sm">{t("hitl.detail.back")}</Link>
+        </p>
+        <ErrorState
+          status={t("hitl.notFound")}
+          title={t("hitl.notFound")}
+          body={<>#{id}</>}
+        />
       </>
     )
   }
   if (errCode || !detail) {
     return (
       <>
-        <p><Link href="/hitl">← Review queue</Link></p>
-        <div className="card" role="alert">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted">see server logs</p>
-        </div>
+        <p className="mb-3">
+          <Link href="/hitl" className="text-sm">{t("hitl.detail.back")}</Link>
+        </p>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       </>
     )
   }
@@ -83,76 +99,117 @@ export default async function HitlDetailPage({
   const cites = detail.payload?.citations ?? []
   return (
     <>
-      <p><Link href="/hitl">← Review queue</Link></p>
-      <h1>HITL #{detail.id}</h1>
-      <div className="card row" style={{ gap: 18, flexWrap: "wrap" }}>
-        <div>matter: <code>{detail.matter}</code></div>
-        <div>doc: <code>{detail.doc_id}</code></div>
-        <div>reason: {detail.reason}</div>
-        <div>status: <StatusTag s={detail.status} /></div>
-        <div className="muted">created: {fmtUtc(detail.ts_created)}</div>
-        {detail.ts_decided != null && (
-          <div className="muted">decided: {fmtUtc(detail.ts_decided)}</div>
-        )}
-        {detail.approver && <div>by: <code>{detail.approver}</code></div>}
-      </div>
+      <p className="mb-3">
+        <Link href="/hitl" className="text-sm">{t("hitl.detail.back")}</Link>
+      </p>
+      <PageHeader title={t("hitl.detail.title", { id: detail.id })} />
 
-      <h2>Why this is in review</h2>
+      <Card className="mb-6">
+        <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm m-0">
+          <div>
+            <dt className="inline text-[var(--color-text-tertiary)]">matter: </dt>
+            <dd className="inline"><Code>{detail.matter}</Code></dd>
+          </div>
+          <div>
+            <dt className="inline text-[var(--color-text-tertiary)]">doc: </dt>
+            <dd className="inline"><Code>{detail.doc_id}</Code></dd>
+          </div>
+          <div>
+            <dt className="inline text-[var(--color-text-tertiary)]">reason: </dt>
+            <dd className="inline">{detail.reason}</dd>
+          </div>
+          <div>
+            <dt className="inline text-[var(--color-text-tertiary)]">status: </dt>
+            <dd className="inline"><StatusTag s={detail.status} /></dd>
+          </div>
+          <div>
+            <dt className="inline text-[var(--color-text-tertiary)]">created: </dt>
+            <dd className="inline">{fmtUtc(detail.ts_created)}</dd>
+          </div>
+          {detail.ts_decided != null && (
+            <div>
+              <dt className="inline text-[var(--color-text-tertiary)]">decided: </dt>
+              <dd className="inline">{fmtUtc(detail.ts_decided)}</dd>
+            </div>
+          )}
+          {detail.approver && (
+            <div className="sm:col-span-2 md:col-span-3">
+              <dt className="inline text-[var(--color-text-tertiary)]">by: </dt>
+              <dd className="inline"><Code>{detail.approver}</Code></dd>
+            </div>
+          )}
+        </dl>
+      </Card>
+
+      <h2 className="text-md font-semibold m-0 mb-2">{t("hitl.detail.why")}</h2>
       {cites.length === 0 && (
-        <div className="card muted">No citations in payload.</div>
+        <Card className="text-[var(--color-text-tertiary)] text-sm">No citations.</Card>
       )}
       {cites.length > 0 && (
-        <table className="card">
-          <thead>
-            <tr>
-              <th>ref</th>
-              <th>status</th>
-              <th>NLI (advisory)</th>
-              <th>reasons (why this status)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cites.map((c, i) => (
-              <tr key={i}>
-                <td><code style={{ overflowWrap: "anywhere" }}>{c.ref}</code></td>
-                <td><CitationStatusTag s={c.status} /></td>
-                <td><NliTag label={c.nli_label} score={c.nli_score} /></td>
-                <td className="muted">
-                  {(c.reasons ?? []).length === 0 ? "—" : (c.reasons ?? []).join("; ")}
-                </td>
+        <Card noPadding className="overflow-x-auto mb-6">
+          <table>
+            <thead>
+              <tr>
+                <th>ref</th>
+                <th>status</th>
+                <th>NLI</th>
+                <th>reasons</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {cites.map((c, i) => (
+                <tr key={i}>
+                  <td><Code>{c.ref}</Code></td>
+                  <td><CitationStatusTag s={c.status} /></td>
+                  <td><NliTag label={c.nli_label} score={c.nli_score} /></td>
+                  <td className="text-[var(--color-text-tertiary)]">
+                    {(c.reasons ?? []).length === 0 ? "—" : (c.reasons ?? []).join("; ")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
       )}
 
-      <h2>Ledger context for matter {detail.matter}</h2>
-      <p className="muted" style={{ fontSize: 11 }}>
-        All ledger entries for this matter, oldest → newest. The review entry
-        that produced this HITL item is highlighted.
+      <h2 className="text-md font-semibold m-0 mb-2">
+        {t("hitl.detail.ledgerContext", { matter: detail.matter })}
+      </h2>
+      <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+        {t("hitl.detail.ledgerHint")}
       </p>
-      <table className="card">
-        <thead>
-          <tr><th>id</th><th>ts</th><th>verdict</th><th>step</th><th>h</th></tr>
-        </thead>
-        <tbody>
-          {detail.ledger_context.map(e => {
-            const isReview = e.body?.verdict === "review" && e.body?.hitl_id === detail!.id
-            return (
-              <tr key={e.id} style={isReview ? { background: "#1c2530" } : undefined}>
-                <td>{e.id}</td>
-                <td className="muted">{fmtUtc(e.ts)}</td>
-                <td>
-                  {String(e.body?.verdict ?? "")
-                    && <CitationStatusTag s={String(e.body?.verdict ?? "—")} />}
-                </td>
-                <td className="muted">{String(e.body?.step ?? "—")}</td>
-                <td><code title={e.h}>{e.h.slice(0, 12)}…</code></td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+      <Card noPadding className="overflow-x-auto">
+        <table>
+          <thead>
+            <tr><th>id</th><th>ts</th><th>verdict</th><th>step</th><th>h</th></tr>
+          </thead>
+          <tbody>
+            {detail.ledger_context.map(e => {
+              const isReview = e.body?.verdict === "review" && e.body?.hitl_id === detail!.id
+              return (
+                <tr
+                  key={e.id}
+                  aria-current={isReview ? "true" : undefined}
+                  className={isReview
+                    ? "bg-[var(--color-surface-overlay)] outline-2 outline outline-[var(--color-info-fg)]/40"
+                    : undefined}
+                >
+                  <td>{e.id}</td>
+                  <td className="text-[var(--color-text-tertiary)]">{fmtUtc(e.ts)}</td>
+                  <td>
+                    {String(e.body?.verdict ?? "") &&
+                      <CitationStatusTag s={String(e.body?.verdict ?? "—")} />}
+                  </td>
+                  <td className="text-[var(--color-text-tertiary)]">
+                    {String(e.body?.step ?? "—")}
+                  </td>
+                  <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
     </>
   )
 }

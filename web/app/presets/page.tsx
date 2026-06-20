@@ -1,4 +1,8 @@
 import { cloud, type PresetEntry } from "@/lib/cloud"
+import { getIntl, getT } from "@/lib/i18n/server"
+import {
+  Badge, Card, Code, EmptyState, ErrorState, PageHeader,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
@@ -7,66 +11,30 @@ const CATEGORY_ORDER: PresetEntry["category"][] = [
   "RESEARCH", "MEMORY", "SECURITY",
 ]
 
-const CATEGORY_DESC: Record<PresetEntry["category"], string> = {
-  ANSWER:   "Response quality at final-answer time.",
-  FACT:     "Factual grounding and source backing.",
-  CODING:   "Coding-turn evidence and discipline.",
-  TASK:     "Task lifecycle, goals, and completion.",
-  OUTPUT:   "Output shape, delivery, and language.",
-  RESEARCH: "Research coverage and source authority.",
-  MEMORY:   "Cross-session memory consistency.",
-  SECURITY: "Always-on safety guards.",
-}
-
 function EnforcementBadge({ kind }: { kind: PresetEntry["enforcement"] }) {
-  // v1.1 only emits "enforcing" (5 wired) or "preview" (vendor). The 4-tier
-  // type stays open for future expansion, but until a verifier returns
-  // always-on/capability we don't pre-style them — distinct colors would
-  // suggest semantic states the runtime doesn't actually produce.
-  const cls = kind === "enforcing" ? "tag ok" : "tag"
-  return <span className={cls} aria-label={`enforcement: ${kind}`}>{kind}</span>
-}
-
-function PresetCard({ p }: { p: PresetEntry }) {
   return (
-    <div className="card">
-      <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <code style={{ fontSize: 13 }}>{p.id}</code>
-          <div className="muted" style={{ marginTop: 4, fontSize: 12, color: "#aab" }}>
-            {p.description}
-          </div>
-          {p.step && (
-            <div className="muted" style={{ marginTop: 6, fontSize: 11 }}>
-              policy IR step: <code>{p.step}</code>
-            </div>
-          )}
-        </div>
-        <EnforcementBadge kind={p.enforcement} />
-      </div>
-    </div>
+    <Badge variant={kind === "enforcing" ? "ok" : "muted"}>
+      {kind}
+    </Badge>
   )
 }
 
-function CategorySection({
-  category, items,
-}: { category: PresetEntry["category"]; items: PresetEntry[] }) {
-  if (items.length === 0) return null
-  const enforcing = items.filter(i => i.enforcement === "enforcing").length
+function PresetCard({ p, stepLabel }: { p: PresetEntry; stepLabel: string }) {
   return (
-    <section aria-labelledby={`cat-${category}`}>
-      <h2 id={`cat-${category}`}>
-        {category}
-        <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
-          {items.length} preset{items.length === 1 ? "" : "s"}
-          {enforcing > 0 ? `, ${enforcing} wired` : ""}
-        </span>
-      </h2>
-      <p className="muted" style={{ marginTop: -4, marginBottom: 10 }}>
-        {CATEGORY_DESC[category]}
+    <Card className="flex flex-col gap-2 h-full">
+      <div className="flex items-start justify-between gap-3">
+        <Code className="text-sm">{p.id}</Code>
+        <EnforcementBadge kind={p.enforcement} />
+      </div>
+      <p className="text-sm text-[var(--color-text-secondary)] line-clamp-3">
+        {p.description}
       </p>
-      {items.map(p => <PresetCard key={p.id} p={p} />)}
-    </section>
+      {p.step && (
+        <div className="text-xs text-[var(--color-text-tertiary)]">
+          {stepLabel}: <Code>{p.step}</Code>
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -75,39 +43,91 @@ function errMsg(e: unknown): string {
 }
 
 export default async function PresetsPage() {
+  const { t } = await getT()
+  const { nf } = await getIntl()
+
   let items: PresetEntry[] = []
   let err: string | null = null
   try { items = await cloud.listPresets() }
   catch (e: unknown) { err = errMsg(e) }
 
   const byCategory: Record<string, PresetEntry[]> = {}
-  for (const it of items) {
-    (byCategory[it.category] ||= []).push(it)
-  }
+  for (const it of items) (byCategory[it.category] ||= []).push(it)
   const wiredCount = items.filter(i => i.enforcement === "enforcing").length
 
   return (
     <>
-      <h1>
-        Presets {err ? "(unavailable)" : `(${items.length} total, ${wiredCount} wired)`}
-      </h1>
-      <p className="muted" style={{ marginTop: -4, marginBottom: 16 }}>
-        Catalog of verifier presets. <strong>Enforcing</strong> presets are wired to a
-        live verifier in this control plane — policies may bind to their step.{" "}
-        <strong>Preview</strong> presets are surfaced for label parity with magi-agent
-        but have no runtime gate here yet.
-      </p>
-      {err && (
-        <div className="card" role="alert">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted">see server logs</p>
+      <PageHeader
+        title={t("presets.title")}
+        description={
+          !err
+            ? t("presets.description.lead", {
+                enforcing: t("presets.description.enforcing"),
+                preview: t("presets.description.preview"),
+              })
+            : undefined
+        }
+      />
+
+      {!err && items.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 text-sm text-[var(--color-text-tertiary)]">
+          <Badge variant="info">
+            {t("presets.summary", {
+              total: nf.format(items.length),
+              wired: nf.format(wiredCount),
+            })}
+          </Badge>
         </div>
       )}
-      {!err && items.length === 0 && (
-        <div className="card muted">No presets surfaced.</div>
+
+      {err && (
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       )}
-      {!err && CATEGORY_ORDER.map(cat =>
-        <CategorySection key={cat} category={cat} items={byCategory[cat] || []} />
+      {!err && items.length === 0 && (
+        <EmptyState title={t("hitl.empty")} />
+      )}
+
+      {!err && items.length > 0 && (
+        <div className="space-y-8">
+          {CATEGORY_ORDER.map(cat => {
+            const list = byCategory[cat] || []
+            if (list.length === 0) return null
+            const wired = list.filter(i => i.enforcement === "enforcing").length
+            return (
+              <section
+                key={cat}
+                aria-labelledby={`cat-${cat}`}
+                className="space-y-3"
+              >
+                <header className="flex flex-wrap items-baseline gap-3">
+                  <h2 id={`cat-${cat}`} className="text-md font-semibold m-0">
+                    {t(`presets.category.${cat}` as never)}
+                  </h2>
+                  <span className="text-xs text-[var(--color-text-tertiary)]">
+                    {t("presets.count", { n: nf.format(list.length) })}
+                    {wired > 0 && t("presets.wired", { n: nf.format(wired) })}
+                  </span>
+                </header>
+                <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
+                  {t(`presets.categoryHint.${cat}` as never)}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {list.map(p => (
+                    <PresetCard
+                      key={p.id}
+                      p={p}
+                      stepLabel={t("presets.stepLabel")}
+                    />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </div>
       )}
     </>
   )

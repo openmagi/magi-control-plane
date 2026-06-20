@@ -4,9 +4,11 @@ import {
   DEFAULT_DRAFT, validateDraft, previewManagedSettings,
   type PolicyDraft, type EventKind, type Decision,
 } from "@/lib/policy-builder"
-import {
-  Button, Card, CardHeader, CodeBlock, Input, Select, Textarea,
-} from "@/components/ui"
+import { Button } from "@/components/ui/Button"
+import { Card, CardHeader } from "@/components/ui/Card"
+import { CodeBlock } from "@/components/ui/Code"
+import { Input, Textarea } from "@/components/ui/Input"
+import { Select } from "@/components/ui/Select"
 
 type Props = {
   submitAction: (formData: FormData) => Promise<void> | void

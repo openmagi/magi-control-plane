@@ -2,7 +2,11 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { cloud, type PresetEntry } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
-import { SubmitButton } from "@/components/SubmitButton"
+import { getIntl, getT } from "@/lib/i18n/server"
+import {
+  Badge, Button, Card, CardHeader, Code, CodeBlock, CopyButton,
+  ErrorState, Input, PageHeader, Select, SubmitButton, Textarea,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
@@ -19,17 +23,14 @@ type VerifyResult = {
   hitlId?: number | null
 }
 
-// Per-step starter payload — shows the operator what shape each verifier expects.
 const SAMPLE_PAYLOAD: Record<string, string> = {
   privilege_scan: JSON.stringify(
     { text: "Motion to compel discovery filed on 2026-06-20." },
-    null,
-    2,
+    null, 2,
   ),
   source_allowlist: JSON.stringify(
     { sources: ["https://law.go.kr/case/123"], allowlist: ["law.go.kr"] },
-    null,
-    2,
+    null, 2,
   ),
   structured_output: JSON.stringify(
     {
@@ -42,14 +43,11 @@ const SAMPLE_PAYLOAD: Record<string, string> = {
           filing_type: { type: "string", enum: ["motion", "brief", "response"] },
         },
       },
-    },
-    null,
-    2,
+    }, null, 2,
   ),
   prompt_injection_screen: JSON.stringify(
     { text: "대법원 2018도13694 판결문 전문…" },
-    null,
-    2,
+    null, 2,
   ),
 }
 
@@ -81,10 +79,7 @@ async function runVerify(formData: FormData): Promise<void> {
   }
 
   const display: VerifyResult = {
-    step,
-    payload: payloadRaw,
-    matter,
-    docId,
+    step, payload: payloadRaw, matter, docId,
     verdict: result!.verdict,
     token: result!.token,
     reasons: result!.reasons ?? [],
@@ -94,138 +89,18 @@ async function runVerify(formData: FormData): Promise<void> {
   }
   const encoded = encodeURIComponent(JSON.stringify(display))
   if (encoded.length > 6000) {
+    // round-trip via cookie like /policies/compile
+    const { cookies } = await import("next/headers")
+    cookies().set({
+      name: "magi-cp-verify-result",
+      value: JSON.stringify(display),
+      path: "/verify",
+      sameSite: "lax",
+      maxAge: 60 * 5,
+    })
     redirect(`/verify?msg=ran&step=${encodeURIComponent(step)}`)
   }
   redirect(`/verify?r=${encoded}`)
-}
-
-function VerdictBadge({ v }: { v: VerifyResult["verdict"] }) {
-  const cls =
-    v === "pass" ? "tag ok"
-    : v === "review" ? "tag review"
-    : v === "deny" ? "tag deny"
-    : "tag"
-  return <span className={cls} aria-label={`verdict: ${v}`}>{v}</span>
-}
-
-function VerifyForm({
-  wiredSteps,
-  defaultStep,
-  defaultPayload,
-}: {
-  wiredSteps: { step: string; id: string }[]
-  defaultStep?: string
-  defaultPayload?: string
-}) {
-  const initialStep = defaultStep ?? wiredSteps[0]?.step ?? ""
-  return (
-    <form action={runVerify}>
-      <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
-        <label style={{ flex: 1, minWidth: 220 }}>
-          <div className="muted">verifier step</div>
-          <select
-            name="step"
-            defaultValue={initialStep}
-            style={{
-              width: "100%", background: "#0c0d10",
-              border: "1px solid #2f3845", color: "#d7d7db",
-              padding: "8px 10px", borderRadius: 6, fontSize: 13, marginTop: 4,
-            }}
-          >
-            {wiredSteps.map(s => (
-              <option key={s.step} value={s.step}>
-                {s.step} ({s.id})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={{ minWidth: 160 }}>
-          <div className="muted">matter (audit label)</div>
-          <input type="text" name="matter" defaultValue="dashboard" />
-        </label>
-        <label style={{ minWidth: 160 }}>
-          <div className="muted">doc_id (audit label)</div>
-          <input type="text" name="doc_id" defaultValue="dashboard" />
-        </label>
-      </div>
-
-      <label style={{ display: "block", marginTop: 14 }}>
-        <div className="muted">payload (JSON object passed to verifier.run)</div>
-        <textarea
-          name="payload"
-          rows={10}
-          defaultValue={defaultPayload ?? SAMPLE_PAYLOAD[initialStep] ?? "{\n  \n}"}
-          style={{
-            width: "100%", marginTop: 4, background: "#0c0d10",
-            border: "1px solid #2f3845", color: "#d7d7db",
-            padding: 10, borderRadius: 6, fontSize: 13,
-            fontFamily: "ui-monospace, monospace",
-          }}
-        />
-      </label>
-
-      <div style={{ marginTop: 12 }}>
-        <SubmitButton
-          label="Run verifier"
-          pendingLabel="Running"
-          progressHint="Dispatching to the verifier; signing token + appending to ledger."
-        />
-      </div>
-
-      <p className="muted" style={{ marginTop: 10, fontSize: 11 }}>
-        Tip: the per-step sample shows the shape each verifier expects.
-        Switch the step to load a fresh sample.
-      </p>
-    </form>
-  )
-}
-
-function VerifyResultCard({ r }: { r: VerifyResult }) {
-  return (
-    <>
-      <h2 style={{ marginTop: 24 }}>Result</h2>
-      <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <VerdictBadge v={r.verdict} />
-        {r.token
-          ? <span className="tag ok">token issued</span>
-          : <span className="tag">no token</span>}
-        {r.hitlId != null && <span className="tag review">hitl #{r.hitlId}</span>}
-        {r.kid && <span className="tag" style={{ fontFamily: "monospace" }}>kid {r.kid.slice(0, 8)}…</span>}
-        {r.exp && (
-          <span className="muted" style={{ fontSize: 11 }}>
-            token exp = {new Date(r.exp * 1000).toLocaleString()}
-          </span>
-        )}
-      </div>
-
-      {r.reasons.length > 0 && (
-        <div className="card">
-          <div className="muted" style={{ marginBottom: 4 }}>reasons</div>
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-            {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
-          </ul>
-        </div>
-      )}
-
-      {r.token && (
-        <details className="card">
-          <summary className="muted">signed token (ed25519)</summary>
-          <pre style={{
-            margin: 0, marginTop: 6, fontSize: 11, overflowX: "auto",
-            whiteSpace: "pre-wrap", wordBreak: "break-all",
-          }}>{r.token}</pre>
-        </details>
-      )}
-
-      <div className="row" style={{ marginTop: 16, gap: 8, flexWrap: "wrap" }}>
-        <Link href="/verify"><button>Run another</button></Link>
-        <Link href="/ledger"><button>See ledger entry</button></Link>
-        {r.hitlId != null && (
-          <Link href={`/hitl/${r.hitlId}`}><button>Open in review queue</button></Link>
-        )}
-      </div>
-    </>
-  )
 }
 
 function decodeResult(r: string | undefined): VerifyResult | null {
@@ -234,83 +109,216 @@ function decodeResult(r: string | undefined): VerifyResult | null {
     const obj = JSON.parse(decodeURIComponent(r))
     if (!obj || typeof obj.verdict !== "string") return null
     return obj as VerifyResult
-  } catch {
-    return null
-  }
+  } catch { return null }
+}
+
+async function readCookieResult(): Promise<VerifyResult | null> {
+  const { cookies } = await import("next/headers")
+  const raw = cookies().get("magi-cp-verify-result")?.value
+  if (!raw) return null
+  try { return JSON.parse(raw) as VerifyResult } catch { return null }
 }
 
 export default async function VerifyPage({
   searchParams,
 }: {
-  searchParams: { r?: string; err?: string; step?: string; msg?: string; parse?: string; missing?: string }
+  searchParams: {
+    r?: string; err?: string; step?: string; msg?: string;
+    parse?: string; missing?: string;
+  }
 }) {
+  const { t } = await getT()
+  const { dtf } = await getIntl()
+
   let presets: PresetEntry[] = []
   let listErr: string | null = null
-  try { presets = await cloud.listPresets() } catch (e: unknown) { listErr = String(e) }
+  try { presets = await cloud.listPresets() }
+  catch (e: unknown) { listErr = String(e) }
 
   const wired = presets
-    .filter(p => p.enforcement === "enforcing" && p.step && p.step !== "citation_verify")
+    .filter(p =>
+      p.enforcement === "enforcing" && p.step && p.step !== "citation_verify")
     .map(p => ({ step: p.step!, id: p.id }))
 
-  const prior = decodeResult(searchParams.r)
+  const fromQuery = decodeResult(searchParams.r)
+  const prior =
+    fromQuery ?? (searchParams.msg === "ran" ? await readCookieResult() : null)
   const stepHint = searchParams.step ?? prior?.step
+  const initialStep = stepHint ?? wired[0]?.step ?? ""
 
   return (
     <>
-      <h1>Run a verifier</h1>
-      <p className="muted" style={{ marginTop: -4, marginBottom: 14 }}>
-        Dispatches against <code>/verify/&#123;step&#125;</code>. On <strong>pass</strong> a signed
-        Ed25519 token is issued + appended to the audit ledger. On{" "}
-        <strong>deny</strong> the reasons explain why. <code>citation_verify</code> has its own
-        specialised path (with corpus_override and NLI advisory) — use{" "}
-        <Link href="/policies/compile">/policies/compile</Link> or the cloud API directly for it.
-      </p>
+      <PageHeader
+        title={t("verify.title")}
+        description={
+          <span>
+            {t("verify.description", {
+              pass: "pass",
+              deny: "deny",
+            })}
+          </span>
+        }
+      />
 
       {listErr && (
-        <div className="card" role="alert">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted">cannot list verifiers; see server logs</p>
-        </div>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       )}
 
       {searchParams.err === "invalid_input" && (
-        <div className="card" role="alert">
-          <span className="tag deny">invalid input</span>
-          <p className="muted">
-            {searchParams.missing
-              ? `missing field: ${searchParams.missing}`
-              : searchParams.parse
-                ? "payload is not a valid JSON object"
-                : "see form below"}
-          </p>
-        </div>
+        <ErrorState
+          status={searchParams.parse ? t("verify.error.invalidPayload") : "invalid"}
+          title={
+            searchParams.parse
+              ? t("verify.error.invalidPayload")
+              : (searchParams.missing
+                  ? `missing field: ${searchParams.missing}`
+                  : t("verify.error.invalidPayload"))
+          }
+          severity="warning"
+        />
       )}
       {searchParams.err === "cloud_unreachable" && (
-        <div className="card" role="alert">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted">see server logs</p>
-        </div>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={t("common.seeServerLogs")}
+        />
       )}
       {searchParams.err === "forbidden" && (
-        <div className="card" role="alert">
-          <span className="tag deny">forbidden</span>
-          <p className="muted">tenant suspended or revoked key</p>
-        </div>
+        <ErrorState
+          status="forbidden"
+          title={t("verify.error.tenantSuspended")}
+        />
       )}
-      {searchParams.msg === "ran" && (
-        <div className="card" role="status">
-          <span className="tag ok">verifier ran</span>
-          <p className="muted">result payload too large to display — see /ledger</p>
-        </div>
+      {searchParams.msg === "ran" && !prior && (
+        <Card role="status">
+          <Badge variant="ok">{t("verify.result.title")}</Badge>
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+            {t("verify.error.payloadTooLarge")}
+          </p>
+        </Card>
       )}
 
-      <VerifyForm
-        wiredSteps={wired}
-        defaultStep={stepHint}
-        defaultPayload={prior?.payload}
-      />
+      <form action={runVerify} className="space-y-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Select
+            name="step"
+            label={t("verify.field.step")}
+            defaultValue={initialStep}
+            options={wired.map(s => ({ value: s.step, label: `${s.step}` }))}
+          />
+          <Input
+            type="text"
+            name="matter"
+            label={t("verify.field.matter")}
+            defaultValue={prior?.matter ?? "dashboard"}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <Input
+            type="text"
+            name="doc_id"
+            label={t("verify.field.docId")}
+            defaultValue={prior?.docId ?? "dashboard"}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
 
-      {prior && <VerifyResultCard r={prior} />}
+        <Textarea
+          name="payload"
+          rows={10}
+          label={t("verify.field.payload")}
+          helper={t("verify.tip")}
+          defaultValue={prior?.payload ?? SAMPLE_PAYLOAD[initialStep] ?? "{\n  \n}"}
+          spellCheck={false}
+          autoComplete="off"
+          monospace
+        />
+
+        <SubmitButton
+          label={t("verify.submit")}
+          pendingLabel={t("verify.submit.pending")}
+          progressHint={t("verify.progressHint")}
+        />
+      </form>
+
+      {prior && <ResultBlock t={t} dtf={dtf} r={prior} />}
     </>
+  )
+}
+
+function ResultBlock({
+  t, dtf, r,
+}: {
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+  dtf: Intl.DateTimeFormat
+  r: VerifyResult
+}) {
+  const verdictTone =
+    r.verdict === "pass"   ? "ok"
+    : r.verdict === "review" ? "review"
+    : r.verdict === "deny"   ? "deny"
+    : "default"
+  return (
+    <section aria-labelledby="verify-result" className="space-y-3">
+      <h2 id="verify-result" className="text-md font-semibold mt-4">
+        {t("verify.result.title")}
+      </h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={verdictTone as never}>{r.verdict}</Badge>
+        {r.token
+          ? <Badge variant="ok">{t("verify.result.tokenIssued")}</Badge>
+          : <Badge variant="muted">{t("verify.result.noToken")}</Badge>}
+        {r.hitlId != null && (
+          <Badge variant="review">HITL #{r.hitlId}</Badge>
+        )}
+        {r.kid && (
+          <Badge variant="muted">
+            kid <Code className="ml-1 bg-transparent border-0 px-0">{r.kid.slice(0, 8)}…</Code>
+          </Badge>
+        )}
+        {r.exp && (
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {t("verify.result.expires")}: {dtf.format(new Date(r.exp * 1000))}
+          </span>
+        )}
+      </div>
+
+      {r.reasons.length > 0 && (
+        <Card>
+          <div className="text-xs text-[var(--color-text-tertiary)] mb-2">
+            {t("verify.result.reasons")}
+          </div>
+          <ul className="m-0 pl-5 text-sm list-disc text-[var(--color-text-secondary)] space-y-1">
+            {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
+          </ul>
+        </Card>
+      )}
+
+      {r.token && (
+        <Card>
+          <CardHeader
+            title={t("verify.result.signedToken")}
+            action={<CopyButton value={r.token} size="sm" variant="ghost" />}
+          />
+          <CodeBlock maxHeight="40vh">{r.token}</CodeBlock>
+        </Card>
+      )}
+
+      <div className="flex flex-wrap gap-2 mt-2">
+        <Link href="/verify"><Button variant="secondary">{t("verify.action.runAnother")}</Button></Link>
+        <Link href="/ledger"><Button variant="ghost">{t("verify.action.seeLedger")}</Button></Link>
+        {r.hitlId != null && (
+          <Link href={`/hitl/${r.hitlId}`}>
+            <Button variant="ghost">{t("verify.action.openHitl")}</Button>
+          </Link>
+        )}
+      </div>
+    </section>
   )
 }

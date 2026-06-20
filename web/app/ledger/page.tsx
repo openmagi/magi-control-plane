@@ -1,5 +1,10 @@
+import Link from "next/link"
 import { cloud } from "@/lib/cloud"
 import { fmtUtc, clampNonNegInt, LEDGER_PAGE_SIZE } from "@/lib/format"
+import { getIntl, getT } from "@/lib/i18n/server"
+import {
+  Badge, Card, Code, EmptyState, ErrorState, PageHeader,
+} from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
@@ -10,6 +15,8 @@ function errMsg(e: unknown): string {
 export default async function LedgerPage({
   searchParams,
 }: { searchParams: { since?: string } }) {
+  const { t } = await getT()
+  const { nf } = await getIntl()
   const since = clampNonNegInt(searchParams.since, 0)
   let result: Awaited<ReturnType<typeof cloud.ledger>> | null = null
   let err: string | null = null
@@ -21,56 +28,91 @@ export default async function LedgerPage({
 
   return (
     <>
-      <h1>Audit ledger</h1>
+      <PageHeader title={t("ledger.title")} />
+
       {err && (
-        <div className="card">
-          <span className="tag deny">cloud unreachable</span>
-          <p className="muted" style={{ marginTop: 8 }}>{err}</p>
-          <p className="muted"><a href="/ledger">Retry</a></p>
-        </div>
+        <ErrorState
+          status={t("common.cloudUnreachable")}
+          title={t("common.cloudUnreachable")}
+          body={err}
+        />
       )}
+
       {result && (
         <>
-          <div className="card row">
-            <div>
-              chain integrity:{" "}
+          <Card className="mb-4 flex flex-wrap items-center gap-3">
+            <span className="text-sm">
+              {t("ledger.chainIntegrity")}:{" "}
               {result.chain_ok
-                ? <span className="tag ok">OK</span>
-                : <strong style={{ color: "#e07979" }}>BROKEN — investigate immediately</strong>}
-            </div>
-            <div className="muted">UTC · cursor: {result.next_since_id}</div>
-          </div>
+                ? <Badge variant="ok">{t("ledger.chainOk")}</Badge>
+                : <Badge variant="deny">{t("ledger.chainBroken")}</Badge>}
+            </span>
+            <span className="text-xs text-[var(--color-text-tertiary)]">
+              {t("ledger.cursor", { n: nf.format(result.next_since_id) })}
+            </span>
+          </Card>
+
           {result.entries.length === 0 ? (
-            <div className="card muted">감사 항목이 없습니다.</div>
+            <EmptyState title={t("ledger.empty")} />
           ) : (
-            <table className="card">
-              <thead>
-                <tr><th>id</th><th>ts (UTC)</th><th>matter</th><th>prev</th><th>h</th></tr>
-              </thead>
-              <tbody>
-                {result.entries.map(e => (
-                  <tr key={e.id}>
-                    <td>{e.id}</td>
-                    <td className="muted">{fmtUtc(e.ts)}</td>
-                    <td><code>{e.matter}</code></td>
-                    <td><code title={e.prev}>{e.prev ? e.prev.slice(0, 12) + "…" : "∅"}</code></td>
-                    <td><code title={e.h}>{e.h.slice(0, 12)}…</code></td>
+            <Card noPadding className="overflow-x-auto">
+              <table>
+                <caption className="sr-only">
+                  {t("ledger.title")}
+                </caption>
+                <thead>
+                  <tr>
+                    <th>{t("ledger.col.id")}</th>
+                    <th>{t("ledger.col.ts")}</th>
+                    <th>{t("ledger.col.matter")}</th>
+                    <th>{t("ledger.col.prev")}</th>
+                    <th>{t("ledger.col.h")}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {result.entries.map(e => (
+                    <tr key={e.id}>
+                      <td>{e.id}</td>
+                      <td className="text-[var(--color-text-tertiary)]">
+                        {fmtUtc(e.ts)}
+                      </td>
+                      <td><Code>{e.matter}</Code></td>
+                      <td>
+                        <Code title={e.prev}>
+                          {e.prev ? e.prev.slice(0, 12) + "…" : "∅"}
+                        </Code>
+                      </td>
+                      <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
           )}
-          <p className="muted" style={{ fontSize: 11 }}>
-            Note: entry bodies are redacted in this view (P5 v0). Drill-down requires
-            an authenticated audit token (deferred to v0.1).
+
+          <p className="text-xs text-[var(--color-text-tertiary)] mt-3">
+            {t("ledger.redactionNote")}
           </p>
-          <p className="row">
-            {since > 0 && <a href="/ledger">← First</a>}
+
+          <nav
+            aria-label="Ledger pagination"
+            className="mt-4 flex items-center gap-4 text-sm"
+          >
+            {since > 0 && (
+              <Link href="/ledger" aria-label="First page">
+                {t("ledger.first")}
+              </Link>
+            )}
             {result.entries.length === LEDGER_PAGE_SIZE
               && result.next_since_id !== since && (
-              <a href={`/ledger?since=${result.next_since_id}`}>Next →</a>
+              <Link
+                href={`/ledger?since=${result.next_since_id}`}
+                aria-label="Next page"
+              >
+                {t("ledger.next")}
+              </Link>
             )}
-          </p>
+          </nav>
         </>
       )}
     </>
