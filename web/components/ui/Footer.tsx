@@ -4,6 +4,7 @@ import { getLocale } from "@/lib/i18n/server"
 /** Minimal site footer with legal links + contact. Server component. */
 export default function Footer() {
   const locale = getLocale()
+  const labelAbout   = locale === "ko" ? "소개"          : "About"
   const labelTerms   = locale === "ko" ? "이용약관"       : "Terms"
   const labelPrivacy = locale === "ko" ? "개인정보처리방침" : "Privacy"
   const labelContact = locale === "ko" ? "문의"          : "Contact"
@@ -20,6 +21,9 @@ export default function Footer() {
           OpenMagi · magi-control-plane · alpha pilot
         </div>
         <nav aria-label="Footer" className="flex flex-wrap gap-4">
+          <Link href="/welcome" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+            {labelAbout}
+          </Link>
           <Link href="/legal/terms" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
             {labelTerms}
           </Link>
