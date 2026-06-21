@@ -3,10 +3,9 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * Logic invariants for WorkspaceCard — without bootstrapping
- * React Testing Library + jsdom (no other component in this repo
- * uses RTL yet). These guard the three render branches that matter
- * most: self-host vs tenant vs fetch-fail.
+ * Source-level invariants for WorkspaceCard. Guards the 3 branches
+ * (Pro+ tenant / Self-host / unreachable) without bootstrapping
+ * React Testing Library.
  */
 describe("WorkspaceCard branch coverage", () => {
   const src = readFileSync(
@@ -15,9 +14,8 @@ describe("WorkspaceCard branch coverage", () => {
   )
 
   it("renders Self-host label when tenantId is null OR \"default\"", () => {
-    // Both branches must be hit by the isSelfHost predicate.
     expect(src).toMatch(/tenantId === null \|\| tenantId === "default"/)
-    expect(src).toMatch(/자체 호스트/)
+    // Both KO + EN labels for the Self-host branch must be present.
     expect(src).toMatch(/Self-host/)
   })
 
@@ -26,15 +24,18 @@ describe("WorkspaceCard branch coverage", () => {
     expect(src).toMatch(/slice\(0, 14\)/)
   })
 
-  it("uses semantic status dot tokens (no hardcoded hex)", () => {
-    // Health dot must use --color-pass-fg / --color-review-fg so a
-    // theme flip propagates without touching this component.
-    expect(src).toMatch(/--color-pass-fg/)
-    expect(src).toMatch(/--color-review-fg/)
+  it("uses emerald/amber for healthOk dot (no hardcoded hex)", () => {
+    expect(src).toMatch(/bg-emerald-500/)
+    expect(src).toMatch(/bg-amber-500/)
     expect(src).not.toMatch(/#[0-9a-fA-F]{6}/)
   })
 
   it("renders host with translate=\"no\" to prevent auto-translation", () => {
     expect(src).toMatch(/translate="no"/)
+  })
+
+  it("dot has role=\"img\" + aria-label for a11y (WAI rule)", () => {
+    expect(src).toMatch(/role="img"/)
+    expect(src).toMatch(/aria-label=\{dotLabel\}/)
   })
 })

@@ -9,46 +9,48 @@
   src: url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/PretendardVariable.min.woff2") format("woff2-variations");
 }
 
-/* ── Plus Jakarta Sans (Latin) — matches magi-agent OSS dashboard ─── */
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap");
+/* ── Plus Jakarta Sans (Latin) — magi-agent OSS dashboard font ────── */
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap");
 
-/* ── Design tokens (light mode, magi-agent palette) ─────────────────
-   Re-themed 2026-06-21 to match the magi-agent OSS dashboard visual
-   language: warm off-white background, dark slate text, purple CTA.
-   Semantic token names retained so component CSS doesn't churn. */
+/* ── Design tokens — mirrors magi-agent OSS dashboard (light/purple) ──
+   Source: magi-agent/apps/web/app/globals.css + dashboard/layout.tsx +
+   components/dashboard/sidebar-nav.tsx. Theme is light with purple
+   primary + emerald status accents. Semantic token names retained so
+   component CSS stays stable. */
 @theme {
-  /* surfaces — light mode */
+  /* surfaces */
   --color-surface-base:    #FAFAFA; /* page bg (matches magi-agent --background) */
-  --color-surface-raised:  #FFFFFF; /* sidebar, cards */
-  --color-surface-overlay: #F4F0FF; /* nav active bg (pale lavender) */
-  --color-surface-input:   #FFFFFF; /* form inputs */
+  --color-surface-raised:  #FFFFFF; /* card, sidebar (bg-white/80 elsewhere) */
+  --color-surface-overlay: #F4F0FF; /* nav-active tint (primary/10 equivalent) */
+  --color-surface-input:   #FFFFFF;
 
   /* borders */
-  --color-border-subtle: #E5E7EB;   /* gray-200 */
-  --color-border-strong: #CBD5E1;   /* slate-300 */
-  --color-border-focus:  #7C3AED;   /* purple-600 — matches CTA */
+  --color-border-subtle: rgba(0, 0, 0, 0.06);   /* magi-agent border-black/[0.06] */
+  --color-border-strong: rgba(0, 0, 0, 0.10);
+  --color-border-focus:  #7C3AED;               /* primary */
 
   /* text */
   --color-text-primary:    #1A1A2E; /* magi-agent --foreground */
   --color-text-secondary:  #475569; /* magi-agent --text-secondary */
   --color-text-tertiary:   #64748B; /* magi-agent --text-muted */
-  --color-text-disabled:   #94A3B8; /* slate-400 */
-  --color-text-on-accent:  #FFFFFF; /* purple → white */
+  --color-text-disabled:   #94A3B8;
+  --color-text-on-accent:  #FFFFFF;
 
-  /* semantic status (light pill style, matches magi-agent "Always on") */
-  --color-pass-fg:    #16A34A; /* green-600 */
-  --color-pass-bg:    #DCFCE7; /* green-100 */
+  /* semantic status — emerald success matches magi-agent "Local" pill */
+  --color-pass-fg:    #047857; /* emerald-700 */
+  --color-pass-bg:    rgba(16, 185, 129, 0.10); /* emerald-500/10 */
   --color-review-fg:  #B45309; /* amber-700 */
   --color-review-bg:  #FEF3C7; /* amber-100 */
-  --color-deny-fg:    #B91C1C; /* red-700 (5.78:1 on red-100, WCAG AA) */
+  --color-deny-fg:    #B91C1C; /* red-700 */
   --color-deny-bg:    #FEE2E2; /* red-100 */
   --color-info-fg:    #2563EB; /* blue-600 */
   --color-info-bg:    #DBEAFE; /* blue-100 */
 
-  /* accent (CTA — purple, magi-agent --primary) */
-  --color-accent:       #7C3AED; /* purple-600 */
-  --color-accent-hover: #6D28D9; /* purple-700 */
-  --color-accent-press: #5B21B6; /* purple-800 */
+  /* accent (CTA — magi-agent --primary / --cta) */
+  --color-accent:        #7C3AED; /* purple-600 */
+  --color-accent-light:  #6D28D9; /* purple-700 (active nav text) */
+  --color-accent-hover:  #6D28D9;
+  --color-accent-press:  #5B21B6;
 
   /* typography */
   --font-sans: "Plus Jakarta Sans", "Pretendard Variable", "Pretendard",
@@ -64,36 +66,30 @@
   --text-xl: 24px;     --text-xl--line-height: 32px;
   --text-2xl: 32px;    --text-2xl--line-height: 40px;
 
-  /* radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 
-  /* shadows (light-friendly) */
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 4px 8px rgba(15, 23, 42, 0.08);
-  --shadow-lg: 0 12px 24px rgba(15, 23, 42, 0.12);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 32px rgba(15, 23, 42, 0.12);
 
-  /* motion */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
-  /* layout */
   --header-height: 56px;
-  --sidebar-width: 240px;
-  --content-max: 1280px;
+  --sidebar-width: 288px;   /* magi-agent w-72 */
+  --content-max:   1280px;
 }
 
-/* ── Base reset + global feel ─────────────────────────────────────── */
+/* ── Base reset ───────────────────────────────────────────────────── */
 @layer base {
-  :root {
-    color-scheme: light;
-  }
+  :root { color-scheme: light; }
+
   html, body {
     margin: 0;
     padding: 0;
-    background: var(--color-surface-base);
     color: var(--color-text-primary);
     font-family: var(--font-sans);
     font-feature-settings: "ss01", "cv11";
@@ -105,6 +101,12 @@
   }
   body {
     min-height: 100dvh;
+    /* magi-agent page bg: subtle purple radial in top-left over
+       white → slate-50 → off-white gradient. */
+    background:
+      radial-gradient(circle at top left, rgba(124, 58, 237, 0.08), transparent 32rem),
+      linear-gradient(180deg, #ffffff 0%, #f8fafc 42%, #fafafa 100%);
+    background-attachment: fixed;
   }
 
   a {
@@ -118,7 +120,6 @@
     border-radius: var(--radius-sm);
   }
 
-  /* All interactive elements get a visible focus ring */
   button:focus-visible,
   [role="button"]:focus-visible,
   input:focus-visible,
@@ -128,7 +129,6 @@
     outline: 2px solid var(--color-border-focus);
     outline-offset: 2px;
   }
-
   :focus:not(:focus-visible) { outline: none; }
 
   code, pre {
@@ -164,9 +164,7 @@
     z-index: 50;
     font-size: var(--text-sm);
   }
-  .skip-link:focus-visible {
-    top: 12px;
-  }
+  .skip-link:focus-visible { top: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -177,7 +175,7 @@
   }
 }
 
-/* ── Legacy class compatibility ────────────────────────────────────── */
+/* ── Legacy class compatibility (incrementally removed as pages migrate) ── */
 @layer components {
   .topbar {
     display: flex;
@@ -185,7 +183,9 @@
     align-items: center;
     padding: 12px 20px;
     border-bottom: 1px solid var(--color-border-subtle);
-    background: var(--color-surface-raised);
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     height: var(--header-height);
   }
   .topbar nav { display: flex; gap: 18px; align-items: center; }
@@ -194,7 +194,7 @@
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-lg);
-    padding: 14px;
+    padding: 16px;
     margin-bottom: 12px;
   }
   .muted { color: var(--color-text-tertiary); font-size: var(--text-xs); }
@@ -203,37 +203,38 @@
 
   .tag {
     font-size: var(--text-xs);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
+    padding: 2px 8px;
+    border-radius: 9999px;
     background: var(--color-surface-overlay);
     color: var(--color-text-secondary);
     display: inline-flex;
     align-items: center;
     gap: 4px;
   }
-  .tag.ok      { background: var(--color-pass-bg);   color: var(--color-pass-fg); }
+  .tag.ok      { background: var(--color-pass-bg);   color: var(--color-pass-fg); border: 1px solid rgba(16,185,129,0.20); }
   .tag.review  { background: var(--color-review-bg); color: var(--color-review-fg); }
   .tag.deny,
   .tag.missing { background: var(--color-deny-bg);   color: var(--color-deny-fg); }
 
-  table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
-  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--color-border-subtle); }
-  th { color: var(--color-text-tertiary); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--color-border-subtle); }
+  th { color: var(--color-text-tertiary); font-weight: 600; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; }
   td { font-variant-numeric: tabular-nums; }
 
   button {
     background: var(--color-surface-raised);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-subtle);
-    padding: 6px 12px;
+    padding: 8px 14px;
     border-radius: var(--radius-md);
     cursor: pointer;
     font-size: var(--text-sm);
+    font-weight: 500;
     transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out), opacity 180ms var(--ease-out);
   }
   button:hover:not(:disabled) {
-    background: var(--color-surface-overlay);
-    border-color: var(--color-border-strong);
+    background: #FFFFFF;
+    border-color: rgba(0, 0, 0, 0.08);
   }
   button:disabled { opacity: 0.55; cursor: not-allowed; }
   button.primary {
@@ -259,20 +260,13 @@
     background: var(--color-surface-input);
     border: 1px solid var(--color-border-subtle);
     color: var(--color-text-primary);
-    padding: 6px 10px;
+    padding: 8px 12px;
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
   }
-  input:focus,
-  textarea:focus,
-  select:focus {
+  input:focus, textarea:focus, select:focus {
     border-color: var(--color-accent);
   }
 
-  form.legacy-row {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    align-items: center;
-  }
+  form.legacy-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 }

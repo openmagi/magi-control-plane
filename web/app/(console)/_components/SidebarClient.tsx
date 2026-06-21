@@ -107,15 +107,18 @@ export function SidebarClient({
         )}
       />
 
-      {/* Sidebar element: desktop sticky column / mobile slide-in drawer. */}
+      {/* Sidebar element: desktop sticky column / mobile slide-in drawer.
+         Matches magi-agent SidebarNav: w-72 bg-white/80 backdrop-blur-xl
+         border-r border-black/5. */}
       <aside
         id="primary-nav-drawer"
         aria-label={brandLabel}
         aria-modal={open ? "true" : undefined}
         role={open ? "dialog" : undefined}
         className={cn(
-          "w-[var(--sidebar-width)] shrink-0 bg-[var(--color-surface-raised)]",
-          "border-r border-[var(--color-border-subtle)]",
+          "w-[var(--sidebar-width)] shrink-0",
+          "bg-white/80 backdrop-blur-xl",
+          "border-r border-black/5",
           // Desktop: sticky column inside the flex layout
           "md:sticky md:top-0 md:h-screen md:translate-x-0",
           // Mobile: fixed slide-in drawer

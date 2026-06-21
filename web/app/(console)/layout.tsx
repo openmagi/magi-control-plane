@@ -1,21 +1,21 @@
+import { Suspense } from "react"
 import { getT } from "@/lib/i18n/server"
 import { Sidebar } from "./_components/Sidebar"
 import { SidebarClient } from "./_components/SidebarClient"
+import { RuntimeHeader } from "./_components/RuntimeHeader"
 
 /**
- * Console shell: sidebar + content.
+ * Console shell. Two-column layout mirrored from magi-agent's
+ * DashboardLayout: bg gradient (via globals.css body), sticky sidebar
+ * w-72, sticky RuntimeHeader, main content padding.
  *
- * Desktop (≥md): sticky sidebar column on the left, content fluid on
- * the right.
- *
- * Mobile (<md): SidebarClient renders the sticky mobile header (with
- * hamburger) at the top and a slide-in drawer containing the Sidebar.
- * Content fills the full width below the header.
+ * Mobile (<md): SidebarClient renders the sticky mobile header with
+ * hamburger, hides the sidebar off-screen, slides it in on tap.
  */
 export default async function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const { t } = await getT()
   return (
-    <div className="md:flex md:min-h-screen">
+    <div className="flex min-h-screen">
       <SidebarClient
         openMenuLabel={t("nav.openMenu")}
         closeMenuLabel={t("nav.closeMenu")}
@@ -26,10 +26,15 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
       <main
         id="main-content"
         tabIndex={-1}
-        className="flex-1 min-w-0 px-5 md:px-8 py-6 outline-none"
+        className="flex-1 min-w-0 outline-none"
       >
-        <div className="mx-auto" style={{ maxWidth: "var(--content-max)" }}>
-          {children}
+        <Suspense>
+          <RuntimeHeader />
+        </Suspense>
+        <div className="min-w-0 px-4 py-5 sm:px-6 md:px-8 md:py-7">
+          <div className="mx-auto" style={{ maxWidth: "var(--content-max)" }}>
+            {children}
+          </div>
         </div>
       </main>
     </div>

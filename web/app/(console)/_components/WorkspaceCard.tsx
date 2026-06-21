@@ -5,63 +5,64 @@ export interface WorkspaceCardProps {
   plan: string | null
   /** true = cloud /healthz returned ok, false = unreachable / down */
   healthOk: boolean
-  /** Cloud hostname shown in the card header (e.g. "cloud.openmagi.ai"). */
+  /** Cloud hostname shown subtly under the workspace label. */
   host: string
 }
 
 /**
- * Sidebar workspace context card. Three render states:
+ * Sidebar workspace context card. Matches magi-agent's pattern:
+ * uppercase tracking-wide label, bold workspace name, muted descriptor,
+ * subtle gradient bg from-white to gray-50.
  *
- *   1. Pro+ subscriber: tenant prefix + plan + green dot
+ * Three render states:
+ *   1. Pro+ subscriber: tenant prefix + plan
  *   2. Self-host / env-key tenant: "Self-host" label + cloud host
- *   3. Fetch failed: amber dot + "cloud unreachable" hint
- *
- * Pure server component. Receives data from the parent Sidebar's
- * cached getWorkspaceData() (D4) so it never blocks render.
+ *   3. Fetch failed: shown as offline (amber dot) — host still visible
  */
 export function WorkspaceCard({ tenantId, plan, healthOk, host }: WorkspaceCardProps) {
   const locale = getLocale()
   const isKo = locale === "ko"
   const isSelfHost = tenantId === null || tenantId === "default"
 
-  const dotColor = healthOk
-    ? "bg-[var(--color-pass-fg)]"
-    : "bg-[var(--color-review-fg)]"
+  const labelTop = isKo ? "워크스페이스" : "Workspace"
+  const headlineSelfHost = isKo ? "Self-host" : "Self-host"
+  const descriptorSelfHost = isKo ? "Apache 2.0 OSS · 로컬 키" : "Apache 2.0 OSS · local key"
+
+  const dotClass = healthOk ? "bg-emerald-500" : "bg-amber-500"
   const dotLabel = healthOk
-    ? (isKo ? "정상" : "OK")
-    : (isKo ? "응답 없음" : "unreachable")
+    ? (isKo ? "정상" : "Healthy")
+    : (isKo ? "응답 없음" : "Unreachable")
 
   return (
-    <div className="mx-3 mb-4 mt-3 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-base)] px-3 py-2.5">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span
-          role="img"
-          aria-label={dotLabel}
-          className={`inline-block w-1.5 h-1.5 rounded-full ${dotColor}`}
-        />
-        <span className="text-xs text-[var(--color-text-tertiary)] truncate font-mono" translate="no">
+    <div className="mt-5 rounded-2xl border border-black/[0.06] bg-gradient-to-br from-white to-gray-50 px-4 py-3 shadow-sm">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
+        {labelTop}
+      </div>
+      {isSelfHost ? (
+        <>
+          <div className="mt-1 text-sm font-semibold text-[var(--color-text-primary)]">
+            {headlineSelfHost}
+          </div>
+          <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+            {descriptorSelfHost}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-1 text-sm font-mono font-semibold text-[var(--color-text-primary)] truncate" translate="no">
+            {tenantId!.length > 16 ? `${tenantId!.slice(0, 14)}…` : tenantId}
+          </div>
+          <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+            {isKo ? "플랜" : "Plan"}: <span className="text-[var(--color-text-secondary)] font-medium">{plan ?? "—"}</span>
+          </div>
+        </>
+      )}
+      <div className="mt-2 inline-flex items-center gap-1.5">
+        <span role="img" aria-label={dotLabel} className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        <span className="text-[11px] text-[var(--color-text-tertiary)] truncate font-mono" translate="no">
           {host}
         </span>
       </div>
-      {isSelfHost ? (
-        <div>
-          <div className="text-sm font-medium text-[var(--color-text-primary)]">
-            {isKo ? "자체 호스트" : "Self-host"}
-          </div>
-          <div className="text-[11px] text-[var(--color-text-tertiary)] mt-0.5">
-            {isKo ? "로컬 키 사용 중" : "using local key"}
-          </div>
-        </div>
-      ) : (
-        <div>
-          <div className="text-sm font-mono text-[var(--color-text-primary)] truncate" translate="no">
-            {tenantId!.length > 16 ? `${tenantId!.slice(0, 14)}…` : tenantId}
-          </div>
-          <div className="text-[11px] text-[var(--color-text-tertiary)] mt-0.5">
-            {isKo ? "플랜" : "plan"}: <span className="text-[var(--color-text-secondary)]">{plan ?? "—"}</span>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

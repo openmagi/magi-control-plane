@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { getT } from "@/lib/i18n/server"
+import { Logo } from "@/components/ui/Logo"
 import { getWorkspaceData } from "../_data/workspace"
 import { NavGroup } from "./NavGroup"
 import { NavItem } from "./NavItem"
@@ -13,25 +14,23 @@ const CLOUD_HOST = process.env.MAGI_CP_PUBLIC_CLOUD_URL
     : "cloud.openmagi.ai"
 
 /**
- * Console sidebar content. Returns the inner column only — the wrapping
- * <aside> element + responsive positioning lives in SidebarClient, so
- * the server fetch happens once and the client wrapper can flip the
- * presentation between desktop sticky column and mobile slide-in drawer
- * without re-rendering the content.
+ * Console sidebar content. Mirrors the magi-agent OSS dashboard's
+ * SidebarNav structure: brand logo + workspace card + grouped nav +
+ * locale switcher. The outer <aside> + responsive positioning lives
+ * in SidebarClient so the server fetch happens once.
  */
 export async function Sidebar() {
   const { t } = await getT()
   const { tenant, healthOk, hitlPending } = await getWorkspaceData()
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full p-5">
       <Link
         href="/overview"
         aria-label={t("nav.brand")}
-        className="flex items-center gap-2 px-4 h-[var(--header-height)] border-b border-[var(--color-border-subtle)] text-[var(--color-text-primary)] hover:no-underline shrink-0"
+        className="inline-flex hover:no-underline shrink-0"
       >
-        <span aria-hidden="true" className="inline-block w-5 h-5 rounded-sm bg-[var(--color-accent)]" />
-        <span className="font-medium">magi-control-plane</span>
+        <Logo />
       </Link>
 
       <WorkspaceCard
@@ -41,7 +40,7 @@ export async function Sidebar() {
         host={CLOUD_HOST}
       />
 
-      <nav className="px-3 flex-1 overflow-y-auto" aria-label={t("nav.primary")}>
+      <nav className="space-y-1 flex-1 overflow-y-auto min-h-0 -mx-1 px-1" aria-label={t("nav.primary")}>
         <NavGroup label={t("nav.group.authoring")}>
           <NavItem href="/policies" label={t("nav.policies")} icon="policies" />
           <NavItem href="/policies/compile" label={t("nav.compile")} icon="compile" />
