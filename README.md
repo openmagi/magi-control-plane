@@ -1,20 +1,25 @@
 # magi-control-plane
 
-> agent-governance control plane — for Claude Code first, agent-agnostic by design.
->
-> 2026-06-19. v1.1 alpha (5 wired verifiers + NL→IR compile + /presets catalog).
-> spec = `../docs/plans/2026-06-18-magi-control-plane-v0-plan.md §8`; build plan =
-> `../docs/plans/2026-06-19-magi-control-plane-mvp-build.md`.
+> Open-source governance gate for Claude Code (Codex / OpenCode next).
+> Apache 2.0. Beachhead: Korean legal filing (citation existence +
+> verbatim verification + partner sign-off).
 
-## What this is
-Hooks-into-Claude-Code (and later Codex/OpenCode) middleware that lets organizations
-enforce their *own* procedures + capture cryptographically-signed evidence trails.
-Beachhead: Korean legal filing (citation existence + verbatim verification + partner sign-off).
+## Two ways to use it
+
+| Path | Cost | What you operate | When to pick this |
+|------|------|------------------|-------------------|
+| **Self-host** (this repo) | Free forever | Your K8s / fly.io / docker | You want full control, on-prem, or air-gapped audit chain |
+| **Clawy Pro+ (hosted)** | Included in your Pro+ subscription | Nothing — we run it | You already pay for Clawy Pro+ and want governance without ops |
+
+Same code on both paths — the hosted version is just this repo running
+on Kevin's infra with Stripe-driven tenant provisioning. The dashboard
+at `cloud.openmagi.ai` is the hosted instance; self-hosters point their
+own DNS at their own deploy.
 
 Three layers:
-- **Local** (OSS-able): `magi-cp` CLI, CC hook helper, MCP server. Verify-only — no signing keys.
-- **Cloud** (paid SaaS): policy authority, Ed25519 signer, tamper-evident ledger, HITL queue, dashboard, NL→IR authoring.
-- **Floor**: managed-settings + plugin = users can't disable. *Subscription expiry = fail-closed*.
+- **Local** (this repo's `magi-cp` CLI + Claude Code hook): client side, verify-only, no signing keys
+- **Cloud** (`src/magi_cp/cloud/`): policy authority, Ed25519 signer, tamper-evident ledger, HITL queue, dashboard, NL→IR authoring
+- **Floor**: managed-settings + plugin = users can't disable mid-session. Subscription expiry (hosted) or license expiry (self-host) = fail-closed by design.
 
 ## Quick start (dev)
 ```bash
@@ -236,19 +241,18 @@ Run the dashboard:
 cd web && npm install && npm run dev  # http://127.0.0.1:3787
 ```
 
-## Hosting
+## Self-host deploy
 
-The app splits into two surfaces; the production deploy puts them on
-two hostnames behind one user-facing URL.
+The app has two surfaces; production puts them on two hostnames.
 
-| Component | Hostname | Runtime | Why |
-|-----------|----------|---------|-----|
-| Next.js dashboard (`web/`) | `cloud.openmagi.ai` | **Vercel** | Server actions, ISR, edge i18n, preview deploys |
-| Python FastAPI cloud (`src/magi_cp/cloud/`) | `api.openmagi.ai` | **Kubernetes** (`charts/magi-cp/`) | Long-running, Ed25519 keypair on PVC, 5–20s LLM compile, no cold-start tolerance |
+| Component | Runtime | Why |
+|-----------|---------|-----|
+| Next.js dashboard (`web/`) | Vercel-style serverless OR your Node hosting | Server actions, edge i18n |
+| Python FastAPI cloud (`src/magi_cp/cloud/`) | Kubernetes (`charts/magi-cp/`) or fly.io | Long-running, Ed25519 keypair on PVC, 5–20s LLM compile |
 
-The dashboard reads `MAGI_CP_PUBLIC_CLOUD_URL=https://api.openmagi.ai`
-from its Vercel env; the gate's runtime URL ends up pointing there via
-the `/api/install-config` endpoint that `install.sh` consults.
+The dashboard reads `MAGI_CP_PUBLIC_CLOUD_URL=https://your-api-host`
+from env; the gate's runtime URL ends up pointing there via the
+`/api/install-config` endpoint that `install.sh` consults.
 
 ### Primary deploy — K8s (`charts/magi-cp/`)
 
@@ -276,13 +280,11 @@ cd web && vercel --prod
 
 Point `cloud.openmagi.ai` CNAME → `cname.vercel-dns.com`.
 
-### Alternative — fly.io single-node (no K8s, no Vercel)
+### Alternative — fly.io single-node
 
-For external contributors or solo self-hosters without ops infra,
-`deploy/fly.toml` brings up the FastAPI cloud on fly.io in the Tokyo
-region (Korea-adjacent). The dashboard then either lives on the same
-fly.io app or runs locally. Not used by the openmagi.ai alpha pilot;
-kept so the OSS install path works for non-K8s users.
+For solo self-hosters without K8s, `deploy/fly.toml` brings up the
+FastAPI cloud on fly.io in the Tokyo region (Korea-adjacent). The
+dashboard then lives on the same fly.io app or runs locally.
 
 ```bash
 cd deploy && fly launch --copy-config --no-deploy --name magi-cp
@@ -291,16 +293,32 @@ fly vol create magi_data --region nrt --size 3
 fly deploy && fly cert add api.openmagi.ai
 ```
 
-## Onboarding (alpha pilot UX)
+## Hosted via Clawy Pro+
 
-- `/signup` — public application form; per-IP rate-limited (3/hour). Lands
-  in the `alpha_signups` table; operator triages via
-  `GET /admin/signups`.
-- `/setup` — applicant pastes their `mcp_…` key; the dashboard validates
-  against `/tenants/me`, then walks through a four-step install with
-  `managed-settings.json` + `magi-gate.sh` download buttons.
-- `/legal/terms` + `/legal/privacy` — bilingual ToS + PIPA-aligned privacy
-  policy. Footer links exposed on every page.
+If you don't want to run the infra yourself: `magi-control-plane` is
+bundled into every **[Clawy Pro+](https://clawy.pro/pricing)** subscription.
+When you subscribe, our Stripe webhook calls `POST /admin/tenants` on
+the hosted instance (HMAC-signed contract — see `src/magi_cp/cloud/app.py`
+`_attach_admin_tenant_routes`), provisions your tenant, and emails you
+the `mcp_…` API key. Same code path as `scripts/quickstart.sh` from
+there.
+
+No separate sign-up here. The hosted instance at `cloud.openmagi.ai`
+exists for Pro+ subscribers; everyone else self-hosts.
+
+## Setup (after you have an `mcp_…` key)
+
+```bash
+curl -fsSL https://<your-instance>/install.sh | bash -s -- mcp_YOUR_KEY
+```
+
+This:
+1. installs the Python `magi-cp` package
+2. drops `~/.claude/managed-settings.json` + `~/.local/bin/magi-gate.sh`
+3. persists your key + cloud URL to `~/.config/magi-cp/env` (0600)
+4. runs the smoke test to confirm the gate fires
+
+See `docs/install.md` for the full guide (KO + EN).
 
 ## Status
 v2.1 ga-candidate — **437 Python + 72 web = 509 tests**. LLM providers hardened against
