@@ -1,24 +1,25 @@
-import NavBarShell from "@/components/ui/NavBarShell"
+import { Sidebar } from "./_components/Sidebar"
 
 /**
- * Console shell — placeholder during D1.
+ * Console shell: sidebar + content.
  *
- * D2 swaps NavBarShell for the new Sidebar primitive. Until then we
- * reuse the same chrome as marketing so D1 is a visual no-op — only the
- * route-group plumbing moves, content rendering stays byte-equivalent.
+ * Desktop only at D2 — mobile collapse (hamburger drawer) lands in D3.
+ * The sidebar is sticky on the left and scrolls independently; main
+ * content scrolls in its own column up to --content-max.
  */
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   return (
-    <>
-      <NavBarShell />
+    <div className="flex min-h-screen">
+      <Sidebar />
       <main
         id="main-content"
         tabIndex={-1}
-        className="px-5 py-6 mx-auto outline-none"
-        style={{ maxWidth: "var(--content-max)" }}
+        className="flex-1 min-w-0 px-5 md:px-8 py-6 outline-none"
       >
-        {children}
+        <div className="mx-auto" style={{ maxWidth: "var(--content-max)" }}>
+          {children}
+        </div>
       </main>
-    </>
+    </div>
   )
 }
