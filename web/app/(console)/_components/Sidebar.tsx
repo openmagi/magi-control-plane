@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { getT } from "@/lib/i18n/server"
-import { cloud, CloudConfigError } from "@/lib/cloud"
+import { getWorkspaceData } from "../_data/workspace"
 import { NavGroup } from "./NavGroup"
 import { NavItem } from "./NavItem"
 import { WorkspaceCard } from "./WorkspaceCard"
@@ -13,26 +13,6 @@ const CLOUD_HOST = process.env.MAGI_CP_PUBLIC_CLOUD_URL
     : "cloud.openmagi.ai"
 
 /**
- * Fetches workspace context in parallel. Failures degrade gracefully.
- * Real cache wrapping (unstable_cache + revalidateTag) lands in D4.
- */
-async function loadSidebarData() {
-  const apiKey = process.env.MAGI_CP_API_KEY
-  const [tenant, healthOk, hitlPending] = await Promise.all([
-    apiKey ? cloud.getMyTenant(apiKey).catch(() => null) : Promise.resolve(null),
-    fetch(
-      `${process.env.MAGI_CP_CLOUD_URL ?? "http://127.0.0.1:8787"}/healthz`,
-      { cache: "no-store", signal: AbortSignal.timeout(2000) },
-    ).then(r => r.ok).catch(() => false),
-    cloud.listHitl().then(l => l.length).catch((e: unknown) => {
-      if (e instanceof CloudConfigError) return 0
-      return 0
-    }),
-  ])
-  return { tenant, healthOk, hitlPending }
-}
-
-/**
  * Console sidebar content. Returns the inner column only — the wrapping
  * <aside> element + responsive positioning lives in SidebarClient, so
  * the server fetch happens once and the client wrapper can flip the
@@ -41,7 +21,7 @@ async function loadSidebarData() {
  */
 export async function Sidebar() {
   const { t } = await getT()
-  const { tenant, healthOk, hitlPending } = await loadSidebarData()
+  const { tenant, healthOk, hitlPending } = await getWorkspaceData()
 
   return (
     <div className="flex flex-col h-full">

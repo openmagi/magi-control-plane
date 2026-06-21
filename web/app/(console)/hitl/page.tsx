@@ -1,9 +1,10 @@
 import Link from "next/link"
 import { cloud, type HitlItem } from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
-import { revalidatePath } from "next/cache"
+import { revalidatePath, revalidateTag } from "next/cache"
 import { redirect } from "next/navigation"
 import { getIntl, getT } from "@/lib/i18n/server"
+import { WORKSPACE_TAG } from "../_data/workspace"
 import {
   Badge, Button, Card, Code, EmptyState, ErrorState, Input, PageHeader,
 } from "@/components/ui"
@@ -42,6 +43,7 @@ async function approve(formData: FormData) {
     const note = _validateNote(formData.get("note"))
     await cloud.approve(id, approver, note)
     revalidatePath("/hitl")
+    revalidateTag(WORKSPACE_TAG)
     redirect(`/hitl?msg=approved_${id}`)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -57,6 +59,7 @@ async function reject(formData: FormData) {
     const note = _validateNote(formData.get("note"))
     await cloud.reject(id, approver, note)
     revalidatePath("/hitl")
+    revalidateTag(WORKSPACE_TAG)
     redirect(`/hitl?msg=rejected_${id}`)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
