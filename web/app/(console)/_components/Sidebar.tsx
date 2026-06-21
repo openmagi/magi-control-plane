@@ -27,6 +27,7 @@ export async function Sidebar() {
     <div className="flex flex-col h-full">
       <Link
         href="/overview"
+        aria-label={t("nav.brand")}
         className="flex items-center gap-2 px-4 h-[var(--header-height)] border-b border-[var(--color-border-subtle)] text-[var(--color-text-primary)] hover:no-underline shrink-0"
       >
         <span aria-hidden="true" className="inline-block w-5 h-5 rounded-sm bg-[var(--color-accent)]" />

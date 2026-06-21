@@ -40,7 +40,7 @@
   --color-pass-bg:    #DCFCE7; /* green-100 */
   --color-review-fg:  #B45309; /* amber-700 */
   --color-review-bg:  #FEF3C7; /* amber-100 */
-  --color-deny-fg:    #DC2626; /* red-600 */
+  --color-deny-fg:    #B91C1C; /* red-700 (5.78:1 on red-100, WCAG AA) */
   --color-deny-bg:    #FEE2E2; /* red-100 */
   --color-info-fg:    #2563EB; /* blue-600 */
   --color-info-bg:    #DBEAFE; /* blue-100 */

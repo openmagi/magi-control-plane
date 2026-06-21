@@ -35,8 +35,9 @@ export function WorkspaceCard({ tenantId, plan, healthOk, host }: WorkspaceCardP
     <div className="mx-3 mb-4 mt-3 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-base)] px-3 py-2.5">
       <div className="flex items-center gap-2 mb-1.5">
         <span
-          className={`inline-block w-1.5 h-1.5 rounded-full ${dotColor}`}
+          role="img"
           aria-label={dotLabel}
+          className={`inline-block w-1.5 h-1.5 rounded-full ${dotColor}`}
         />
         <span className="text-xs text-[var(--color-text-tertiary)] truncate font-mono" translate="no">
           {host}

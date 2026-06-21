@@ -38,12 +38,22 @@ export function SidebarClient({
   // Close drawer on route change.
   useEffect(() => { setOpen(false) }, [pathname])
 
-  // Body scroll lock while drawer open.
+  // Body scroll lock + page content inert while drawer open.
+  // Background content gets aria-hidden so screen readers don't see it,
+  // and inert so Tab order skips it (cheap focus trap without full
+  // tabindex management).
   useEffect(() => {
     if (!open) return
     const prev = document.body.style.overflow
     document.body.style.overflow = "hidden"
-    return () => { document.body.style.overflow = prev }
+    const main = document.getElementById("main-content")
+    main?.setAttribute("aria-hidden", "true")
+    main?.setAttribute("inert", "")
+    return () => {
+      document.body.style.overflow = prev
+      main?.removeAttribute("aria-hidden")
+      main?.removeAttribute("inert")
+    }
   }, [open])
 
   // ESC closes drawer.
@@ -122,9 +132,10 @@ export function SidebarClient({
           type="button"
           onClick={() => setOpen(false)}
           aria-label={closeMenuLabel}
-          className="md:hidden absolute top-3 right-3 inline-flex items-center justify-center w-8 h-8 rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-base)] hover:text-[var(--color-text-primary)] cursor-pointer transition-colors duration-150 z-10"
+          style={{ width: 44, height: 44 }}
+          className="md:hidden absolute top-2 right-2 inline-flex items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-base)] hover:text-[var(--color-text-primary)] cursor-pointer transition-colors duration-150 z-10"
         >
-          <XMarkIcon aria-hidden="true" className="w-4 h-4" />
+          <XMarkIcon aria-hidden="true" style={{ width: 20, height: 20 }} />
         </button>
         {children}
       </aside>
