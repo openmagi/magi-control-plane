@@ -1,75 +1,12 @@
-import { cloud } from "@/lib/cloud"
-import { getIntl, getT } from "@/lib/i18n/server"
-import {
-  Badge, ErrorState, KPI, PageHeader,
-} from "@/components/ui"
+import { redirect } from "next/navigation"
 
-export const dynamic = "force-dynamic"
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
-
-type Summary = {
-  pending: number
-  chainOk: boolean
-  ledgerEntries: number
-  err?: string
-}
-
-async function loadSummary(): Promise<Summary> {
-  try {
-    // Fetch a large page of the ledger so we can show the actual entry count.
-    // The cloud's /ledger endpoint returns at most `limit` rows; we walk
-    // forward only as far as needed for the KPI display (cap at 1000).
-    const [hitl, ledger] = await Promise.all([
-      cloud.listHitl(),
-      cloud.ledger(0, 1000),
-    ])
-    return {
-      pending: hitl.length,
-      chainOk: ledger.chain_ok,
-      ledgerEntries: ledger.entries.length,
-    }
-  } catch (e: unknown) {
-    return { pending: 0, chainOk: false, ledgerEntries: 0, err: errMsg(e) }
-  }
-}
-
-export default async function Home() {
-  const { t } = await getT()
-  const { nf } = await getIntl()
-  const summary = await loadSummary()
-
-  return (
-    <>
-      <PageHeader title={t("overview.title")} />
-      {summary.err ? (
-        <ErrorState
-          status={t("common.cloudUnreachable")}
-          title={t("common.cloudUnreachable")}
-          body={t("common.seeServerLogs")}
-        />
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <KPI
-            label={t("overview.pendingReview")}
-            value={nf.format(summary.pending)}
-          />
-          <KPI
-            label={t("overview.auditChain")}
-            value={
-              summary.chainOk
-                ? <Badge variant="ok">{t("overview.auditChainOk")}</Badge>
-                : <Badge variant="deny">{t("overview.auditChainBroken")}</Badge>
-            }
-          />
-          <KPI
-            label={t("overview.ledgerEntries")}
-            value={nf.format(summary.ledgerEntries)}
-          />
-        </div>
-      )}
-    </>
-  )
+/**
+ * Root entry: send anonymous visitors to /welcome (marketing).
+ *
+ * Operators bookmark /overview directly for the KPI dashboard. The old
+ * "/ = dashboard" mapping is intentionally retired in v2.2 — see
+ * docs/plans/2026-06-21-dashboard-console-shell.md §1.
+ */
+export default function Root() {
+  redirect("/welcome")
 }

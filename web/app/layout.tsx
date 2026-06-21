@@ -1,8 +1,6 @@
 import "./globals.css"
 import type { Metadata, Viewport } from "next"
-import NavBarShell from "@/components/ui/NavBarShell"
-import Footer from "@/components/ui/Footer"
-import { getT } from "@/lib/i18n/server"
+import { getLocale, getT } from "@/lib/i18n/server"
 
 export const metadata: Metadata = {
   title: {
@@ -10,41 +8,36 @@ export const metadata: Metadata = {
     template: "%s · magi-control-plane",
   },
   description:
-    "Governance over Claude Code — out-of-loop terminal gate with cryptographic audit trail.",
+    "Governance over Claude Code. Out-of-loop terminal gate with cryptographic audit trail.",
 }
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: "#0c0d10",
-  // explicitly DO NOT disable zoom — accessibility (rule violation if maximumScale=1)
 }
 
+/**
+ * Root layout — minimal shell shared by both route groups:
+ *   (marketing) → NavBarShell + Footer (see app/(marketing)/layout.tsx)
+ *   (console)   → Sidebar + content    (see app/(console)/layout.tsx)
+ *
+ * The skip-link and the font preconnect live here because both shells
+ * need them. The actual chrome lives in the group layouts.
+ */
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const { locale, t } = await getT()
+  const locale = await getLocale()
+  const { t } = await getT()
   return (
     <html lang={locale} suppressHydrationWarning>
       <head>
-        <link
-          rel="preconnect"
-          href="https://cdn.jsdelivr.net"
-          crossOrigin="anonymous"
-        />
+        <link rel="preconnect" href="https://cdn.jsdelivr.net" crossOrigin="anonymous" />
       </head>
       <body>
         <a className="skip-link" href="#main-content">
           {t("nav.skipToMain")}
         </a>
-        <NavBarShell />
-        <main
-          id="main-content"
-          tabIndex={-1}
-          className="px-5 py-6 mx-auto outline-none"
-          style={{ maxWidth: "var(--content-max)" }}
-        >
-          {children}
-        </main>
-        <Footer />
+        {children}
       </body>
     </html>
   )

@@ -217,7 +217,7 @@ echo FILE_COURT_M1_D1`
               <Link href="/verify">
                 <Button variant="secondary" size="sm">{t("setup.tryVerify")}</Button>
               </Link>
-              <Link href="/">
+              <Link href="/overview">
                 <Button variant="ghost" size="sm">{t("setup.tryDashboard")}</Button>
               </Link>
             </div>
