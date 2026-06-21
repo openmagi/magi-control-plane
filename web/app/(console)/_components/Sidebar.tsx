@@ -13,11 +13,7 @@ const CLOUD_HOST = process.env.MAGI_CP_PUBLIC_CLOUD_URL
     : "cloud.openmagi.ai"
 
 /**
- * Fetches workspace context in parallel. Failures degrade gracefully:
- * - tenant null → WorkspaceCard renders "self-host" path
- * - healthOk false → amber dot
- * - hitlPending defaults to 0 on failure (no badge)
- *
+ * Fetches workspace context in parallel. Failures degrade gracefully.
  * Real cache wrapping (unstable_cache + revalidateTag) lands in D4.
  */
 async function loadSidebarData() {
@@ -37,21 +33,18 @@ async function loadSidebarData() {
 }
 
 /**
- * Console sidebar shell. Server-rendered chrome with workspace card +
- * 4 grouped nav sections (Authoring / Runtime / Audit / Setup) + footer.
- *
- * Mobile drawer behavior is handled by the parent SidebarClient (D3);
- * this component is structurally agnostic to drawer state.
+ * Console sidebar content. Returns the inner column only — the wrapping
+ * <aside> element + responsive positioning lives in SidebarClient, so
+ * the server fetch happens once and the client wrapper can flip the
+ * presentation between desktop sticky column and mobile slide-in drawer
+ * without re-rendering the content.
  */
 export async function Sidebar() {
   const { t } = await getT()
   const { tenant, healthOk, hitlPending } = await loadSidebarData()
 
   return (
-    <aside
-      className="hidden md:flex flex-col w-[var(--sidebar-width)] shrink-0 h-screen sticky top-0 bg-[var(--color-surface-raised)] border-r border-[var(--color-border-subtle)] overflow-y-auto"
-      aria-label={t("nav.primary")}
-    >
+    <div className="flex flex-col h-full">
       <Link
         href="/overview"
         className="flex items-center gap-2 px-4 h-[var(--header-height)] border-b border-[var(--color-border-subtle)] text-[var(--color-text-primary)] hover:no-underline shrink-0"
@@ -67,7 +60,7 @@ export async function Sidebar() {
         host={CLOUD_HOST}
       />
 
-      <nav className="px-3 flex-1" aria-label={t("nav.primary")}>
+      <nav className="px-3 flex-1 overflow-y-auto" aria-label={t("nav.primary")}>
         <NavGroup label={t("nav.group.authoring")}>
           <NavItem href="/policies" label={t("nav.policies")} icon="policies" />
           <NavItem href="/policies/compile" label={t("nav.compile")} icon="compile" />
@@ -90,6 +83,6 @@ export async function Sidebar() {
       </nav>
 
       <SidebarFooter />
-    </aside>
+    </div>
   )
 }

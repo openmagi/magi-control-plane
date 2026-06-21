@@ -1,16 +1,28 @@
+import { getT } from "@/lib/i18n/server"
 import { Sidebar } from "./_components/Sidebar"
+import { SidebarClient } from "./_components/SidebarClient"
 
 /**
  * Console shell: sidebar + content.
  *
- * Desktop only at D2 — mobile collapse (hamburger drawer) lands in D3.
- * The sidebar is sticky on the left and scrolls independently; main
- * content scrolls in its own column up to --content-max.
+ * Desktop (≥md): sticky sidebar column on the left, content fluid on
+ * the right.
+ *
+ * Mobile (<md): SidebarClient renders the sticky mobile header (with
+ * hamburger) at the top and a slide-in drawer containing the Sidebar.
+ * Content fills the full width below the header.
  */
-export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
+export default async function ConsoleLayout({ children }: { children: React.ReactNode }) {
+  const { t } = await getT()
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
+    <div className="md:flex md:min-h-screen">
+      <SidebarClient
+        openMenuLabel={t("nav.openMenu")}
+        closeMenuLabel={t("nav.closeMenu")}
+        brandLabel={t("nav.brand")}
+      >
+        <Sidebar />
+      </SidebarClient>
       <main
         id="main-content"
         tabIndex={-1}
