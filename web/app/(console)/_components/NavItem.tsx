@@ -65,8 +65,8 @@ export function NavItem({ href, label, icon, badge }: NavItemProps) {
           "transition-colors duration-150 ease-out cursor-pointer",
           "outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]/40",
           active
-            ? "bg-[var(--color-surface-overlay)] text-[var(--color-text-primary)]"
-            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-overlay)]/60 hover:text-[var(--color-text-primary)]",
+            ? "bg-[var(--color-surface-overlay)] text-[var(--color-accent)] font-medium"
+            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-base)] hover:text-[var(--color-text-primary)]",
         )}
       >
         <Icon
@@ -74,7 +74,7 @@ export function NavItem({ href, label, icon, badge }: NavItemProps) {
           className={cn(
             "w-4 h-4 shrink-0",
             active
-              ? "text-[var(--color-text-primary)]"
+              ? "text-[var(--color-accent)]"
               : "text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]",
           )}
         />

@@ -49,7 +49,7 @@ export async function Sidebar() {
 
   return (
     <aside
-      className="hidden md:flex flex-col w-[var(--sidebar-width)] shrink-0 h-screen sticky top-0 bg-[var(--color-surface-base)] border-r border-[var(--color-border-subtle)] overflow-y-auto"
+      className="hidden md:flex flex-col w-[var(--sidebar-width)] shrink-0 h-screen sticky top-0 bg-[var(--color-surface-raised)] border-r border-[var(--color-border-subtle)] overflow-y-auto"
       aria-label={t("nav.primary")}
     >
       <Link
@@ -61,7 +61,7 @@ export async function Sidebar() {
       </Link>
 
       <WorkspaceCard
-        tenantId={tenant?.id ?? null}
+        tenantId={tenant?.synthetic ? null : (tenant?.id ?? null)}
         plan={tenant?.plan ?? null}
         healthOk={healthOk}
         host={CLOUD_HOST}
