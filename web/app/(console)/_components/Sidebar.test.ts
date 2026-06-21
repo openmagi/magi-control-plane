@@ -1,0 +1,43 @@
+import { describe, it, expect } from "vitest"
+import { readFileSync } from "node:fs"
+import path from "node:path"
+
+/**
+ * Source-level invariants for Sidebar — guards the IA contract:
+ * 4 groups, 8 leaf items, all keyed to i18n + HITL badge plumbing.
+ */
+describe("Sidebar IA invariants", () => {
+  const src = readFileSync(
+    path.join(__dirname, "Sidebar.tsx"),
+    "utf-8",
+  )
+
+  it("renders all 4 domain groups in the expected order", () => {
+    const groups = src.match(/nav\.group\.\w+/g) ?? []
+    expect(groups).toEqual([
+      "nav.group.authoring",
+      "nav.group.runtime",
+      "nav.group.audit",
+      "nav.group.setup",
+    ])
+  })
+
+  it("contains exactly 8 NavItem entries (3+2+2+1)", () => {
+    const items = src.match(/<NavItem\b/g) ?? []
+    expect(items).toHaveLength(8)
+  })
+
+  it("wires the HITL pending-count badge", () => {
+    expect(src).toMatch(/icon="hitl"/)
+    expect(src).toMatch(/badge=\{hitlPending\}/)
+  })
+
+  it("uses cached getWorkspaceData (not an inline fetch)", () => {
+    expect(src).toMatch(/getWorkspaceData/)
+    expect(src).not.toMatch(/loadSidebarData/)   // D4 retired this name
+  })
+
+  it("respects tenant.synthetic when deciding self-host branch", () => {
+    expect(src).toMatch(/tenant\?\.synthetic \? null : \(tenant\?\.id \?\? null\)/)
+  })
+})
