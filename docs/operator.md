@@ -32,7 +32,36 @@ files.
 
 ## 1. First deploy
 
-### 1a. K8s cluster (FastAPI cloud)
+### 1. Paste-and-go (fly.io interim + Vercel, recommended for now)
+
+K8s prod cluster (204.168.161.172) is currently unreachable from the
+dev laptop; backend rides fly.io until the network path is fixed. One
+script handles everything:
+
+```bash
+fly auth login   # once
+vercel login     # once
+./scripts/deploy-alpha.sh
+```
+
+The script:
+1. Generates secrets at `.deploy/secrets.env` (gitignored, 0600).
+   Pauses so you can paste `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`.
+2. Creates fly.io app `magi-cp` in `nrt`, allocates dedicated IPs,
+   provisions 3GiB `magi_data` volume, stages secrets, deploys.
+3. Prints DNS records (A/AAAA for `api`, CNAME for `cloud`) and
+   waits for you to add them at the registrar.
+4. Adds Let's Encrypt cert for `api.openmagi.ai` via fly.
+5. Vercel links the dashboard, pushes all 7 env vars, deploys to
+   prod, registers `cloud.openmagi.ai` domain.
+6. Smoke-tests `/healthz` on api + `/welcome` on dash.
+
+Idempotent — re-run on any step failure; existing fly app + Vercel
+project + secrets are picked up.
+
+### 1a. K8s cluster (FastAPI cloud)  ← future migration
+
+When the prod cluster is reachable + `helm` installed:
 
 ```bash
 # In the existing magi-control-plane namespace on Kevin's K8s cluster.
