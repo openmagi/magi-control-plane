@@ -63,10 +63,10 @@ function Hero({ c }: { c: HeroCopy }) {
         {c.subtitle}
       </p>
       <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-        <Link href="/signup" prefetch={false}>
+        <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
           <Button variant="primary" size="lg">{c.cta}</Button>
-        </Link>
-        <Link href="#how" prefetch={false}>
+        </a>
+        <Link href="/install" prefetch={false}>
           <Button variant="ghost" size="lg">{c.ctaSecondary}</Button>
         </Link>
       </div>
@@ -135,9 +135,15 @@ function Pricing({ c, isKo }: { c: PricingCopy; isKo: boolean }) {
               ))}
             </ul>
             <div className="mt-5">
-              <Link href={p.primary ? "/signup" : "mailto:kevin@openmagi.ai"} prefetch={false}>
-                <Button variant={p.primary ? "primary" : "secondary"} size="md">{p.cta}</Button>
-              </Link>
+              {p.primary ? (
+                <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
+                  <Button variant="primary" size="md">{p.cta}</Button>
+                </a>
+              ) : (
+                <a href="https://github.com/openmagi/magi-control-plane" target="_blank" rel="noopener noreferrer">
+                  <Button variant="secondary" size="md">{p.cta}</Button>
+                </a>
+              )}
             </div>
           </Card>
         ))}
@@ -172,9 +178,12 @@ function CTA({ c }: { c: CTACopy }) {
     <section className="text-center rounded-lg border border-[var(--color-border-subtle)] p-10 bg-[var(--color-surface-overlay)]">
       <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
       <p className="mt-3 mx-auto max-w-xl text-sm text-[var(--color-text-secondary)] text-pretty">{c.body}</p>
-      <div className="mt-6">
-        <Link href="/signup" prefetch={false}>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
           <Button variant="primary" size="lg">{c.cta}</Button>
+        </a>
+        <Link href="/install" prefetch={false}>
+          <Button variant="ghost" size="lg">Self-host →</Button>
         </Link>
       </div>
     </section>
@@ -183,13 +192,13 @@ function CTA({ c }: { c: CTACopy }) {
 
 const KO = {
   hero: {
-    eyebrow: "Alpha · 한국 로펌 파일럿",
+    eyebrow: "Open Source · Apache 2.0",
     title: "Claude Code를 변호사가 안심하고 쓸 수 있게.",
     subtitle:
-      "터미널 밖에서 작동하는 거버넌스 게이트. 모델이 무엇을 호출하든, 매번 정책을 통과한 호출만 실행되고 — 모든 단계는 위·변조 불가능한 감사 원장에 기록됩니다. 변호사에게는 익숙한 워크플로, 파트너에게는 감사 가능한 증거.",
-    cta: "알파 신청하기",
-    ctaSecondary: "작동 방식 보기",
-    alpha: "현재 한국 로펌 대상 비공개 알파 — 무료, 영업일 기준 1일 내 응답",
+      "터미널 밖에서 작동하는 거버넌스 게이트. 모델이 무엇을 호출하든, 매번 정책을 통과한 호출만 실행되고, 모든 단계는 위·변조 불가능한 감사 원장에 기록됩니다. 자체 호스팅(무료)이거나 Clawy Pro+ 구독(호스티드 포함) 둘 다 가능.",
+    cta: "Pro+ 시작하기",
+    ctaSecondary: "또는 자체 호스팅",
+    alpha: "Apache 2.0 OSS · 코드 전체 GitHub 공개 · 운영 부담 없으려면 Clawy Pro+",
   },
   problems: {
     heading: "왜 magi-control-plane인가",
@@ -211,41 +220,43 @@ const KO = {
   how: {
     heading: "동작 방식",
     steps: [
-      { n: "1", title: "알파 신청", body: "이메일 한 줄로 신청. 영업일 1일 내 API 키와 설치 가이드를 보내드립니다." },
-      { n: "2", title: "managed-settings.json 설치", body: "5분 안에 끝나는 설치. ~/.claude/managed-settings.json 한 파일과 bash 게이트 스크립트 한 줄을 떨어뜨립니다." },
+      { n: "1", title: "키 발급", body: "Clawy Pro+ 결제 시 자동으로 테넌트 생성+ API 키 이메일 전달. 자체 호스팅이면 본인 인스턴스에서 발급." },
+      { n: "2", title: "한 줄 설치", body: "`curl -fsSL <인스턴스>/install.sh | bash -s -- mcp_…` 한 줄. ~/.claude/managed-settings.json + bash 게이트 자동 배치." },
       { n: "3", title: "정책 작성 또는 프리셋 선택", body: "자연어로 정책을 쓰면 LLM이 IR로 컴파일, 사람이 한 번 검토. 또는 한국 법무 도메인용 사전 정의 프리셋 사용." },
-      { n: "4", title: "Claude Code 사용", body: "변호사는 평소처럼 Claude Code 사용. 모델이 도구를 호출할 때마다 PreToolUse 게이트가 정책을 적용 — 통과만 실행, 거부는 차단, 검토 필요는 큐로." },
+      { n: "4", title: "Claude Code 사용", body: "변호사는 평소처럼 Claude Code 사용. 모델이 도구를 호출할 때마다 PreToolUse 게이트가 정책을 적용. 통과만 실행, 거부는 차단, 검토 필요는 큐로." },
       { n: "5", title: "감사 원장 확인", body: "대시보드에서 모든 통과·거부·HITL 결정을 시간순으로 확인. 체인 무결성 검증은 한 번의 GET 요청." },
     ],
   },
   pricing: {
-    heading: "가격",
+    heading: "두 가지 선택지",
     plans: [
       {
-        name: "Alpha 파일럿",
+        name: "Self-host",
         price: "무료",
-        cap: "알파 기간 한정",
+        cap: "Apache 2.0 OSS · 영구",
         features: [
-          "전 기능 사용 (정책 컴파일, 검증, HITL, 감사 원장)",
-          "한국 법무 도메인 프리셋",
-          "이메일 + Slack 지원 (영업일 4시간 내 응답)",
-          "전용 테넌트, 데이터 격리",
+          "전체 코드 GitHub 공개 (코드 직접 감사 가능)",
+          "Helm chart / fly.io / docker compose 다 지원",
+          "본인 인프라에 본인 데이터 (감사 원장 본인 PVC 안)",
+          "한국 법무 도메인 프리셋 포함",
+          "GitHub Discussions 커뮤니티 지원",
         ],
-        cta: "알파 신청",
-        primary: true,
+        cta: "GitHub 가서 보기",
+        primary: false,
       },
       {
-        name: "GA (예정)",
-        price: "—",
-        cap: "별도 안내",
+        name: "Clawy Pro+",
+        price: "포함",
+        cap: "Pro+ 구독에 호스티드 포함",
         features: [
-          "GA 출시 시 알파 사용자에게 우선 안내",
-          "단일 노드 + 멀티 노드 옵션",
-          "엔터프라이즈 SSO, 별도 SLA",
-          "전용 한국 리전 배포 옵션",
+          "운영 부담 0 (저희가 호스티드 인스턴스 운영)",
+          "Pro+ 결제 자동 프로비저닝 (Stripe webhook → 키 이메일)",
+          "한국 리전 배포, 데이터 격리, 이메일 + Slack 지원",
+          "자동 키 회전, 감사 원장 백업 포함",
+          "GA SLA 99.5% (알파 기간엔 best-effort)",
         ],
-        cta: "관심 등록",
-        primary: false,
+        cta: "Pro+ 구독 시작",
+        primary: true,
       },
     ],
   },
@@ -262,7 +273,7 @@ const KO = {
       },
       {
         q: "온프레미스 배포가 가능한가요?",
-        a: "전체 코드는 GitHub에 공개되며, Helm chart로 자체 호스팅 가능합니다. 알파 기간에는 OpenMagi 호스팅 인스턴스(cloud.openmagi.ai) 사용을 권장 — 운영 부담 없이 빠르게 시작.",
+        a: "예. magi-control-plane 은 Apache 2.0 OSS. 코드 전체가 GitHub 에 있고 Helm chart / fly.io / docker compose 다 지원합니다. 운영 부담 없으려면 Clawy Pro+ 구독으로 저희 호스티드 인스턴스(cloud.openmagi.ai) 사용.",
       },
       {
         q: "감사 원장은 정말 위·변조 불가능한가요?",
@@ -276,8 +287,8 @@ const KO = {
   },
   cta: {
     heading: "5분 안에 시작하세요",
-    body: "비공개 알파 — 한국 로펌 우선. 이메일 한 줄이면 응답드립니다.",
-    cta: "알파 신청하기",
+    body: "Clawy Pro+ 결제 = 자동 키 발급 + 호스티드 인스턴스. 또는 GitHub 에서 본인 인프라에 직접 호스팅.",
+    cta: "Pro+ 시작하기",
   },
 } satisfies {
   hero: HeroCopy; problems: ProblemsCopy; how: HowCopy;
@@ -286,13 +297,13 @@ const KO = {
 
 const EN = {
   hero: {
-    eyebrow: "Alpha · Korean Law Firm Pilot",
+    eyebrow: "Open Source · Apache 2.0",
     title: "Make Claude Code safe for lawyers.",
     subtitle:
-      "An out-of-loop governance gate. Every tool call Claude Code makes is policy-checked at execution time — only compliant calls run, and every step is sealed in a tamper-evident audit ledger. Familiar workflow for lawyers, auditable evidence for partners.",
-    cta: "Apply for Alpha",
-    ctaSecondary: "How it works",
-    alpha: "Currently in private alpha for Korean law firms — free, 1 business day response",
+      "An out-of-loop governance gate. Every tool call Claude Code makes is policy-checked at execution time. Only compliant calls run, and every step is sealed in a tamper-evident audit ledger. Self-host (free) or get it included with your Clawy Pro+ subscription.",
+    cta: "Start with Pro+",
+    ctaSecondary: "Or self-host",
+    alpha: "Apache 2.0 open source. Full code on GitHub. Hosted via Clawy Pro+ when you'd rather not run ops.",
   },
   problems: {
     heading: "Why magi-control-plane",
@@ -308,30 +319,32 @@ const EN = {
   how: {
     heading: "How it works",
     steps: [
-      { n: "1", title: "Apply for alpha", body: "One email. We send your API key + install guide within 1 business day." },
-      { n: "2", title: "Install managed-settings.json", body: "5-minute install. One file at ~/.claude/managed-settings.json plus a one-line bash gate." },
-      { n: "3", title: "Author policy or pick a preset", body: "Write policy in natural language — LLM compiles to IR, human reviews. Or use the prebuilt Korean legal-domain preset." },
-      { n: "4", title: "Use Claude Code", body: "Lawyers work as usual. Every tool call triggers PreToolUse — passes execute, denies block, reviews enter the HITL queue." },
+      { n: "1", title: "Get a key", body: "Subscribe to Clawy Pro+ — tenant + API key auto-provisioned, emailed within seconds. Self-hosting? Issue your own key locally." },
+      { n: "2", title: "One-line install", body: "`curl -fsSL <your-instance>/install.sh | bash -s -- mcp_…`. Drops ~/.claude/managed-settings.json + bash gate, runs a smoke test." },
+      { n: "3", title: "Author policy or pick a preset", body: "Write policy in natural language. LLM compiles to IR, human reviews. Or use the prebuilt Korean legal-domain preset." },
+      { n: "4", title: "Use Claude Code", body: "Lawyers work as usual. Every tool call triggers PreToolUse. Passes execute, denies block, reviews enter the HITL queue." },
       { n: "5", title: "Inspect the audit ledger", body: "Dashboard shows every pass/deny/HITL decision in time order. Chain integrity verified with a single GET." },
     ],
   },
   pricing: {
-    heading: "Pricing",
+    heading: "Two ways to run it",
     plans: [
-      { name: "Alpha pilot", price: "Free", cap: "alpha period",
+      { name: "Self-host", price: "Free", cap: "Apache 2.0 OSS · forever",
         features: [
-          "All features (policy compile, verify, HITL, audit ledger)",
-          "Korean legal-domain preset",
-          "Email + Slack support (4h response)",
-          "Dedicated tenant, data isolation",
-        ], cta: "Apply for alpha", primary: true },
-      { name: "GA (planned)", price: "—", cap: "TBD",
+          "Full source on GitHub (audit the code yourself)",
+          "Helm chart / fly.io / docker compose supported",
+          "Your infra, your data (audit ledger on your PVC)",
+          "Korean legal-domain preset included",
+          "Community support via GitHub Discussions",
+        ], cta: "See on GitHub", primary: false },
+      { name: "Clawy Pro+", price: "Included", cap: "bundled into Pro+ subscription",
         features: [
-          "Alpha users get priority notice at GA",
-          "Single + multi-node deploy options",
-          "Enterprise SSO, dedicated SLA",
-          "Optional dedicated Korea-region deploy",
-        ], cta: "Register interest", primary: false },
+          "Zero ops — we run the hosted instance",
+          "Auto-provisioned at subscribe time (Stripe → key emailed)",
+          "Korea-region deploy, data isolation, email + Slack support",
+          "Auto key rotation + audit-ledger backups",
+          "GA SLA 99.5% (best-effort during alpha)",
+        ], cta: "Start Pro+", primary: true },
     ],
   },
   faq: {
@@ -342,7 +355,7 @@ const EN = {
       { q: "Do you support coding tools other than Claude Code?",
         a: "Today we integrate via Claude Code's hooks mechanism. Cursor/Continue are on the roadmap; alpha-user demand drives priority." },
       { q: "Can I deploy on-prem?",
-        a: "All code is on GitHub; self-host via the Helm chart. During alpha we recommend our hosted instance (cloud.openmagi.ai) so you can move quickly without ops overhead." },
+        a: "Yes — magi-control-plane is Apache 2.0. Full source on GitHub, Helm chart + fly.io + docker compose all supported. If you'd rather not run ops, our hosted instance (cloud.openmagi.ai) is bundled into every Clawy Pro+ subscription." },
       { q: "Is the ledger really tamper-evident?",
         a: "Each entry is SHA-256 hashed and chained to the previous entry's hash, then Ed25519-signed. Any single-row edit invalidates every subsequent hash. Key rotation (kid) preserves history even if a signing key is rotated." },
       { q: "How does the HITL queue work?",
@@ -351,8 +364,8 @@ const EN = {
   },
   cta: {
     heading: "Get started in 5 minutes",
-    body: "Private alpha — Korean law firms prioritized. One email and we'll get back to you.",
-    cta: "Apply for Alpha",
+    body: "Subscribe to Clawy Pro+ for auto-provisioned hosted. Or fork on GitHub and self-host on your own infra.",
+    cta: "Start Pro+",
   },
 } satisfies {
   hero: HeroCopy; problems: ProblemsCopy; how: HowCopy;
