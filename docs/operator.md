@@ -27,8 +27,13 @@ Two surfaces, two hostnames, one user-facing URL:
 
 The runtime gate on the user's laptop calls `api.openmagi.ai`
 directly — never via the dashboard. The dashboard's only job is
-authoring (policies, presets, signup triage) + serving the install
-files.
+authoring (policies, presets) + serving the install files.
+
+Tenant provisioning is automatic: the Clawy Stripe webhook calls
+`POST /admin/tenants` on subscription start (HMAC-signed; see
+`src/magi_cp/cloud/app.py` `_attach_admin_tenant_routes`). There is no
+operator triage queue — see `docs/clawy-integration.md` for the
+end-to-end contract.
 
 ## 1. First deploy
 
@@ -121,30 +126,19 @@ unfortunately cannot reach private networks — either run the dashboard
 on-cluster too (separate Helm chart, not shipped) or leave the public
 api hostname as the integration point.
 
-## 2. Triaging alpha signups (per applicant)
+## 2. Tenant provisioning
 
-1. Visit dashboard `https://cloud.openmagi.ai/admin/signups?status=pending`.
-2. Read the application. Apply triage criteria:
-   - Real firm? (gmail-only addresses → `rejected` unless firm name resolves)
-   - Use case names a real Claude Code workflow they're already running?
-   - Geography KO/JP-adjacent (alpha is KR-first; English-only ROW = waitlist)
-3. Approve → click "승인 / Approve" with the **"provision"** checkbox
-   left checked (default). The dashboard:
-   1. POSTs `/admin/signups/N/status?status=approved&notes=…` (admin key)
-   2. POSTs `/admin/tenants` (HMAC) with a derived `tenant_id` from the
-      applicant's email (alphanumeric + 4 random chars, idempotent)
-   3. POSTs `/admin/tenants/{tenant_id}/keys` (HMAC) → cleartext `mcp_…`
-   4. Displays the cleartext key in a short-lived (10 min, HttpOnly)
-      banner — copy it now, the backend never re-emits it
-4. Email the applicant the `mcp_…` key + a link to
-   `https://cloud.openmagi.ai/welcome` and the install guide.
+Automatic on Clawy Pro+ subscription start. The Clawy Stripe webhook:
 
-> Prereqs for the one-click flow: the Vercel dashboard env needs **both**
-> `MAGI_CP_ADMIN_API_KEY` AND `MAGI_CP_ADMIN_HMAC_SECRET`. If the HMAC
-> secret is missing, the dashboard falls back to approval-only and you
-> must provision manually via `kubectl exec` (see §3).
+1. POSTs `/admin/tenants` (HMAC-signed with `MAGI_CP_ADMIN_HMAC_SECRET`)
+   with `{tenant_id, plan: "pro_plus"}`
+2. POSTs `/admin/tenants/{tenant_id}/keys` (HMAC) → cleartext `mcp_…`
+3. Emails the subscriber the key + install link
 
-## 3. Manual provisioning (fallback)
+Wire contract details: `docs/clawy-integration.md`. The cloud's HMAC
+contract: `src/magi_cp/cloud/app.py` `_attach_admin_tenant_routes`.
+
+## 3. Manual provisioning (operator fallback for self-host or recovery)
 
 ```bash
 kubectl exec -n magi-cp deploy/magi-cp -- \
@@ -174,9 +168,8 @@ doc_id)`, so rotation is non-disruptive for clients already in flight.
 | Symptom | First check | Likely cause |
 |---------|------------|--------------|
 | 5xx surge on `/verify/*` | `kubectl logs -n magi-cp deploy/magi-cp` | PG connection saturated; bump replicas or pool size |
-| HITL queue stuck pending | Vercel logs → `/admin/signups` rendering 401 | `MAGI_CP_ADMIN_API_KEY` rotated on K8s but not on Vercel |
+| Pro+ subscribers not auto-provisioned | Clawy logs for the Stripe webhook | HMAC secret rotated on cloud but not on Clawy; check signature mismatch |
 | Gate denying everyone with `cloud unreachable` | `curl https://api.openmagi.ai/pubkey?kid=…` | DNS regression, cert expiry, or Ingress controller down |
-| Signup rate-limit triggering legit users | `kubectl exec deploy/magi-cp -- magi-cp signups list-by-ip $ip` | Corporate NAT; raise IP-based limit or add per-domain bypass |
 | Dashboard shows stale tenant data | check `MAGI_CP_PUBLIC_CLOUD_URL` env on Vercel | post-deploy env var not propagated; redeploy |
 
 Rollback paths:
@@ -186,7 +179,7 @@ Rollback paths:
 ## 6. Off-boarding (future GA migration)
 
 When GA launches and free-tier closes:
-1. Email all `alpha_signups.status='approved'` users with the migration window.
+1. Email all `tenants.status='active' AND plan='alpha'` users with the migration window.
 2. Mark their tenants `status='grace'` (60 days) — gate still allows but
    shows a deprecation banner in the dashboard.
 3. After grace: tenant → `disabled`. Existing audit ledger entries preserved
@@ -196,14 +189,12 @@ When GA launches and free-tier closes:
 
 ```bash
 kubectl exec -n magi-cp deploy/magi-cp -- magi-cp evidence prune --older-than 90d
-kubectl exec -n magi-cp deploy/magi-cp -- magi-cp signups prune \
-  --status rejected --older-than 365d
 ```
 
 PIPA-aligned retention windows (matches `/legal/privacy`):
 - Audit ledger: tenant lifetime + 30 days
 - Operational logs: 90 days
-- Signup records: 3 years (rejected immediately on opt-out request)
+- Pro+ subscription records: while active + 3 years (deleted on opt-out)
 
 ## 8. Alternative single-binary deploy (fly.io)
 

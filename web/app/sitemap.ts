@@ -12,7 +12,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date("2026-06-20T00:00:00Z")
   const routes = [
     { url: "/welcome",         changeFreq: "weekly",  priority: 1.0 },
-    { url: "/signup",          changeFreq: "monthly", priority: 0.8 },
+    { url: "/install",         changeFreq: "monthly", priority: 0.8 },
     { url: "/legal/terms",     changeFreq: "yearly",  priority: 0.3 },
     { url: "/legal/privacy",   changeFreq: "yearly",  priority: 0.3 },
   ] as const

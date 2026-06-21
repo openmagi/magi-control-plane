@@ -247,28 +247,6 @@ export const cloud = {
       }),
     }),
 
-  /** Submit a public alpha-pilot signup. No auth — backend rate-limits per IP. */
-  signup: async (input: {
-    email: string
-    firm?: string
-    role?: string
-    use_case?: string
-    referrer?: string
-  }): Promise<{ id: number; status: string }> => {
-    const r = await fetch(`${_cloudUrl()}/signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      cache: "no-store",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!r.ok) {
-      console.error(`cloud ${r.status} /signup`)
-      throw new Error(`cloud ${r.status}`)
-    }
-    return r.json()
-  },
-
   /** Fetch the calling tenant's identity. Used by /setup. */
   getMyTenant: (apiKey: string): Promise<{
     id: string
@@ -288,25 +266,6 @@ export const cloud = {
         throw new Error(`cloud ${r.status}`)
       }
       return r.json()
-    })
-  },
-
-  /** List alpha signup applications. Admin only. */
-  listSignups: (status?: "pending" | "approved" | "rejected"): Promise<Signup[]> => {
-    const qs = status ? `?status=${encodeURIComponent(status)}&limit=500` : "?limit=500"
-    return _fetch<{ items: Signup[] }>(`/admin/signups${qs}`,
-      { method: "GET", keyType: "admin" }).then(d => d.items)
-  },
-
-  /** Approve / reject a signup with an optional note. Backend reads status +
-   * notes as query params (see app.py admin_update_signup signature).
-   * Provisioning the tenant + API key is a separate POST /admin/tenants step
-   * (operator runbook). */
-  decideSignup: (signupId: number, status: "approved" | "rejected", notes: string = ""):
-    Promise<{ id: number; status: string }> => {
-    const qs = `?status=${encodeURIComponent(status)}&notes=${encodeURIComponent(notes)}`
-    return _fetch(`/admin/signups/${signupId}/status${qs}`, {
-      method: "POST", keyType: "admin",
     })
   },
 
@@ -356,19 +315,6 @@ export type CompileResult = {
   ir: Record<string, unknown>
   review: { ok: boolean; issues: string[] }
   schema_issues: string[]
-}
-
-export type Signup = {
-  id: number
-  ts_created: number
-  email: string
-  firm: string | null
-  role: string | null
-  use_case: string | null
-  referrer: string | null
-  source_ip: string | null
-  status: "pending" | "approved" | "rejected"
-  notes: string | null
 }
 
 export type PresetEntry = {

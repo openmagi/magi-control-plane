@@ -207,31 +207,7 @@ describe("cloud client", () => {
     await expect(cloud.compilePolicy("x")).rejects.toThrow("cloud 503")
   })
 
-  // ── v2.1-D5: admin signup + provisioning ────────────────────────────
-  it("listSignups passes filter as query param and X-Admin-Api-Key", async () => {
-    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
-    let captured: any
-    global.fetch = vi.fn(async (url: any, init: any) => {
-      captured = { url: String(url), init }
-      return new Response(JSON.stringify({ items: [] }), { status: 200 }) as any
-    })
-    await cloud.listSignups("pending")
-    expect(captured.url).toBe("http://test/admin/signups?status=pending&limit=500")
-    expect(captured.init.headers.get("X-Admin-Api-Key")).toBe("admin-test")
-  })
-
-  it("decideSignup sends status + notes as query params (backend contract)", async () => {
-    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
-    let captured: any
-    global.fetch = vi.fn(async (url: any, init: any) => {
-      captured = { url: String(url), init }
-      return new Response("{}", { status: 200 }) as any
-    })
-    await cloud.decideSignup(42, "approved", "looks legit")
-    expect(captured.url).toBe("http://test/admin/signups/42/status?status=approved&notes=looks%20legit")
-    expect(captured.init.method).toBe("POST")
-  })
-
+  // ── v2.2: tenant provisioning (signup queue retired) ─────────────────
   it("createTenant signs body with HMAC and sends x-magi-signature", async () => {
     process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret-xxxx"
     let captured: any
@@ -290,18 +266,4 @@ describe("cloud client", () => {
     expect(out.tenantId).toBe("t-1")
   })
 
-  it("signup posts JSON to /signup with no auth header", async () => {
-    let captured: any
-    global.fetch = vi.fn(async (url: any, init: any) => {
-      captured = { url: String(url), init }
-      return new Response(JSON.stringify({ id: 1, status: "pending" }), { status: 200 }) as any
-    })
-    await cloud.signup({ email: "x@firm.kr", firm: "Firm" })
-    expect(captured.url).toBe("http://test/signup")
-    expect(captured.init.method).toBe("POST")
-    // Public endpoint — no admin/api/hitl keys leak in
-    const headersObj = captured.init.headers
-    expect(headersObj["X-Admin-Api-Key"]).toBeUndefined()
-    expect(headersObj["X-Api-Key"]).toBeUndefined()
-  })
 })

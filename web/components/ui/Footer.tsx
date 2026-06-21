@@ -5,10 +5,10 @@ import { getLocale } from "@/lib/i18n/server"
 export default function Footer() {
   const locale = getLocale()
   const labelAbout   = locale === "ko" ? "소개"          : "About"
+  const labelInstall = locale === "ko" ? "설치"          : "Install"
   const labelTerms   = locale === "ko" ? "이용약관"       : "Terms"
   const labelPrivacy = locale === "ko" ? "개인정보처리방침" : "Privacy"
   const labelContact = locale === "ko" ? "문의"          : "Contact"
-  const labelSignup  = locale === "ko" ? "알파 신청"      : "Apply"
   const labelGithub  = "GitHub"
   return (
     <footer
@@ -24,14 +24,14 @@ export default function Footer() {
           <Link href="/welcome" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
             {labelAbout}
           </Link>
+          <Link href="/install" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+            {labelInstall}
+          </Link>
           <Link href="/legal/terms" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
             {labelTerms}
           </Link>
           <Link href="/legal/privacy" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
             {labelPrivacy}
-          </Link>
-          <Link href="/signup" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
-            {labelSignup}
           </Link>
           <a
             href="mailto:kevin@openmagi.ai"

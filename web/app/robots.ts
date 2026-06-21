@@ -13,7 +13,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: "*",
-        allow: ["/welcome", "/signup", "/legal/", "/install.sh"],
+        allow: ["/welcome", "/install", "/legal/", "/install.sh"],
         disallow: [
           "/",
           "/policies/",
@@ -22,7 +22,6 @@ export default function robots(): MetadataRoute.Robots {
           "/ledger",
           "/presets",
           "/setup",
-          "/admin/",
           "/api/",
         ],
       },

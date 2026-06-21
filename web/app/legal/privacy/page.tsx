@@ -8,7 +8,7 @@ const KO = `
 
 본 서비스 운영을 위해 회사는 다음 정보를 수집합니다.
 
-- **계정 정보**: 이메일, 소속 firm/회사, 역할, 사용 목적 (알파 신청 시)
+- **계정 정보**: 이메일, 소속 firm/회사 (Clawy Pro+ 결제 시 Stripe 경유)
 - **사용 데이터**: API 호출 시간 / endpoint / 응답 코드 — 사용자 식별 정보 미포함
 - **감사 원장**: 사용자가 작성한 정책, 검증 결과, HITL 의사결정 — 사용자
   테넌트 내에서만 보관
@@ -19,7 +19,7 @@ const KO = `
 
 ## 2. 이용 목적
 
-수집된 정보는 (i) 본 서비스 제공, (ii) 보안 침해 대응, (iii) 알파 사용자 지원에만
+수집된 정보는 (i) 본 서비스 제공, (ii) 보안 침해 대응, (iii) 사용자 지원에만
 사용됩니다. 마케팅이나 광고 목적으로 사용하지 않습니다.
 
 ## 3. 제3자 제공
@@ -37,7 +37,7 @@ const KO = `
 
 - 감사 원장: 사용자 테넌트 활성 기간 + 종료 후 30일
 - 운영 로그: 90일
-- 알파 신청 정보: 3년 (마케팅 거부 시 즉시 삭제)
+- Pro+ 가입 정보: 구독 활성 + 종료 후 3년 (마케팅 거부 시 즉시 삭제)
 
 ## 5. 사용자 권리
 
@@ -75,7 +75,7 @@ const EN = `
 
 To operate the Service we collect:
 
-- **Account info**: email, firm/company, role, intended use (at signup)
+- **Account info**: email, firm/company (passed through from Stripe at Clawy Pro+ checkout)
 - **Usage data**: timestamp / endpoint / status code — no PII
 - **Audit ledger**: your policies, verifier verdicts, HITL decisions —
   isolated to your tenant
@@ -104,7 +104,7 @@ you type into /policies/compile**. No other tenant data is sent.
 
 - Audit ledger: while your tenant is active + 30 days
 - Operational logs: 90 days
-- Alpha signup records: 3 years (deleted immediately on opt-out)
+- Pro+ subscription records: while active + 3 years (deleted immediately on opt-out)
 
 ## 5. Your rights
 
