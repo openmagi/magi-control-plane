@@ -12,10 +12,12 @@ export interface CategorySectionProps {
 }
 
 /**
- * Collapsible category container using native <details>. No JS state
- * required — the disclosure widget is keyboard + screen-reader
- * friendly out of the box. The chevron rotates via the
- * group-open Tailwind variant.
+ * Collapsible category container — list shell, not a grid. Children
+ * are PresetRow elements that supply their own border-bottom dividers
+ * (last:border-b-0 strips the trailing one).
+ *
+ * Layout mirrors the magi-agent Customize section: bold inline header,
+ * single-column list of rows on a flat white card.
  */
 export function CategorySection({
   id, title, hint, countLabel, defaultOpen = true, children,
@@ -24,28 +26,24 @@ export function CategorySection({
     <details
       id={id}
       open={defaultOpen}
-      className="group rounded-2xl border border-black/[0.06] bg-white/60 backdrop-blur-xl overflow-hidden"
+      className="group rounded-2xl border border-black/[0.06] bg-white overflow-hidden"
     >
-      <summary className="flex items-center gap-3 px-5 py-4 cursor-pointer list-none select-none hover:bg-white/80 transition-colors duration-150">
+      <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer list-none select-none hover:bg-gray-50/60 transition-colors duration-150 border-b border-transparent group-open:border-black/[0.06]">
         <ChevronDownIcon
           aria-hidden="true"
           className="w-4 h-4 text-[var(--color-text-tertiary)] transition-transform duration-200 group-open:rotate-0 -rotate-90"
         />
-        <h2 className="text-md font-semibold text-[var(--color-text-primary)] m-0">
+        <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0">
           {title}
         </h2>
-        <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
+        <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums ml-auto">
           {countLabel}
         </span>
       </summary>
-      <div className="px-5 pb-5 pt-1 space-y-2">
-        <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
-          {hint}
-        </p>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {children}
-        </div>
+      <div className="px-5 pt-2 pb-1 text-[11px] uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
+        {hint}
       </div>
+      <div>{children}</div>
     </details>
   )
 }
