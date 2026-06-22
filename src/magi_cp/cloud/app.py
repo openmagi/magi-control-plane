@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import time
 from pathlib import Path
 
@@ -37,7 +38,7 @@ from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
 from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
-from .policy_store import PolicyStore
+from .policy_store import PolicyStore, _evidence_req_to_dict
 from .db import HitlRepo, HitlStatus, LedgerRepo, init_schema, make_engine
 from .keys import KeyStore
 from .presets_catalog import vendor_catalog
@@ -105,6 +106,32 @@ class VerifyDispatchReq(BaseModel):
     def model_post_init(self, _ctx) -> None:
         # Pydantic v2: enforce payload's serialized size after construction.
         # JSON encoding is cheap relative to the regex pass that would follow.
+        import json as _json
+        encoded = _json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_VERIFIER_PAYLOAD_BYTES:
+            raise ValueError(
+                f"verifier payload too large: {len(encoded)} > "
+                f"{MAX_VERIFIER_PAYLOAD_BYTES} bytes"
+            )
+
+
+class VerifyInlineReq(BaseModel):
+    """D35: dispatch an inline EvidenceReq (regex / llm_critic / shacl).
+
+    The gate sends this for any non-`step` requires entry on a policy.
+    Step-kind entries continue to use the existing /verify/{step}
+    endpoint so the registered verifier instance handles them with
+    no closure into the cloud layer."""
+    kind: str = Field(..., pattern="^(regex|llm_critic|shacl)$")
+    payload: dict
+    matter: str = Field(default="generic", min_length=1, max_length=128)
+    doc_id: str = Field(default="generic", min_length=1, max_length=128)
+    # kind-specific
+    pattern: str | None = Field(default=None, max_length=2000)
+    criterion: str | None = Field(default=None, max_length=4000)
+    shape_ttl: str | None = Field(default=None, max_length=16000)
+
+    def model_post_init(self, _ctx) -> None:
         import json as _json
         encoded = _json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
         if len(encoded) > MAX_VERIFIER_PAYLOAD_BYTES:
@@ -467,6 +494,140 @@ def create_app(
         return {"verdict": "deny", "token": None,
                 "reasons": list(verdict.reasons)}
 
+    # ── D35: inline EvidenceReq dispatch (regex/llm_critic/shacl) ──
+    # Path uses an underscore so it doesn't collide with the
+    # `/verify/{step}` wildcard registered above (which would otherwise
+    # capture "inline" as the step name).
+    @app.post("/verify_inline", dependencies=[Depends(require_tenant_auth)])
+    async def verify_inline(req: VerifyInlineReq, request: Request) -> dict:
+        """Dispatch a non-step EvidenceReq evaluated in-cloud.
+
+        regex      — pure stdlib, fully wired.
+        llm_critic — uses MAGI_CP_LLM_COMPILER provider when configured;
+                     returns "review" with a preview reason otherwise.
+        shacl      — uses pyshacl when installed; otherwise "review"
+                     preview with import-failure reason.
+
+        All three paths append to the audit ledger on pass/deny so the
+        catalog endpoint and downstream HITL queue see the same shape
+        as step-kind dispatch.
+        """
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        kind = req.kind
+        step_label = f"inline_{kind}"
+        # Pull the text-typed slice of payload for regex / llm_critic;
+        # SHACL works on the dict shape directly.
+        payload_text = ""
+        try:
+            txt = req.payload.get("text") if isinstance(req.payload, dict) else None
+            if isinstance(txt, str):
+                payload_text = txt
+            else:
+                import json as _json
+                payload_text = _json.dumps(req.payload, ensure_ascii=False)[:8000]
+        except Exception:
+            payload_text = ""
+
+        verdict_status: str = "deny"
+        reasons: list[str] = []
+        if kind == "regex":
+            if not req.pattern:
+                raise HTTPException(422, "kind=regex requires pattern")
+            try:
+                rx = re.compile(req.pattern)
+            except re.error as e:
+                raise HTTPException(422, f"pattern fails to compile: {e}")
+            if rx.search(payload_text):
+                verdict_status = "pass"
+                reasons = [f"pattern matched: {req.pattern[:80]}"]
+            else:
+                verdict_status = "deny"
+                reasons = [f"pattern did not match: {req.pattern[:80]}"]
+        elif kind == "llm_critic":
+            if not req.criterion:
+                raise HTTPException(422, "kind=llm_critic requires criterion")
+            if llm_compiler is None:
+                verdict_status = "review"
+                reasons = [
+                    "llm_critic preview: MAGI_CP_LLM_COMPILER not configured — "
+                    "policy authored but runtime evaluation deferred to HITL.",
+                ]
+            else:
+                # Lightweight one-call yes/no critic. The compiler-side
+                # provider already handles auth + timeout; we use it for
+                # judgment too.
+                prompt = (
+                    "You are a strict gate. Reply with exactly YES or NO on "
+                    "the first line, then a one-sentence rationale.\n\n"
+                    f"CRITERION: {req.criterion}\n\n"
+                    f"PAYLOAD:\n{payload_text[:4000]}"
+                )
+                try:
+                    raw = await asyncio.to_thread(
+                        llm_compiler.complete, prompt,
+                        max_output_tokens=200,
+                    )
+                except Exception as e:
+                    verdict_status = "deny"
+                    reasons = [f"llm_critic provider error: {type(e).__name__}"]
+                else:
+                    head = (raw or "").strip().split("\n", 1)[0].strip().upper()
+                    if head.startswith("YES"):
+                        verdict_status = "pass"
+                        reasons = [f"llm_critic YES — {raw[:200]}"]
+                    else:
+                        verdict_status = "deny"
+                        reasons = [f"llm_critic NO — {raw[:200]}"]
+        elif kind == "shacl":
+            if not req.shape_ttl:
+                raise HTTPException(422, "kind=shacl requires shape_ttl")
+            try:
+                import pyshacl, rdflib  # type: ignore[import-not-found]
+            except ImportError:
+                verdict_status = "review"
+                reasons = [
+                    "shacl preview: pyshacl not installed — install the [shacl] "
+                    "extra to enable runtime validation.",
+                ]
+            else:
+                try:
+                    data = rdflib.Graph()
+                    # Treat payload["evidence_ttl"] or full dict as data:
+                    ev_ttl = req.payload.get("evidence_ttl") if isinstance(req.payload, dict) else None
+                    if isinstance(ev_ttl, str):
+                        data.parse(data=ev_ttl, format="turtle")
+                    conforms, _, results_text = pyshacl.validate(
+                        data, shacl_graph=req.shape_ttl,
+                        inference="none", advanced=False,
+                    )
+                    if conforms:
+                        verdict_status = "pass"
+                        reasons = ["shacl conforms"]
+                    else:
+                        verdict_status = "deny"
+                        reasons = [f"shacl violation: {str(results_text)[:240]}"]
+                except Exception as e:
+                    verdict_status = "deny"
+                    reasons = [f"shacl error: {type(e).__name__}: {str(e)[:200]}"]
+        else:
+            raise HTTPException(422, f"unsupported kind: {kind!r}")
+
+        if verdict_status in ("pass", "review"):
+            async with chain_lock:
+                result = _issue_token(
+                    req.matter, req.doc_id, verdict_status,
+                    ledger=ledger, keystore=ks, kid=kid, step=step_label,
+                    tenant_id=tenant_id,
+                )
+            result["reasons"] = reasons
+            return result
+        async with chain_lock:
+            ledger.append(matter=req.matter,
+                          body={"step": step_label, "verdict": "deny",
+                                "doc_id": req.doc_id, "reasons": reasons},
+                          token="", tenant_id=tenant_id)
+        return {"verdict": "deny", "token": None, "reasons": reasons}
+
     @app.post("/citation_verify", dependencies=[Depends(require_tenant_auth)])
     async def citation_verify(req: VerifyReq, request: Request) -> dict:
         tenant_id = getattr(request.state, "tenant_id", "default")
@@ -680,7 +841,7 @@ def _serialize_policy_for_api(p: Policy) -> dict:
         "trigger": {"host": p.trigger.host, "event": p.trigger.event,
                     "matcher": p.trigger.matcher},
         "sentinel_re": p.sentinel_re,
-        "requires": [{"step": r.step, "verdict": r.verdict} for r in p.requires],
+        "requires": [_evidence_req_to_dict(r) for r in p.requires],
         "action": p.action,
         "on_signature_invalid": p.on_signature_invalid,
         "gate_binary": p.gate_binary,
@@ -688,13 +849,13 @@ def _serialize_policy_for_api(p: Policy) -> dict:
 
 
 def _deserialize_policy_from_api(d: dict) -> Policy:
-    from ..policy.ir import _coerce_action
+    from ..policy.ir import _coerce_action, _coerce_evidence_req
     return Policy(
         id=d["id"], description=d.get("description", ""),
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
         sentinel_re=d["sentinel_re"],
-        requires=[EvidenceReq(**r) for r in d["requires"]],
+        requires=[_coerce_evidence_req(r) for r in d["requires"]],
         action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),
         gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
@@ -1049,6 +1210,39 @@ def _attach_catalog_routes(
                 "trigger_event": p.trigger.event,
                 "tool_matcher": p.trigger.matcher,
             })
+            # D35: surface kind=regex / llm_critic / shacl conditions
+            # extracted from each policy's requires list. step kind is
+            # already surfaced via evidence-types catalog.
+            for req in p.requires:
+                if req.kind == "regex":
+                    items.append({
+                        "kind": "regex",
+                        "value": req.pattern,
+                        "policy_id": p.id,
+                        "trigger_event": p.trigger.event,
+                        "tool_matcher": p.trigger.matcher,
+                    })
+                elif req.kind == "llm_critic":
+                    items.append({
+                        "kind": "llm_critic",
+                        "value": req.criterion,
+                        "policy_id": p.id,
+                        "trigger_event": p.trigger.event,
+                        "tool_matcher": p.trigger.matcher,
+                    })
+                elif req.kind == "shacl":
+                    # SHACL shapes can be long — truncate the catalog
+                    # value to a preview head so the conditions list
+                    # stays readable; the full shape lives in the
+                    # policy IR.
+                    head = (req.shape_ttl or "").strip()[:200]
+                    items.append({
+                        "kind": "shacl",
+                        "value": head + (" …" if len(req.shape_ttl) > 200 else ""),
+                        "policy_id": p.id,
+                        "trigger_event": p.trigger.event,
+                        "tool_matcher": p.trigger.matcher,
+                    })
         items.sort(key=lambda r: (r["kind"], r["value"], r["policy_id"]))
         return {"items": items}
 

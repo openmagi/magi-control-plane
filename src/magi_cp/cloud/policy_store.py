@@ -16,7 +16,22 @@ import os
 import re
 from typing import Iterable
 
-from ..policy.ir import EvidenceReq, Policy, Trigger
+from ..policy.ir import EvidenceReq, Policy, Trigger, _coerce_evidence_req
+
+
+def _evidence_req_to_dict(r: EvidenceReq) -> dict:
+    """D35: kind-aware serialization. Step shape stays the legacy
+    `{step, verdict}` so on-disk policy stores from before D35 still
+    round-trip byte-stable."""
+    if r.kind == "step":
+        return {"step": r.step, "verdict": r.verdict}
+    if r.kind == "regex":
+        return {"kind": "regex", "pattern": r.pattern}
+    if r.kind == "llm_critic":
+        return {"kind": "llm_critic", "criterion": r.criterion}
+    if r.kind == "shacl":
+        return {"kind": "shacl", "shape_ttl": r.shape_ttl}
+    raise ValueError(f"unsupported evidence kind on serialize: {r.kind!r}")
 from ..policy.precedence import PolicySource
 from ..policy.resolved import PolicyOverride
 
@@ -29,7 +44,7 @@ def _serialize_policy(p: Policy) -> dict:
         "trigger": {"host": p.trigger.host, "event": p.trigger.event,
                     "matcher": p.trigger.matcher},
         "sentinel_re": p.sentinel_re,
-        "requires": [{"step": r.step, "verdict": r.verdict} for r in p.requires],
+        "requires": [_evidence_req_to_dict(r) for r in p.requires],
         "action": p.action,
         "on_signature_invalid": p.on_signature_invalid,
         "gate_binary": p.gate_binary,
@@ -43,7 +58,7 @@ def _deserialize_policy(d: dict) -> Policy:
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
         sentinel_re=d["sentinel_re"],
-        requires=[EvidenceReq(**r) for r in d["requires"]],
+        requires=[_coerce_evidence_req(r) for r in d["requires"]],
         action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),
         gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),

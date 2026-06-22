@@ -52,10 +52,67 @@ class Trigger:
     matcher: str = "Bash"
 
 
+# D35: EvidenceReq becomes a discriminated union. v0 was step-ref only;
+# now policies can carry inline conditions of four kinds:
+#
+#   step        — reference a wired verifier by name (default; original).
+#   regex       — Python regex; matched against the payload text. Cheap,
+#                 evaluated at gate time without an LLM round-trip.
+#   llm_critic  — free-text rule, judged by the configured LLM provider
+#                 ("does this output satisfy: <criterion>"). Requires
+#                 MAGI_CP_LLM_COMPILER / REVIEWER to be configured.
+#   shacl       — Turtle SHACL shape; validated against the payload dict
+#                 with pyshacl. Catches structural violations that regex
+#                 can't express.
+#
+# All four shapes share the empty-list = "emit signal" semantics from D31.
+EvidenceKindLiteral = Literal["step", "regex", "llm_critic", "shacl"]
+
+
 @dataclass
 class EvidenceReq:
-    step: str
+    """One condition that must hold for the policy gate to allow.
+
+    Discriminated by `kind`. Unknown / empty kind defaults to "step" so
+    legacy `{step, verdict}` rows keep round-tripping through the loader
+    without churn.
+    """
+    kind: EvidenceKindLiteral = "step"
+    # kind=step — verifier reference
+    step: str = ""
     verdict: str = "pass"
+    # kind=regex — inline regex
+    pattern: str = ""
+    # kind=llm_critic — natural-language rule
+    criterion: str = ""
+    # kind=shacl — Turtle SHACL shape
+    shape_ttl: str = ""
+
+    def validate(self) -> None:
+        if self.kind == "step":
+            if not self.step:
+                raise ValueError("EvidenceReq kind=step requires non-empty `step`")
+        elif self.kind == "regex":
+            if not self.pattern:
+                raise ValueError("EvidenceReq kind=regex requires non-empty `pattern`")
+            if len(self.pattern) > 2000:
+                raise ValueError("EvidenceReq kind=regex pattern too long (>2000 chars)")
+            try:
+                re.compile(self.pattern)
+            except re.error as e:
+                raise ValueError(f"EvidenceReq kind=regex pattern fails to compile: {e}") from e
+        elif self.kind == "llm_critic":
+            if not self.criterion:
+                raise ValueError("EvidenceReq kind=llm_critic requires non-empty `criterion`")
+            if len(self.criterion) > 4000:
+                raise ValueError("EvidenceReq kind=llm_critic criterion too long (>4000 chars)")
+        elif self.kind == "shacl":
+            if not self.shape_ttl:
+                raise ValueError("EvidenceReq kind=shacl requires non-empty `shape_ttl`")
+            if len(self.shape_ttl) > 16000:
+                raise ValueError("EvidenceReq kind=shacl shape_ttl too long (>16000 chars)")
+        else:
+            raise ValueError(f"EvidenceReq unsupported kind: {self.kind!r}")
 
 
 # D31: action archetypes. Replaces the prior `on_missing` field which
@@ -128,6 +185,12 @@ class Policy:
         # the shape.
         if self.action not in ("block", "ask", "audit"):
             raise ValueError(f"policy '{self.id}': action 미지원: {self.action}")
+        # D35: each requires entry must individually validate by kind.
+        for i, req in enumerate(self.requires):
+            try:
+                req.validate()
+            except ValueError as e:
+                raise ValueError(f"policy '{self.id}': requires[{i}] {e}") from e
         if self.on_signature_invalid != "deny":
             raise ValueError(
                 f"policy '{self.id}': on_signature_invalid는 'deny'만 허용 (v0)"
@@ -138,6 +201,20 @@ class Policy:
                                   self.action)
         except ValueError as e:
             raise ValueError(f"policy '{self.id}': {e}") from e
+
+
+def _coerce_evidence_req(raw: dict) -> EvidenceReq:
+    """Build an EvidenceReq from a raw dict, defaulting kind to "step"
+    so legacy `{step, verdict}` rows still load."""
+    kind = raw.get("kind", "step")
+    return EvidenceReq(
+        kind=kind,
+        step=raw.get("step", ""),
+        verdict=raw.get("verdict", "pass"),
+        pattern=raw.get("pattern", ""),
+        criterion=raw.get("criterion", ""),
+        shape_ttl=raw.get("shape_ttl", ""),
+    )
 
 
 def _coerce_action(raw: dict) -> ActionLiteral:
@@ -161,7 +238,7 @@ def load_policy(path: str) -> Policy:
         description=raw.get("description", ""),
         trigger=Trigger(**raw["trigger"]),
         sentinel_re=raw["sentinel_re"],
-        requires=[EvidenceReq(**r) for r in raw["requires"]],
+        requires=[_coerce_evidence_req(r) for r in raw["requires"]],
         action=_coerce_action(raw),
         on_signature_invalid=raw.get("on_signature_invalid", "deny"),
         gate_binary=raw.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
