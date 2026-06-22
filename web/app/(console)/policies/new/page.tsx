@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
-import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -16,6 +16,20 @@ import {
 export const dynamic = "force-dynamic"
 
 type Mode = "nl" | "guided" | "advanced"
+const WIZARD_TOTAL = 6
+const TOOL_PRESETS = ["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"] as const
+const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
+type OnMissing = (typeof ON_MISSING_PRESETS)[number]
+type EventKind = "PreToolUse" | "PostToolUse" | "Stop"
+
+interface WizardState {
+  event?: EventKind
+  matcher?: string
+  verifier?: string
+  on_missing?: OnMissing
+  id?: string
+  description?: string
+}
 
 // ── server actions ──────────────────────────────────────────────────
 
@@ -108,38 +122,49 @@ async function saveAdvanced(formData: FormData): Promise<void> {
   await persistDraft(draft, source)
 }
 
-/** Guided form for the most common policy intent:
- *  "Before tool X runs, require evidence step Y = pass; if missing, deny".
- *  Fields are constrained dropdowns / simple inputs. The form maps them
- *  into a complete PolicyDraft and reuses persistDraft.
- */
-async function saveGuidedBlockTool(formData: FormData): Promise<void> {
+/** Move the wizard one step forward. All accumulated fields ride in the
+ * URL so browser back works as a natural "previous step" affordance. */
+async function advanceWizard(formData: FormData): Promise<void> {
   "use server"
+  const params = new URLSearchParams()
+  params.set("mode", "guided")
+  const stepIn = Number(formData.get("_step") ?? "1")
+  const nextStep = stepIn + 1
+  params.set("step", String(nextStep))
+  for (const [k, v] of formData.entries()) {
+    if (typeof v !== "string") continue
+    if (k.startsWith("$ACTION") || k === "_step") continue
+    if (!v.trim()) continue
+    params.set(k, v.trim())
+  }
+  redirect(`/policies/new?${params.toString()}`)
+}
+
+/** Final step → build a complete PolicyDraft from the URL state and PUT. */
+async function saveWizard(formData: FormData): Promise<void> {
+  "use server"
+  const event = String(formData.get("event") ?? "PreToolUse") as EventKind
+  const matcher = String(formData.get("matcher") ?? "").trim()
+  const verifier = String(formData.get("verifier") ?? "").trim()
+  const on_missing = (String(formData.get("on_missing") ?? "deny")) as OnMissing
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
-  const event = String(formData.get("event") ?? "PreToolUse")
-  const matcher = String(formData.get("matcher") ?? "").trim()
-  const step = String(formData.get("step") ?? "").trim()
-  const onMissing = String(formData.get("on_missing") ?? "deny")
-  const sentinelTag = String(formData.get("sentinel_tag") ?? "FILE_COURT").trim()
   const source = String(formData.get("source") ?? "org")
+  const sentinelTag = "FILE_COURT"
 
-  if (!id || !matcher || !step) {
-    redirect("/policies/new?mode=guided&err=invalid_input"); return
-  }
-  if (!/^[A-Z][A-Z0-9_]*$/.test(sentinelTag)) {
-    redirect("/policies/new?mode=guided&err=invalid_input"); return
+  if (!id || !matcher || !verifier) {
+    redirect("/policies/new?mode=guided&step=1&err=invalid_input"); return
   }
   const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
 
   const draft: PolicyDraft = {
     id,
     version: "0.1",
-    description: description || `Require ${step}=pass before ${event}|${matcher}`,
-    trigger: { host: "claude-code", event: event as "PreToolUse" | "PostToolUse" | "Stop", matcher },
+    description: description || `Require ${verifier}=pass before ${event}|${matcher}`,
+    trigger: { host: "claude-code", event, matcher },
     sentinel_re,
-    requires: [{ step, verdict: "pass" }],
-    on_missing: onMissing as "deny" | "ask" | "log" | "allow",
+    requires: [{ step: verifier, verdict: "pass" }],
+    on_missing,
     on_signature_invalid: "deny",
     gate_binary: "/usr/local/bin/magi-gate.sh",
   }
@@ -181,12 +206,10 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
 
 export default async function NewPolicyPage({
   searchParams,
-}: { searchParams: { err?: string; draft?: string; r?: string; msg?: string; nl?: string; mode?: string } }) {
+}: { searchParams: Record<string, string | undefined> }) {
   const { t } = await getT()
   const flash = resolveFlash(undefined, searchParams.err)
 
-  // No mode → picker landing.
-  // Legacy ?draft=... (from /policies/compile redirect) → advanced.
   const rawMode = searchParams.mode
   const mode: Mode | null =
     rawMode === "advanced" || (rawMode === undefined && searchParams.draft != null)
@@ -197,7 +220,6 @@ export default async function NewPolicyPage({
           ? "guided"
           : null
 
-  // Decode possible compile result (only meaningful for nl mode).
   const fromQuery = decodeResult(searchParams.r)
   const compileResult =
     mode === "nl"
@@ -210,14 +232,17 @@ export default async function NewPolicyPage({
     _parseDraftQuery(searchParams.draft) ??
     null
 
-  let wiredSteps: string[] = []
+  let wiredSteps: { step: string; description: string }[] = []
   if (mode === "advanced" || mode === "guided") {
     try {
       const presets = await cloud.listPresets()
-      wiredSteps = Array.from(new Set(
-        presets.filter(p => p.enforcement === "enforcing" && p.step)
-               .map(p => p.step as string),
-      )).sort()
+      const seen = new Set<string>()
+      for (const p of presets) {
+        if (p.enforcement !== "enforcing" || !p.step || seen.has(p.step)) continue
+        seen.add(p.step)
+        wiredSteps.push({ step: p.step, description: p.description })
+      }
+      wiredSteps.sort((a, b) => a.step.localeCompare(b.step))
     } catch { /* best-effort; empty datalist is fine */ }
   }
 
@@ -275,17 +300,13 @@ export default async function NewPolicyPage({
       )}
 
       {mode === "guided" && (
-        <AuthoringShell
+        <GuidedWizard
           t={t}
-          modeTitle={t("newPolicy.mode.guidedAuthoring")}
-          info={{
-            tone: "info",
-            title: t("newPolicy.guided.info.title"),
-            body: t("newPolicy.guided.info.body"),
-          }}
-        >
-          <GuidedBlockToolForm t={t} wiredSteps={wiredSteps} saveAction={saveGuidedBlockTool} />
-        </AuthoringShell>
+          wiredSteps={wiredSteps.length > 0 ? wiredSteps : [{ step: "citation_verify", description: "Cite verifier" }]}
+          searchParams={searchParams}
+          advanceAction={advanceWizard}
+          saveAction={saveWizard}
+        />
       )}
 
       {mode === "advanced" && (
@@ -302,7 +323,7 @@ export default async function NewPolicyPage({
             <PolicyBuilder
               submitAction={saveAdvanced}
               initial={initialDraft}
-              wiredSteps={wiredSteps}
+              wiredSteps={wiredSteps.map(w => w.step)}
               labels={{
                 irFields: "IR fields",
                 compiledPreview: "Compiled preview",
@@ -370,7 +391,7 @@ function PickerLanding({
           backing={t("newPolicy.picker.nl.backing")}
         />
         <ChoiceCard
-          href="/policies/new?mode=guided"
+          href="/policies/new?mode=guided&step=1"
           icon={<AdjustmentsHorizontalIcon className="h-5 w-5" />}
           label={t("newPolicy.picker.guided.label")}
           description={t("newPolicy.picker.guided.description")}
@@ -418,7 +439,7 @@ function ChoiceCard({
   )
 }
 
-// ── authoring shell (header + info card + slot for the form) ────────
+// ── authoring shell ────────────────────────────────────────────────
 
 function AuthoringShell({
   t, modeTitle, info, children,
@@ -443,17 +464,11 @@ function AuthoringShell({
           </h1>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Link
-            href="/policies/new"
-            className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          >
+          <Link href="/policies/new" className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             {t("newPolicy.pickDifferent")}
           </Link>
-          <Link
-            href="/policies"
-            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]"
-          >
+          <Link href="/policies" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
             {t("newPolicy.close")}
           </Link>
         </div>
@@ -469,170 +484,466 @@ function AuthoringShell({
   )
 }
 
-// ── guided block-tool form ──────────────────────────────────────
+// ── guided wizard ─────────────────────────────────────────────────
 
-const TOOL_PRESETS = ["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"] as const
-const EVENT_PRESETS = ["PreToolUse", "PostToolUse", "Stop"] as const
-const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
+function buildWizardHref(state: WizardState, step: number): string {
+  const params = new URLSearchParams()
+  params.set("mode", "guided")
+  params.set("step", String(step))
+  if (state.event) params.set("event", state.event)
+  if (state.matcher) params.set("matcher", state.matcher)
+  if (state.verifier) params.set("verifier", state.verifier)
+  if (state.on_missing) params.set("on_missing", state.on_missing)
+  if (state.id) params.set("id", state.id)
+  if (state.description) params.set("description", state.description)
+  return `/policies/new?${params.toString()}`
+}
 
-function GuidedBlockToolForm({
-  t, wiredSteps, saveAction,
-}: {
-  wiredSteps: string[]
-  saveAction: (fd: FormData) => Promise<void>
-  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
-}) {
-  const stepChoices = wiredSteps.length > 0 ? wiredSteps : ["citation_verify"]
+function HiddenState({ state }: { state: WizardState }) {
   return (
-    <Card>
-      <form action={saveAction} className="space-y-4">
-        <div>
-          <label htmlFor="g-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("newPolicy.guided.field.id")}
-          </label>
-          <input
-            id="g-id"
-            name="id"
-            required
-            maxLength={128}
-            pattern="[A-Za-z0-9._\\-/]{1,128}"
-            placeholder="legal-filing/v1"
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-          />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.idHint")}</p>
-        </div>
-
-        <div>
-          <label htmlFor="g-desc" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("newPolicy.guided.field.description")}
-          </label>
-          <input
-            id="g-desc"
-            name="description"
-            maxLength={256}
-            placeholder={t("newPolicy.guided.field.descriptionPh")}
-            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
-          />
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label htmlFor="g-event" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-              {t("newPolicy.guided.field.event")}
-            </label>
-            <select
-              id="g-event"
-              name="event"
-              defaultValue="PreToolUse"
-              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
-            >
-              {EVENT_PRESETS.map(e => <option key={e} value={e}>{e}</option>)}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="g-matcher" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-              {t("newPolicy.guided.field.matcher")}
-            </label>
-            <input
-              id="g-matcher"
-              name="matcher"
-              required
-              maxLength={128}
-              list="g-matcher-list"
-              placeholder="Bash"
-              spellCheck={false}
-              autoComplete="off"
-              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-            />
-            <datalist id="g-matcher-list">
-              {TOOL_PRESETS.map(tool => <option key={tool} value={tool} />)}
-            </datalist>
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.matcherHint")}</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label htmlFor="g-step" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-              {t("newPolicy.guided.field.step")}
-            </label>
-            <select
-              id="g-step"
-              name="step"
-              required
-              defaultValue={stepChoices[0]}
-              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-            >
-              {stepChoices.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.stepHint")}</p>
-          </div>
-          <div>
-            <label htmlFor="g-onmissing" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-              {t("newPolicy.guided.field.onMissing")}
-            </label>
-            <select
-              id="g-onmissing"
-              name="on_missing"
-              defaultValue="deny"
-              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
-            >
-              {ON_MISSING_PRESETS.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label htmlFor="g-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("newPolicy.guided.field.sentinelTag")}
-          </label>
-          <input
-            id="g-sentinel"
-            name="sentinel_tag"
-            required
-            defaultValue="FILE_COURT"
-            pattern="[A-Z][A-Z0-9_]{0,32}"
-            maxLength={32}
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-          />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
-            <code className="font-mono">TAG_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
-          </p>
-        </div>
-
-        <div>
-          <label htmlFor="g-source" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("policies.source")}
-          </label>
-          <select
-            id="g-source"
-            name="source"
-            defaultValue="org"
-            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
-          >
-            <option value="org">org</option>
-            <option value="team">team</option>
-            <option value="platform">platform</option>
-          </select>
-        </div>
-
-        <div className="pt-2">
-          <SubmitButton
-            label={t("newPolicy.savePolicy")}
-            pendingLabel={t("newPolicy.saving")}
-          />
-        </div>
-      </form>
-    </Card>
+    <>
+      {state.event && <input type="hidden" name="event" value={state.event} />}
+      {state.matcher && <input type="hidden" name="matcher" value={state.matcher} />}
+      {state.verifier && <input type="hidden" name="verifier" value={state.verifier} />}
+      {state.on_missing && <input type="hidden" name="on_missing" value={state.on_missing} />}
+      {state.id && <input type="hidden" name="id" value={state.id} />}
+      {state.description && <input type="hidden" name="description" value={state.description} />}
+    </>
   )
 }
 
-// ── compile result + direct save ────────────────────────────────
+function WizardHeader({
+  t, step, total, state,
+}: {
+  step: number; total: number; state: WizardState
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center gap-3">
+        <Link href="/policies/new" className="inline-flex items-center gap-1 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
+          <ArrowLeftIcon className="h-4 w-4" />
+          {t("newPolicy.pickDifferent")}
+        </Link>
+      </div>
+      <div className="flex items-center gap-2">
+        {Array.from({ length: total }).map((_, i) => {
+          const n = i + 1
+          const past = n < step
+          const current = n === step
+          return (
+            <span
+              key={n}
+              aria-hidden="true"
+              className={
+                current
+                  ? "h-2 w-6 rounded-full bg-[var(--color-accent)]"
+                  : past
+                    ? "h-2 w-2 rounded-full bg-[var(--color-accent)]/40"
+                    : "h-2 w-2 rounded-full bg-gray-300"
+              }
+            />
+          )
+        })}
+        <span className="ml-2 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] tabular-nums">
+          {step} / {total}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function GuidedWizard({
+  t, wiredSteps, searchParams, advanceAction, saveAction,
+}: {
+  wiredSteps: { step: string; description: string }[]
+  searchParams: Record<string, string | undefined>
+  advanceAction: (fd: FormData) => Promise<void>
+  saveAction: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const step = Math.max(1, Math.min(WIZARD_TOTAL, Number(searchParams.step ?? 1)))
+  const state: WizardState = {
+    event: (searchParams.event as EventKind) || undefined,
+    matcher: searchParams.matcher || undefined,
+    verifier: searchParams.verifier || undefined,
+    on_missing: (searchParams.on_missing as OnMissing) || undefined,
+    id: searchParams.id || undefined,
+    description: searchParams.description || undefined,
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <WizardHeader t={t} step={step} total={WIZARD_TOTAL} state={state} />
+
+      {step === 1 && <Step1Event t={t} state={state} action={advanceAction} />}
+      {step === 2 && <Step2Matcher t={t} state={state} action={advanceAction} />}
+      {step === 3 && <Step3Verifier t={t} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
+      {step === 4 && <Step4OnMissing t={t} state={state} action={advanceAction} />}
+      {step === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
+      {step === 6 && <Step6Review t={t} state={state} action={saveAction} wiredSteps={wiredSteps} />}
+    </div>
+  )
+}
+
+function StepShell({
+  t, step, prevHref, heading, helper, children,
+}: {
+  step: number; prevHref: string | null; heading: string; helper?: string
+  children: React.ReactNode
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-[var(--color-text-primary)] m-0 leading-tight">
+          {heading}
+        </h2>
+        {helper && (
+          <p className="mt-2 text-sm text-[var(--color-text-secondary)] leading-relaxed">
+            {helper}
+          </p>
+        )}
+      </div>
+      {children}
+      {prevHref && (
+        <div>
+          <Link href={prevHref} className="inline-flex items-center gap-1 text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+            <ArrowLeftIcon className="h-4 w-4" />
+            {t("newPolicy.wizard.back")}
+          </Link>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RadioCard({
+  name, value, defaultChecked, label, sub, recommended,
+}: {
+  name: string; value: string; defaultChecked?: boolean
+  label: string; sub: string; recommended?: boolean
+}) {
+  return (
+    <label className="block cursor-pointer">
+      <input
+        type="radio"
+        name={name}
+        value={value}
+        defaultChecked={defaultChecked}
+        className="peer sr-only"
+        required
+      />
+      <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+        <span className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-sm font-semibold text-[var(--color-text-primary)]">{label}</span>
+          {recommended && (
+            <Badge variant="ok">recommended</Badge>
+          )}
+        </span>
+        <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{sub}</span>
+      </span>
+    </label>
+  )
+}
+
+function NextButton({ label }: { label: string }) {
+  return (
+    <button
+      type="submit"
+      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-accent)] px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer transition-colors"
+    >
+      {label}
+    </button>
+  )
+}
+
+function Step1Event({
+  t, state, action,
+}: {
+  state: WizardState; action: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <StepShell
+      t={t}
+      step={1}
+      prevHref={null}
+      heading={t("newPolicy.wizard.step1.heading")}
+      helper={t("newPolicy.wizard.step1.helper")}
+    >
+      <form action={action} className="space-y-3">
+        <input type="hidden" name="_step" value="1" />
+        <RadioCard
+          name="event"
+          value="PreToolUse"
+          defaultChecked={(state.event ?? "PreToolUse") === "PreToolUse"}
+          label="PreToolUse"
+          sub={t("newPolicy.wizard.step1.pre")}
+          recommended
+        />
+        <RadioCard
+          name="event"
+          value="PostToolUse"
+          defaultChecked={state.event === "PostToolUse"}
+          label="PostToolUse"
+          sub={t("newPolicy.wizard.step1.post")}
+        />
+        <RadioCard
+          name="event"
+          value="Stop"
+          defaultChecked={state.event === "Stop"}
+          label="Stop"
+          sub={t("newPolicy.wizard.step1.stop")}
+        />
+        <NextButton label={t("newPolicy.wizard.next")} />
+      </form>
+    </StepShell>
+  )
+}
+
+function Step2Matcher({
+  t, state, action,
+}: {
+  state: WizardState; action: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <StepShell
+      t={t}
+      step={2}
+      prevHref={buildWizardHref(state, 1)}
+      heading={t("newPolicy.wizard.step2.heading")}
+      helper={t("newPolicy.wizard.step2.helper")}
+    >
+      <form action={action} className="space-y-4">
+        <input type="hidden" name="_step" value="2" />
+        <HiddenState state={{ event: state.event }} />
+        <input
+          name="matcher"
+          required
+          maxLength={128}
+          defaultValue={state.matcher ?? ""}
+          list="matcher-list"
+          placeholder="Bash"
+          spellCheck={false}
+          autoComplete="off"
+          autoFocus
+          className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+        />
+        <datalist id="matcher-list">
+          {TOOL_PRESETS.map(tool => <option key={tool} value={tool} />)}
+        </datalist>
+        <div className="flex flex-wrap gap-1.5">
+          {TOOL_PRESETS.map(tool => (
+            <button
+              key={tool}
+              type="submit"
+              name="matcher"
+              value={tool}
+              formAction={action}
+              className="rounded-full border border-black/[0.08] bg-white px-3 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04] cursor-pointer transition-colors"
+            >
+              {tool}
+            </button>
+          ))}
+        </div>
+        <NextButton label={t("newPolicy.wizard.next")} />
+      </form>
+    </StepShell>
+  )
+}
+
+function Step3Verifier({
+  t, state, wiredSteps, action,
+}: {
+  state: WizardState; wiredSteps: { step: string; description: string }[]
+  action: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <StepShell
+      t={t}
+      step={3}
+      prevHref={buildWizardHref(state, 2)}
+      heading={t("newPolicy.wizard.step3.heading")}
+      helper={t("newPolicy.wizard.step3.helper")}
+    >
+      <form action={action} className="space-y-3">
+        <input type="hidden" name="_step" value="3" />
+        <HiddenState state={{ event: state.event, matcher: state.matcher }} />
+        {wiredSteps.map(v => (
+          <RadioCard
+            key={v.step}
+            name="verifier"
+            value={v.step}
+            defaultChecked={(state.verifier ?? wiredSteps[0]?.step) === v.step}
+            label={v.step}
+            sub={v.description}
+          />
+        ))}
+        <NextButton label={t("newPolicy.wizard.next")} />
+      </form>
+    </StepShell>
+  )
+}
+
+function Step4OnMissing({
+  t, state, action,
+}: {
+  state: WizardState; action: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <StepShell
+      t={t}
+      step={4}
+      prevHref={buildWizardHref(state, 3)}
+      heading={t("newPolicy.wizard.step4.heading")}
+      helper={t("newPolicy.wizard.step4.helper")}
+    >
+      <form action={action} className="space-y-3">
+        <input type="hidden" name="_step" value="4" />
+        <HiddenState state={{ event: state.event, matcher: state.matcher, verifier: state.verifier }} />
+        <RadioCard
+          name="on_missing"
+          value="deny"
+          defaultChecked={(state.on_missing ?? "deny") === "deny"}
+          label={t("newPolicy.wizard.step4.deny.label")}
+          sub={t("newPolicy.wizard.step4.deny.sub")}
+          recommended
+        />
+        <RadioCard
+          name="on_missing"
+          value="ask"
+          defaultChecked={state.on_missing === "ask"}
+          label={t("newPolicy.wizard.step4.ask.label")}
+          sub={t("newPolicy.wizard.step4.ask.sub")}
+        />
+        <RadioCard
+          name="on_missing"
+          value="log"
+          defaultChecked={state.on_missing === "log"}
+          label={t("newPolicy.wizard.step4.log.label")}
+          sub={t("newPolicy.wizard.step4.log.sub")}
+        />
+        <RadioCard
+          name="on_missing"
+          value="allow"
+          defaultChecked={state.on_missing === "allow"}
+          label={t("newPolicy.wizard.step4.allow.label")}
+          sub={t("newPolicy.wizard.step4.allow.sub")}
+        />
+        <NextButton label={t("newPolicy.wizard.next")} />
+      </form>
+    </StepShell>
+  )
+}
+
+function Step5Naming({
+  t, state, action,
+}: {
+  state: WizardState; action: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <StepShell
+      t={t}
+      step={5}
+      prevHref={buildWizardHref(state, 4)}
+      heading={t("newPolicy.wizard.step5.heading")}
+      helper={t("newPolicy.wizard.step5.helper")}
+    >
+      <form action={action} className="space-y-4">
+        <input type="hidden" name="_step" value="5" />
+        <HiddenState state={{
+          event: state.event, matcher: state.matcher,
+          verifier: state.verifier, on_missing: state.on_missing,
+        }} />
+        <div>
+          <label htmlFor="w-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.id")}
+          </label>
+          <input
+            id="w-id"
+            name="id"
+            required
+            maxLength={128}
+            pattern="[A-Za-z0-9._\-/]{1,128}"
+            defaultValue={state.id ?? ""}
+            placeholder="legal-filing/v1"
+            spellCheck={false}
+            autoComplete="off"
+            autoFocus
+            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+          />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.idHint")}</p>
+        </div>
+        <div>
+          <label htmlFor="w-desc" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.description")}
+          </label>
+          <input
+            id="w-desc"
+            name="description"
+            maxLength={256}
+            defaultValue={state.description ?? ""}
+            placeholder={t("newPolicy.guided.field.descriptionPh")}
+            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
+          />
+        </div>
+        <NextButton label={t("newPolicy.wizard.next")} />
+      </form>
+    </StepShell>
+  )
+}
+
+function Step6Review({
+  t, state, action, wiredSteps,
+}: {
+  state: WizardState; action: (fd: FormData) => Promise<void>
+  wiredSteps: { step: string; description: string }[]
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const verifierDesc = wiredSteps.find(v => v.step === state.verifier)?.description ?? ""
+  return (
+    <StepShell
+      t={t}
+      step={6}
+      prevHref={buildWizardHref(state, 5)}
+      heading={t("newPolicy.wizard.step6.heading")}
+      helper={t("newPolicy.wizard.step6.helper")}
+    >
+      <Card>
+        <p className="text-sm font-semibold mb-3">{t("newPolicy.wizard.step6.summaryHead")}</p>
+        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
+          {t("newPolicy.wizard.step6.summary", {
+            event: state.event ?? "PreToolUse",
+            matcher: state.matcher ?? "",
+            verifier: state.verifier ?? "",
+            on_missing: state.on_missing ?? "deny",
+          })}
+        </p>
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs mt-4 pt-4 border-t border-black/[0.06]">
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">id</dt>
+          <dd className="font-mono text-[12.5px]" translate="no">{state.id}</dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">trigger</dt>
+          <dd><code className="font-mono">{state.event} · {state.matcher}</code></dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">requires</dt>
+          <dd><code className="font-mono">{state.verifier}=pass</code> <span className="text-[var(--color-text-tertiary)]">— {verifierDesc}</span></dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">on_missing</dt>
+          <dd className="text-[var(--color-text-secondary)]">{state.on_missing}</dd>
+        </dl>
+      </Card>
+      <form action={action}>
+        <HiddenState state={state} />
+        <NextButton label={t("newPolicy.wizard.savePolicy")} />
+      </form>
+    </StepShell>
+  )
+}
+
+// ── compile result block ────────────────────────────────────────
 
 function CompileResultBlock({
   t, data, saveAction,
