@@ -60,18 +60,59 @@ interface WiredStep {
   category: VerifierCategory
 }
 
-// D31: legal action set is a function of (event × matcher_class) per
-// LEGAL_COMBINATIONS. We compute it on demand using the policy-builder
-// mirror so a wildcard chip on PreToolUse narrows action to just audit
-// while Bash on PreToolUse keeps block / ask / audit.
-function legalActionsFor(event: EventKind, matcher: string): readonly Action[] {
-  if (!matcher) return []
-  return ACTION_PRESETS.filter((a) => isLegal(event, matcher, a))
+// D32: archetype is the user-facing "What to do?" picked in Step 2.
+// It maps to the IR's (action, requires-shape) pair:
+//
+//   block         → action=block,  requires=[…verifiers] (Step 3 required)
+//   ask           → action=ask,    requires=[…verifiers] (Step 3 required)
+//   audit         → action=audit,  requires=[…verifiers] (Step 3 required)
+//   emit-signal   → action=audit,  requires=[]            (Step 3 auto-skipped)
+//   strip         → reserved for the verifier-protocol-mutation cycle;
+//                   rendered as a disabled "Coming soon" card on
+//                   PostToolUse and never sent to the backend.
+const ARCHETYPE_PRESETS = ["block", "ask", "audit", "emit-signal", "strip"] as const
+type Archetype = (typeof ARCHETYPE_PRESETS)[number]
+
+// Per-event archetype filter. Mirrors magi-agent's "Step 2 archetypes
+// filter" table:
+//   PreToolUse           → block / ask / audit / emit-signal
+//   PostToolUse          → audit / emit-signal / (strip coming-soon)
+//   UserPromptSubmit     → block / ask / audit / emit-signal
+//   PreCompact           → block / audit / emit-signal
+//   Stop / SubagentStop  → audit / emit-signal
+//   SessionStart/End     → audit / emit-signal
+function archetypesFor(event: EventKind): readonly Archetype[] {
+  switch (event) {
+    case "PreToolUse":       return ["block", "ask", "audit", "emit-signal"]
+    case "PostToolUse":      return ["audit", "emit-signal", "strip"]
+    case "UserPromptSubmit": return ["block", "ask", "audit", "emit-signal"]
+    case "PreCompact":       return ["block", "audit", "emit-signal"]
+    case "Stop":             return ["audit", "emit-signal"]
+    case "SubagentStop":     return ["audit", "emit-signal"]
+    case "SessionStart":     return ["audit", "emit-signal"]
+    case "SessionEnd":       return ["audit", "emit-signal"]
+  }
 }
 
-// Recommended verifier categories per event. Soft signal only — the
-// wizard still renders every wired verifier; the badge just nudges
-// the operator toward fitness for the event they picked.
+// Strip is reserved — backend Verifier protocol has no mutated-payload
+// channel yet, so picking it would save a policy the runtime can't
+// honor. We render the card with a Coming-soon badge instead.
+const STRIP_AVAILABLE = false
+
+// Map an archetype pick to the IR action that gets saved.
+function archetypeToAction(arch: Archetype): Action {
+  if (arch === "block") return "block"
+  if (arch === "ask") return "ask"
+  return "audit"  // audit and emit-signal both map to audit; requires shape differs
+}
+
+// True when Step 3 (condition / verifier picker) should be auto-skipped
+// for this archetype.
+function archetypeSkipsCondition(arch: Archetype): boolean {
+  return arch === "emit-signal" || arch === "strip"
+}
+
+// Per-event recommended verifier categories (soft signal on Step 3).
 const RECOMMENDED_CATEGORIES_BY_EVENT: Record<EventKind, ReadonlySet<VerifierCategory>> = {
   PreToolUse:       new Set<VerifierCategory>(["SECURITY", "RESEARCH", "OUTPUT", "CODING"]),
   PostToolUse:      new Set<VerifierCategory>(["SECURITY", "FACT", "OUTPUT", "RESEARCH"]),
@@ -83,19 +124,29 @@ const RECOMMENDED_CATEGORIES_BY_EVENT: Record<EventKind, ReadonlySet<VerifierCat
   SessionEnd:       new Set<VerifierCategory>(["MEMORY"]),
 }
 
+// Step 4 (Specifics) matcher chip palette is filtered by the picked
+// action so the chosen archetype + matcher are guaranteed to land in a
+// legal triple. Helper queries the policy-builder mirror.
+function legalMatchersFor(event: EventKind, action: Action): readonly string[] {
+  const candidates = [
+    ...TOOL_PRESETS,
+    "*",  // wildcard surfaced when legal for this (event, action) pair
+  ]
+  return candidates.filter((m) => isLegal(event, m, action))
+}
+
 interface WizardState {
   event?: EventKind
+  archetype?: Archetype
   matcher?: string
-  /** N verifiers (backend's `requires: list[EvidenceReq]` is len>=1).
-   * Comma-joined in the URL so the hidden carry-over stays one field. */
+  /** N verifiers (backend's `requires: list[EvidenceReq]`). Comma-joined
+   * in the URL. Required len>=1 for block/ask/audit archetypes; len=0
+   * for emit-signal. */
   verifiers?: string[]
-  action?: Action
   id?: string
   description?: string
   /** Sentinel tag prefix. saveWizard expands this into the policy's
-   * `sentinel_re` as `<TAG>_(?P<matter>…)_(?P<doc_id>…)`. v1 hardcoded
-   * "FILE_COURT" here for legal-filing; D30 makes it operator-editable
-   * so the gate matches whatever marker their tool calls emit. */
+   * `sentinel_re` as `<TAG>_(?P<matter>…)_(?P<doc_id>…)`. */
   sentinel_tag?: string
 }
 
@@ -206,10 +257,11 @@ async function advanceWizard(formData: FormData): Promise<void> {
   params.set("mode", "guided")
   const stepIn = Number(formData.get("_step") ?? "1")
   let nextStep = stepIn + 1
-  // Multi-verifier merge: Step 3 emits N checkboxes named "verifier";
-  // earlier steps carry the comma-joined "verifiers" hidden field.
-  // Merge both into one ordered, deduped list. First-seen order
-  // preserved so editing earlier picks does not churn the URL.
+
+  // Multi-verifier merge — Step 3 (Condition) emits N checkboxes named
+  // "verifier"; other steps carry the comma-joined "verifiers" hidden
+  // field. Step 3 is authoritative when it's the submitter so flipping
+  // a checkbox off actually unsets it.
   const verifierChecks = formData
     .getAll("verifier")
     .filter((v): v is string => typeof v === "string")
@@ -217,15 +269,13 @@ async function advanceWizard(formData: FormData): Promise<void> {
     .filter(Boolean)
   const verifiersCarry = (formData.get("verifiers")?.toString() ?? "")
     .split(",").map((s) => s.trim()).filter(Boolean)
-  // On Step 3 the checkbox set is the new authoritative pick. Earlier
-  // visits' carry-over only applies when Step 3 itself is not the
-  // submitter (i.e. user is moving forward from Step 1 / 2 / 4 / 5).
   const mergedVerifiers: string[] = []
   const sourceList = stepIn === 3 ? verifierChecks : [...verifierChecks, ...verifiersCarry]
   for (const v of sourceList) {
     if (!mergedVerifiers.includes(v)) mergedVerifiers.push(v)
   }
   if (mergedVerifiers.length > 0) params.set("verifiers", mergedVerifiers.join(","))
+
   for (const [k, v] of formData.entries()) {
     if (typeof v !== "string") continue
     if (k.startsWith("$ACTION") || k === "_step") continue
@@ -233,14 +283,17 @@ async function advanceWizard(formData: FormData): Promise<void> {
     if (!v.trim()) continue
     params.set(k, v.trim())
   }
-  // Auto-skip Step 2 (matcher chips) for events that don't carry a
-  // tool context. matcher is forced to "*" because that's the only
-  // matcher class the backend accepts for these events.
-  const pickedEvent = (params.get("event") || "PreToolUse") as EventKind
-  if (stepIn === 1 && !TOOL_CONTEXT_EVENTS.has(pickedEvent)) {
-    params.set("matcher", "*")
-    nextStep = 3
+
+  // D32 step routing — Step 2 picks an archetype, Step 3 is the
+  // condition (skipped for emit-signal / strip), Step 4 is the
+  // matcher/specifics form. Auto-skip rules:
+  const archetype = (params.get("archetype") || "block") as Archetype
+  if (stepIn === 2 && archetypeSkipsCondition(archetype)) {
+    // emit-signal and strip don't have a condition step — jump from
+    // "What to do?" straight to "Specifics".
+    nextStep = 4
   }
+
   params.set("step", String(nextStep))
   redirect(`/policies/new?${params.toString()}`)
 }
@@ -249,10 +302,10 @@ async function advanceWizard(formData: FormData): Promise<void> {
 async function saveWizard(formData: FormData): Promise<void> {
   "use server"
   const event = String(formData.get("event") ?? "PreToolUse") as EventKind
+  const archetype = (String(formData.get("archetype") ?? "block")) as Archetype
   const matcher = String(formData.get("matcher") ?? "").trim()
   const verifiers = (formData.get("verifiers")?.toString() ?? "")
     .split(",").map((s) => s.trim()).filter(Boolean)
-  const action = (String(formData.get("action") ?? "block")) as Action
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
@@ -261,24 +314,37 @@ async function saveWizard(formData: FormData): Promise<void> {
     ? sentinelTagRaw
     : SENTINEL_TAG_DEFAULT
 
-  // D31: requires is optional ONLY when action="audit" (emit-signal).
-  if (!id || !matcher || (verifiers.length === 0 && action !== "audit")) {
-    redirect("/policies/new?mode=guided&step=1&err=invalid_input"); return
+  if (archetype === "strip") {
+    // Strip needs verifier-protocol mutation support that isn't built
+    // yet; refuse cleanly rather than save a policy the runtime can't
+    // honor.
+    redirect("/policies/new?mode=guided&step=2&err=strip_unsupported"); return
+  }
+
+  const action = archetypeToAction(archetype)
+  const isEmitSignal = archetype === "emit-signal"
+  if (!isEmitSignal && verifiers.length === 0) {
+    redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+  }
+  if (!id || !matcher) {
+    redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
   }
   const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
 
-  const summary = verifiers.length === 0
-    ? `Emit signal on ${event}|${matcher}`
+  const summary = isEmitSignal
+    ? `Emit signal on every ${event}|${matcher} (no condition)`
     : verifiers.length === 1
-      ? `${action} on ${event}|${matcher} when ${verifiers[0]} ≠ pass`
-      : `${action} on ${event}|${matcher} when any of ${verifiers.length} verifiers ≠ pass`
+      ? `${archetype} on ${event}|${matcher} when ${verifiers[0]} ≠ pass`
+      : `${archetype} on ${event}|${matcher} when any of ${verifiers.length} verifiers ≠ pass`
   const draft: PolicyDraft = {
     id,
     version: "0.1",
     description: description || summary,
     trigger: { host: "claude-code", event, matcher },
     sentinel_re,
-    requires: verifiers.map((step) => ({ step, verdict: "pass" })),
+    requires: isEmitSignal
+      ? []
+      : verifiers.map((step) => ({ step, verdict: "pass" })),
     action,
     on_signature_invalid: "deny",
     gate_binary: "/usr/local/bin/magi-gate.sh",
@@ -610,11 +676,11 @@ function buildWizardHref(state: WizardState, step: number): string {
   params.set("mode", "guided")
   params.set("step", String(step))
   if (state.event) params.set("event", state.event)
+  if (state.archetype) params.set("archetype", state.archetype)
   if (state.matcher) params.set("matcher", state.matcher)
   if (state.verifiers && state.verifiers.length > 0) {
     params.set("verifiers", state.verifiers.join(","))
   }
-  if (state.action) params.set("action", state.action)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
   if (state.sentinel_tag) params.set("sentinel_tag", state.sentinel_tag)
@@ -625,11 +691,11 @@ function HiddenState({ state }: { state: WizardState }) {
   return (
     <>
       {state.event && <input type="hidden" name="event" value={state.event} />}
+      {state.archetype && <input type="hidden" name="archetype" value={state.archetype} />}
       {state.matcher && <input type="hidden" name="matcher" value={state.matcher} />}
       {state.verifiers && state.verifiers.length > 0 && (
         <input type="hidden" name="verifiers" value={state.verifiers.join(",")} />
       )}
-      {state.action && <input type="hidden" name="action" value={state.action} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
       {state.sentinel_tag && (
@@ -692,6 +758,7 @@ function GuidedWizard({
   const step = Math.max(1, Math.min(WIZARD_TOTAL, Number(searchParams.step ?? 1)))
   const state: WizardState = {
     event: (searchParams.event as EventKind) || undefined,
+    archetype: (searchParams.archetype as Archetype) || undefined,
     matcher: searchParams.matcher || undefined,
     verifiers: ((): string[] | undefined => {
       const list = parseVerifierList(
@@ -699,7 +766,6 @@ function GuidedWizard({
       )
       return list.length > 0 ? list : undefined
     })(),
-    action: (searchParams.action as Action) || undefined,
     id: searchParams.id || undefined,
     description: searchParams.description || undefined,
     sentinel_tag: searchParams.sentinel_tag || undefined,
@@ -710,9 +776,9 @@ function GuidedWizard({
       <WizardHeader t={t} step={step} total={WIZARD_TOTAL} state={state} />
 
       {step === 1 && <Step1Event t={t} state={state} action={advanceAction} />}
-      {step === 2 && <Step2Matcher t={t} state={state} action={advanceAction} />}
-      {step === 3 && <Step3Verifier t={t} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
-      {step === 4 && <Step4Action t={t} state={state} action={advanceAction} />}
+      {step === 2 && <Step2Archetype t={t} state={state} action={advanceAction} />}
+      {step === 3 && <Step3Condition t={t} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
+      {step === 4 && <Step4Specifics t={t} state={state} action={advanceAction} />}
       {step === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
       {step === 6 && <Step6Review t={t} state={state} action={saveAction} wiredSteps={wiredSteps} />}
     </div>
@@ -853,18 +919,20 @@ function Step1Event({
   )
 }
 
-function Step2Matcher({
+// Step 2 — What to do? Picks an archetype (block / ask / audit /
+// emit-signal / strip) filtered by the event from Step 1.
+function Step2Archetype({
   t, state, action,
 }: {
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const event = state.event ?? "PreToolUse"
-  // The wildcard chip is meaningful only for PreToolUse (the matrix
-  // accepts (PreToolUse, wildcard, log) but no other event/wildcard
-  // pair on a tool-context event). For PostToolUse this chip is
-  // hidden so users don't author a triple the backend rejects.
-  const showWildcard = event === "PreToolUse"
+  const allowed = archetypesFor(event)
+  const defaultPick: Archetype | undefined =
+    state.archetype && allowed.includes(state.archetype)
+      ? state.archetype
+      : allowed[0]
   return (
     <StepShell
       t={t}
@@ -873,66 +941,53 @@ function Step2Matcher({
       heading={t("newPolicy.wizard.step2.heading")}
       helper={t("newPolicy.wizard.step2.helper")}
     >
-      <form action={action} className="space-y-4">
+      <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ event: state.event }} />
-        <input
-          name="matcher"
-          required
-          maxLength={128}
-          defaultValue={state.matcher ?? ""}
-          list="matcher-list"
-          placeholder="Bash"
-          spellCheck={false}
-          autoComplete="off"
-          autoFocus
-          className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-        />
-        <datalist id="matcher-list">
-          {TOOL_PRESETS.map((tool) => <option key={tool} value={tool} />)}
-          {showWildcard && <option value="*" />}
-        </datalist>
-        <div className="flex flex-wrap gap-1.5">
-          {TOOL_PRESETS.map((tool) => (
-            <button
-              key={tool}
-              type="submit"
-              name="matcher"
-              value={tool}
-              formAction={action}
-              formNoValidate
-              className="rounded-full border border-black/[0.08] bg-white px-3 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04] cursor-pointer transition-colors"
-            >
-              {tool}
-            </button>
-          ))}
-          {showWildcard && (
-            <button
-              key="wildcard"
-              type="submit"
-              name="matcher"
-              value="*"
-              formAction={action}
-              formNoValidate
-              title={t("newPolicy.wizard.step2.wildcardHint")}
-              className="rounded-full border border-amber-400/40 bg-amber-50 px-3 py-1 text-xs font-mono text-amber-900 hover:border-amber-500 hover:bg-amber-100 cursor-pointer transition-colors"
-            >
-              *
-            </button>
-          )}
-        </div>
-        {showWildcard && (
-          <p className="text-[11px] text-[var(--color-text-tertiary)]">
-            {t("newPolicy.wizard.step2.wildcardHint")}
-          </p>
-        )}
+        {allowed.map((arc) => {
+          const isStrip = arc === "strip"
+          const stripDisabled = isStrip && !STRIP_AVAILABLE
+          const sub = stripDisabled
+            ? t("newPolicy.wizard.step2.strip.comingSoon")
+            : t(`newPolicy.wizard.step2.archetype.${arc}.sub` as never)
+          if (stripDisabled) {
+            return (
+              <label key={arc} className="block cursor-not-allowed opacity-60">
+                <input type="radio" name="archetype" value={arc} disabled className="peer sr-only" />
+                <span className="block rounded-xl border border-black/[0.08] bg-gray-50 p-4">
+                  <span className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                      {t(`newPolicy.wizard.step2.archetype.${arc}.label` as never)}
+                    </span>
+                    <Badge variant="info">coming soon</Badge>
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{sub}</span>
+                </span>
+              </label>
+            )
+          }
+          return (
+            <RadioCard
+              key={arc}
+              name="archetype"
+              value={arc}
+              defaultChecked={defaultPick === arc}
+              label={t(`newPolicy.wizard.step2.archetype.${arc}.label` as never)}
+              sub={sub}
+              recommended={arc === allowed[0] && arc !== "emit-signal"}
+            />
+          )
+        })}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
   )
 }
 
-function Step3Verifier({
+// Step 3 — Under what condition? Picks 1..N verifiers. Auto-skipped
+// for emit-signal / strip via advanceWizard, so this only renders when
+// the archetype actually has a condition.
+function Step3Condition({
   t, state, wiredSteps, action,
 }: {
   state: WizardState; wiredSteps: WiredStep[]
@@ -941,18 +996,11 @@ function Step3Verifier({
 }) {
   const event = state.event ?? "PreToolUse"
   const recommendedCategories = RECOMMENDED_CATEGORIES_BY_EVENT[event]
-  // Sort: event-recommended verifiers first, then the rest. Stable
-  // within each group by the alphabetical order wiredSteps already
-  // arrives in.
   const ordered = [...wiredSteps].sort((a, b) => {
     const ra = recommendedCategories.has(a.category) ? 0 : 1
     const rb = recommendedCategories.has(b.category) ? 0 : 1
     return ra - rb
   })
-  // First visit (no prior picks) → preselect the first recommended
-  // verifier (or first wired if none are recommended). Returning
-  // visits keep their multi-pick. The backend rejects an empty
-  // `requires` list so saveWizard also defends with err=invalid_input.
   const picked: Set<string> = new Set(
     state.verifiers && state.verifiers.length > 0
       ? state.verifiers
@@ -968,7 +1016,7 @@ function Step3Verifier({
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
-        <HiddenState state={{ event: state.event, matcher: state.matcher }} />
+        <HiddenState state={{ event: state.event, archetype: state.archetype }} />
         <p className="text-xs text-[var(--color-text-tertiary)]">
           {t("newPolicy.wizard.step3.multiHint")}
         </p>
@@ -992,53 +1040,110 @@ function Step3Verifier({
   )
 }
 
-function Step4Action({
+// Step 4 — Specifics. Matcher input + sentinel_tag. The matcher chip
+// palette and free-text default both narrow to options legal under
+// (event × picked archetype's action). For no-tool events the matcher
+// is locked to "*" and the user only edits sentinel_tag.
+function Step4Specifics({
   t, state, action,
 }: {
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
-  // Filter to options the backend will accept for THIS (event, matcher)
-  // pair — not just event. The (PreToolUse, wildcard, log) triple is
-  // legal but (PreToolUse, wildcard, deny) is not, so a per-event
-  // table would mis-classify the wildcard chip path.
   const event = state.event ?? "PreToolUse"
-  const matcher = state.matcher ?? "Bash"
-  const allowed: readonly Action[] = legalActionsFor(event, matcher)
-  const defaultPick: Action | undefined =
-    state.action && allowed.includes(state.action)
-      ? state.action
-      : allowed[0]
-  const OPTIONS: Record<Action, { label: string; sub: string; recommended?: boolean }> = {
-    block: { label: t("newPolicy.wizard.step4.block.label"),
-             sub:   t("newPolicy.wizard.step4.block.sub"), recommended: true },
-    ask:   { label: t("newPolicy.wizard.step4.ask.label"),
-             sub:   t("newPolicy.wizard.step4.ask.sub") },
-    audit: { label: t("newPolicy.wizard.step4.audit.label"),
-             sub:   t("newPolicy.wizard.step4.audit.sub") },
-  }
+  const archetype: Archetype = state.archetype ?? archetypesFor(event)[0]
+  const irAction = archetypeToAction(archetype)
+  const matcherCandidates = legalMatchersFor(event, irAction)
+  const isNoToolEvent = !TOOL_CONTEXT_EVENTS.has(event)
+  const matcherDefault = isNoToolEvent
+    ? "*"
+    : state.matcher && matcherCandidates.includes(state.matcher)
+      ? state.matcher
+      : matcherCandidates[0] ?? "Bash"
   return (
     <StepShell
       t={t}
       step={4}
-      prevHref={buildWizardHref(state, 3)}
+      prevHref={buildWizardHref(state, archetypeSkipsCondition(archetype) ? 2 : 3)}
       heading={t("newPolicy.wizard.step4.heading")}
       helper={t("newPolicy.wizard.step4.helper")}
     >
-      <form action={action} className="space-y-3">
+      <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="4" />
-        <HiddenState state={{ event: state.event, matcher: state.matcher, verifiers: state.verifiers }} />
-        {allowed.map((opt) => (
-          <RadioCard
-            key={opt}
-            name="action"
-            value={opt}
-            defaultChecked={defaultPick === opt}
-            label={OPTIONS[opt].label}
-            sub={OPTIONS[opt].sub}
-            recommended={opt === allowed[0] && OPTIONS[opt].recommended}
+        <HiddenState state={{
+          event: state.event, archetype: state.archetype,
+          verifiers: state.verifiers,
+        }} />
+        {isNoToolEvent ? (
+          <div className="rounded-xl border border-black/[0.08] bg-gray-50 px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+            <span className="font-mono">*</span>
+            <span className="text-xs text-[var(--color-text-tertiary)] ml-2">
+              {t("newPolicy.wizard.step4.matcherLocked")}
+            </span>
+            <input type="hidden" name="matcher" value="*" />
+          </div>
+        ) : (
+          <>
+            <input
+              name="matcher"
+              required
+              maxLength={128}
+              defaultValue={matcherDefault}
+              list="matcher-list"
+              placeholder="Bash"
+              spellCheck={false}
+              autoComplete="off"
+              autoFocus
+              className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+            />
+            <datalist id="matcher-list">
+              {matcherCandidates.map((m) => <option key={m} value={m} />)}
+            </datalist>
+            <div className="flex flex-wrap gap-1.5">
+              {matcherCandidates.map((m) => {
+                const isWildcard = m === "*"
+                return (
+                  <button
+                    key={m}
+                    type="submit"
+                    name="matcher"
+                    value={m}
+                    formAction={action}
+                    formNoValidate
+                    className={`rounded-full border px-3 py-1 text-xs font-mono cursor-pointer transition-colors ${
+                      isWildcard
+                        ? "border-amber-400/40 bg-amber-50 text-amber-900 hover:border-amber-500 hover:bg-amber-100"
+                        : "border-black/[0.08] bg-white text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04]"
+                    }`}
+                    title={isWildcard ? t("newPolicy.wizard.step4.wildcardHint") : undefined}
+                  >
+                    {m}
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
+        <div>
+          <label htmlFor="w-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.sentinelTag")}
+          </label>
+          <input
+            id="w-sentinel"
+            name="sentinel_tag"
+            maxLength={32}
+            pattern="[A-Z][A-Z0-9_]{0,31}"
+            defaultValue={state.sentinel_tag ?? SENTINEL_TAG_DEFAULT}
+            placeholder={SENTINEL_TAG_DEFAULT}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
           />
-        ))}
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
+            <code className="font-mono">{(state.sentinel_tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
+          </p>
+        </div>
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -1062,8 +1167,9 @@ function Step5Naming({
       <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="5" />
         <HiddenState state={{
-          event: state.event, matcher: state.matcher,
-          verifiers: state.verifiers, action: state.action,
+          event: state.event, archetype: state.archetype,
+          matcher: state.matcher, verifiers: state.verifiers,
+          sentinel_tag: state.sentinel_tag,
         }} />
         <div>
           <label htmlFor="w-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
@@ -1097,26 +1203,6 @@ function Step5Naming({
             className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
           />
         </div>
-        <div>
-          <label htmlFor="w-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("newPolicy.guided.field.sentinelTag")}
-          </label>
-          <input
-            id="w-sentinel"
-            name="sentinel_tag"
-            maxLength={32}
-            pattern="[A-Z][A-Z0-9_]{0,31}"
-            defaultValue={state.sentinel_tag ?? SENTINEL_TAG_DEFAULT}
-            placeholder={SENTINEL_TAG_DEFAULT}
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-          />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
-            <code className="font-mono">{(state.sentinel_tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
-          </p>
-        </div>
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -1131,11 +1217,15 @@ function Step6Review({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const picked = state.verifiers ?? []
-  const verifierSummary = picked.length === 1
-    ? picked[0]
-    : picked.length === 0
-      ? "(none)"
-      : `${picked.join(" + ")} (all=pass)`
+  const archetype: Archetype = state.archetype ?? "block"
+  const isEmitSignal = archetype === "emit-signal"
+  const verifierSummary = isEmitSignal
+    ? "(unconditional)"
+    : picked.length === 1
+      ? picked[0]
+      : picked.length === 0
+        ? "(none)"
+        : `${picked.join(" + ")} (all=pass)`
   return (
     <StepShell
       t={t}
@@ -1151,7 +1241,7 @@ function Step6Review({
             event: state.event ?? "PreToolUse",
             matcher: state.matcher ?? "",
             verifier: verifierSummary,
-            action: state.action ?? "deny",
+            action: archetype,
           })}
         </p>
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs mt-4 pt-4 border-t border-black/[0.06]">
@@ -1159,22 +1249,28 @@ function Step6Review({
           <dd className="font-mono text-[12.5px]" translate="no">{state.id}</dd>
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">trigger</dt>
           <dd><code className="font-mono">{state.event} · {state.matcher}</code></dd>
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">requires</dt>
-          <dd>
-            <ul className="space-y-1">
-              {picked.map((v) => {
-                const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
-                return (
-                  <li key={v}>
-                    <code className="font-mono">{v}=pass</code>{" "}
-                    <span className="text-[var(--color-text-tertiary)]">— {desc}</span>
-                  </li>
-                )
-              })}
-            </ul>
-          </dd>
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">action</dt>
-          <dd className="text-[var(--color-text-secondary)]">{state.action}</dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">archetype</dt>
+          <dd className="text-[var(--color-text-secondary)]">{archetype}</dd>
+          {!isEmitSignal && (
+            <>
+              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">requires</dt>
+              <dd>
+                <ul className="space-y-1">
+                  {picked.map((v) => {
+                    const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
+                    return (
+                      <li key={v}>
+                        <code className="font-mono">{v}=pass</code>{" "}
+                        <span className="text-[var(--color-text-tertiary)]">— {desc}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </dd>
+            </>
+          )}
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">action (IR)</dt>
+          <dd className="text-[var(--color-text-secondary)]">{archetypeToAction(archetype)}</dd>
         </dl>
       </Card>
       <form action={action}>
