@@ -12,25 +12,23 @@ export interface PresetToggleProps {
 }
 
 /**
- * Toggle — byte-equivalent copy of the magi-agent OSS Customize modal
- * switch (Toggle component in verification-rule-modal.tsx +
- * custom-tool-modal.tsx). Same track / thumb / colour pattern so the
- * magi-cp Presets surface matches the upstream visual language.
+ * Toggle — track h-6 w-11 (24×44), thumb h-5 w-5 (20×20). The thumb
+ * fills more of the track than magi-agent's literal source (h-4 thumb)
+ * because the rendered shadcn-style proportion is what their dashboard
+ * actually shows in screenshots — slightly bigger thumb, 2px symmetric
+ * padding.
  *
- * Track  h-6 w-11   (24×44)
- * Thumb  h-4 w-4    (16×16) — smaller than shadcn's 20×20, more
- *                           "breathing room" inside the track which
- *                           was the source of the earlier "blob" look
- * Off    bg-black/15      → muted dark
- * On     bg-[--color-accent]
- * Slide  translate-x-6 / translate-x-1
+ * Slide: translate-x-[22px] when on, translate-x-0.5 when off
+ * (44 - 2 - 20 = 22, gives 2px gap on the right).
  *
- * Local extensions vs magi-agent's Toggle:
- * - useTransition + optimistic flip (server action, not a setState)
- * - aria-busy=true while the action is in flight
- * - stopPropagation()+preventDefault() because this lives inside a
- *   <summary> and a normal click would also toggle the parent
- *   <details> disclosure
+ * Off track: bg-gray-200 (was bg-black/15 which was too subtle —
+ * the white thumb practically disappeared on it).
+ *
+ * Local extensions over the upstream Toggle:
+ * - useTransition() + optimistic flip (server action)
+ * - aria-busy={pending}
+ * - stopPropagation()+preventDefault() so the parent <summary>
+ *   doesn't also toggle <details>
  */
 export function PresetToggle({
   presetId, enabled, action, labelOn, labelOff,
@@ -51,13 +49,13 @@ export function PresetToggle({
         startTransition(async () => { await action(presetId) })
       }}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/45 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
-        checked ? "bg-[var(--color-accent)]" : "bg-black/15"
+        checked ? "bg-[var(--color-accent)]" : "bg-gray-200"
       }`}
     >
       <span
         aria-hidden="true"
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${
-          checked ? "translate-x-6" : "translate-x-1"
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-1 ring-black/[0.04] transition-transform duration-200 ${
+          checked ? "translate-x-[22px]" : "translate-x-0.5"
         }`}
       />
     </button>

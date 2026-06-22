@@ -18,31 +18,26 @@ export interface PresetRowProps {
   notWiredLabel: string
 }
 
-const STATUS_PILL_CLS: Record<PresetEntry["enforcement"] | "off", string> = {
-  enforcing:    "bg-emerald-500/10 text-emerald-700",
-  "always-on":  "bg-emerald-500/10 text-emerald-700",
-  preview:      "bg-amber-500/10 text-amber-700",
-  capability:   "bg-blue-500/10 text-blue-700",
-  off:          "bg-gray-200 text-gray-600",
-}
-
 function StatusPill({
   enabled, enforcement,
 }: { enabled: boolean; enforcement: PresetEntry["enforcement"] }) {
-  // Always-on items: green Locked pill, no toggle (matches magi-agent).
+  // Always-on: green Locked pill, no toggle (matches magi-agent).
   if (enforcement === "always-on") {
     return (
-      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_PILL_CLS["always-on"]}`}>
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-700">
         <LockClosedIcon aria-hidden="true" className="h-3 w-3" />
         always-on
       </span>
     )
   }
-  const label = enabled ? "on" : "off"
-  const cls = enabled ? STATUS_PILL_CLS[enforcement] : STATUS_PILL_CLS.off
-  return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {label}
+  // State pill = state only. Enforcement lives in the meta row.
+  return enabled ? (
+    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-700">
+      on
+    </span>
+  ) : (
+    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-600">
+      off
     </span>
   )
 }
