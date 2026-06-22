@@ -17,10 +17,27 @@ export const dynamic = "force-dynamic"
 
 type Mode = "nl" | "guided" | "advanced"
 const WIZARD_TOTAL = 6
-const TOOL_PRESETS = ["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"] as const
+// Built-in Claude Code tool list — MUST stay in sync with the backend's
+// matrix._BUILTIN_TOOLS (otherwise wizard-built policies trip the IR
+// loader's "unknown matcher class" guard).
+const TOOL_PRESETS = [
+  "Bash", "Read", "Edit", "Write", "Glob", "Grep",
+  "NotebookEdit", "TodoWrite", "WebFetch", "WebSearch",
+] as const
 const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
 type OnMissing = (typeof ON_MISSING_PRESETS)[number]
 type EventKind = "PreToolUse" | "PostToolUse" | "Stop"
+
+// matrix.LEGAL_COMBINATIONS, narrowed by event since this wizard only
+// surfaces the standard tool matcher path (no wildcard / MCP form for
+// now). Stop only legally pairs with wildcard+log, so the IR loader
+// rejects every Stop combination this wizard can produce — we still
+// allow picking Stop in step1 but the helper text steers users away.
+const LEGAL_ON_MISSING_BY_EVENT: Record<EventKind, readonly OnMissing[]> = {
+  PreToolUse:  ["deny", "ask"],
+  PostToolUse: ["log", "allow"],
+  Stop:        ["log"],
+}
 
 interface WizardState {
   event?: EventKind
@@ -794,6 +811,22 @@ function Step4OnMissing({
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  // Filter to options the backend will accept for this event — keeps
+  // the wizard from minting policies the IR loader rejects with 422.
+  const allowed: readonly OnMissing[] = LEGAL_ON_MISSING_BY_EVENT[state.event ?? "PreToolUse"]
+  const defaultPick: OnMissing = state.on_missing && allowed.includes(state.on_missing)
+    ? state.on_missing
+    : allowed[0]
+  const OPTIONS: Record<OnMissing, { label: string; sub: string; recommended?: boolean }> = {
+    deny:  { label: t("newPolicy.wizard.step4.deny.label"),
+             sub:   t("newPolicy.wizard.step4.deny.sub"),  recommended: true },
+    ask:   { label: t("newPolicy.wizard.step4.ask.label"),
+             sub:   t("newPolicy.wizard.step4.ask.sub") },
+    log:   { label: t("newPolicy.wizard.step4.log.label"),
+             sub:   t("newPolicy.wizard.step4.log.sub") },
+    allow: { label: t("newPolicy.wizard.step4.allow.label"),
+             sub:   t("newPolicy.wizard.step4.allow.sub") },
+  }
   return (
     <StepShell
       t={t}
@@ -805,35 +838,17 @@ function Step4OnMissing({
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="4" />
         <HiddenState state={{ event: state.event, matcher: state.matcher, verifier: state.verifier }} />
-        <RadioCard
-          name="on_missing"
-          value="deny"
-          defaultChecked={(state.on_missing ?? "deny") === "deny"}
-          label={t("newPolicy.wizard.step4.deny.label")}
-          sub={t("newPolicy.wizard.step4.deny.sub")}
-          recommended
-        />
-        <RadioCard
-          name="on_missing"
-          value="ask"
-          defaultChecked={state.on_missing === "ask"}
-          label={t("newPolicy.wizard.step4.ask.label")}
-          sub={t("newPolicy.wizard.step4.ask.sub")}
-        />
-        <RadioCard
-          name="on_missing"
-          value="log"
-          defaultChecked={state.on_missing === "log"}
-          label={t("newPolicy.wizard.step4.log.label")}
-          sub={t("newPolicy.wizard.step4.log.sub")}
-        />
-        <RadioCard
-          name="on_missing"
-          value="allow"
-          defaultChecked={state.on_missing === "allow"}
-          label={t("newPolicy.wizard.step4.allow.label")}
-          sub={t("newPolicy.wizard.step4.allow.sub")}
-        />
+        {allowed.map((opt) => (
+          <RadioCard
+            key={opt}
+            name="on_missing"
+            value={opt}
+            defaultChecked={defaultPick === opt}
+            label={OPTIONS[opt].label}
+            sub={OPTIONS[opt].sub}
+            recommended={opt === allowed[0] && OPTIONS[opt].recommended}
+          />
+        ))}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
