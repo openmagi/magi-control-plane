@@ -189,32 +189,46 @@ export default function PolicyBuilder({
             {labels.requires}
           </legend>
           <div className="space-y-2">
-            {draft.requires.map((r, i) => (
+            {draft.requires.map((r, i) => {
+              // PolicyBuilder edits step-kind rows inline. Non-step kinds
+              // (regex/llm_critic/shacl) are authored via the Guided
+              // wizard or raw JSON IR — we just show a read-only chip.
+              const kind = ("kind" in r ? r.kind : "step")
+              const step = ("step" in r ? r.step : "")
+              const verdict = ("verdict" in r ? r.verdict : "pass")
+              if (kind !== "step") {
+                return (
+                  <div key={i} className="rounded-md border border-black/[0.08] bg-gray-50 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
+                    <span className="font-mono">{kind}</span> — edit via the Guided wizard or raw IR mode.
+                  </div>
+                )
+              }
+              return (
               <div key={i} className="flex flex-wrap items-center gap-2">
                 <input
                   list="pb-wired-steps"
                   className="h-9 px-3 text-sm rounded-md min-w-[160px] flex-1 bg-[var(--color-surface-input)] border border-[var(--color-border-strong)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
                   type="text"
-                  value={r.step}
+                  value={step}
                   placeholder="step"
                   spellCheck={false}
                   autoComplete="off"
                   onChange={e => {
                     const next = [...draft.requires]
-                    next[i] = { ...r, step: e.target.value }
+                    next[i] = { kind: "step", step: e.target.value, verdict }
                     update("requires", next)
                   }}
                 />
                 <input
                   className="h-9 px-3 text-sm rounded-md w-24 bg-[var(--color-surface-input)] border border-[var(--color-border-strong)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
                   type="text"
-                  value={r.verdict}
+                  value={verdict}
                   placeholder="verdict"
                   spellCheck={false}
                   autoComplete="off"
                   onChange={e => {
                     const next = [...draft.requires]
-                    next[i] = { ...r, verdict: e.target.value }
+                    next[i] = { kind: "step", step, verdict: e.target.value }
                     update("requires", next)
                   }}
                 />
@@ -233,14 +247,15 @@ export default function PolicyBuilder({
                   </Button>
                 )}
               </div>
-            ))}
+              )
+            })}
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() =>
                 update("requires",
-                  [...draft.requires, { step: "", verdict: "pass" }])
+                  [...draft.requires, { kind: "step", step: "", verdict: "pass" }])
               }
             >
               + {labels.addRequirement}

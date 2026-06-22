@@ -344,10 +344,20 @@ function ConditionsTab({
                 }`}
               >
                 <div className="flex flex-wrap items-baseline gap-2 mb-1">
-                  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700">
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                    row.kind === "regex" || row.kind === "llm_critic" || row.kind === "shacl"
+                      ? "bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]"
+                      : "bg-gray-100 text-gray-700"
+                  }`}>
                     {row.kind === "sentinel_re"
                       ? t("rules.condition.kind.sentinel")
-                      : t("rules.condition.kind.tool")}
+                      : row.kind === "tool_match"
+                        ? t("rules.condition.kind.tool")
+                        : row.kind === "regex"
+                          ? t("rules.condition.kind.regex")
+                          : row.kind === "llm_critic"
+                            ? t("rules.condition.kind.llm")
+                            : t("rules.condition.kind.shacl")}
                   </span>
                   <Code className="text-[12.5px] truncate max-w-full">
                     {row.value}

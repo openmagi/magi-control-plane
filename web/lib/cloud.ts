@@ -370,7 +370,7 @@ export type EvidenceTypeEntry = {
  * policy. v1 covers the two condition shapes the policy IR carries
  * inline today — sentinel_re patterns and tool matchers. */
 export type ConditionEntry = {
-  kind: "sentinel_re" | "tool_match"
+  kind: "sentinel_re" | "tool_match" | "regex" | "llm_critic" | "shacl"
   value: string
   policy_id: string
   trigger_event: string

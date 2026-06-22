@@ -17,6 +17,7 @@ import {
 } from "@/components/ui"
 import SentinelModeSection from "./_components/SentinelModeSection"
 import MinOneSubmit from "./_components/MinOneSubmit"
+import ConditionKindSection from "./_components/ConditionKindSection"
 
 export const dynamic = "force-dynamic"
 
@@ -155,14 +156,25 @@ function legalMatchersFor(event: EventKind, action: Action): readonly string[] {
   return candidates.filter((m) => isLegal(event, m, action))
 }
 
+type ConditionKind = "step" | "regex" | "llm_critic" | "shacl"
+const CONDITION_KINDS: readonly ConditionKind[] = ["step", "regex", "llm_critic", "shacl"]
+
 interface WizardState {
   event?: EventKind
   archetype?: Archetype
   matcher?: string
-  /** N verifiers (backend's `requires: list[EvidenceReq]`). Comma-joined
-   * in the URL. Required len>=1 for block/ask/audit archetypes; len=0
-   * for emit-signal. */
+  /** D35: which kind of condition this policy carries. step is the
+   * existing multi-verifier path; regex/llm_critic/shacl are inline. */
+  condition_kind?: ConditionKind
+  /** N verifiers (backend's `requires: list[EvidenceReq]` step kind).
+   * Comma-joined in the URL. Used only when condition_kind=step. */
   verifiers?: string[]
+  /** Inline regex pattern (condition_kind=regex). */
+  cond_pattern?: string
+  /** LLM critic criterion (condition_kind=llm_critic). */
+  cond_criterion?: string
+  /** SHACL shape Turtle (condition_kind=shacl). */
+  cond_shape_ttl?: string
   id?: string
   description?: string
   /** D34: sentinel authoring split into two modes.
@@ -340,8 +352,27 @@ async function saveWizard(formData: FormData): Promise<void> {
   const event = String(formData.get("event") ?? "PreToolUse") as EventKind
   const archetype = (String(formData.get("archetype") ?? "block")) as Archetype
   const matcher = String(formData.get("matcher") ?? "").trim()
-  const verifiers = (formData.get("verifiers")?.toString() ?? "")
+  const conditionKindRaw = String(formData.get("condition_kind") ?? "step")
+  const conditionKind: "step" | "regex" | "llm_critic" | "shacl" =
+    conditionKindRaw === "regex" || conditionKindRaw === "llm_critic" || conditionKindRaw === "shacl"
+      ? conditionKindRaw
+      : "step"
+  // For kind=step the wizard already merged checkbox picks into the
+  // comma-joined `verifiers` URL field via advanceWizard. For other
+  // kinds we use the dedicated cond_* fields directly.
+  const verifierChecksNow = formData.getAll("verifier")
+    .filter((v): v is string => typeof v === "string")
+    .map(v => v.trim()).filter(Boolean)
+  const verifiersCarry = (formData.get("verifiers")?.toString() ?? "")
     .split(",").map((s) => s.trim()).filter(Boolean)
+  const verifiersUnique: string[] = []
+  for (const v of [...verifierChecksNow, ...verifiersCarry]) {
+    if (!verifiersUnique.includes(v)) verifiersUnique.push(v)
+  }
+  const verifiers = verifiersUnique
+  const condPattern = String(formData.get("cond_pattern") ?? "").trim()
+  const condCriterion = String(formData.get("cond_criterion") ?? "").trim()
+  const condShapeTtl = String(formData.get("cond_shape_ttl") ?? "").trim()
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
@@ -363,8 +394,20 @@ async function saveWizard(formData: FormData): Promise<void> {
 
   const action = archetypeToAction(archetype)
   const isEmitSignal = archetype === "emit-signal"
-  if (!isEmitSignal && verifiers.length === 0) {
-    redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+  // D35: condition validation per kind. emit-signal bypasses (requires=[]).
+  if (!isEmitSignal) {
+    if (conditionKind === "step" && verifiers.length === 0) {
+      redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+    }
+    if (conditionKind === "regex" && !condPattern) {
+      redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+    }
+    if (conditionKind === "llm_critic" && !condCriterion) {
+      redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+    }
+    if (conditionKind === "shacl" && !condShapeTtl) {
+      redirect("/policies/new?mode=guided&step=3&err=invalid_input"); return
+    }
   }
   if (!id || !matcher) {
     redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
@@ -383,20 +426,36 @@ async function saveWizard(formData: FormData): Promise<void> {
     sentinel_re = buildSentinelReFromTag(sentinelTag)
   }
 
+  let requires: PolicyDraft["requires"]
+  let conditionDescription: string
+  if (isEmitSignal) {
+    requires = []
+    conditionDescription = "no condition"
+  } else if (conditionKind === "step") {
+    requires = verifiers.map((step) => ({ kind: "step" as const, step, verdict: "pass" }))
+    conditionDescription = verifiers.length === 1
+      ? `${verifiers[0]} ≠ pass`
+      : `any of ${verifiers.length} verifiers ≠ pass`
+  } else if (conditionKind === "regex") {
+    requires = [{ kind: "regex" as const, pattern: condPattern }]
+    conditionDescription = `regex ${condPattern.slice(0, 40)} does not match`
+  } else if (conditionKind === "llm_critic") {
+    requires = [{ kind: "llm_critic" as const, criterion: condCriterion }]
+    conditionDescription = `LLM critic fails: ${condCriterion.slice(0, 40)}`
+  } else {
+    requires = [{ kind: "shacl" as const, shape_ttl: condShapeTtl }]
+    conditionDescription = "SHACL shape does not conform"
+  }
   const summary = isEmitSignal
     ? `Emit signal on every ${event}|${matcher} (no condition)`
-    : verifiers.length === 1
-      ? `${archetype} on ${event}|${matcher} when ${verifiers[0]} ≠ pass`
-      : `${archetype} on ${event}|${matcher} when any of ${verifiers.length} verifiers ≠ pass`
+    : `${archetype} on ${event}|${matcher} when ${conditionDescription}`
   const draft: PolicyDraft = {
     id,
     version: "0.1",
     description: description || summary,
     trigger: { host: "claude-code", event, matcher },
     sentinel_re,
-    requires: isEmitSignal
-      ? []
-      : verifiers.map((step) => ({ step, verdict: "pass" })),
+    requires,
     action,
     on_signature_invalid: "deny",
     gate_binary: "/usr/local/bin/magi-gate.sh",
@@ -738,6 +797,10 @@ function buildWizardHref(state: WizardState, step: number): string {
   if (state.sentinel_mode) params.set("sentinel_mode", state.sentinel_mode)
   if (state.sentinel_tag) params.set("sentinel_tag", state.sentinel_tag)
   if (state.sentinel_re_custom) params.set("sentinel_re_custom", state.sentinel_re_custom)
+  if (state.condition_kind) params.set("condition_kind", state.condition_kind)
+  if (state.cond_pattern) params.set("cond_pattern", state.cond_pattern)
+  if (state.cond_criterion) params.set("cond_criterion", state.cond_criterion)
+  if (state.cond_shape_ttl) params.set("cond_shape_ttl", state.cond_shape_ttl)
   return `/policies/new?${params.toString()}`
 }
 
@@ -760,6 +823,18 @@ function HiddenState({ state }: { state: WizardState }) {
       )}
       {state.sentinel_re_custom && (
         <input type="hidden" name="sentinel_re_custom" value={state.sentinel_re_custom} />
+      )}
+      {state.condition_kind && (
+        <input type="hidden" name="condition_kind" value={state.condition_kind} />
+      )}
+      {state.cond_pattern && (
+        <input type="hidden" name="cond_pattern" value={state.cond_pattern} />
+      )}
+      {state.cond_criterion && (
+        <input type="hidden" name="cond_criterion" value={state.cond_criterion} />
+      )}
+      {state.cond_shape_ttl && (
+        <input type="hidden" name="cond_shape_ttl" value={state.cond_shape_ttl} />
       )}
     </>
   )
@@ -831,6 +906,12 @@ function GuidedWizard({
     sentinel_mode: (searchParams.sentinel_mode === "custom" ? "custom" : "tag"),
     sentinel_tag: searchParams.sentinel_tag || undefined,
     sentinel_re_custom: searchParams.sentinel_re_custom || undefined,
+    condition_kind: (CONDITION_KINDS as readonly string[]).includes(searchParams.condition_kind ?? "")
+      ? (searchParams.condition_kind as ConditionKind)
+      : undefined,
+    cond_pattern: searchParams.cond_pattern || undefined,
+    cond_criterion: searchParams.cond_criterion || undefined,
+    cond_shape_ttl: searchParams.cond_shape_ttl || undefined,
   }
 
   return (
@@ -1084,11 +1165,9 @@ function Step3Condition({
     const rb = recommendedCategories.has(b.category) ? 0 : 1
     return ra - rb
   })
-  const picked: Set<string> = new Set(
-    state.verifiers && state.verifiers.length > 0
-      ? state.verifiers
-      : ordered.length > 0 ? [ordered[0].step] : [],
-  )
+  const initialPicks: string[] = state.verifiers && state.verifiers.length > 0
+    ? state.verifiers
+    : ordered.length > 0 ? [ordered[0].step] : []
   return (
     <StepShell
       t={t}
@@ -1100,29 +1179,38 @@ function Step3Condition({
       <form id="wizard-step3-form" action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{ event: state.event, archetype: state.archetype }} />
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          {t("newPolicy.wizard.step3.multiHint")}
-        </p>
-        {ordered.map((v) => (
-          <CheckboxCard
-            key={v.step}
-            name="verifier"
-            value={v.step}
-            defaultChecked={picked.has(v.step)}
-            label={v.step}
-            sub={
-              recommendedCategories.has(v.category)
-                ? `${v.description}  ·  ${t("newPolicy.wizard.step3.recommendedFor", { event })}`
-                : v.description
-            }
-          />
-        ))}
-        <MinOneSubmit
-          formId="wizard-step3-form"
-          inputName="verifier"
-          label={t("newPolicy.wizard.next")}
-          hint={t("newPolicy.wizard.step3.minOneHint")}
+        <ConditionKindSection
+          initialKind={state.condition_kind ?? "step"}
+          wiredSteps={ordered.map(v => ({
+            step: v.step,
+            description: v.description,
+            recommended: recommendedCategories.has(v.category),
+          }))}
+          initialPicks={initialPicks}
+          initialPattern={state.cond_pattern ?? ""}
+          initialCriterion={state.cond_criterion ?? ""}
+          initialShapeTtl={state.cond_shape_ttl ?? ""}
+          labels={{
+            kindStep:          t("newPolicy.wizard.step3.kind.step"),
+            kindRegex:         t("newPolicy.wizard.step3.kind.regex"),
+            kindLlm:           t("newPolicy.wizard.step3.kind.llm"),
+            kindShacl:         t("newPolicy.wizard.step3.kind.shacl"),
+            pickAtLeastOne:    t("newPolicy.wizard.step3.minOneHint"),
+            patternLabel:      t("newPolicy.wizard.step3.regex.label"),
+            patternHint:       t("newPolicy.wizard.step3.regex.hint"),
+            patternPlaceholder: t("newPolicy.wizard.step3.regex.placeholder"),
+            patternInvalid:    t("newPolicy.wizard.step3.regex.invalid"),
+            criterionLabel:    t("newPolicy.wizard.step3.llm.label"),
+            criterionHint:     t("newPolicy.wizard.step3.llm.hint"),
+            criterionPlaceholder: t("newPolicy.wizard.step3.llm.placeholder"),
+            shaclLabel:        t("newPolicy.wizard.step3.shacl.label"),
+            shaclHint:         t("newPolicy.wizard.step3.shacl.hint"),
+            shaclPlaceholder:  t("newPolicy.wizard.step3.shacl.placeholder"),
+            llmPreviewBadge:   t("newPolicy.wizard.step3.kind.llmPreview"),
+            shaclPreviewBadge: t("newPolicy.wizard.step3.kind.shaclPreview"),
+          }}
         />
+        <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
   )
@@ -1456,7 +1544,14 @@ function CompileResultBlock({
           <>
             <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">requires</dt>
             <dd className="text-[var(--color-text-secondary)] text-xs">
-              {draft.requires.map(r => `${r.step}=${r.verdict}`).join(", ")}
+              {draft.requires.map(r => {
+                const kind = ("kind" in r ? r.kind : "step")
+                if (kind === "step") return `${("step" in r ? r.step : "")}=${("verdict" in r ? r.verdict : "pass")}`
+                if (kind === "regex") return `regex(${("pattern" in r ? r.pattern : "").slice(0, 24)})`
+                if (kind === "llm_critic") return `llm(${("criterion" in r ? r.criterion : "").slice(0, 24)})`
+                if (kind === "shacl") return "shacl(…)"
+                return kind
+              }).join(", ")}
             </dd>
           </>
         )}

@@ -92,7 +92,21 @@ export function isLegal(
   return LEGAL.has(`${event}|${kls}|${action}`)
 }
 
-export type EvidenceReqDraft = { step: string; verdict: string }
+// D35: EvidenceReq is a discriminated union by kind.
+//   step       — existing: reference a wired verifier.
+//   regex      — inline pattern (Python re syntax) matched against
+//                payload text at gate time.
+//   llm_critic — natural-language rule judged by LLM provider.
+//   shacl      — Turtle SHACL shape validated against payload dict.
+export type EvidenceKind = "step" | "regex" | "llm_critic" | "shacl"
+
+export type EvidenceReqDraft =
+  | { kind: "step"; step: string; verdict: string }
+  | { kind: "regex"; pattern: string }
+  | { kind: "llm_critic"; criterion: string }
+  | { kind: "shacl"; shape_ttl: string }
+  // Legacy: rows without an explicit kind are treated as step.
+  | { step: string; verdict: string }
 
 export type PolicyDraft = {
   id: string
@@ -135,8 +149,26 @@ export function validateDraft(d: PolicyDraft): DraftError[] {
   // a non-audit action is paired with an empty list (almost always
   // an authoring mistake).
   for (const [i, r] of d.requires.entries()) {
-    if (!r.step) errs.push({ field: `requires[${i}].step`, message: "step required" })
-    if (!r.verdict) errs.push({ field: `requires[${i}].verdict`, message: "verdict required" })
+    const kind = ("kind" in r ? r.kind : "step")
+    if (kind === "step") {
+      const step = ("step" in r ? r.step : "")
+      const verdict = ("verdict" in r ? r.verdict : "")
+      if (!step) errs.push({ field: `requires[${i}].step`, message: "step required" })
+      if (!verdict) errs.push({ field: `requires[${i}].verdict`, message: "verdict required" })
+    } else if (kind === "regex") {
+      const pattern = ("pattern" in r ? r.pattern : "")
+      if (!pattern) errs.push({ field: `requires[${i}].pattern`, message: "regex pattern required" })
+      else {
+        try { new RegExp(pattern) }
+        catch { errs.push({ field: `requires[${i}].pattern`, message: "regex fails to compile" }) }
+      }
+    } else if (kind === "llm_critic") {
+      const criterion = ("criterion" in r ? r.criterion : "")
+      if (!criterion) errs.push({ field: `requires[${i}].criterion`, message: "criterion required" })
+    } else if (kind === "shacl") {
+      const shape_ttl = ("shape_ttl" in r ? r.shape_ttl : "")
+      if (!shape_ttl) errs.push({ field: `requires[${i}].shape_ttl`, message: "SHACL shape required" })
+    }
   }
   if (d.requires.length === 0 && d.action !== "audit") {
     errs.push({
