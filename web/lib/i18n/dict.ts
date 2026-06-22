@@ -20,6 +20,7 @@ const KO_RAW = {
   "nav.closeMenu": "메뉴 닫기",
   "nav.policies": "정책",
   "nav.compile": "컴파일",
+  "nav.newPolicy": "새 정책",
   "nav.verify": "검증",
   "nav.presets": "프리셋",
   "nav.reviewQueue": "리뷰 대기열",
@@ -103,6 +104,10 @@ const KO_RAW = {
   "newPolicy.savePolicy": "정책 저장",
   "newPolicy.saving": "저장 중",
   "newPolicy.unsavedWarning": "저장하지 않은 변경 사항이 있습니다.",
+  "newPolicy.description": "자연어로 작성하거나 IR 필드를 직접 입력하세요. 둘 다 같은 정책 IR 을 만듭니다.",
+  "newPolicy.composeNL.title": "자연어로 작성 (NL → IR)",
+  "newPolicy.composeNL.hint": "LLM 이 IR 로 컴파일, critic 이 리뷰 — 결과는 아래 폼에 자동 채워짐",
+  "newPolicy.composeNL.handoffNote": "아래 IR 필드에 자동 채워졌습니다. 검토 후 저장하세요.",
 
   /* ── verify ──────────────────────────────────────────────────── */
   "verify.title": "검증 실행",
@@ -255,6 +260,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "nav.closeMenu": "Close navigation",
   "nav.policies": "Policies",
   "nav.compile": "Compile",
+  "nav.newPolicy": "New policy",
   "nav.verify": "Verify",
   "nav.presets": "Presets",
   "nav.reviewQueue": "Review queue",
@@ -333,6 +339,10 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.savePolicy": "Save policy",
   "newPolicy.saving": "Saving",
   "newPolicy.unsavedWarning": "You have unsaved changes.",
+  "newPolicy.description": "Write in natural language or fill the IR fields manually — both produce the same Policy IR.",
+  "newPolicy.composeNL.title": "Compose via natural language (NL → IR)",
+  "newPolicy.composeNL.hint": "LLM compiles to IR, a critic LLM reviews — result fills the form below.",
+  "newPolicy.composeNL.handoffNote": "The IR fields below were filled from the compile result. Review and save.",
 
   "verify.title": "Run a verifier",
   "verify.description": "Dispatches the chosen verifier. On {pass} an Ed25519 token is issued and appended to the audit ledger; on {deny} the reasons explain why. citation_verify uses a specialised path with NLI advisory — use the compile / policy forms for it.",
