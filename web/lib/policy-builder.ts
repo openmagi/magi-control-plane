@@ -13,6 +13,15 @@ export type EventKind =
   | "PreCompact"
   | "SessionStart" | "SessionEnd"
 
+// D31: action archetypes replace the old decision vocabulary. block /
+// ask map to the previous deny / ask 1:1; audit replaces both log and
+// allow (which were operationally interchangeable). strip is reserved
+// for the verifier-protocol-mutation cycle.
+export type Action = "block" | "ask" | "audit"
+
+// Legacy alias kept so old request bodies / draft fixtures from the
+// pre-D31 vocabulary keep round-tripping through validateDraft until
+// they're migrated.
 export type Decision = "deny" | "ask" | "log" | "allow"
 
 export type MatcherClass = "tool" | "mcp_tool" | "wildcard" | "tool_alt"
@@ -35,33 +44,52 @@ export function classifyMatcher(matcher: string): MatcherClass | "unknown" {
   return "unknown"
 }
 
+// D31: triples now use action archetype vocabulary (block / ask /
+// audit). Mirrors backend policy/matrix.LEGAL_COMBINATIONS exactly.
 const LEGAL = new Set<string>([
-  // PreToolUse — gate
-  "PreToolUse|tool|deny",     "PreToolUse|tool|ask",
-  "PreToolUse|mcp_tool|deny", "PreToolUse|mcp_tool|ask",
-  "PreToolUse|tool_alt|deny", "PreToolUse|tool_alt|ask",
-  "PreToolUse|wildcard|log",
-  // PostToolUse — observe
-  "PostToolUse|tool|log",     "PostToolUse|tool|allow",
-  "PostToolUse|mcp_tool|log", "PostToolUse|mcp_tool|allow",
-  // No-tool-context events (D28: scope expanded to Claude Code's
-  // full hook set minus Notification). All use the wildcard matcher
-  // class because the hook payload has no tool to match.
-  "Stop|wildcard|log",
-  "SubagentStop|wildcard|log",
-  "UserPromptSubmit|wildcard|deny",
+  // PreToolUse — every action class is legal on every concrete matcher;
+  // wildcard narrows to audit only.
+  "PreToolUse|tool|block",     "PreToolUse|tool|ask",     "PreToolUse|tool|audit",
+  "PreToolUse|mcp_tool|block", "PreToolUse|mcp_tool|ask", "PreToolUse|mcp_tool|audit",
+  "PreToolUse|tool_alt|block", "PreToolUse|tool_alt|ask", "PreToolUse|tool_alt|audit",
+  "PreToolUse|wildcard|audit",
+  // PostToolUse — tool already ran, only audit makes sense.
+  "PostToolUse|tool|audit",
+  "PostToolUse|mcp_tool|audit",
+  // No-tool-context events all use wildcard.
+  "UserPromptSubmit|wildcard|block",
   "UserPromptSubmit|wildcard|ask",
-  "UserPromptSubmit|wildcard|log",
-  "PreCompact|wildcard|deny",
-  "PreCompact|wildcard|log",
-  "SessionStart|wildcard|log",
-  "SessionEnd|wildcard|log",
+  "UserPromptSubmit|wildcard|audit",
+  "PreCompact|wildcard|block",
+  "PreCompact|wildcard|audit",
+  "Stop|wildcard|audit",
+  "SubagentStop|wildcard|audit",
+  "SessionStart|wildcard|audit",
+  "SessionEnd|wildcard|audit",
 ])
 
-export function isLegal(event: EventKind, matcher: string, decision: Decision): boolean {
+// Migration shim: callers still using the old (deny / ask / log /
+// allow) wording get folded into the new archetype set so the legacy
+// tests keep working without churn.
+const LEGACY_DECISION_TO_ACTION: Record<Decision, Action> = {
+  deny:  "block",
+  ask:   "ask",
+  log:   "audit",
+  allow: "audit",
+}
+
+export function isLegal(
+  event: EventKind,
+  matcher: string,
+  actionOrDecision: Action | Decision,
+): boolean {
   const kls = classifyMatcher(matcher)
   if (kls === "unknown") return false
-  return LEGAL.has(`${event}|${kls}|${decision}`)
+  const action: Action =
+    actionOrDecision === "block" || actionOrDecision === "ask" || actionOrDecision === "audit"
+      ? actionOrDecision
+      : LEGACY_DECISION_TO_ACTION[actionOrDecision]
+  return LEGAL.has(`${event}|${kls}|${action}`)
 }
 
 export type EvidenceReqDraft = { step: string; verdict: string }
@@ -73,7 +101,7 @@ export type PolicyDraft = {
   trigger: { host: "claude-code"; event: EventKind; matcher: string }
   sentinel_re: string
   requires: EvidenceReqDraft[]
-  on_missing: Decision
+  action: Action
   on_signature_invalid: "deny"
   gate_binary: string
 }
@@ -85,7 +113,7 @@ export const DEFAULT_DRAFT: PolicyDraft = {
   trigger: { host: "claude-code", event: "PreToolUse", matcher: "Bash" },
   sentinel_re: "FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
   requires: [{ step: "citation_verify", verdict: "pass" }],
-  on_missing: "deny",
+  action: "block",
   on_signature_invalid: "deny",
   gate_binary: "/usr/local/bin/magi-gate.sh",
 }
@@ -102,20 +130,24 @@ export function validateDraft(d: PolicyDraft): DraftError[] {
     errs.push({ field: "id", message: "id must not end with /compiled or /enabled" })
   if (!d.sentinel_re || !d.sentinel_re.includes("?P<matter>") || !d.sentinel_re.includes("?P<doc_id>"))
     errs.push({ field: "sentinel_re", message: "must contain named groups (?P<matter>...) and (?P<doc_id>...)" })
-  // Note: sentinel_re uses Python regex syntax `(?P<name>)` not JS `(?<name>)`,
-  // so we DON'T compile it here. Server-side `Policy.__post_init__` is the
-  // source of truth on regex validity; the client only enforces the named-group
-  // presence rule above for fast feedback.
-  if (d.requires.length === 0)
-    errs.push({ field: "requires", message: "at least one evidence requirement is required" })
+  // D31: requires can be empty for the emit-signal archetype. We no
+  // longer hard-fail on length 0; we DO surface a soft warning when
+  // a non-audit action is paired with an empty list (almost always
+  // an authoring mistake).
   for (const [i, r] of d.requires.entries()) {
     if (!r.step) errs.push({ field: `requires[${i}].step`, message: "step required" })
     if (!r.verdict) errs.push({ field: `requires[${i}].verdict`, message: "verdict required" })
   }
-  if (!isLegal(d.trigger.event, d.trigger.matcher, d.on_missing)) {
+  if (d.requires.length === 0 && d.action !== "audit") {
+    errs.push({
+      field: "requires",
+      message: `empty requires is only meaningful with action="audit" (emit-signal); current action is "${d.action}"`,
+    })
+  }
+  if (!isLegal(d.trigger.event, d.trigger.matcher, d.action)) {
     errs.push({
       field: "matrix",
-      message: `Illegal combination: ${d.trigger.event} × ${d.trigger.matcher} × ${d.on_missing}.`,
+      message: `Illegal combination: ${d.trigger.event} × ${d.trigger.matcher} × ${d.action}.`,
     })
   }
   return errs

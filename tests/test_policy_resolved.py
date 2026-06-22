@@ -15,20 +15,20 @@ from magi_cp.policy.resolved import (
 
 
 def _make(id: str, *, event: str = "PreToolUse", matcher: str = "Bash",
-          on_missing: str = "deny",
+          action: str = "block",
           sentinel: str = r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)"
           ) -> Policy:
-    # Auto-pick a legal decision for non-PreToolUse events (fail-fast now enforces matrix)
-    if event == "PostToolUse" and on_missing == "deny":
-        on_missing = "log"
+    # Auto-pick a legal action for non-PreToolUse events (fail-fast now enforces matrix)
+    if event == "PostToolUse" and action == "block":
+        action = "audit"
     if event == "Stop":
-        matcher, on_missing = "*", "log"
+        matcher, action = "*", "audit"
     return Policy(
         id=id, description="t", version="0.1",
         trigger=Trigger(host="claude-code", event=event, matcher=matcher),
         sentinel_re=sentinel,
         requires=[EvidenceReq(step="citation_verify", verdict="pass")],
-        on_missing=on_missing, on_signature_invalid="deny",  # type: ignore[arg-type]
+        action=action, on_signature_invalid="deny",  # type: ignore[arg-type]
         gate_binary="/usr/local/bin/magi-gate.sh",
     )
 

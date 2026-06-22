@@ -19,7 +19,7 @@ def _make(id: str) -> Policy:
         trigger=Trigger(host="claude-code", event="PreToolUse", matcher="Bash"),
         sentinel_re=r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
         requires=[EvidenceReq(step="citation_verify", verdict="pass")],
-        on_missing="deny", on_signature_invalid="deny",
+        action="block", on_signature_invalid="deny",
         gate_binary="/usr/local/bin/magi-gate.sh",
     )
 
@@ -99,7 +99,7 @@ def test_load_fails_on_illegal_triple_in_on_disk_policy(tmp_path):
             "trigger": {"host": "claude-code", "event": "PostToolUse", "matcher": "Bash"},
             "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
             "requires": [{"step": "citation_verify", "verdict": "pass"}],
-            "on_missing": "deny",   # illegal: PostToolUse + deny not in matrix
+            "action": "block",   # illegal: PostToolUse + block not in matrix
             "on_signature_invalid": "deny",
             "gate_binary": "/usr/local/bin/magi-gate.sh",
         },

@@ -58,6 +58,41 @@ class EvidenceReq:
     verdict: str = "pass"
 
 
+# D31: action archetypes. Replaces the prior `on_missing` field which
+# conflated "what happens when the verifier fails" with "what the policy
+# is fundamentally trying to do." Action is now the primary intent.
+#
+#   block — when the verifier doesn't all-pass, prevent the host action
+#           (tool runs / prompt sends / compaction starts). The strongest
+#           pre-event gate.
+#   ask   — when the verifier doesn't all-pass, interrupt for human
+#           approval (HITL). Used for legal-significant filings, etc.
+#   audit — record the verdict to the evidence ledger; never blocks.
+#           Combined with `requires=[]` this expresses the "emit signal"
+#           archetype (unconditional ledger marker every time the trigger
+#           fires).
+#
+# Reserved for a follow-up cycle (requires verifier-protocol mutation
+# support before it can be wired through the runtime gate):
+#   strip — intercept tool output and redact / transform it before the
+#           agent sees it. PostToolUse-only.
+ActionLiteral = Literal["block", "ask", "audit"]
+
+
+# Legacy → archetype migration. Older JSON fixtures + persisted policies
+# still carry the on_missing wording; deserialization accepts the key
+# and folds it into `action` so we don't strand existing rows. The
+# allow/log distinction collapses to `audit` — at runtime both meant
+# "verifier ran, log the verdict, don't gate," so they were
+# operationally interchangeable.
+_LEGACY_ON_MISSING_TO_ACTION = {
+    "deny":  "block",
+    "ask":   "ask",
+    "log":   "audit",
+    "allow": "audit",
+}
+
+
 @dataclass
 class Policy:
     id: str
@@ -65,7 +100,7 @@ class Policy:
     trigger: Trigger
     sentinel_re: str
     requires: list[EvidenceReq]
-    on_missing: Literal["deny", "ask"] = "deny"
+    action: ActionLiteral = "block"
     on_signature_invalid: Literal["deny"] = "deny"
     gate_binary: str = "/usr/local/bin/magi-gate.sh"
     version: str = "0.1"
@@ -87,26 +122,36 @@ class Policy:
             )
         if self.trigger.event not in _SUPPORTED_EVENTS:
             raise ValueError(f"policy '{self.id}': trigger.event 미지원: {self.trigger.event}")
-        if not self.requires:
-            raise ValueError(f"policy '{self.id}': requires가 비어 있음 (=강제 의미 없음)")
-        # Defense in depth: Literal[...] is not runtime-enforced by Python.
-        # v1: matrix now governs which (event, matcher, on_missing) combos are
-        # legal — on_missing can be deny/ask/log/allow per event class.
-        if self.on_missing not in {"deny", "ask", "log", "allow"}:
-            raise ValueError(f"policy '{self.id}': on_missing 미지원: {self.on_missing}")
+        # D31: requires CAN be empty — that's the unconditional ("emit
+        # signal") archetype. The matrix decides whether the combination
+        # makes sense for the chosen action; this validator just gates
+        # the shape.
+        if self.action not in ("block", "ask", "audit"):
+            raise ValueError(f"policy '{self.id}': action 미지원: {self.action}")
         if self.on_signature_invalid != "deny":
             raise ValueError(
                 f"policy '{self.id}': on_signature_invalid는 'deny'만 허용 (v0)"
             )
-        # v1: _LEGAL matrix — reject illegal (event, matcher_class, decision)
-        # triples before they reach the compiler. on_missing doubles as the
-        # decision label because that's what v0 policies express.
         from .matrix import validate_combination
         try:
             validate_combination(self.trigger.event, self.trigger.matcher,
-                                  self.on_missing)
+                                  self.action)
         except ValueError as e:
             raise ValueError(f"policy '{self.id}': {e}") from e
+
+
+def _coerce_action(raw: dict) -> ActionLiteral:
+    """Accept either the new `action` key or the legacy `on_missing`.
+    When both are present, `action` wins."""
+    if "action" in raw:
+        return raw["action"]
+    if "on_missing" in raw:
+        legacy = raw["on_missing"]
+        mapped = _LEGACY_ON_MISSING_TO_ACTION.get(legacy)
+        if mapped is None:
+            raise ValueError(f"unknown legacy on_missing value: {legacy!r}")
+        return mapped  # type: ignore[return-value]
+    return "block"
 
 
 def load_policy(path: str) -> Policy:
@@ -117,7 +162,7 @@ def load_policy(path: str) -> Policy:
         trigger=Trigger(**raw["trigger"]),
         sentinel_re=raw["sentinel_re"],
         requires=[EvidenceReq(**r) for r in raw["requires"]],
-        on_missing=raw.get("on_missing", "deny"),
+        action=_coerce_action(raw),
         on_signature_invalid=raw.get("on_signature_invalid", "deny"),
         gate_binary=raw.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
         version=raw.get("version", "0.1"),

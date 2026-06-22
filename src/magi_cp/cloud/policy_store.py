@@ -30,20 +30,21 @@ def _serialize_policy(p: Policy) -> dict:
                     "matcher": p.trigger.matcher},
         "sentinel_re": p.sentinel_re,
         "requires": [{"step": r.step, "verdict": r.verdict} for r in p.requires],
-        "on_missing": p.on_missing,
+        "action": p.action,
         "on_signature_invalid": p.on_signature_invalid,
         "gate_binary": p.gate_binary,
     }
 
 
 def _deserialize_policy(d: dict) -> Policy:
+    from ..policy.ir import _coerce_action
     return Policy(
         id=d["id"], description=d.get("description", ""),
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
         sentinel_re=d["sentinel_re"],
         requires=[EvidenceReq(**r) for r in d["requires"]],
-        on_missing=d.get("on_missing", "deny"),
+        action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),
         gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
     )

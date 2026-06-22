@@ -18,7 +18,7 @@ SAMPLE_IR = {
     "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
     "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
     "requires": [{"step": "citation_verify", "verdict": "pass"}],
-    "on_missing": "deny",
+    "action": "block",
     "on_signature_invalid": "deny",
     "gate_binary": "/usr/local/bin/magi-gate.sh",
 }
@@ -46,9 +46,11 @@ def test_load_policy_rejects_re_without_named_groups(tmp_path):
         load_policy(_write_policy(tmp_path, {"sentinel_re": r"FILE_COURT_\w+_\w+"}))
 
 
-def test_load_policy_rejects_empty_requires(tmp_path):
-    with pytest.raises(ValueError, match="requires"):
-        load_policy(_write_policy(tmp_path, {"requires": []}))
+def test_load_policy_accepts_empty_requires_with_audit(tmp_path):
+    """D31: requires=[] is the emit-signal archetype; legal with action=audit."""
+    p = load_policy(_write_policy(tmp_path, {"requires": [], "action": "audit"}))
+    assert p.requires == []
+    assert p.action == "audit"
 
 
 def test_load_policy_rejects_unsupported_event(tmp_path):
@@ -56,16 +58,32 @@ def test_load_policy_rejects_unsupported_event(tmp_path):
         load_policy(_write_policy(tmp_path, {"trigger": {**SAMPLE_IR["trigger"], "event": "X"}}))
 
 
-def test_load_policy_rejects_unknown_on_missing(tmp_path):
-    # v1: "xyzzy" is not a legal decision label at all.
-    with pytest.raises(ValueError, match="on_missing"):
-        load_policy(_write_policy(tmp_path, {"on_missing": "xyzzy"}))
+def test_load_policy_rejects_unknown_action(tmp_path):
+    with pytest.raises(ValueError, match="action"):
+        load_policy(_write_policy(tmp_path, {"action": "xyzzy"}))
 
 
 def test_load_policy_rejects_illegal_matrix_combination(tmp_path):
-    """v1 _LEGAL matrix: PreToolUse × Bash × log is not in the matrix."""
+    """D31: PreToolUse + tool + audit is now legal, but
+    PostToolUse + Bash + block is still rejected (post-event can't block)."""
     with pytest.raises(ValueError, match="illegal combination"):
-        load_policy(_write_policy(tmp_path, {"on_missing": "log"}))
+        load_policy(_write_policy(tmp_path, {
+            "trigger": {**SAMPLE_IR["trigger"], "event": "PostToolUse"},
+            "action": "block",
+        }))
+
+
+def test_load_policy_accepts_legacy_on_missing_alias(tmp_path):
+    """D31: existing policies stored with the on_missing wording still
+    deserialize. deny→block / ask→ask / log→audit / allow→audit mapping
+    handled by _coerce_action."""
+    raw = {**SAMPLE_IR}
+    raw.pop("action", None)
+    raw["on_missing"] = "deny"
+    p = tmp_path / "policy.json"
+    p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    loaded = load_policy(str(p))
+    assert loaded.action == "block"
 
 
 # ── v1-P6 review fixes: server-side id pattern enforcement ──────────

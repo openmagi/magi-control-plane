@@ -30,7 +30,7 @@ VALID_IR_JSON = json.dumps({
     "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
     "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
     "requires": [{"step": "citation_verify", "verdict": "pass"}],
-    "on_missing": "deny",
+    "action": "block",
     "on_signature_invalid": "deny",
 })
 
@@ -255,9 +255,14 @@ class TestCompileWithReview:
 
     def test_orchestrator_includes_schema_issues(self):
         """server-side schema check runs after compile and surfaces with the
-        review payload — even if the LLM reviewer rubber-stamps."""
+        review payload — even if the LLM reviewer rubber-stamps.
+
+        D31: the soft warning triggers when requires=[] is paired with a
+        non-audit action. The combination is structurally legal (the
+        matrix accepts it) but almost certainly an authoring error —
+        gate fires on every trigger with no condition."""
         bad_ir = json.dumps({**json.loads(VALID_IR_JSON),
-                             "on_missing": "allow"})   # weakens the gate
+                             "requires": [], "action": "block"})
         compiler = FakeLlmProvider([bad_ir])
         reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
         result = compile_with_review(
@@ -265,19 +270,22 @@ class TestCompileWithReview:
             nl="법원 filing 정책 약간만 게이트",
         )
         assert "schema_issues" in result
-        assert any("on_missing=allow" in i or "allow" in i for i in result["schema_issues"])
+        assert any("empty requires" in i for i in result["schema_issues"])
 
-    def test_orchestrator_schema_catches_empty_requires(self):
-        bad_ir = json.dumps({**json.loads(VALID_IR_JSON), "requires": []})
-        compiler = FakeLlmProvider([bad_ir])
+    def test_orchestrator_schema_allows_audit_with_empty_requires(self):
+        """D31: requires=[] + action=audit is the emit-signal archetype
+        and is legitimate — no warning, no schema issue."""
+        emit_ir = json.dumps({**json.loads(VALID_IR_JSON),
+                              "requires": [], "action": "audit"})
+        compiler = FakeLlmProvider([emit_ir])
         reviewer = FakeLlmProvider([json.dumps({"ok": True, "issues": []})])
         result = compile_with_review(
             compiler=compiler, reviewer=reviewer,
             nl="법원 filing 정책 만들어줘",
         )
-        # Empty requires hits the hard schema error (Policy validate) AND the
-        # operator-warning. Either appearing is fine.
-        assert result["schema_issues"]   # non-empty
+        # D31: emit-signal pattern is legitimate — schema check passes
+        # clean with no issues raised.
+        assert result["schema_issues"] == []
 
     def test_orchestrator_step_not_in_registry_is_flagged(self):
         """When a verifier registry is provided, every requires[].step must

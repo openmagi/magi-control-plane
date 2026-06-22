@@ -27,8 +27,8 @@ const TOOL_PRESETS = [
   "Bash", "Read", "Edit", "Write", "Glob", "Grep",
   "NotebookEdit", "TodoWrite", "WebFetch", "WebSearch",
 ] as const
-const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
-type OnMissing = (typeof ON_MISSING_PRESETS)[number]
+const ACTION_PRESETS = ["block", "ask", "audit"] as const
+type Action = (typeof ACTION_PRESETS)[number]
 type EventKind =
   | "PreToolUse" | "PostToolUse"
   | "Stop" | "SubagentStop"
@@ -60,14 +60,13 @@ interface WiredStep {
   category: VerifierCategory
 }
 
-// True legal-decision set is a function of (event × matcher_class) per
+// D31: legal action set is a function of (event × matcher_class) per
 // LEGAL_COMBINATIONS. We compute it on demand using the policy-builder
-// mirror so a wildcard chip on PreToolUse correctly narrows on_missing
-// to just "log", while Bash on PreToolUse keeps deny/ask.
-const ALL_DECISIONS: readonly OnMissing[] = ["deny", "ask", "log", "allow"]
-function legalOnMissingFor(event: EventKind, matcher: string): readonly OnMissing[] {
+// mirror so a wildcard chip on PreToolUse narrows action to just audit
+// while Bash on PreToolUse keeps block / ask / audit.
+function legalActionsFor(event: EventKind, matcher: string): readonly Action[] {
   if (!matcher) return []
-  return ALL_DECISIONS.filter((d) => isLegal(event, matcher, d))
+  return ACTION_PRESETS.filter((a) => isLegal(event, matcher, a))
 }
 
 // Recommended verifier categories per event. Soft signal only — the
@@ -90,7 +89,7 @@ interface WizardState {
   /** N verifiers (backend's `requires: list[EvidenceReq]` is len>=1).
    * Comma-joined in the URL so the hidden carry-over stays one field. */
   verifiers?: string[]
-  on_missing?: OnMissing
+  action?: Action
   id?: string
   description?: string
   /** Sentinel tag prefix. saveWizard expands this into the policy's
@@ -253,7 +252,7 @@ async function saveWizard(formData: FormData): Promise<void> {
   const matcher = String(formData.get("matcher") ?? "").trim()
   const verifiers = (formData.get("verifiers")?.toString() ?? "")
     .split(",").map((s) => s.trim()).filter(Boolean)
-  const on_missing = (String(formData.get("on_missing") ?? "deny")) as OnMissing
+  const action = (String(formData.get("action") ?? "block")) as Action
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
@@ -262,14 +261,17 @@ async function saveWizard(formData: FormData): Promise<void> {
     ? sentinelTagRaw
     : SENTINEL_TAG_DEFAULT
 
-  if (!id || !matcher || verifiers.length === 0) {
+  // D31: requires is optional ONLY when action="audit" (emit-signal).
+  if (!id || !matcher || (verifiers.length === 0 && action !== "audit")) {
     redirect("/policies/new?mode=guided&step=1&err=invalid_input"); return
   }
   const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
 
-  const summary = verifiers.length === 1
-    ? `Require ${verifiers[0]}=pass before ${event}|${matcher}`
-    : `Require ${verifiers.length} verifiers (all pass) before ${event}|${matcher}`
+  const summary = verifiers.length === 0
+    ? `Emit signal on ${event}|${matcher}`
+    : verifiers.length === 1
+      ? `${action} on ${event}|${matcher} when ${verifiers[0]} ≠ pass`
+      : `${action} on ${event}|${matcher} when any of ${verifiers.length} verifiers ≠ pass`
   const draft: PolicyDraft = {
     id,
     version: "0.1",
@@ -277,7 +279,7 @@ async function saveWizard(formData: FormData): Promise<void> {
     trigger: { host: "claude-code", event, matcher },
     sentinel_re,
     requires: verifiers.map((step) => ({ step, verdict: "pass" })),
-    on_missing,
+    action,
     on_signature_invalid: "deny",
     gate_binary: "/usr/local/bin/magi-gate.sh",
   }
@@ -450,7 +452,7 @@ export default async function NewPolicyPage({
                 description: "description",
                 triggerEvent: "trigger.event",
                 triggerMatcher: "trigger.matcher",
-                onMissing: "on_missing (decision)",
+                onMissing: "action",
                 sentinelRe: "sentinel_re",
                 sentinelReHint:
                   "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
@@ -612,7 +614,7 @@ function buildWizardHref(state: WizardState, step: number): string {
   if (state.verifiers && state.verifiers.length > 0) {
     params.set("verifiers", state.verifiers.join(","))
   }
-  if (state.on_missing) params.set("on_missing", state.on_missing)
+  if (state.action) params.set("action", state.action)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
   if (state.sentinel_tag) params.set("sentinel_tag", state.sentinel_tag)
@@ -627,7 +629,7 @@ function HiddenState({ state }: { state: WizardState }) {
       {state.verifiers && state.verifiers.length > 0 && (
         <input type="hidden" name="verifiers" value={state.verifiers.join(",")} />
       )}
-      {state.on_missing && <input type="hidden" name="on_missing" value={state.on_missing} />}
+      {state.action && <input type="hidden" name="action" value={state.action} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
       {state.sentinel_tag && (
@@ -697,7 +699,7 @@ function GuidedWizard({
       )
       return list.length > 0 ? list : undefined
     })(),
-    on_missing: (searchParams.on_missing as OnMissing) || undefined,
+    action: (searchParams.action as Action) || undefined,
     id: searchParams.id || undefined,
     description: searchParams.description || undefined,
     sentinel_tag: searchParams.sentinel_tag || undefined,
@@ -710,7 +712,7 @@ function GuidedWizard({
       {step === 1 && <Step1Event t={t} state={state} action={advanceAction} />}
       {step === 2 && <Step2Matcher t={t} state={state} action={advanceAction} />}
       {step === 3 && <Step3Verifier t={t} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
-      {step === 4 && <Step4OnMissing t={t} state={state} action={advanceAction} />}
+      {step === 4 && <Step4Action t={t} state={state} action={advanceAction} />}
       {step === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
       {step === 6 && <Step6Review t={t} state={state} action={saveAction} wiredSteps={wiredSteps} />}
     </div>
@@ -990,7 +992,7 @@ function Step3Verifier({
   )
 }
 
-function Step4OnMissing({
+function Step4Action({
   t, state, action,
 }: {
   state: WizardState; action: (fd: FormData) => Promise<void>
@@ -1002,20 +1004,18 @@ function Step4OnMissing({
   // table would mis-classify the wildcard chip path.
   const event = state.event ?? "PreToolUse"
   const matcher = state.matcher ?? "Bash"
-  const allowed: readonly OnMissing[] = legalOnMissingFor(event, matcher)
-  const defaultPick: OnMissing | undefined =
-    state.on_missing && allowed.includes(state.on_missing)
-      ? state.on_missing
+  const allowed: readonly Action[] = legalActionsFor(event, matcher)
+  const defaultPick: Action | undefined =
+    state.action && allowed.includes(state.action)
+      ? state.action
       : allowed[0]
-  const OPTIONS: Record<OnMissing, { label: string; sub: string; recommended?: boolean }> = {
-    deny:  { label: t("newPolicy.wizard.step4.deny.label"),
-             sub:   t("newPolicy.wizard.step4.deny.sub"),  recommended: true },
+  const OPTIONS: Record<Action, { label: string; sub: string; recommended?: boolean }> = {
+    block: { label: t("newPolicy.wizard.step4.block.label"),
+             sub:   t("newPolicy.wizard.step4.block.sub"), recommended: true },
     ask:   { label: t("newPolicy.wizard.step4.ask.label"),
              sub:   t("newPolicy.wizard.step4.ask.sub") },
-    log:   { label: t("newPolicy.wizard.step4.log.label"),
-             sub:   t("newPolicy.wizard.step4.log.sub") },
-    allow: { label: t("newPolicy.wizard.step4.allow.label"),
-             sub:   t("newPolicy.wizard.step4.allow.sub") },
+    audit: { label: t("newPolicy.wizard.step4.audit.label"),
+             sub:   t("newPolicy.wizard.step4.audit.sub") },
   }
   return (
     <StepShell
@@ -1031,7 +1031,7 @@ function Step4OnMissing({
         {allowed.map((opt) => (
           <RadioCard
             key={opt}
-            name="on_missing"
+            name="action"
             value={opt}
             defaultChecked={defaultPick === opt}
             label={OPTIONS[opt].label}
@@ -1063,7 +1063,7 @@ function Step5Naming({
         <input type="hidden" name="_step" value="5" />
         <HiddenState state={{
           event: state.event, matcher: state.matcher,
-          verifiers: state.verifiers, on_missing: state.on_missing,
+          verifiers: state.verifiers, action: state.action,
         }} />
         <div>
           <label htmlFor="w-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
@@ -1151,7 +1151,7 @@ function Step6Review({
             event: state.event ?? "PreToolUse",
             matcher: state.matcher ?? "",
             verifier: verifierSummary,
-            on_missing: state.on_missing ?? "deny",
+            action: state.action ?? "deny",
           })}
         </p>
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs mt-4 pt-4 border-t border-black/[0.06]">
@@ -1173,8 +1173,8 @@ function Step6Review({
               })}
             </ul>
           </dd>
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">on_missing</dt>
-          <dd className="text-[var(--color-text-secondary)]">{state.on_missing}</dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">action</dt>
+          <dd className="text-[var(--color-text-secondary)]">{state.action}</dd>
         </dl>
       </Card>
       <form action={action}>
@@ -1230,8 +1230,8 @@ function CompileResultBlock({
             </dd>
           </>
         )}
-        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">on_missing</dt>
-        <dd className="text-[var(--color-text-secondary)]">{draft.on_missing}</dd>
+        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">action</dt>
+        <dd className="text-[var(--color-text-secondary)]">{draft.action}</dd>
       </dl>
 
       <details className="mb-3 rounded-lg bg-gray-50/70 p-2">

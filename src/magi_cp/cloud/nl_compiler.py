@@ -82,13 +82,27 @@ object. The schema:
     "id": "<kebab/v1>",
     "version": "0.1",
     "description": "<one-sentence summary>",
-    "trigger": {{"host": "claude-code", "event": "PreToolUse|PostToolUse|Stop",
-                "matcher": "<tool name like Bash, Edit, Write>"}},
+    "trigger": {{"host": "claude-code",
+                "event": "PreToolUse|PostToolUse|Stop|SubagentStop|UserPromptSubmit|PreCompact|SessionStart|SessionEnd",
+                "matcher": "<tool name (Bash, Edit, Write, …) | mcp__server__tool | * for no-tool events>"}},
     "sentinel_re": "<Python re with (?P<matter>...) and (?P<doc_id>...) named groups>",
     "requires": [{{"step": "<verifier_step_name>", "verdict": "pass"}}],
-    "on_missing": "deny|ask|log|allow",
+    "action": "block|ask|audit",
     "on_signature_invalid": "deny"
   }}
+
+Action archetypes:
+  - block: refuse the host action when requires don't all-pass. Strongest
+    pre-event gate. Legal on PreToolUse, UserPromptSubmit, PreCompact.
+  - ask:   interrupt for human approval when requires don't all-pass.
+           Legal on PreToolUse and UserPromptSubmit.
+  - audit: record verdict to the evidence ledger; never blocks. Legal on
+           every event. Combined with requires=[] this is the "emit
+           signal" pattern (unconditional ledger marker per trigger).
+
+requires CAN be empty — that expresses the unconditional emit-signal
+archetype and must be paired with action="audit".
+
 {step_block}
 Output ONLY the JSON object — no prose, no markdown.
 
@@ -122,9 +136,9 @@ _SYSTEM_REVIEWER_TMPL = """You are a Policy IR reviewer.
 
 Given a Policy IR JSON object and the original natural-language intent, judge
 whether the IR faithfully captures the intent and is internally consistent
-(sentinel_re has matter+doc_id named groups, requires is non-empty, the
-trigger event makes sense for the matcher, on_missing is legal for the
-matcher class).
+(sentinel_re has matter+doc_id named groups, trigger event makes sense for
+the matcher, action is legal for the (event, matcher_class) pair, and a
+requires=[] list is paired with action="audit").
 
 Output ONLY a JSON object: {{"ok": <bool>, "issues": [<string>, ...]}}.
 
@@ -323,6 +337,7 @@ def _server_side_validate(
     """
     # Late import to avoid a circular dep with the policy package at module load.
     from ..policy import EvidenceReq, Policy, Trigger
+    from ..policy.ir import _coerce_action
     issues: list[str] = []
     try:
         Policy(
@@ -331,7 +346,7 @@ def _server_side_validate(
             trigger=Trigger(**(ir.get("trigger") or {})),
             sentinel_re=ir.get("sentinel_re", ""),
             requires=[EvidenceReq(**r) for r in (ir.get("requires") or [])],
-            on_missing=ir.get("on_missing", "deny"),
+            action=_coerce_action(ir),
             on_signature_invalid=ir.get("on_signature_invalid", "deny"),
             gate_binary=ir.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
             version=ir.get("version", "0.1"),
@@ -339,10 +354,14 @@ def _server_side_validate(
     except Exception as e:
         issues.append(f"schema: {e}")
     # Operator-warning soft checks (still pass schema but worth flagging):
-    if ir.get("on_missing") == "allow":
-        issues.append("warning: on_missing=allow weakens the gate to log-only")
-    if not (ir.get("requires") or []):
-        issues.append("warning: empty requires — gate has nothing to enforce")
+    if not (ir.get("requires") or []) and ir.get("action") not in ("audit", None):
+        # An empty requires list is only meaningful for the emit-signal
+        # archetype (audit). Block/ask with no condition is almost
+        # certainly an authoring mistake — surface it but don't block.
+        issues.append(
+            "warning: empty requires combined with action="
+            f"{ir.get('action')!r} — gate would fire on every trigger"
+        )
     issues.extend(_registry_issues(ir, registry))
     return issues
 

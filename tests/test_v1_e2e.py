@@ -53,7 +53,7 @@ def _valid_policy(**override):
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
         "requires": [{"step": "citation_verify", "verdict": "pass"}],
-        "on_missing": "deny",
+        "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
     }
@@ -156,7 +156,11 @@ def test_e2e_admin_routes_reject_other_keys(client):
 
 # ── 4. Reject illegal matrix combos at the API boundary ──────────────
 def test_e2e_api_rejects_illegal_matrix(client):
-    body = _valid_policy(on_missing="log")   # illegal: PreToolUse + Bash + log
+    # D31: PostToolUse + Bash + block is illegal (post-event can't block).
+    body = _valid_policy(
+        trigger={"host": "claude-code", "event": "PostToolUse", "matcher": "Bash"},
+        action="block",
+    )
     r = client.put("/policies/legal-filing/v1",
                    json={"policy": body, "source": "org", "enabled": True},
                    headers=ADMIN)

@@ -25,7 +25,7 @@ VALID_IR_JSON = json.dumps({
     "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
     "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
     "requires": [{"step": "citation_verify", "verdict": "pass"}],
-    "on_missing": "deny",
+    "action": "block",
     "on_signature_invalid": "deny",
 })
 

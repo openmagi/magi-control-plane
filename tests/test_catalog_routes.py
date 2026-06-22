@@ -50,7 +50,7 @@ def _valid_policy(**override):
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
         "requires": [{"step": "citation_verify", "verdict": "pass"}],
-        "on_missing": "deny",
+        "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
     }

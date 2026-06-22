@@ -36,7 +36,7 @@ def _valid_policy(**override):
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
         "requires": [{"step": "citation_verify", "verdict": "pass"}],
-        "on_missing": "deny",
+        "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
     }
@@ -101,7 +101,11 @@ def test_put_rejects_id_mismatch(client):
 
 
 def test_put_rejects_illegal_matrix_combo(client):
-    body = _valid_policy(on_missing="log")    # PreToolUse + Bash + log is illegal
+    # D31: PostToolUse + Bash + block is illegal (post-event can't block).
+    body = _valid_policy(
+        trigger={"host": "claude-code", "event": "PostToolUse", "matcher": "Bash"},
+        action="block",
+    )
     r = _put(client, "legal-filing/v1", body)
     assert r.status_code == 400
     assert "illegal" in r.json()["detail"].lower()

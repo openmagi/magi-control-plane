@@ -661,10 +661,11 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
 def _enforcement_label(policy: Policy) -> str:
     """Short human label for the enforcement character of a policy.
 
-    v1 surface: simple mapping. Future v1.x will use the matrix to label each
-    rule individually (deterministic-gate / advisory / log-only).
+    D31: maps the new action vocabulary to the dashboard's familiar
+    enforcement labels. block / ask are deterministic gates; audit is
+    observe-only regardless of event.
     """
-    if policy.trigger.event == "PreToolUse" and policy.on_missing in ("deny", "ask"):
+    if policy.action in ("block", "ask"):
         return "deterministic-gate"
     if policy.trigger.event == "PostToolUse":
         return "observe-only"
@@ -680,20 +681,21 @@ def _serialize_policy_for_api(p: Policy) -> dict:
                     "matcher": p.trigger.matcher},
         "sentinel_re": p.sentinel_re,
         "requires": [{"step": r.step, "verdict": r.verdict} for r in p.requires],
-        "on_missing": p.on_missing,
+        "action": p.action,
         "on_signature_invalid": p.on_signature_invalid,
         "gate_binary": p.gate_binary,
     }
 
 
 def _deserialize_policy_from_api(d: dict) -> Policy:
+    from ..policy.ir import _coerce_action
     return Policy(
         id=d["id"], description=d.get("description", ""),
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
         sentinel_re=d["sentinel_re"],
         requires=[EvidenceReq(**r) for r in d["requires"]],
-        on_missing=d.get("on_missing", "deny"),
+        action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),
         gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
     )
@@ -723,7 +725,11 @@ class PolicyIn(BaseModel):
     trigger: dict
     sentinel_re: str = Field(..., min_length=1, max_length=2000)
     requires: list[dict]
-    on_missing: str = Field(default="deny")
+    # D31: `action` is canonical. `on_missing` accepted as legacy alias
+    # via _coerce_action() during deserialization. Either-or here, both
+    # optional so old clients keep working until they migrate.
+    action: str | None = Field(default=None)
+    on_missing: str | None = Field(default=None)
     on_signature_invalid: str = Field(default="deny")
     gate_binary: str = Field(default="/usr/local/bin/magi-gate.sh", max_length=1000)
 

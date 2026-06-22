@@ -32,52 +32,53 @@ describe("isLegal — mirrors backend matrix", () => {
     | "UserPromptSubmit"
     | "PreCompact"
     | "SessionStart" | "SessionEnd"
-  const ALL_LEGAL: Array<[AnyEvent, string, "deny"|"ask"|"log"|"allow"]> = [
-    ["PreToolUse", "Bash", "deny"], ["PreToolUse", "Bash", "ask"],
-    ["PreToolUse", "mcp__a__b", "deny"], ["PreToolUse", "mcp__a__b", "ask"],
-    ["PreToolUse", "Bash|Edit", "deny"], ["PreToolUse", "Bash|Edit", "ask"],
-    ["PreToolUse", "*", "log"],
-    ["PostToolUse", "Bash", "log"], ["PostToolUse", "Bash", "allow"],
-    ["PostToolUse", "mcp__a__b", "log"], ["PostToolUse", "mcp__a__b", "allow"],
-    ["Stop", "*", "log"],
-    // D28: no-tool-context events
-    ["SubagentStop", "*", "log"],
-    ["UserPromptSubmit", "*", "deny"],
+  // D31: triples now use action archetypes (block/ask/audit).
+  const ALL_LEGAL: Array<[AnyEvent, string, "block"|"ask"|"audit"]> = [
+    ["PreToolUse", "Bash", "block"],     ["PreToolUse", "Bash", "ask"],     ["PreToolUse", "Bash", "audit"],
+    ["PreToolUse", "mcp__a__b", "block"], ["PreToolUse", "mcp__a__b", "ask"], ["PreToolUse", "mcp__a__b", "audit"],
+    ["PreToolUse", "Bash|Edit", "block"], ["PreToolUse", "Bash|Edit", "ask"], ["PreToolUse", "Bash|Edit", "audit"],
+    ["PreToolUse", "*", "audit"],
+    ["PostToolUse", "Bash", "audit"],
+    ["PostToolUse", "mcp__a__b", "audit"],
+    ["Stop", "*", "audit"],
+    ["SubagentStop", "*", "audit"],
+    ["UserPromptSubmit", "*", "block"],
     ["UserPromptSubmit", "*", "ask"],
-    ["UserPromptSubmit", "*", "log"],
-    ["PreCompact", "*", "deny"],
-    ["PreCompact", "*", "log"],
-    ["SessionStart", "*", "log"],
-    ["SessionEnd", "*", "log"],
+    ["UserPromptSubmit", "*", "audit"],
+    ["PreCompact", "*", "block"],
+    ["PreCompact", "*", "audit"],
+    ["SessionStart", "*", "audit"],
+    ["SessionEnd", "*", "audit"],
   ]
   it.each(ALL_LEGAL)("accepts %s × %s × %s", (ev, m, d) => {
     expect(isLegal(ev, m, d)).toBe(true)
   })
 
   // Representative illegals
-  it("rejects PostToolUse × Bash × deny (tool already ran)", () => {
-    expect(isLegal("PostToolUse", "Bash", "deny")).toBe(false)
+  it("rejects PostToolUse × Bash × block (tool already ran)", () => {
+    expect(isLegal("PostToolUse", "Bash", "block")).toBe(false)
   })
-  it("rejects Stop × Bash × log (Stop is wildcard-only)", () => {
-    expect(isLegal("Stop", "Bash", "log")).toBe(false)
+  it("rejects Stop × Bash × audit (Stop is wildcard-only)", () => {
+    expect(isLegal("Stop", "Bash", "audit")).toBe(false)
   })
-  it("rejects PreToolUse × Bash × log", () => {
-    expect(isLegal("PreToolUse", "Bash", "log")).toBe(false)
-  })
-  it("rejects PreToolUse × Bash × allow", () => {
-    expect(isLegal("PreToolUse", "Bash", "allow")).toBe(false)
+  // D31: legacy log/allow fold into audit via LEGACY_DECISION_TO_ACTION.
+  // PreToolUse + Bash + audit is legal under the new matrix, so the
+  // legacy aliases now map to a legal triple.
+  it("legacy log/allow on PreToolUse + Bash maps to audit and is legal", () => {
+    expect(isLegal("PreToolUse", "Bash", "log")).toBe(true)
+    expect(isLegal("PreToolUse", "Bash", "allow")).toBe(true)
   })
   it("rejects unknown matcher", () => {
-    expect(isLegal("PreToolUse", "FooBar", "deny")).toBe(false)
+    expect(isLegal("PreToolUse", "FooBar", "block")).toBe(false)
   })
-  it("rejects UserPromptSubmit × Bash × deny (no tool context here)", () => {
-    expect(isLegal("UserPromptSubmit", "Bash", "deny")).toBe(false)
+  it("rejects UserPromptSubmit × Bash × block (no tool context here)", () => {
+    expect(isLegal("UserPromptSubmit", "Bash", "block")).toBe(false)
   })
-  it("rejects SessionEnd × * × deny (observe-only event)", () => {
-    expect(isLegal("SessionEnd", "*", "deny")).toBe(false)
+  it("rejects SessionEnd × * × block (observe-only event)", () => {
+    expect(isLegal("SessionEnd", "*", "block")).toBe(false)
   })
-  it("rejects SubagentStop × * × deny (observe-only event)", () => {
-    expect(isLegal("SubagentStop", "*", "deny")).toBe(false)
+  it("rejects SubagentStop × * × block (observe-only event)", () => {
+    expect(isLegal("SubagentStop", "*", "block")).toBe(false)
   })
 })
 

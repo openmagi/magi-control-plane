@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react"
 import {
   DEFAULT_DRAFT, validateDraft, previewManagedSettings,
-  type PolicyDraft, type EventKind, type Decision,
+  type PolicyDraft, type EventKind, type Action,
 } from "@/lib/policy-builder"
 import { Button } from "@/components/ui/Button"
 import { Card, CardHeader } from "@/components/ui/Card"
@@ -157,15 +157,14 @@ export default function PolicyBuilder({
         </div>
 
         <Select
-          id="pb-on-missing"
+          id="pb-action"
           label={labels.onMissing}
-          value={draft.on_missing}
-          onChange={e => update("on_missing", e.target.value as Decision)}
+          value={draft.action}
+          onChange={e => update("action", e.target.value as Action)}
           options={[
-            { value: "deny",  label: "deny"  },
+            { value: "block", label: "block" },
             { value: "ask",   label: "ask"   },
-            { value: "log",   label: "log"   },
-            { value: "allow", label: "allow" },
+            { value: "audit", label: "audit" },
           ]}
           error={errorByField.get("matrix")}
         />

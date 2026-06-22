@@ -43,57 +43,58 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 
 
 # ── _LEGAL matrix ────────────────────────────────────────────────────
-# (event, matcher_class, decision) — *meaningful* combinations only.
+# (event, matcher_class, action) — *meaningful* combinations only.
 # Builder UI dropdowns enumerate this; IR loader rejects anything missing.
 #
-# Event scope: Claude Code's 9 hook points minus Notification (no
-# governance signal there). The remaining 8 split into two families:
+# D31: triples now use the action archetype vocabulary (block / ask /
+# audit) instead of the prior decision wording (deny / ask / log /
+# allow). Migration is mechanical at deserialization (`_coerce_action`
+# in ir.py). Audit is the universal "record only" action and is legal
+# for every event × matcher_class pair the runtime supports.
 #
-#   tool-context events    — Pre/PostToolUse. Carry a tool name in
-#                            the hook payload, so tool / mcp_tool /
-#                            tool_alt matchers apply.
+# Event scope: Claude Code's 9 hook points minus Notification. The
+# remaining 8 split into two families:
+#
+#   tool-context events    — Pre/PostToolUse. Carry a tool name, so
+#                            tool / mcp_tool / tool_alt matchers apply.
 #   no-tool-context events — Stop, UserPromptSubmit, SubagentStop,
-#                            PreCompact, SessionStart, SessionEnd.
-#                            The hook has no tool to match, so the
-#                            matcher is required to be "*".
+#                            PreCompact, SessionStart, SessionEnd. The
+#                            hook has no tool, so matcher is forced "*".
 #
-# Decision availability follows the lifecycle: "before X happens" can
-# deny/ask the host out of it (Pre*, UserPromptSubmit, PreCompact);
-# "after X happened" can only log/allow.
+# Action availability follows the lifecycle: pre-event hooks (PreTool,
+# UserPromptSubmit, PreCompact) can block or ask; post-event hooks can
+# only audit. Every event can audit.
 LEGAL_COMBINATIONS: frozenset[tuple[str, MatcherClass, str]] = frozenset({
-    # PreToolUse — fires before tool execution; deny/ask both useful.
-    ("PreToolUse", MatcherClass.tool,       "deny"),
+    # PreToolUse — block / ask / audit on every matcher class; wildcard
+    # can audit but not block (would be too broad to surface in UI).
+    ("PreToolUse", MatcherClass.tool,       "block"),
     ("PreToolUse", MatcherClass.tool,       "ask"),
-    ("PreToolUse", MatcherClass.mcp_tool,   "deny"),
+    ("PreToolUse", MatcherClass.tool,       "audit"),
+    ("PreToolUse", MatcherClass.mcp_tool,   "block"),
     ("PreToolUse", MatcherClass.mcp_tool,   "ask"),
-    ("PreToolUse", MatcherClass.tool_alt,   "deny"),
+    ("PreToolUse", MatcherClass.mcp_tool,   "audit"),
+    ("PreToolUse", MatcherClass.tool_alt,   "block"),
     ("PreToolUse", MatcherClass.tool_alt,   "ask"),
-    ("PreToolUse", MatcherClass.wildcard,   "log"),   # broad observation only
-    # PostToolUse — tool already ran; allow/log only (cannot retroactively deny).
-    ("PostToolUse", MatcherClass.tool,      "log"),
-    ("PostToolUse", MatcherClass.tool,      "allow"),
-    ("PostToolUse", MatcherClass.mcp_tool,  "log"),
-    ("PostToolUse", MatcherClass.mcp_tool,  "allow"),
-    # Stop — turn end. Matcher is conventionally "*"; can request a continue.
-    ("Stop", MatcherClass.wildcard, "log"),
-    # UserPromptSubmit — fires before the prompt is forwarded to the
-    # LLM. The classic confidentiality gate (PII / privileged content
-    # leaving the boundary); deny blocks the send, ask interrupts for
-    # operator approval, log is observe-only.
-    ("UserPromptSubmit", MatcherClass.wildcard, "deny"),
+    ("PreToolUse", MatcherClass.tool_alt,   "audit"),
+    ("PreToolUse", MatcherClass.wildcard,   "audit"),
+
+    # PostToolUse — tool already ran; only audit is legal. (strip will
+    # land here in a follow-up once verifier-protocol mutation lands.)
+    ("PostToolUse", MatcherClass.tool,      "audit"),
+    ("PostToolUse", MatcherClass.mcp_tool,  "audit"),
+
+    # No-tool-context events all use wildcard. Their action set follows
+    # whether the hook fires before or after the moment the policy is
+    # interested in.
+    ("UserPromptSubmit", MatcherClass.wildcard, "block"),
     ("UserPromptSubmit", MatcherClass.wildcard, "ask"),
-    ("UserPromptSubmit", MatcherClass.wildcard, "log"),
-    # SubagentStop — observe-only. A subagent has already returned by
-    # the time this fires; allowing/denying it is meaningless.
-    ("SubagentStop", MatcherClass.wildcard, "log"),
-    # PreCompact — fires before context compaction. Critical for
-    # evidence chain preservation: deny if compaction would drop
-    # ledger references the policy needs to keep intact.
-    ("PreCompact", MatcherClass.wildcard, "deny"),
-    ("PreCompact", MatcherClass.wildcard, "log"),
-    # SessionStart / SessionEnd — boundary markers, observe-only.
-    ("SessionStart", MatcherClass.wildcard, "log"),
-    ("SessionEnd",   MatcherClass.wildcard, "log"),
+    ("UserPromptSubmit", MatcherClass.wildcard, "audit"),
+    ("PreCompact",       MatcherClass.wildcard, "block"),
+    ("PreCompact",       MatcherClass.wildcard, "audit"),
+    ("Stop",             MatcherClass.wildcard, "audit"),
+    ("SubagentStop",     MatcherClass.wildcard, "audit"),
+    ("SessionStart",     MatcherClass.wildcard, "audit"),
+    ("SessionEnd",       MatcherClass.wildcard, "audit"),
 })
 
 
