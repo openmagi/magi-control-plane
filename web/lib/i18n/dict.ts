@@ -153,6 +153,8 @@ const KO_RAW = {
   "presets.count": "{n}개",
   "presets.wired": ", 그 중 {n}개 연결됨",
   "presets.stepLabel": "Policy IR step",
+  "presets.toggle.on": "활성화됨 — 토글로 비활성화",
+  "presets.toggle.off": "비활성화됨 — 토글로 활성화",
 
   /* ── hitl ────────────────────────────────────────────────────── */
   "hitl.title": "리뷰 대기 ({n}건)",
@@ -373,6 +375,8 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "presets.count": "{n} presets",
   "presets.wired": ", {n} wired",
   "presets.stepLabel": "Policy IR step",
+  "presets.toggle.on": "Enabled — toggle to disable",
+  "presets.toggle.off": "Disabled — toggle to enable",
 
   "hitl.title": "Pending review ({n})",
   "hitl.empty": "No items pending review.",

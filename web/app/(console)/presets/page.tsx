@@ -1,8 +1,11 @@
 import { cloud, type PresetEntry } from "@/lib/cloud"
 import { getIntl, getT } from "@/lib/i18n/server"
 import {
-  Badge, Card, Code, EmptyState, ErrorState, PageHeader,
+  Badge, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
+import { CategorySection } from "./_components/CategorySection"
+import { PresetToggle } from "./_components/PresetToggle"
+import { readDisabledPresetIds, togglePresetAction } from "./actions"
 
 export const dynamic = "force-dynamic"
 
@@ -12,29 +15,46 @@ const CATEGORY_ORDER: PresetEntry["category"][] = [
 ]
 
 function EnforcementBadge({ kind }: { kind: PresetEntry["enforcement"] }) {
-  return (
-    <Badge variant={kind === "enforcing" ? "ok" : "muted"}>
-      {kind}
-    </Badge>
-  )
+  const variant =
+    kind === "enforcing" ? "ok" :
+    kind === "always-on" ? "info" :
+    kind === "preview"   ? "review" : "muted"
+  return <Badge variant={variant}>{kind}</Badge>
 }
 
-function PresetCard({ p, stepLabel }: { p: PresetEntry; stepLabel: string }) {
+interface PresetRowProps {
+  p: PresetEntry
+  stepLabel: string
+  enabled: boolean
+  labelOn: string
+  labelOff: string
+}
+
+function PresetRow({ p, stepLabel, enabled, labelOn, labelOff }: PresetRowProps) {
   return (
-    <Card className="flex flex-col gap-2 h-full">
-      <div className="flex items-start justify-between gap-3">
-        <Code className="text-sm">{p.id}</Code>
-        <EnforcementBadge kind={p.enforcement} />
-      </div>
-      <p className="text-sm text-[var(--color-text-secondary)] line-clamp-3">
-        {p.description}
-      </p>
-      {p.step && (
-        <div className="text-xs text-[var(--color-text-tertiary)]">
-          {stepLabel}: <Code>{p.step}</Code>
+    <div className="flex items-start gap-3 rounded-xl border border-black/[0.04] bg-white px-4 py-3 hover:border-black/[0.08] transition-colors duration-150">
+      <div className="flex-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-2 mb-1.5">
+          <Code className="text-[13px] font-semibold">{p.id}</Code>
+          <EnforcementBadge kind={p.enforcement} />
         </div>
-      )}
-    </Card>
+        <p className="text-sm text-[var(--color-text-secondary)] leading-5 line-clamp-3">
+          {p.description}
+        </p>
+        {p.step && (
+          <div className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
+            {stepLabel}: <Code>{p.step}</Code>
+          </div>
+        )}
+      </div>
+      <PresetToggle
+        presetId={p.id}
+        enabled={enabled}
+        action={togglePresetAction}
+        labelOn={labelOn}
+        labelOff={labelOff}
+      />
+    </div>
   )
 }
 
@@ -51,9 +71,14 @@ export default async function PresetsPage() {
   try { items = await cloud.listPresets() }
   catch (e: unknown) { err = errMsg(e) }
 
+  const disabled = await readDisabledPresetIds()
+
   const byCategory: Record<string, PresetEntry[]> = {}
   for (const it of items) (byCategory[it.category] ||= []).push(it)
-  const wiredCount = items.filter(i => i.enforcement === "enforcing").length
+  const enabledCount = items.filter(i => !disabled.has(i.id)).length
+
+  const labelOn = t("presets.toggle.on")
+  const labelOff = t("presets.toggle.off")
 
   return (
     <>
@@ -70,11 +95,11 @@ export default async function PresetsPage() {
       />
 
       {!err && items.length > 0 && (
-        <div className="flex items-center gap-2 mb-4 text-sm text-[var(--color-text-tertiary)]">
+        <div className="flex flex-wrap items-center gap-2 mb-5">
           <Badge variant="info">
             {t("presets.summary", {
               total: nf.format(items.length),
-              wired: nf.format(wiredCount),
+              wired: nf.format(enabledCount),
             })}
           </Badge>
         </div>
@@ -92,39 +117,31 @@ export default async function PresetsPage() {
       )}
 
       {!err && items.length > 0 && (
-        <div className="space-y-8">
+        <div className="space-y-3">
           {CATEGORY_ORDER.map(cat => {
             const list = byCategory[cat] || []
             if (list.length === 0) return null
-            const wired = list.filter(i => i.enforcement === "enforcing").length
+            const enabledInCat = list.filter(i => !disabled.has(i.id)).length
+            const countLabel = `${nf.format(enabledInCat)} / ${nf.format(list.length)}`
             return (
-              <section
+              <CategorySection
                 key={cat}
-                aria-labelledby={`cat-${cat}`}
-                className="space-y-3"
+                id={`cat-${cat}`}
+                title={t(`presets.category.${cat}` as never)}
+                hint={t(`presets.categoryHint.${cat}` as never)}
+                countLabel={countLabel}
               >
-                <header className="flex flex-wrap items-baseline gap-3">
-                  <h2 id={`cat-${cat}`} className="text-md font-semibold m-0">
-                    {t(`presets.category.${cat}` as never)}
-                  </h2>
-                  <span className="text-xs text-[var(--color-text-tertiary)]">
-                    {t("presets.count", { n: nf.format(list.length) })}
-                    {wired > 0 && t("presets.wired", { n: nf.format(wired) })}
-                  </span>
-                </header>
-                <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
-                  {t(`presets.categoryHint.${cat}` as never)}
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {list.map(p => (
-                    <PresetCard
-                      key={p.id}
-                      p={p}
-                      stepLabel={t("presets.stepLabel")}
-                    />
-                  ))}
-                </div>
-              </section>
+                {list.map(p => (
+                  <PresetRow
+                    key={p.id}
+                    p={p}
+                    stepLabel={t("presets.stepLabel")}
+                    enabled={!disabled.has(p.id)}
+                    labelOn={labelOn}
+                    labelOff={labelOff}
+                  />
+                ))}
+              </CategorySection>
             )
           })}
         </div>
