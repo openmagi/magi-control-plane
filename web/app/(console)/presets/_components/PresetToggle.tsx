@@ -49,8 +49,11 @@ export function PresetToggle({
     >
       <span
         aria-hidden="true"
-        style={{ transform: `translateX(${checked ? "20px" : "0"})` }}
-        className="absolute top-0.5 left-0.5 inline-block h-5 w-5 rounded-full bg-white shadow ring-1 ring-black/[0.06] transition-transform duration-200 ease-out"
+        style={{
+          transform: `translateX(${checked ? "20px" : "0"})`,
+          boxShadow: "0 1px 2px rgba(15,23,42,0.18)",
+        }}
+        className="absolute top-0.5 left-0.5 inline-block h-5 w-5 rounded-full bg-white transition-transform duration-200 ease-out"
       />
     </button>
   )
