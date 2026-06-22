@@ -8,6 +8,7 @@ import { getIntl, getT } from "@/lib/i18n/server"
 import {
   Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
+import { PolicyToggle } from "./_components/PolicyToggle"
 
 export const dynamic = "force-dynamic"
 
@@ -27,11 +28,15 @@ async function toggleEnabled(formData: FormData) {
   }
   try {
     await cloud.setEnabled(id, enabled)
-    revalidatePath("/policies")
-    redirect(`/policies?msg=toggled`)
   } catch (e: unknown) {
     redirect(`/policies?err=${codeForError(e)}`)
   }
+  // NOTE: redirect() MUST live outside the try block — it throws
+  // NEXT_REDIRECT, which would otherwise be caught by the catch and
+  // mis-coded as cloud_unreachable (the catch-all default in
+  // codeForError) even though the underlying setEnabled succeeded.
+  revalidatePath("/policies")
+  redirect(`/policies?msg=toggled`)
 }
 
 function EnforcementBadge({ kind }: { kind: string }) {
@@ -64,11 +69,20 @@ function PolicyCard(
             {item.description || "—"}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1.5">
+        <div className="flex flex-col items-end gap-2">
           <EnforcementBadge kind={item.enforcement} />
-          {item.enabled
-            ? <Badge variant="ok">{t("policies.enabled")}</Badge>
-            : <Badge variant="deny">{t("policies.disabled")}</Badge>}
+          <div className="flex items-center gap-2">
+            <span className={`text-[11px] font-medium uppercase tracking-wider ${item.enabled ? "text-emerald-700" : "text-[var(--color-text-tertiary)]"}`}>
+              {item.enabled ? "on" : "off"}
+            </span>
+            <PolicyToggle
+              policyId={item.id}
+              enabled={item.enabled}
+              action={toggleEnabled}
+              labelOn={`${t("policies.disable")} — ${item.id}`}
+              labelOff={`${t("policies.enable")} — ${item.id}`}
+            />
+          </div>
         </div>
       </div>
 
@@ -77,57 +91,30 @@ function PolicyCard(
         <span>{t("policies.source")}: <Code>{item.source}</Code></span>
       </div>
 
-      <div className="mt-1 flex flex-wrap items-center gap-2 justify-end">
-        {showConfirm ? (
-          <form action={toggleEnabled} className="flex flex-wrap items-center gap-2">
-            <input type="hidden" name="id" value={item.id} />
-            <input type="hidden" name="enabled" value="false" />
-            <input type="hidden" name="confirmed" value="1" />
-            <span className="text-xs text-[var(--color-review-fg)]">
-              {t("policies.confirmDisable.body")}
-            </span>
-            <Button
-              type="submit"
-              variant="danger"
-              size="sm"
-              aria-label={`${t("policies.confirmDisable.confirm")} — ${item.id}`}
-            >
-              {t("policies.confirmDisable.confirm")}
-            </Button>
-            <Link
-              href="/policies"
-              className="text-xs text-[var(--color-text-tertiary)] hover:no-underline px-2 py-1"
-            >
-              {t("common.cancel")}
-            </Link>
-          </form>
-        ) : (
-          <form action={toggleEnabled}>
-            <input type="hidden" name="id" value={item.id} />
-            <input
-              type="hidden"
-              name="enabled"
-              value={item.enabled ? "false" : "true"}
-            />
-            {isHighStakes && item.enabled && (
-              <input type="hidden" name="require_confirm" value="1" />
-            )}
-            <Button
-              type="submit"
-              variant={item.enabled ? "secondary" : "primary"}
-              size="sm"
-              aria-pressed={item.enabled}
-              aria-label={
-                item.enabled
-                  ? `${t("policies.disable")} — ${item.id}`
-                  : `${t("policies.enable")} — ${item.id}`
-              }
-            >
-              {item.enabled ? t("policies.disable") : t("policies.enable")}
-            </Button>
-          </form>
-        )}
-      </div>
+      {showConfirm && (
+        <form action={toggleEnabled} className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-review-fg)]/30 bg-[var(--color-review-bg)]/40 px-3 py-2">
+          <input type="hidden" name="id" value={item.id} />
+          <input type="hidden" name="enabled" value="false" />
+          <input type="hidden" name="confirmed" value="1" />
+          <span className="text-xs text-[var(--color-review-fg)] flex-1">
+            {t("policies.confirmDisable.body")}
+          </span>
+          <Button
+            type="submit"
+            variant="danger"
+            size="sm"
+            aria-label={`${t("policies.confirmDisable.confirm")} — ${item.id}`}
+          >
+            {t("policies.confirmDisable.confirm")}
+          </Button>
+          <Link
+            href="/policies"
+            className="text-xs text-[var(--color-text-tertiary)] hover:no-underline px-2 py-1"
+          >
+            {t("common.cancel")}
+          </Link>
+        </form>
+      )}
     </Card>
   )
 }
@@ -168,7 +155,7 @@ export default async function PoliciesPage({
         </Card>
       )}
       {flash?.kind === "error" && (
-        <ErrorState status={flash.text} title={flash.text} severity="error" />
+        <ErrorState title={flash.text} severity="error" />
       )}
       {err && (
         <ErrorState

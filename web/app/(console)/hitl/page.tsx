@@ -37,34 +37,37 @@ function _validateId(v: unknown): number {
 
 async function approve(formData: FormData) {
   "use server"
+  let id: number
   try {
-    const id = _validateId(formData.get("id"))
+    id = _validateId(formData.get("id"))
     const approver = _validateApprover(formData.get("approver"))
     const note = _validateNote(formData.get("note"))
     await cloud.approve(id, approver, note)
-    revalidatePath("/hitl")
-    revalidateTag(WORKSPACE_TAG)
-    redirect(`/hitl?msg=approved_${id}`)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     redirect(`/hitl?err=${encodeURIComponent(msg)}`)
   }
+  // redirect() throws NEXT_REDIRECT — keep out of the try block.
+  revalidatePath("/hitl")
+  revalidateTag(WORKSPACE_TAG)
+  redirect(`/hitl?msg=approved_${id}`)
 }
 
 async function reject(formData: FormData) {
   "use server"
+  let id: number
   try {
-    const id = _validateId(formData.get("id"))
+    id = _validateId(formData.get("id"))
     const approver = _validateApprover(formData.get("approver"))
     const note = _validateNote(formData.get("note"))
     await cloud.reject(id, approver, note)
-    revalidatePath("/hitl")
-    revalidateTag(WORKSPACE_TAG)
-    redirect(`/hitl?msg=rejected_${id}`)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     redirect(`/hitl?err=${encodeURIComponent(msg)}`)
   }
+  revalidatePath("/hitl")
+  revalidateTag(WORKSPACE_TAG)
+  redirect(`/hitl?msg=rejected_${id}`)
 }
 
 const STATUS_VARIANT: Record<string, "ok" | "review" | "deny" | "default"> = {
