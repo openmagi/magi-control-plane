@@ -35,3 +35,5 @@ Thumbs.db
 .idea/
 *.swp
 /.deploy/
+_devdb.sqlite*
+_devpols.json

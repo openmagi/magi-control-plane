@@ -8,10 +8,8 @@ import LangSelect from "./LangSelect"
 export default async function NavBarShell() {
   const { t } = await getT()
   const items: NavItem[] = [
-    { href: "/policies",         label: t("nav.policies") },
-    { href: "/policies/compile", label: t("nav.compile") },
+    { href: "/rules",            label: t("nav.rules") },
     { href: "/verify",           label: t("nav.verify") },
-    { href: "/presets",          label: t("nav.presets") },
     { href: "/hitl",             label: t("nav.reviewQueue") },
     { href: "/ledger",           label: t("nav.audit") },
     { href: "/setup",            label: t("setup.title") },
