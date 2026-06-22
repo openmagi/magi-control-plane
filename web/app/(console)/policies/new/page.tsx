@@ -36,13 +36,31 @@ type EventKind =
   | "PreCompact"
   | "SessionStart" | "SessionEnd"
 
-const EVENT_KINDS: readonly EventKind[] = [
-  "PreToolUse", "PostToolUse",
-  "UserPromptSubmit",
-  "PreCompact",
-  "Stop", "SubagentStop",
-  "SessionStart", "SessionEnd",
+// Step 1 event picker is grouped by "level" of the lifecycle moment.
+// Tool actions are concrete pre/post moments; content-flow moments are
+// about what's being sent or summarised; boundary markers are zero-
+// action lifecycle events (Stop / SubagentStop / Session*). Visual
+// grouping prevents "Stop" looking like it sits at the same level as
+// "PreToolUse."
+type EventGroup = {
+  labelKey: import("@/lib/i18n/dict").TKey
+  events: readonly EventKind[]
+}
+const EVENT_GROUPS: readonly EventGroup[] = [
+  {
+    labelKey: "newPolicy.wizard.step1.group.toolActions",
+    events: ["PreToolUse", "PostToolUse"],
+  },
+  {
+    labelKey: "newPolicy.wizard.step1.group.contentFlow",
+    events: ["UserPromptSubmit", "PreCompact"],
+  },
+  {
+    labelKey: "newPolicy.wizard.step1.group.boundaries",
+    events: ["Stop", "SubagentStop", "SessionStart", "SessionEnd"],
+  },
 ]
+const EVENT_KINDS: readonly EventKind[] = EVENT_GROUPS.flatMap(g => g.events)
 
 // Events that carry a tool name in their hook payload. The wizard's
 // Step 2 (matcher chips) only shows for these. For the rest, matcher
@@ -900,18 +918,27 @@ function Step1Event({
       heading={t("newPolicy.wizard.step1.heading")}
       helper={t("newPolicy.wizard.step1.helper")}
     >
-      <form action={action} className="space-y-3">
+      <form action={action} className="space-y-5">
         <input type="hidden" name="_step" value="1" />
-        {EVENT_KINDS.map((ev) => (
-          <RadioCard
-            key={ev}
-            name="event"
-            value={ev}
-            defaultChecked={current === ev}
-            label={ev}
-            sub={t(`newPolicy.wizard.step1.event.${ev}.sub` as never)}
-            recommended={ev === "PreToolUse"}
-          />
+        {EVENT_GROUPS.map((group) => (
+          <section key={group.labelKey} className="space-y-2">
+            <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-[var(--color-text-tertiary)]">
+              {t(group.labelKey)}
+            </h3>
+            <div className="space-y-2">
+              {group.events.map((ev) => (
+                <RadioCard
+                  key={ev}
+                  name="event"
+                  value={ev}
+                  defaultChecked={current === ev}
+                  label={ev}
+                  sub={t(`newPolicy.wizard.step1.event.${ev}.sub` as never)}
+                  recommended={ev === "PreToolUse"}
+                />
+              ))}
+            </div>
+          </section>
         ))}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
