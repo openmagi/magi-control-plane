@@ -45,6 +45,21 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # ── _LEGAL matrix ────────────────────────────────────────────────────
 # (event, matcher_class, decision) — *meaningful* combinations only.
 # Builder UI dropdowns enumerate this; IR loader rejects anything missing.
+#
+# Event scope: Claude Code's 9 hook points minus Notification (no
+# governance signal there). The remaining 8 split into two families:
+#
+#   tool-context events    — Pre/PostToolUse. Carry a tool name in
+#                            the hook payload, so tool / mcp_tool /
+#                            tool_alt matchers apply.
+#   no-tool-context events — Stop, UserPromptSubmit, SubagentStop,
+#                            PreCompact, SessionStart, SessionEnd.
+#                            The hook has no tool to match, so the
+#                            matcher is required to be "*".
+#
+# Decision availability follows the lifecycle: "before X happens" can
+# deny/ask the host out of it (Pre*, UserPromptSubmit, PreCompact);
+# "after X happened" can only log/allow.
 LEGAL_COMBINATIONS: frozenset[tuple[str, MatcherClass, str]] = frozenset({
     # PreToolUse — fires before tool execution; deny/ask both useful.
     ("PreToolUse", MatcherClass.tool,       "deny"),
@@ -61,6 +76,24 @@ LEGAL_COMBINATIONS: frozenset[tuple[str, MatcherClass, str]] = frozenset({
     ("PostToolUse", MatcherClass.mcp_tool,  "allow"),
     # Stop — turn end. Matcher is conventionally "*"; can request a continue.
     ("Stop", MatcherClass.wildcard, "log"),
+    # UserPromptSubmit — fires before the prompt is forwarded to the
+    # LLM. The classic confidentiality gate (PII / privileged content
+    # leaving the boundary); deny blocks the send, ask interrupts for
+    # operator approval, log is observe-only.
+    ("UserPromptSubmit", MatcherClass.wildcard, "deny"),
+    ("UserPromptSubmit", MatcherClass.wildcard, "ask"),
+    ("UserPromptSubmit", MatcherClass.wildcard, "log"),
+    # SubagentStop — observe-only. A subagent has already returned by
+    # the time this fires; allowing/denying it is meaningless.
+    ("SubagentStop", MatcherClass.wildcard, "log"),
+    # PreCompact — fires before context compaction. Critical for
+    # evidence chain preservation: deny if compaction would drop
+    # ledger references the policy needs to keep intact.
+    ("PreCompact", MatcherClass.wildcard, "deny"),
+    ("PreCompact", MatcherClass.wildcard, "log"),
+    # SessionStart / SessionEnd — boundary markers, observe-only.
+    ("SessionStart", MatcherClass.wildcard, "log"),
+    ("SessionEnd",   MatcherClass.wildcard, "log"),
 })
 
 

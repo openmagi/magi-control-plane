@@ -84,3 +84,56 @@ def test_legal_combinations_are_tuples_of_three():
         assert isinstance(ev, str)
         assert isinstance(kls, MatcherClass)
         assert dec in {"deny", "ask", "allow", "log"}
+
+
+# ── post-D28: scope expanded from 3 events to 8 (Claude Code's full
+# hook set minus Notification, which has no governance signal). ───────
+def test_supported_events_covers_full_8():
+    s = supported_events()
+    assert s == {
+        "PreToolUse", "PostToolUse",
+        "Stop", "SubagentStop",
+        "UserPromptSubmit",
+        "PreCompact",
+        "SessionStart", "SessionEnd",
+    }
+
+
+@pytest.mark.parametrize("event,decision", [
+    ("UserPromptSubmit", "deny"),   # block the prompt
+    ("UserPromptSubmit", "ask"),    # interrupt for approval
+    ("UserPromptSubmit", "log"),    # audit
+    ("PreCompact", "deny"),         # protect the evidence chain
+    ("PreCompact", "log"),
+    ("SubagentStop", "log"),
+    ("SessionStart", "log"),
+    ("SessionEnd", "log"),
+])
+def test_validate_combination_accepts_no_tool_events_with_wildcard(event, decision):
+    """The 6 no-tool-context events require matcher='*' — wildcard is
+    the only meaningful matcher class. validate_combination must
+    accept those triples."""
+    validate_combination(event, "*", decision)
+
+
+@pytest.mark.parametrize("event", [
+    "UserPromptSubmit", "PreCompact",
+    "SubagentStop", "SessionStart", "SessionEnd",
+])
+def test_no_tool_events_reject_tool_matcher(event):
+    """A tool matcher on a no-tool-context event is meaningless and
+    must be rejected by the IR loader before reaching the gate."""
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "Bash", "log")
+
+
+def test_session_end_cannot_deny():
+    """SessionEnd is observe-only — denying a session that has already
+    closed has no semantics."""
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination("SessionEnd", "*", "deny")
+
+
+def test_subagent_stop_cannot_deny():
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination("SubagentStop", "*", "deny")

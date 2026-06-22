@@ -26,17 +26,42 @@ const TOOL_PRESETS = [
 ] as const
 const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
 type OnMissing = (typeof ON_MISSING_PRESETS)[number]
-type EventKind = "PreToolUse" | "PostToolUse" | "Stop"
+type EventKind =
+  | "PreToolUse" | "PostToolUse"
+  | "Stop" | "SubagentStop"
+  | "UserPromptSubmit"
+  | "PreCompact"
+  | "SessionStart" | "SessionEnd"
 
-// matrix.LEGAL_COMBINATIONS, narrowed by event since this wizard only
-// surfaces the standard tool matcher path (no wildcard / MCP form for
-// now). Stop only legally pairs with wildcard+log, so the IR loader
-// rejects every Stop combination this wizard can produce — we still
-// allow picking Stop in step1 but the helper text steers users away.
+const EVENT_KINDS: readonly EventKind[] = [
+  "PreToolUse", "PostToolUse",
+  "UserPromptSubmit",
+  "PreCompact",
+  "Stop", "SubagentStop",
+  "SessionStart", "SessionEnd",
+]
+
+// Events that carry a tool name in their hook payload. The wizard's
+// Step 2 (matcher chips) only shows for these. For the rest, matcher
+// is forced to "*" and Step 2 is auto-skipped (Next on Step 1 lands
+// the user directly on Step 3).
+const TOOL_CONTEXT_EVENTS: ReadonlySet<EventKind> = new Set([
+  "PreToolUse", "PostToolUse",
+])
+
+// matrix.LEGAL_COMBINATIONS, narrowed by event. Mirrors the backend's
+// policy/matrix.py — keep in sync. No-tool-context events all use the
+// wildcard matcher class so the decision options follow the lifecycle:
+// "before X" can deny/ask, "after X" can only log/allow.
 const LEGAL_ON_MISSING_BY_EVENT: Record<EventKind, readonly OnMissing[]> = {
-  PreToolUse:  ["deny", "ask"],
-  PostToolUse: ["log", "allow"],
-  Stop:        ["log"],
+  PreToolUse:       ["deny", "ask"],
+  PostToolUse:      ["log", "allow"],
+  UserPromptSubmit: ["deny", "ask", "log"],
+  PreCompact:       ["deny", "log"],
+  Stop:             ["log"],
+  SubagentStop:     ["log"],
+  SessionStart:     ["log"],
+  SessionEnd:       ["log"],
 }
 
 interface WizardState {
@@ -146,14 +171,22 @@ async function advanceWizard(formData: FormData): Promise<void> {
   const params = new URLSearchParams()
   params.set("mode", "guided")
   const stepIn = Number(formData.get("_step") ?? "1")
-  const nextStep = stepIn + 1
-  params.set("step", String(nextStep))
+  let nextStep = stepIn + 1
   for (const [k, v] of formData.entries()) {
     if (typeof v !== "string") continue
     if (k.startsWith("$ACTION") || k === "_step") continue
     if (!v.trim()) continue
     params.set(k, v.trim())
   }
+  // Auto-skip Step 2 (matcher chips) for events that don't carry a
+  // tool context. matcher is forced to "*" because that's the only
+  // matcher class the backend accepts for these events.
+  const pickedEvent = (params.get("event") || "PreToolUse") as EventKind
+  if (stepIn === 1 && !TOOL_CONTEXT_EVENTS.has(pickedEvent)) {
+    params.set("matcher", "*")
+    nextStep = 3
+  }
+  params.set("step", String(nextStep))
   redirect(`/policies/new?${params.toString()}`)
 }
 
@@ -681,6 +714,7 @@ function Step1Event({
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  const current = state.event ?? "PreToolUse"
   return (
     <StepShell
       t={t}
@@ -691,28 +725,17 @@ function Step1Event({
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="1" />
-        <RadioCard
-          name="event"
-          value="PreToolUse"
-          defaultChecked={(state.event ?? "PreToolUse") === "PreToolUse"}
-          label="PreToolUse"
-          sub={t("newPolicy.wizard.step1.pre")}
-          recommended
-        />
-        <RadioCard
-          name="event"
-          value="PostToolUse"
-          defaultChecked={state.event === "PostToolUse"}
-          label="PostToolUse"
-          sub={t("newPolicy.wizard.step1.post")}
-        />
-        <RadioCard
-          name="event"
-          value="Stop"
-          defaultChecked={state.event === "Stop"}
-          label="Stop"
-          sub={t("newPolicy.wizard.step1.stop")}
-        />
+        {EVENT_KINDS.map((ev) => (
+          <RadioCard
+            key={ev}
+            name="event"
+            value={ev}
+            defaultChecked={current === ev}
+            label={ev}
+            sub={t(`newPolicy.wizard.step1.event.${ev}.sub` as never)}
+            recommended={ev === "PreToolUse"}
+          />
+        ))}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>

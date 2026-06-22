@@ -6,7 +6,12 @@
  * UX) and so the server enforces the source-of-truth (good security). The
  * server's response is authoritative on disagreement.
  */
-export type EventKind = "PreToolUse" | "PostToolUse" | "Stop"
+export type EventKind =
+  | "PreToolUse" | "PostToolUse"
+  | "Stop" | "SubagentStop"
+  | "UserPromptSubmit"
+  | "PreCompact"
+  | "SessionStart" | "SessionEnd"
 
 export type Decision = "deny" | "ask" | "log" | "allow"
 
@@ -39,8 +44,18 @@ const LEGAL = new Set<string>([
   // PostToolUse — observe
   "PostToolUse|tool|log",     "PostToolUse|tool|allow",
   "PostToolUse|mcp_tool|log", "PostToolUse|mcp_tool|allow",
-  // Stop — end of turn
+  // No-tool-context events (D28: scope expanded to Claude Code's
+  // full hook set minus Notification). All use the wildcard matcher
+  // class because the hook payload has no tool to match.
   "Stop|wildcard|log",
+  "SubagentStop|wildcard|log",
+  "UserPromptSubmit|wildcard|deny",
+  "UserPromptSubmit|wildcard|ask",
+  "UserPromptSubmit|wildcard|log",
+  "PreCompact|wildcard|deny",
+  "PreCompact|wildcard|log",
+  "SessionStart|wildcard|log",
+  "SessionEnd|wildcard|log",
 ])
 
 export function isLegal(event: EventKind, matcher: string, decision: Decision): boolean {

@@ -29,10 +29,26 @@ def _validate_id(s: str) -> None:
             raise ValueError(f"policy id must not end with {suf!r}: {s!r}")
 
 
+EventLiteral = Literal[
+    "PreToolUse", "PostToolUse",
+    "Stop", "SubagentStop",
+    "UserPromptSubmit",
+    "PreCompact",
+    "SessionStart", "SessionEnd",
+]
+_SUPPORTED_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse", "PostToolUse",
+    "Stop", "SubagentStop",
+    "UserPromptSubmit",
+    "PreCompact",
+    "SessionStart", "SessionEnd",
+})
+
+
 @dataclass
 class Trigger:
     host: Literal["claude-code"] = "claude-code"
-    event: Literal["PreToolUse", "PostToolUse", "Stop"] = "PreToolUse"
+    event: EventLiteral = "PreToolUse"
     matcher: str = "Bash"
 
 
@@ -69,7 +85,7 @@ class Policy:
             raise ValueError(
                 f"policy '{self.id}': sentinel_re는 named groups (?P<matter>) (?P<doc_id>) 필요"
             )
-        if self.trigger.event not in ("PreToolUse", "PostToolUse", "Stop"):
+        if self.trigger.event not in _SUPPORTED_EVENTS:
             raise ValueError(f"policy '{self.id}': trigger.event 미지원: {self.trigger.event}")
         if not self.requires:
             raise ValueError(f"policy '{self.id}': requires가 비어 있음 (=강제 의미 없음)")

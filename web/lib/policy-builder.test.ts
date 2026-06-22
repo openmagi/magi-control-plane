@@ -26,7 +26,13 @@ describe("isLegal — mirrors backend matrix", () => {
   // EXHAUSTIVE coverage of the matrix so a backend drift gets caught by CI.
   // If the server adds or removes a triple, this client mirror's tests will
   // fail and force the mirror to be updated.
-  const ALL_LEGAL: Array<["PreToolUse"|"PostToolUse"|"Stop", string, "deny"|"ask"|"log"|"allow"]> = [
+  type AnyEvent =
+    | "PreToolUse" | "PostToolUse"
+    | "Stop" | "SubagentStop"
+    | "UserPromptSubmit"
+    | "PreCompact"
+    | "SessionStart" | "SessionEnd"
+  const ALL_LEGAL: Array<[AnyEvent, string, "deny"|"ask"|"log"|"allow"]> = [
     ["PreToolUse", "Bash", "deny"], ["PreToolUse", "Bash", "ask"],
     ["PreToolUse", "mcp__a__b", "deny"], ["PreToolUse", "mcp__a__b", "ask"],
     ["PreToolUse", "Bash|Edit", "deny"], ["PreToolUse", "Bash|Edit", "ask"],
@@ -34,6 +40,15 @@ describe("isLegal — mirrors backend matrix", () => {
     ["PostToolUse", "Bash", "log"], ["PostToolUse", "Bash", "allow"],
     ["PostToolUse", "mcp__a__b", "log"], ["PostToolUse", "mcp__a__b", "allow"],
     ["Stop", "*", "log"],
+    // D28: no-tool-context events
+    ["SubagentStop", "*", "log"],
+    ["UserPromptSubmit", "*", "deny"],
+    ["UserPromptSubmit", "*", "ask"],
+    ["UserPromptSubmit", "*", "log"],
+    ["PreCompact", "*", "deny"],
+    ["PreCompact", "*", "log"],
+    ["SessionStart", "*", "log"],
+    ["SessionEnd", "*", "log"],
   ]
   it.each(ALL_LEGAL)("accepts %s × %s × %s", (ev, m, d) => {
     expect(isLegal(ev, m, d)).toBe(true)
@@ -54,6 +69,15 @@ describe("isLegal — mirrors backend matrix", () => {
   })
   it("rejects unknown matcher", () => {
     expect(isLegal("PreToolUse", "FooBar", "deny")).toBe(false)
+  })
+  it("rejects UserPromptSubmit × Bash × deny (no tool context here)", () => {
+    expect(isLegal("UserPromptSubmit", "Bash", "deny")).toBe(false)
+  })
+  it("rejects SessionEnd × * × deny (observe-only event)", () => {
+    expect(isLegal("SessionEnd", "*", "deny")).toBe(false)
+  })
+  it("rejects SubagentStop × * × deny (observe-only event)", () => {
+    expect(isLegal("SubagentStop", "*", "deny")).toBe(false)
   })
 })
 
