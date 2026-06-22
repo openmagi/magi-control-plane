@@ -1,11 +1,9 @@
 import { cloud, type PresetEntry } from "@/lib/cloud"
 import { getIntl, getT } from "@/lib/i18n/server"
-import {
-  Badge, Code, EmptyState, ErrorState, PageHeader,
-} from "@/components/ui"
+import { Badge, EmptyState, ErrorState, PageHeader } from "@/components/ui"
 import { CategorySection } from "./_components/CategorySection"
-import { PresetToggle } from "./_components/PresetToggle"
-import { readDisabledPresetIds, togglePresetAction } from "./actions"
+import { PresetRow } from "./_components/PresetRow"
+import { readDisabledPresetIds } from "./actions"
 
 export const dynamic = "force-dynamic"
 
@@ -13,50 +11,6 @@ const CATEGORY_ORDER: PresetEntry["category"][] = [
   "ANSWER", "FACT", "CODING", "TASK", "OUTPUT",
   "RESEARCH", "MEMORY", "SECURITY",
 ]
-
-function EnforcementBadge({ kind }: { kind: PresetEntry["enforcement"] }) {
-  const variant =
-    kind === "enforcing" ? "ok" :
-    kind === "always-on" ? "info" :
-    kind === "preview"   ? "review" : "muted"
-  return <Badge variant={variant}>{kind}</Badge>
-}
-
-interface PresetRowProps {
-  p: PresetEntry
-  stepLabel: string
-  enabled: boolean
-  labelOn: string
-  labelOff: string
-}
-
-function PresetRow({ p, stepLabel, enabled, labelOn, labelOff }: PresetRowProps) {
-  return (
-    <div className="flex items-start gap-3 rounded-xl border border-black/[0.04] bg-white px-4 py-3 hover:border-black/[0.08] transition-colors duration-150">
-      <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap items-center gap-2 mb-1.5">
-          <Code className="text-[13px] font-semibold">{p.id}</Code>
-          <EnforcementBadge kind={p.enforcement} />
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)] leading-5 line-clamp-3">
-          {p.description}
-        </p>
-        {p.step && (
-          <div className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-            {stepLabel}: <Code>{p.step}</Code>
-          </div>
-        )}
-      </div>
-      <PresetToggle
-        presetId={p.id}
-        enabled={enabled}
-        action={togglePresetAction}
-        labelOn={labelOn}
-        labelOff={labelOff}
-      />
-    </div>
-  )
-}
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -77,8 +31,15 @@ export default async function PresetsPage() {
   for (const it of items) (byCategory[it.category] ||= []).push(it)
   const enabledCount = items.filter(i => !disabled.has(i.id)).length
 
-  const labelOn = t("presets.toggle.on")
-  const labelOff = t("presets.toggle.off")
+  const labelOn        = t("presets.toggle.on")
+  const labelOff       = t("presets.toggle.off")
+  const stepLabel      = t("presets.stepLabel")
+  const whenLabel      = t("presets.spec.when")
+  const matchersLabel  = t("presets.spec.matchers")
+  const verdictLabel   = t("presets.spec.verdict")
+  const howLabel       = t("presets.spec.howItWorks")
+  const schemaLabel    = t("presets.spec.inputSchema")
+  const notWiredLabel  = t("presets.spec.notWired")
 
   return (
     <>
@@ -135,10 +96,16 @@ export default async function PresetsPage() {
                   <PresetRow
                     key={p.id}
                     p={p}
-                    stepLabel={t("presets.stepLabel")}
                     enabled={!disabled.has(p.id)}
                     labelOn={labelOn}
                     labelOff={labelOff}
+                    stepLabel={stepLabel}
+                    whenLabel={whenLabel}
+                    matchersLabel={matchersLabel}
+                    verdictLabel={verdictLabel}
+                    howLabel={howLabel}
+                    schemaLabel={schemaLabel}
+                    notWiredLabel={notWiredLabel}
                   />
                 ))}
               </CategorySection>

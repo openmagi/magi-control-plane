@@ -1,0 +1,131 @@
+import type { PresetEntry } from "@/lib/cloud"
+import { ChevronDownIcon } from "@heroicons/react/24/outline"
+import { Badge } from "@/components/ui"
+import { PresetToggle } from "./PresetToggle"
+import { PRESET_USAGE_HINTS } from "./PresetUsageHint"
+import { togglePresetAction } from "../actions"
+
+export interface PresetRowProps {
+  p: PresetEntry
+  enabled: boolean
+  labelOn: string
+  labelOff: string
+  stepLabel: string
+  whenLabel: string
+  matchersLabel: string
+  verdictLabel: string
+  howLabel: string
+  schemaLabel: string
+  notWiredLabel: string
+}
+
+function EnforcementBadge({ kind }: { kind: PresetEntry["enforcement"] }) {
+  const variant =
+    kind === "enforcing" ? "ok" :
+    kind === "always-on" ? "info" :
+    kind === "preview"   ? "review" : "muted"
+  return <Badge variant={variant}>{kind}</Badge>
+}
+
+/**
+ * Collapsible preset row. Summary shows id (inline monospace, no
+ * background box), enforcement badge, description, toggle. Open
+ * pane reveals usage hints + input schema (when present).
+ */
+export function PresetRow({
+  p, enabled, labelOn, labelOff,
+  stepLabel, whenLabel, matchersLabel, verdictLabel, howLabel, schemaLabel,
+  notWiredLabel,
+}: PresetRowProps) {
+  const hint = PRESET_USAGE_HINTS[p.id]
+  const hasSpec = Boolean(hint || p.input_schema || p.step)
+
+  return (
+    <details className="group rounded-xl border border-black/[0.04] bg-white overflow-hidden hover:border-black/[0.08] transition-colors duration-150">
+      <summary className="flex items-start gap-3 px-4 py-3 cursor-pointer list-none select-none">
+        <ChevronDownIcon
+          aria-hidden="true"
+          className="w-4 h-4 mt-1 text-[var(--color-text-tertiary)] shrink-0 transition-transform duration-200 group-open:rotate-0 -rotate-90"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span
+              className="font-mono text-[13px] font-semibold text-[var(--color-text-primary)]"
+              translate="no"
+            >
+              {p.id}
+            </span>
+            <EnforcementBadge kind={p.enforcement} />
+          </div>
+          <p className="text-sm text-[var(--color-text-secondary)] leading-5 line-clamp-3">
+            {p.description}
+          </p>
+        </div>
+        <PresetToggle
+          presetId={p.id}
+          enabled={enabled}
+          action={togglePresetAction}
+          labelOn={labelOn}
+          labelOff={labelOff}
+        />
+      </summary>
+
+      {hasSpec && (
+        <div className="border-t border-black/[0.04] bg-gradient-to-br from-white to-gray-50 px-4 py-3 text-sm">
+          {p.step && (
+            <div className="flex flex-wrap items-baseline gap-2 mb-2">
+              <span className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold">
+                {stepLabel}
+              </span>
+              <code className="font-mono text-[12.5px] text-[var(--color-text-primary)]" translate="no">
+                {p.step}
+              </code>
+            </div>
+          )}
+          {hint ? (
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 text-[13px]">
+              <dt className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold pt-0.5">{whenLabel}</dt>
+              <dd className="flex flex-wrap gap-1.5">
+                {hint.when.map(e => (
+                  <code key={e} className="font-mono text-[12px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/8 text-[var(--color-accent-light)] border border-[var(--color-accent)]/15" translate="no">
+                    {e}
+                  </code>
+                ))}
+              </dd>
+              <dt className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold pt-0.5">{matchersLabel}</dt>
+              <dd className="flex flex-wrap gap-1.5">
+                {hint.matchers.map(m => (
+                  <code key={m} className="font-mono text-[12px] px-1.5 py-0.5 rounded bg-gray-100 text-[var(--color-text-secondary)] border border-black/[0.04]" translate="no">
+                    {m}
+                  </code>
+                ))}
+              </dd>
+              <dt className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold pt-0.5">{verdictLabel}</dt>
+              <dd className="text-[var(--color-text-secondary)] leading-5">{hint.verdict}</dd>
+              <dt className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold pt-0.5">{howLabel}</dt>
+              <dd className="text-[var(--color-text-secondary)] leading-5">{hint.howItWorks}</dd>
+            </dl>
+          ) : (
+            <p className="text-xs text-[var(--color-text-tertiary)] italic">
+              {notWiredLabel}
+            </p>
+          )}
+          {p.input_schema && (
+            <details className="mt-3 group/schema">
+              <summary className="cursor-pointer text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] font-semibold inline-flex items-center gap-1">
+                <ChevronDownIcon aria-hidden="true" className="w-3 h-3 transition-transform group-open/schema:rotate-0 -rotate-90" />
+                {schemaLabel}
+              </summary>
+              <pre
+                className="mt-2 max-h-64 overflow-auto rounded-lg border border-black/[0.04] bg-white px-3 py-2 font-mono text-[12px] text-[var(--color-text-primary)] leading-5"
+                translate="no"
+              >
+                {JSON.stringify(p.input_schema, null, 2)}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
+    </details>
+  )
+}

@@ -4,8 +4,22 @@ import { Logo } from "@/components/ui/Logo"
 import { getWorkspaceData } from "../_data/workspace"
 import { NavGroup } from "./NavGroup"
 import { NavItem } from "./NavItem"
+import { NavHrefsProvider } from "./NavItemContext"
 import { WorkspaceCard } from "./WorkspaceCard"
 import { SidebarFooter } from "./SidebarFooter"
+
+/** Single source of truth — the longest-prefix matcher inside NavItem
+ * uses this list to decide which item wins the active highlight. */
+const NAV_HREFS = [
+  "/policies",
+  "/policies/compile",
+  "/presets",
+  "/verify",
+  "/hitl",
+  "/overview",
+  "/ledger",
+  "/setup",
+] as const
 
 const CLOUD_HOST = process.env.MAGI_CP_PUBLIC_CLOUD_URL
   ? new URL(process.env.MAGI_CP_PUBLIC_CLOUD_URL).host
@@ -41,25 +55,27 @@ export async function Sidebar() {
       />
 
       <nav className="space-y-1 flex-1 overflow-y-auto min-h-0 -mx-1 px-1" aria-label={t("nav.primary")}>
-        <NavGroup label={t("nav.group.authoring")}>
-          <NavItem href="/policies" label={t("nav.policies")} icon="policies" />
-          <NavItem href="/policies/compile" label={t("nav.compile")} icon="compile" />
-          <NavItem href="/presets" label={t("nav.presets")} icon="presets" />
-        </NavGroup>
+        <NavHrefsProvider hrefs={NAV_HREFS}>
+          <NavGroup label={t("nav.group.authoring")}>
+            <NavItem href="/policies" label={t("nav.policies")} icon="policies" />
+            <NavItem href="/policies/compile" label={t("nav.compile")} icon="compile" />
+            <NavItem href="/presets" label={t("nav.presets")} icon="presets" />
+          </NavGroup>
 
-        <NavGroup label={t("nav.group.runtime")}>
-          <NavItem href="/verify" label={t("nav.verify")} icon="verify" />
-          <NavItem href="/hitl" label={t("nav.reviewQueue")} icon="hitl" badge={hitlPending} />
-        </NavGroup>
+          <NavGroup label={t("nav.group.runtime")}>
+            <NavItem href="/verify" label={t("nav.verify")} icon="verify" />
+            <NavItem href="/hitl" label={t("nav.reviewQueue")} icon="hitl" badge={hitlPending} />
+          </NavGroup>
 
-        <NavGroup label={t("nav.group.audit")}>
-          <NavItem href="/overview" label={t("nav.overview")} icon="overview" />
-          <NavItem href="/ledger" label={t("nav.audit")} icon="ledger" />
-        </NavGroup>
+          <NavGroup label={t("nav.group.audit")}>
+            <NavItem href="/overview" label={t("nav.overview")} icon="overview" />
+            <NavItem href="/ledger" label={t("nav.audit")} icon="ledger" />
+          </NavGroup>
 
-        <NavGroup label={t("nav.group.setup")}>
-          <NavItem href="/setup" label={t("setup.title")} icon="setup" />
-        </NavGroup>
+          <NavGroup label={t("nav.group.setup")}>
+            <NavItem href="/setup" label={t("setup.title")} icon="setup" />
+          </NavGroup>
+        </NavHrefsProvider>
       </nav>
 
       <SidebarFooter />

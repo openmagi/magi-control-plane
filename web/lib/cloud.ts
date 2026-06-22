@@ -324,6 +324,10 @@ export type PresetEntry = {
   description: string
   enforcement: "enforcing" | "always-on" | "preview" | "capability"
   step: string | null
+  /** JSON Schema for the verifier's payload. Wired presets only. */
+  input_schema?: Record<string, unknown> | null
+  /** Verifier class name (e.g. "verify_privilege_scan"). Wired only. */
+  name?: string | null
 }
 
 function _encId(id: string): string {

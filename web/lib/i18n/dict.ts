@@ -155,6 +155,12 @@ const KO_RAW = {
   "presets.stepLabel": "Policy IR step",
   "presets.toggle.on": "활성화됨 — 토글로 비활성화",
   "presets.toggle.off": "비활성화됨 — 토글로 활성화",
+  "presets.spec.when": "Hook event",
+  "presets.spec.matchers": "Tool 매처",
+  "presets.spec.verdict": "판정 모드",
+  "presets.spec.howItWorks": "동작 방식",
+  "presets.spec.inputSchema": "입력 스키마",
+  "presets.spec.notWired": "magi-agent 카탈로그 항목 (이 런타임에 미연결). 정책 IR 가 사용할 수 있는 자리 표시자.",
 
   /* ── hitl ────────────────────────────────────────────────────── */
   "hitl.title": "리뷰 대기 ({n}건)",
@@ -377,6 +383,12 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "presets.stepLabel": "Policy IR step",
   "presets.toggle.on": "Enabled — toggle to disable",
   "presets.toggle.off": "Disabled — toggle to enable",
+  "presets.spec.when": "Hook event",
+  "presets.spec.matchers": "Tool matcher",
+  "presets.spec.verdict": "Verdict modes",
+  "presets.spec.howItWorks": "How it works",
+  "presets.spec.inputSchema": "Input schema",
+  "presets.spec.notWired": "magi-agent catalog entry (not wired in this runtime). Placeholder for policy IR consumption.",
 
   "hitl.title": "Pending review ({n})",
   "hitl.empty": "No items pending review.",

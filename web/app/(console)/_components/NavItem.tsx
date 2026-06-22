@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useSelectedLayoutSegment } from "next/navigation"
+import { usePathname } from "next/navigation"
 import {
   ShieldCheckIcon, SparklesIcon, BookOpenIcon,
   CheckBadgeIcon, InboxIcon,
@@ -9,6 +9,7 @@ import {
   ArrowDownTrayIcon,
 } from "@heroicons/react/24/outline"
 import { cn } from "@/lib/cn"
+import { longestActiveHref, useNavHrefs } from "./NavItemContext"
 
 const ICONS = {
   policies: ShieldCheckIcon,
@@ -40,10 +41,9 @@ export interface NavItemProps {
  * Client component because the active state needs useSelectedLayoutSegment().
  */
 export function NavItem({ href, label, icon, badge }: NavItemProps) {
-  const segment = useSelectedLayoutSegment()
-  const itemSegment = href.replace(/^\//, "").split("/")[0]
-  const active = segment === itemSegment ||
-    (segment === null && itemSegment === "")
+  const pathname = usePathname()
+  const allHrefs = useNavHrefs()
+  const active = longestActiveHref(pathname, allHrefs) === href
   const Icon = ICONS[icon]
 
   return (

@@ -359,6 +359,8 @@ def create_app(
                     "description": v.description,
                     "enforcement": v.enforcement.value,
                     "step": v.step,
+                    "input_schema": getattr(v, "input_schema", None),
+                    "name": getattr(v, "name", None),
                 })
                 seen_ids.add(pid)
         vendor = sorted(
@@ -369,6 +371,8 @@ def create_app(
                     "description": vp.description,
                     "enforcement": "preview",
                     "step": None,
+                    "input_schema": None,
+                    "name": None,
                 }
                 for vp in vendor_catalog()
                 if vp.id not in seen_ids   # wired ID shadows vendor entry
