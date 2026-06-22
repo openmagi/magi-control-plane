@@ -5,7 +5,10 @@ import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHor
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
-import { validateDraft, type PolicyDraft } from "@/lib/policy-builder"
+import {
+  classifyMatcher, isLegal,
+  validateDraft, type PolicyDraft,
+} from "@/lib/policy-builder"
 import { CloudConfigError, cloud, type CompileResult } from "@/lib/cloud"
 import { getT } from "@/lib/i18n/server"
 import {
@@ -49,19 +52,36 @@ const TOOL_CONTEXT_EVENTS: ReadonlySet<EventKind> = new Set([
   "PreToolUse", "PostToolUse",
 ])
 
-// matrix.LEGAL_COMBINATIONS, narrowed by event. Mirrors the backend's
-// policy/matrix.py — keep in sync. No-tool-context events all use the
-// wildcard matcher class so the decision options follow the lifecycle:
-// "before X" can deny/ask, "after X" can only log/allow.
-const LEGAL_ON_MISSING_BY_EVENT: Record<EventKind, readonly OnMissing[]> = {
-  PreToolUse:       ["deny", "ask"],
-  PostToolUse:      ["log", "allow"],
-  UserPromptSubmit: ["deny", "ask", "log"],
-  PreCompact:       ["deny", "log"],
-  Stop:             ["log"],
-  SubagentStop:     ["log"],
-  SessionStart:     ["log"],
-  SessionEnd:       ["log"],
+// Verifier metadata as the wizard receives it from /verifiers.
+type VerifierCategory = import("@/lib/cloud").PresetEntry["category"]
+interface WiredStep {
+  step: string
+  description: string
+  category: VerifierCategory
+}
+
+// True legal-decision set is a function of (event × matcher_class) per
+// LEGAL_COMBINATIONS. We compute it on demand using the policy-builder
+// mirror so a wildcard chip on PreToolUse correctly narrows on_missing
+// to just "log", while Bash on PreToolUse keeps deny/ask.
+const ALL_DECISIONS: readonly OnMissing[] = ["deny", "ask", "log", "allow"]
+function legalOnMissingFor(event: EventKind, matcher: string): readonly OnMissing[] {
+  if (!matcher) return []
+  return ALL_DECISIONS.filter((d) => isLegal(event, matcher, d))
+}
+
+// Recommended verifier categories per event. Soft signal only — the
+// wizard still renders every wired verifier; the badge just nudges
+// the operator toward fitness for the event they picked.
+const RECOMMENDED_CATEGORIES_BY_EVENT: Record<EventKind, ReadonlySet<VerifierCategory>> = {
+  PreToolUse:       new Set<VerifierCategory>(["SECURITY", "RESEARCH", "OUTPUT", "CODING"]),
+  PostToolUse:      new Set<VerifierCategory>(["SECURITY", "FACT", "OUTPUT", "RESEARCH"]),
+  UserPromptSubmit: new Set<VerifierCategory>(["SECURITY"]),
+  PreCompact:       new Set<VerifierCategory>(["SECURITY", "MEMORY"]),
+  Stop:             new Set<VerifierCategory>(["ANSWER", "FACT", "OUTPUT"]),
+  SubagentStop:     new Set<VerifierCategory>(["TASK", "OUTPUT"]),
+  SessionStart:     new Set<VerifierCategory>(["MEMORY"]),
+  SessionEnd:       new Set<VerifierCategory>(["MEMORY"]),
 }
 
 interface WizardState {
@@ -73,7 +93,15 @@ interface WizardState {
   on_missing?: OnMissing
   id?: string
   description?: string
+  /** Sentinel tag prefix. saveWizard expands this into the policy's
+   * `sentinel_re` as `<TAG>_(?P<matter>…)_(?P<doc_id>…)`. v1 hardcoded
+   * "FILE_COURT" here for legal-filing; D30 makes it operator-editable
+   * so the gate matches whatever marker their tool calls emit. */
+  sentinel_tag?: string
 }
+
+const SENTINEL_TAG_DEFAULT = "FILE_COURT"
+const SENTINEL_TAG_RE = /^[A-Z][A-Z0-9_]{0,31}$/
 
 function parseVerifierList(raw: string | undefined): string[] {
   if (!raw) return []
@@ -229,7 +257,10 @@ async function saveWizard(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
-  const sentinelTag = "FILE_COURT"
+  const sentinelTagRaw = String(formData.get("sentinel_tag") ?? "").trim()
+  const sentinelTag = SENTINEL_TAG_RE.test(sentinelTagRaw)
+    ? sentinelTagRaw
+    : SENTINEL_TAG_DEFAULT
 
   if (!id || !matcher || verifiers.length === 0) {
     redirect("/policies/new?mode=guided&step=1&err=invalid_input"); return
@@ -314,7 +345,7 @@ export default async function NewPolicyPage({
     _parseDraftQuery(searchParams.draft) ??
     null
 
-  let wiredSteps: { step: string; description: string }[] = []
+  let wiredSteps: WiredStep[] = []
   if (mode === "advanced" || mode === "guided") {
     try {
       const presets = await cloud.listPresets()
@@ -322,7 +353,11 @@ export default async function NewPolicyPage({
       for (const p of presets) {
         if (p.enforcement !== "enforcing" || !p.step || seen.has(p.step)) continue
         seen.add(p.step)
-        wiredSteps.push({ step: p.step, description: p.description })
+        wiredSteps.push({
+          step: p.step,
+          description: p.description,
+          category: p.category,
+        })
       }
       wiredSteps.sort((a, b) => a.step.localeCompare(b.step))
     } catch { /* best-effort; empty datalist is fine */ }
@@ -384,7 +419,7 @@ export default async function NewPolicyPage({
       {mode === "guided" && (
         <GuidedWizard
           t={t}
-          wiredSteps={wiredSteps.length > 0 ? wiredSteps : [{ step: "citation_verify", description: "Cite verifier" }]}
+          wiredSteps={wiredSteps.length > 0 ? wiredSteps : [{ step: "citation_verify", description: "Cite verifier", category: "FACT" }]}
           searchParams={searchParams}
           advanceAction={advanceWizard}
           saveAction={saveWizard}
@@ -580,6 +615,7 @@ function buildWizardHref(state: WizardState, step: number): string {
   if (state.on_missing) params.set("on_missing", state.on_missing)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
+  if (state.sentinel_tag) params.set("sentinel_tag", state.sentinel_tag)
   return `/policies/new?${params.toString()}`
 }
 
@@ -594,6 +630,9 @@ function HiddenState({ state }: { state: WizardState }) {
       {state.on_missing && <input type="hidden" name="on_missing" value={state.on_missing} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
+      {state.sentinel_tag && (
+        <input type="hidden" name="sentinel_tag" value={state.sentinel_tag} />
+      )}
     </>
   )
 }
@@ -642,7 +681,7 @@ function WizardHeader({
 function GuidedWizard({
   t, wiredSteps, searchParams, advanceAction, saveAction,
 }: {
-  wiredSteps: { step: string; description: string }[]
+  wiredSteps: WiredStep[]
   searchParams: Record<string, string | undefined>
   advanceAction: (fd: FormData) => Promise<void>
   saveAction: (fd: FormData) => Promise<void>
@@ -661,6 +700,7 @@ function GuidedWizard({
     on_missing: (searchParams.on_missing as OnMissing) || undefined,
     id: searchParams.id || undefined,
     description: searchParams.description || undefined,
+    sentinel_tag: searchParams.sentinel_tag || undefined,
   }
 
   return (
@@ -817,6 +857,12 @@ function Step2Matcher({
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  const event = state.event ?? "PreToolUse"
+  // The wildcard chip is meaningful only for PreToolUse (the matrix
+  // accepts (PreToolUse, wildcard, log) but no other event/wildcard
+  // pair on a tool-context event). For PostToolUse this chip is
+  // hidden so users don't author a triple the backend rejects.
+  const showWildcard = event === "PreToolUse"
   return (
     <StepShell
       t={t}
@@ -841,10 +887,11 @@ function Step2Matcher({
           className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
         />
         <datalist id="matcher-list">
-          {TOOL_PRESETS.map(tool => <option key={tool} value={tool} />)}
+          {TOOL_PRESETS.map((tool) => <option key={tool} value={tool} />)}
+          {showWildcard && <option value="*" />}
         </datalist>
         <div className="flex flex-wrap gap-1.5">
-          {TOOL_PRESETS.map(tool => (
+          {TOOL_PRESETS.map((tool) => (
             <button
               key={tool}
               type="submit"
@@ -857,7 +904,26 @@ function Step2Matcher({
               {tool}
             </button>
           ))}
+          {showWildcard && (
+            <button
+              key="wildcard"
+              type="submit"
+              name="matcher"
+              value="*"
+              formAction={action}
+              formNoValidate
+              title={t("newPolicy.wizard.step2.wildcardHint")}
+              className="rounded-full border border-amber-400/40 bg-amber-50 px-3 py-1 text-xs font-mono text-amber-900 hover:border-amber-500 hover:bg-amber-100 cursor-pointer transition-colors"
+            >
+              *
+            </button>
+          )}
         </div>
+        {showWildcard && (
+          <p className="text-[11px] text-[var(--color-text-tertiary)]">
+            {t("newPolicy.wizard.step2.wildcardHint")}
+          </p>
+        )}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -867,20 +933,28 @@ function Step2Matcher({
 function Step3Verifier({
   t, state, wiredSteps, action,
 }: {
-  state: WizardState; wiredSteps: { step: string; description: string }[]
+  state: WizardState; wiredSteps: WiredStep[]
   action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
-  // First visit (no prior picks) → preselect the first wired verifier
-  // so the user can hit Next immediately. Returning visits keep their
-  // multi-pick. The backend rejects an empty `requires` list so we
-  // need at least one box ticked; client-side enforcement happens at
-  // the form's `data-min-checked` attribute (defensive — server-side
-  // saveWizard also redirects to err=invalid_input).
+  const event = state.event ?? "PreToolUse"
+  const recommendedCategories = RECOMMENDED_CATEGORIES_BY_EVENT[event]
+  // Sort: event-recommended verifiers first, then the rest. Stable
+  // within each group by the alphabetical order wiredSteps already
+  // arrives in.
+  const ordered = [...wiredSteps].sort((a, b) => {
+    const ra = recommendedCategories.has(a.category) ? 0 : 1
+    const rb = recommendedCategories.has(b.category) ? 0 : 1
+    return ra - rb
+  })
+  // First visit (no prior picks) → preselect the first recommended
+  // verifier (or first wired if none are recommended). Returning
+  // visits keep their multi-pick. The backend rejects an empty
+  // `requires` list so saveWizard also defends with err=invalid_input.
   const picked: Set<string> = new Set(
     state.verifiers && state.verifiers.length > 0
       ? state.verifiers
-      : wiredSteps.length > 0 ? [wiredSteps[0].step] : [],
+      : ordered.length > 0 ? [ordered[0].step] : [],
   )
   return (
     <StepShell
@@ -896,14 +970,18 @@ function Step3Verifier({
         <p className="text-xs text-[var(--color-text-tertiary)]">
           {t("newPolicy.wizard.step3.multiHint")}
         </p>
-        {wiredSteps.map((v) => (
+        {ordered.map((v) => (
           <CheckboxCard
             key={v.step}
             name="verifier"
             value={v.step}
             defaultChecked={picked.has(v.step)}
             label={v.step}
-            sub={v.description}
+            sub={
+              recommendedCategories.has(v.category)
+                ? `${v.description}  ·  ${t("newPolicy.wizard.step3.recommendedFor", { event })}`
+                : v.description
+            }
           />
         ))}
         <NextButton label={t("newPolicy.wizard.next")} />
@@ -918,12 +996,17 @@ function Step4OnMissing({
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
-  // Filter to options the backend will accept for this event — keeps
-  // the wizard from minting policies the IR loader rejects with 422.
-  const allowed: readonly OnMissing[] = LEGAL_ON_MISSING_BY_EVENT[state.event ?? "PreToolUse"]
-  const defaultPick: OnMissing = state.on_missing && allowed.includes(state.on_missing)
-    ? state.on_missing
-    : allowed[0]
+  // Filter to options the backend will accept for THIS (event, matcher)
+  // pair — not just event. The (PreToolUse, wildcard, log) triple is
+  // legal but (PreToolUse, wildcard, deny) is not, so a per-event
+  // table would mis-classify the wildcard chip path.
+  const event = state.event ?? "PreToolUse"
+  const matcher = state.matcher ?? "Bash"
+  const allowed: readonly OnMissing[] = legalOnMissingFor(event, matcher)
+  const defaultPick: OnMissing | undefined =
+    state.on_missing && allowed.includes(state.on_missing)
+      ? state.on_missing
+      : allowed[0]
   const OPTIONS: Record<OnMissing, { label: string; sub: string; recommended?: boolean }> = {
     deny:  { label: t("newPolicy.wizard.step4.deny.label"),
              sub:   t("newPolicy.wizard.step4.deny.sub"),  recommended: true },
@@ -1014,6 +1097,26 @@ function Step5Naming({
             className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
           />
         </div>
+        <div>
+          <label htmlFor="w-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.sentinelTag")}
+          </label>
+          <input
+            id="w-sentinel"
+            name="sentinel_tag"
+            maxLength={32}
+            pattern="[A-Z][A-Z0-9_]{0,31}"
+            defaultValue={state.sentinel_tag ?? SENTINEL_TAG_DEFAULT}
+            placeholder={SENTINEL_TAG_DEFAULT}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+          />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
+            <code className="font-mono">{(state.sentinel_tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
+          </p>
+        </div>
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -1024,7 +1127,7 @@ function Step6Review({
   t, state, action, wiredSteps,
 }: {
   state: WizardState; action: (fd: FormData) => Promise<void>
-  wiredSteps: { step: string; description: string }[]
+  wiredSteps: WiredStep[]
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const picked = state.verifiers ?? []
