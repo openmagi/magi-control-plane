@@ -759,6 +759,7 @@ function Step2Matcher({
               name="matcher"
               value={tool}
               formAction={action}
+              formNoValidate
               className="rounded-full border border-black/[0.08] bg-white px-3 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04] cursor-pointer transition-colors"
             >
               {tool}
