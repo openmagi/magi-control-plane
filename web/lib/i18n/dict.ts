@@ -92,6 +92,8 @@ const KO_RAW = {
   "compile.result.schemaIssuesLabel": "스키마 문제 (결정론)",
   "compile.handoff": "편집 후 저장",
   "compile.runAgain": "다시 컴파일",
+  "compile.activate": "이 정책 저장",
+  "compile.cantActivate": "스키마 이슈 또는 리뷰어 플래그가 있어 저장 불가 — NL 을 수정해서 다시 컴파일하세요.",
   "compile.payloadTooLarge": "컴파일 결과가 너무 큽니다. NL을 짧게 다시 시도해 주세요.",
   "compile.llmNotConfigured": "LLM 공급자가 구성되어 있지 않습니다. 환경 변수 MAGI_CP_LLM_COMPILER / MAGI_CP_LLM_REVIEWER를 설정하세요.",
 
@@ -108,6 +110,9 @@ const KO_RAW = {
   "newPolicy.composeNL.title": "자연어로 작성 (NL → IR)",
   "newPolicy.composeNL.hint": "LLM 이 IR 로 컴파일, critic 이 리뷰 — 결과는 아래 폼에 자동 채워짐",
   "newPolicy.composeNL.handoffNote": "아래 IR 필드에 자동 채워졌습니다. 검토 후 저장하세요.",
+  "newPolicy.composeNL.clear": "지우고 다시",
+  "newPolicy.advanced.title": "Advanced — IR 필드 직접 편집",
+  "newPolicy.advanced.hint": "스키마 알고 있는 사용자용. 위 NL 흐름이 우선",
 
   /* ── verify ──────────────────────────────────────────────────── */
   "verify.title": "검증 실행",
@@ -328,6 +333,8 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "compile.result.schemaIssuesLabel": "Schema issues (deterministic)",
   "compile.handoff": "Edit & save",
   "compile.runAgain": "Compile another",
+  "compile.activate": "Save this policy",
+  "compile.cantActivate": "Schema issues or reviewer flagged — edit the NL above and recompile.",
   "compile.payloadTooLarge": "Compiled result too large to display. Try a shorter NL.",
   "compile.llmNotConfigured": "LLM providers not configured. Set MAGI_CP_LLM_COMPILER / MAGI_CP_LLM_REVIEWER environment variables.",
 
@@ -343,6 +350,9 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.composeNL.title": "Compose via natural language (NL → IR)",
   "newPolicy.composeNL.hint": "LLM compiles to IR, a critic LLM reviews — result fills the form below.",
   "newPolicy.composeNL.handoffNote": "The IR fields below were filled from the compile result. Review and save.",
+  "newPolicy.composeNL.clear": "Clear and start over",
+  "newPolicy.advanced.title": "Advanced — edit raw IR fields",
+  "newPolicy.advanced.hint": "For users who know the schema. The NL flow above is the recommended path.",
 
   "verify.title": "Run a verifier",
   "verify.description": "Dispatches the chosen verifier. On {pass} an Ed25519 token is issued and appended to the audit ledger; on {deny} the reasons explain why. citation_verify uses a specialised path with NLI advisory — use the compile / policy forms for it.",

@@ -30,8 +30,6 @@ async function compileNL(formData: FormData): Promise<void> {
     redirect(`/policies/new?err=${codeForError(e)}&nl=${encodeURIComponent(nl)}`)
   }
   const payload = JSON.stringify({ nl, ...result })
-  // Result includes the full IR JSON + reviewer issues; can blow past the
-  // URL length budget. Use a short-lived cookie for the overflow case.
   if (payload.length > 1500) {
     const { cookies } = await import("next/headers")
     cookies().set({
@@ -48,16 +46,12 @@ async function compileNL(formData: FormData): Promise<void> {
   redirect(`/policies/new?r=${encodeURIComponent(payload)}`)
 }
 
-async function saveNewPolicy(formData: FormData): Promise<void> {
-  "use server"
-  let draft: PolicyDraft
-  try { draft = JSON.parse(String(formData.get("draft_json") ?? "{}")) }
-  catch { redirect("/policies/new?err=invalid_input"); return }
+/** Shared persist routine — takes a PolicyDraft + source and PUTs to cloud. */
+async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   const errs = validateDraft(draft)
   if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
   try { validatePolicyId(draft.id) }
   catch { redirect("/policies/new?err=invalid_id"); return }
-  const source = String(formData.get("source") ?? "org")
   let adminKey: string
   try {
     if (!process.env.MAGI_CP_ADMIN_API_KEY) {
@@ -87,11 +81,37 @@ async function saveNewPolicy(formData: FormData): Promise<void> {
   } catch (e) {
     redirect(`/policies/new?err=${codeForError(e)}`); return
   }
+  // Best-effort: clear the compile cookie now that the policy is persisted.
+  try {
+    const { cookies } = await import("next/headers")
+    cookies().delete("magi-cp-compile-result")
+  } catch { /* no-op */ }
   revalidatePath("/policies")
   redirect(`/policies/${encodeURI(draft.id)}?msg=saved`)
 }
 
-// ── result decoders ────────────────────────────────────────────────
+/** Direct save from the compile result card — no IR field editing. */
+async function saveCompiled(formData: FormData): Promise<void> {
+  "use server"
+  let draft: PolicyDraft
+  try { draft = JSON.parse(String(formData.get("ir_json") ?? "{}")) }
+  catch { redirect("/policies/new?err=invalid_input"); return }
+  const source = String(formData.get("source") ?? "org")
+  await persistDraft(draft, source)
+}
+
+/** Save from the Advanced (manual IR) form — same draft_json shape as
+ * PolicyBuilder's hidden field. */
+async function saveAdvanced(formData: FormData): Promise<void> {
+  "use server"
+  let draft: PolicyDraft
+  try { draft = JSON.parse(String(formData.get("draft_json") ?? "{}")) }
+  catch { redirect("/policies/new?err=invalid_input"); return }
+  const source = String(formData.get("source") ?? "org")
+  await persistDraft(draft, source)
+}
+
+// ── decoders ────────────────────────────────────────────────────────
 
 function decodeResult(r: string | undefined): (CompileResult & { nl: string }) | null {
   if (!r) return null
@@ -126,7 +146,7 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
 
 export default async function NewPolicyPage({
   searchParams,
-}: { searchParams: { err?: string; draft?: string; r?: string; msg?: string; nl?: string } }) {
+}: { searchParams: { err?: string; draft?: string; r?: string; msg?: string; nl?: string; advanced?: string } }) {
   const { t } = await getT()
   const flash = resolveFlash(undefined, searchParams.err)
 
@@ -140,15 +160,24 @@ export default async function NewPolicyPage({
     _parseDraftQuery(searchParams.draft) ??
     null
 
-  // Wired steps for the requires datalist (best-effort)
+  // Open the advanced disclosure when user is actively in it OR they came
+  // from /policies/compile?draft=... (no compileResult cookie, but a draft
+  // is supplied → legacy hand-off URL).
+  const advancedOpen =
+    searchParams.advanced === "1" || (initialDraft != null && !compileResult)
+
+  // Wired steps for the requires datalist (best-effort, only matters when
+  // the advanced form is open).
   let wiredSteps: string[] = []
-  try {
-    const presets = await cloud.listPresets()
-    wiredSteps = Array.from(new Set(
-      presets.filter(p => p.enforcement === "enforcing" && p.step)
-             .map(p => p.step as string),
-    )).sort()
-  } catch { /* best-effort; empty datalist is fine */ }
+  if (advancedOpen) {
+    try {
+      const presets = await cloud.listPresets()
+      wiredSteps = Array.from(new Set(
+        presets.filter(p => p.enforcement === "enforcing" && p.step)
+               .map(p => p.step as string),
+      )).sort()
+    } catch { /* best-effort; empty datalist is fine */ }
+  }
 
   return (
     <>
@@ -156,31 +185,19 @@ export default async function NewPolicyPage({
         <Link href="/policies" className="text-sm">{t("newPolicy.back")}</Link>
       </p>
       <PageHeader
-        title={initialDraft ? t("newPolicy.titlePrefilled") : t("newPolicy.title")}
+        title={t("newPolicy.title")}
         description={t("newPolicy.description")}
       />
       {flash?.kind === "error" && (
         <ErrorState title={flash.text} severity="error" />
       )}
 
-      {/* ── Compose via natural language ─────────────────────────── */}
-      <details
-        open={!initialDraft}
-        className="group rounded-2xl border border-black/[0.06] bg-white overflow-hidden mb-4"
-      >
-        <summary className="flex items-center gap-3 px-5 py-4 cursor-pointer list-none select-none hover:bg-gray-50/60 transition-colors duration-150">
-          <ChevronDownIcon
-            aria-hidden="true"
-            className="w-4 h-4 text-[var(--color-text-tertiary)] transition-transform duration-200 group-open:rotate-0 -rotate-90"
-          />
-          <h2 className="text-md font-semibold text-[var(--color-text-primary)] m-0">
-            {t("newPolicy.composeNL.title")}
-          </h2>
-          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">
-            {t("newPolicy.composeNL.hint")}
-          </span>
-        </summary>
-        <form action={compileNL} className="px-5 pb-5 pt-1 border-t border-black/[0.04]">
+      {/* ── Primary: NL → IR ────────────────────────────────────── */}
+      <Card className="mb-4">
+        <h2 className="text-md font-semibold m-0 mb-3">
+          {t("newPolicy.composeNL.title")}
+        </h2>
+        <form action={compileNL}>
           <Textarea
             id="nl"
             name="nl"
@@ -193,69 +210,98 @@ export default async function NewPolicyPage({
             autoComplete="off"
             monospace
           />
-          <div className="mt-3">
+          <div className="mt-3 flex items-center gap-2">
             <SubmitButton
               label={t("compile.submit")}
               pendingLabel={t("compile.submit.pending")}
               progressHint={t("compile.progressHint")}
             />
+            {compileResult && (
+              <Link href="/policies/new" className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+                {t("newPolicy.composeNL.clear")}
+              </Link>
+            )}
           </div>
         </form>
+      </Card>
+
+      {/* ── Compile result + direct Save ───────────────────────── */}
+      {compileResult && <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />}
+
+      {/* ── Advanced: raw IR fields ────────────────────────────── */}
+      <details
+        open={advancedOpen}
+        className="group rounded-2xl border border-black/[0.06] bg-white overflow-hidden mt-2"
+      >
+        <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer list-none select-none hover:bg-gray-50/60 transition-colors duration-150">
+          <ChevronDownIcon
+            aria-hidden="true"
+            className="w-4 h-4 text-[var(--color-text-tertiary)] transition-transform duration-200 group-open:rotate-0 -rotate-90"
+          />
+          <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0">
+            {t("newPolicy.advanced.title")}
+          </h2>
+          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">
+            {t("newPolicy.advanced.hint")}
+          </span>
+        </summary>
+        <div className="p-5 border-t border-black/[0.04]">
+          <PolicyBuilder
+            submitAction={saveAdvanced}
+            initial={initialDraft}
+            wiredSteps={wiredSteps}
+            labels={{
+              irFields: "IR fields",
+              compiledPreview: "Compiled preview",
+              compiledPreviewHint:
+                "Live mirror of what the cloud compiler will emit. The cloud is authoritative.",
+              id: "id",
+              description: "description",
+              triggerEvent: "trigger.event",
+              triggerMatcher: "trigger.matcher",
+              onMissing: "on_missing (decision)",
+              sentinelRe: "sentinel_re",
+              sentinelReHint:
+                "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
+              requires: "requires (evidence)",
+              addRequirement: "add requirement",
+              removeRequirement: t("policies.disable"),
+              source: t("policies.source"),
+              save: t("newPolicy.savePolicy"),
+              saving: t("newPolicy.saving"),
+              fixIssueOne: "Fix 1 validation issue",
+              fixIssueMany: "Fix {n} validation issues",
+              unsavedWarning: t("newPolicy.unsavedWarning"),
+              placeholderId: "legal-filing/v1",
+              placeholderMatcher: "Bash | mcp__court__file",
+            }}
+          />
+        </div>
       </details>
-
-      {compileResult && <CompileResultCards t={t} data={compileResult} />}
-
-      {/* ── Manual IR fields + Save ──────────────────────────────── */}
-      <PolicyBuilder
-        submitAction={saveNewPolicy}
-        initial={initialDraft}
-        wiredSteps={wiredSteps}
-        labels={{
-          irFields: "IR fields",
-          compiledPreview: "Compiled preview",
-          compiledPreviewHint:
-            "Live mirror of what the cloud compiler will emit. The cloud is authoritative.",
-          id: "id",
-          description: "description",
-          triggerEvent: "trigger.event",
-          triggerMatcher: "trigger.matcher",
-          onMissing: "on_missing (decision)",
-          sentinelRe: "sentinel_re",
-          sentinelReHint:
-            "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
-          requires: "requires (evidence)",
-          addRequirement: "add requirement",
-          removeRequirement: t("policies.disable"),
-          source: t("policies.source"),
-          save: t("newPolicy.savePolicy"),
-          saving: t("newPolicy.saving"),
-          fixIssueOne: "Fix 1 validation issue",
-          fixIssueMany: "Fix {n} validation issues",
-          unsavedWarning: t("newPolicy.unsavedWarning"),
-          placeholderId: "legal-filing/v1",
-          placeholderMatcher: "Bash | mcp__court__file",
-        }}
-      />
     </>
   )
 }
 
-// ── compile result cards ──────────────────────────────────────────
+// ── compile result + direct save ────────────────────────────────
 
-function CompileResultCards({
-  t, data,
+function CompileResultBlock({
+  t, data, saveAction,
 }: {
   data: CompileResult & { nl: string }
+  saveAction: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const irJson = JSON.stringify(data.ir, null, 2)
   const hasSchemaIssues = data.schema_issues.length > 0
+  const canSave = data.review.ok && !hasSchemaIssues
+  const draft = data.ir as unknown as PolicyDraft
+
   return (
-    <section aria-labelledby="result-heading" className="space-y-3 mb-5">
-      <h2 id="result-heading" className="text-md font-semibold mt-2">
-        {t("compile.result.title")}
-      </h2>
-      <div className="flex items-center gap-2 flex-wrap">
+    <Card className="mb-4 border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <h2 className="text-md font-semibold m-0">
+          {t("compile.result.title")}
+        </h2>
         <Badge variant={data.review.ok ? "ok" : "review"}>
           {data.review.ok
             ? t("compile.result.reviewerOk")
@@ -268,38 +314,66 @@ function CompileResultCards({
         </Badge>
       </div>
 
-      <Card>
-        <div className="text-xs text-[var(--color-text-tertiary)] mb-2">
+      {/* Human-readable summary */}
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-sm mb-3">
+        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">id</dt>
+        <dd className="font-mono text-[13px]" translate="no">{draft.id}</dd>
+        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">trigger</dt>
+        <dd><code className="font-mono">{draft.trigger.event}</code> · <code className="font-mono">{draft.trigger.matcher}</code></dd>
+        {draft.requires && draft.requires.length > 0 && (
+          <>
+            <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">requires</dt>
+            <dd className="text-[var(--color-text-secondary)] text-xs">
+              {draft.requires.map(r => `${r.step}=${r.verdict}`).join(", ")}
+            </dd>
+          </>
+        )}
+        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">on_missing</dt>
+        <dd className="text-[var(--color-text-secondary)]">{draft.on_missing}</dd>
+      </dl>
+
+      <details className="mb-3 rounded-lg bg-gray-50/70 p-2">
+        <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
           {t("compile.result.irLabel")}
-        </div>
-        <CodeBlock maxHeight="44vh">{irJson}</CodeBlock>
-      </Card>
+        </summary>
+        <CodeBlock maxHeight="44vh" className="mt-2">{irJson}</CodeBlock>
+      </details>
 
       {data.review.issues.length > 0 && (
-        <Card>
-          <div className="text-xs text-[var(--color-text-tertiary)] mb-2">
+        <div className="mb-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
             {t("compile.result.reviewerIssuesLabel")}
-          </div>
-          <ul className="m-0 pl-5 text-sm list-disc text-[var(--color-text-secondary)] space-y-1">
+          </p>
+          <ul className="m-0 pl-5 text-xs list-disc text-[var(--color-text-secondary)] space-y-1 leading-relaxed">
             {data.review.issues.map((s, i) => <li key={i}>{s}</li>)}
           </ul>
-        </Card>
+        </div>
       )}
 
       {hasSchemaIssues && (
-        <Card tone="alert" role="alert">
-          <div className="text-xs text-[var(--color-deny-fg)] mb-2 font-medium">
+        <div className="mb-3 rounded-lg border border-[var(--color-deny-fg)]/20 bg-[var(--color-deny-bg)]/60 p-3" role="alert">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-deny-fg)] mb-1.5">
             {t("compile.result.schemaIssuesLabel")}
-          </div>
-          <ul className="m-0 pl-5 text-sm list-disc text-[var(--color-text-secondary)] space-y-1">
+          </p>
+          <ul className="m-0 pl-5 text-xs list-disc text-[var(--color-text-secondary)] space-y-1 leading-relaxed">
             {data.schema_issues.map((s, i) => <li key={i}>{s}</li>)}
           </ul>
-        </Card>
+        </div>
       )}
 
-      <p className="text-xs text-[var(--color-text-tertiary)] italic">
-        {t("newPolicy.composeNL.handoffNote")}
-      </p>
-    </section>
+      <form action={saveAction} className="mt-2 flex items-center gap-2 flex-wrap">
+        <input type="hidden" name="ir_json" value={irJson} />
+        <input type="hidden" name="source" value="org" />
+        <SubmitButton
+          label={t("compile.activate")}
+          pendingLabel={t("newPolicy.saving")}
+        />
+        {!canSave && (
+          <span className="text-xs text-[var(--color-text-tertiary)] leading-tight">
+            {t("compile.cantActivate")}
+          </span>
+        )}
+      </form>
+    </Card>
   )
 }
