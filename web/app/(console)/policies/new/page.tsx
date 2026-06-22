@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
+import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -146,16 +147,22 @@ export default async function NewPolicyPage({
   const { t } = await getT()
   const flash = resolveFlash(undefined, searchParams.err)
 
-  // Determine mode. Legacy /policies/compile?draft=... hand-off opens advanced.
-  const mode: Mode =
-    searchParams.mode === "advanced" ||
-    (searchParams.mode === undefined && searchParams.draft != null)
+  // No mode → picker landing.
+  // Legacy ?draft=... (from /policies/compile redirect) → advanced.
+  const rawMode = searchParams.mode
+  const mode: Mode | null =
+    rawMode === "advanced" || (rawMode === undefined && searchParams.draft != null)
       ? "advanced"
-      : "nl"
+      : rawMode === "nl"
+        ? "nl"
+        : null
 
+  // Decode possible compile result (only meaningful for nl mode).
   const fromQuery = decodeResult(searchParams.r)
   const compileResult =
-    fromQuery ?? (searchParams.msg === "large" ? await readCookieResult() : null)
+    mode === "nl"
+      ? fromQuery ?? (searchParams.msg === "large" ? await readCookieResult() : null)
+      : null
   const nl = compileResult?.nl ?? searchParams.nl ?? ""
 
   const initialDraft =
@@ -163,8 +170,6 @@ export default async function NewPolicyPage({
     _parseDraftQuery(searchParams.draft) ??
     null
 
-  // Wired steps for the requires datalist — only fetched when advanced mode
-  // is active (the NL mode doesn't show that input).
   let wiredSteps: string[] = []
   if (mode === "advanced") {
     try {
@@ -178,25 +183,23 @@ export default async function NewPolicyPage({
 
   return (
     <>
-      <p className="mb-3">
-        <Link href="/policies" className="text-sm">{t("newPolicy.back")}</Link>
-      </p>
-      <PageHeader
-        title={t("newPolicy.title")}
-        description={t("newPolicy.description")}
-      />
       {flash?.kind === "error" && (
         <ErrorState title={flash.text} severity="error" />
       )}
 
-      <ModeTabs t={t} mode={mode} />
+      {mode === null && <PickerLanding t={t} />}
 
-      {mode === "nl" ? (
-        <>
+      {mode === "nl" && (
+        <AuthoringShell
+          t={t}
+          modeTitle={t("newPolicy.mode.nlAuthoring")}
+          info={{
+            tone: "info",
+            title: t("newPolicy.nl.info.title"),
+            body: t("newPolicy.nl.info.body"),
+          }}
+        >
           <Card>
-            <h2 className="text-md font-semibold m-0 mb-3">
-              {t("newPolicy.composeNL.title")}
-            </h2>
             <form action={compileNL}>
               <Textarea
                 id="nl"
@@ -228,106 +231,180 @@ export default async function NewPolicyPage({
           {compileResult && (
             <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />
           )}
-        </>
-      ) : (
-        <Card>
-          <h2 className="text-md font-semibold m-0 mb-3">
-            {t("newPolicy.advanced.title")}
-          </h2>
-          <p className="text-xs text-[var(--color-text-tertiary)] mb-4">
-            {t("newPolicy.advanced.hint")}
-          </p>
-          <PolicyBuilder
-            submitAction={saveAdvanced}
-            initial={initialDraft}
-            wiredSteps={wiredSteps}
-            labels={{
-              irFields: "IR fields",
-              compiledPreview: "Compiled preview",
-              compiledPreviewHint:
-                "Live mirror of what the cloud compiler will emit. The cloud is authoritative.",
-              id: "id",
-              description: "description",
-              triggerEvent: "trigger.event",
-              triggerMatcher: "trigger.matcher",
-              onMissing: "on_missing (decision)",
-              sentinelRe: "sentinel_re",
-              sentinelReHint:
-                "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
-              requires: "requires (evidence)",
-              addRequirement: "add requirement",
-              removeRequirement: t("policies.disable"),
-              source: t("policies.source"),
-              save: t("newPolicy.savePolicy"),
-              saving: t("newPolicy.saving"),
-              fixIssueOne: "Fix 1 validation issue",
-              fixIssueMany: "Fix {n} validation issues",
-              unsavedWarning: t("newPolicy.unsavedWarning"),
-              placeholderId: "legal-filing/v1",
-              placeholderMatcher: "Bash | mcp__court__file",
-            }}
-          />
-        </Card>
+        </AuthoringShell>
+      )}
+
+      {mode === "advanced" && (
+        <AuthoringShell
+          t={t}
+          modeTitle={t("newPolicy.mode.advancedAuthoring")}
+          info={{
+            tone: "warn",
+            title: t("newPolicy.advanced.info.title"),
+            body: t("newPolicy.advanced.info.body"),
+          }}
+        >
+          <Card>
+            <PolicyBuilder
+              submitAction={saveAdvanced}
+              initial={initialDraft}
+              wiredSteps={wiredSteps}
+              labels={{
+                irFields: "IR fields",
+                compiledPreview: "Compiled preview",
+                compiledPreviewHint:
+                  "Live mirror of what the cloud compiler will emit. The cloud is authoritative.",
+                id: "id",
+                description: "description",
+                triggerEvent: "trigger.event",
+                triggerMatcher: "trigger.matcher",
+                onMissing: "on_missing (decision)",
+                sentinelRe: "sentinel_re",
+                sentinelReHint:
+                  "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
+                requires: "requires (evidence)",
+                addRequirement: "add requirement",
+                removeRequirement: t("policies.disable"),
+                source: t("policies.source"),
+                save: t("newPolicy.savePolicy"),
+                saving: t("newPolicy.saving"),
+                fixIssueOne: "Fix 1 validation issue",
+                fixIssueMany: "Fix {n} validation issues",
+                unsavedWarning: t("newPolicy.unsavedWarning"),
+                placeholderId: "legal-filing/v1",
+                placeholderMatcher: "Bash | mcp__court__file",
+              }}
+            />
+          </Card>
+        </AuthoringShell>
       )}
     </>
   )
 }
 
-// ── tabs ────────────────────────────────────────────────────────────
+// ── picker landing (no mode) ────────────────────────────────────────
 
-function ModeTabs({
-  t, mode,
-}: {
-  mode: Mode
-  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
-}) {
+function PickerLanding({
+  t,
+}: { t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string }) {
   return (
-    <div
-      role="tablist"
-      aria-label={t("newPolicy.modeLabel")}
-      className="inline-flex items-center gap-1 rounded-full border border-black/[0.06] bg-white p-1 mb-4"
-    >
-      <ModeTab
-        href="/policies/new?mode=nl"
-        active={mode === "nl"}
-        label={t("newPolicy.mode.nl")}
-        sub={t("newPolicy.mode.nlSub")}
-      />
-      <ModeTab
-        href="/policies/new?mode=advanced"
-        active={mode === "advanced"}
-        label={t("newPolicy.mode.advanced")}
-        sub={t("newPolicy.mode.advancedSub")}
-      />
-    </div>
+    <section className="rounded-2xl border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/[0.02] p-5 shadow-sm">
+      <header className="mb-4 flex items-start justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-[var(--color-text-primary)] m-0">
+            {t("newPolicy.picker.title")}
+          </h1>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+            {t("newPolicy.picker.subtitle")}
+          </p>
+        </div>
+        <Link
+          href="/policies"
+          aria-label={t("newPolicy.picker.close")}
+          className="rounded-lg p-1.5 text-[var(--color-text-tertiary)] hover:bg-black/[0.04] hover:text-[var(--color-text-primary)] transition-colors"
+        >
+          <XMarkIcon className="h-4 w-4" />
+        </Link>
+      </header>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <ChoiceCard
+          href="/policies/new?mode=nl"
+          icon={<SparklesIcon className="h-5 w-5" />}
+          label={t("newPolicy.picker.nl.label")}
+          description={t("newPolicy.picker.nl.description")}
+          backing={t("newPolicy.picker.nl.backing")}
+        />
+        <ChoiceCard
+          href="/policies/new?mode=advanced"
+          icon={<CodeBracketIcon className="h-5 w-5" />}
+          label={t("newPolicy.picker.advanced.label")}
+          description={t("newPolicy.picker.advanced.description")}
+          backing={t("newPolicy.picker.advanced.backing")}
+        />
+      </div>
+    </section>
   )
 }
 
-function ModeTab({
-  href, active, label, sub,
-}: { href: string; active: boolean; label: string; sub: string }) {
+function ChoiceCard({
+  href, icon, label, description, backing,
+}: {
+  href: string
+  icon: React.ReactNode
+  label: string
+  description: string
+  backing: string
+}) {
   return (
     <Link
-      role="tab"
-      aria-selected={active}
       href={href}
-      className={
-        active
-          ? "inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold bg-[var(--color-accent)] text-white shadow-sm"
-          : "inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-gray-50"
-      }
+      className="flex flex-col items-start gap-2 rounded-xl border border-black/[0.08] bg-white p-4 text-left transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.05] hover:no-underline"
     >
-      {label}
-      <span
-        className={
-          active
-            ? "text-[10px] font-medium uppercase tracking-wider opacity-80"
-            : "text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]"
-        }
-      >
-        {sub}
+      <span className="rounded-lg bg-[var(--color-accent)]/10 p-2 text-[var(--color-accent)]">
+        {icon}
+      </span>
+      <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+        {label}
+      </span>
+      <span className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+        {description}
+      </span>
+      <span className="mt-1 rounded bg-black/[0.04] px-1.5 py-0.5 text-[10px] font-mono text-[var(--color-text-tertiary)]">
+        → {backing}
       </span>
     </Link>
+  )
+}
+
+// ── authoring shell (header + info card + slot for the form) ────────
+
+function AuthoringShell({
+  t, modeTitle, info, children,
+}: {
+  modeTitle: string
+  info: { tone: "info" | "warn"; title: string; body: string }
+  children: React.ReactNode
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const infoCls = info.tone === "warn"
+    ? "border-amber-500/25 bg-amber-500/[0.06] text-amber-900"
+    : "border-blue-500/25 bg-blue-500/[0.06] text-blue-900"
+  return (
+    <div className="space-y-4">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
+            {t("newPolicy.authoringPrefix")}
+          </p>
+          <h1 className="text-lg font-bold text-[var(--color-text-primary)] m-0 mt-0.5">
+            {modeTitle}
+          </h1>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Link
+            href="/policies/new"
+            className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          >
+            <ArrowLeftIcon className="h-3.5 w-3.5" />
+            {t("newPolicy.pickDifferent")}
+          </Link>
+          <Link
+            href="/policies"
+            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]"
+          >
+            {t("newPolicy.close")}
+          </Link>
+        </div>
+      </div>
+
+      <div className={`rounded-xl border px-4 py-3 ${infoCls}`}>
+        <p className="text-sm font-semibold mb-1">{info.title}</p>
+        <p className="text-xs leading-relaxed">{info.body}</p>
+      </div>
+
+      {children}
+    </div>
   )
 }
 
@@ -346,7 +423,7 @@ function CompileResultBlock({
   const draft = data.ir as unknown as PolicyDraft
 
   return (
-    <Card className="mt-3 border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
+    <Card className="border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h2 className="text-md font-semibold m-0">
           {t("compile.result.title")}
