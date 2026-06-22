@@ -67,10 +67,17 @@ const LEGAL_ON_MISSING_BY_EVENT: Record<EventKind, readonly OnMissing[]> = {
 interface WizardState {
   event?: EventKind
   matcher?: string
-  verifier?: string
+  /** N verifiers (backend's `requires: list[EvidenceReq]` is len>=1).
+   * Comma-joined in the URL so the hidden carry-over stays one field. */
+  verifiers?: string[]
   on_missing?: OnMissing
   id?: string
   description?: string
+}
+
+function parseVerifierList(raw: string | undefined): string[] {
+  if (!raw) return []
+  return raw.split(",").map((s) => s.trim()).filter(Boolean)
 }
 
 // ── server actions ──────────────────────────────────────────────────
@@ -172,9 +179,30 @@ async function advanceWizard(formData: FormData): Promise<void> {
   params.set("mode", "guided")
   const stepIn = Number(formData.get("_step") ?? "1")
   let nextStep = stepIn + 1
+  // Multi-verifier merge: Step 3 emits N checkboxes named "verifier";
+  // earlier steps carry the comma-joined "verifiers" hidden field.
+  // Merge both into one ordered, deduped list. First-seen order
+  // preserved so editing earlier picks does not churn the URL.
+  const verifierChecks = formData
+    .getAll("verifier")
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean)
+  const verifiersCarry = (formData.get("verifiers")?.toString() ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean)
+  // On Step 3 the checkbox set is the new authoritative pick. Earlier
+  // visits' carry-over only applies when Step 3 itself is not the
+  // submitter (i.e. user is moving forward from Step 1 / 2 / 4 / 5).
+  const mergedVerifiers: string[] = []
+  const sourceList = stepIn === 3 ? verifierChecks : [...verifierChecks, ...verifiersCarry]
+  for (const v of sourceList) {
+    if (!mergedVerifiers.includes(v)) mergedVerifiers.push(v)
+  }
+  if (mergedVerifiers.length > 0) params.set("verifiers", mergedVerifiers.join(","))
   for (const [k, v] of formData.entries()) {
     if (typeof v !== "string") continue
     if (k.startsWith("$ACTION") || k === "_step") continue
+    if (k === "verifier" || k === "verifiers") continue
     if (!v.trim()) continue
     params.set(k, v.trim())
   }
@@ -195,25 +223,29 @@ async function saveWizard(formData: FormData): Promise<void> {
   "use server"
   const event = String(formData.get("event") ?? "PreToolUse") as EventKind
   const matcher = String(formData.get("matcher") ?? "").trim()
-  const verifier = String(formData.get("verifier") ?? "").trim()
+  const verifiers = (formData.get("verifiers")?.toString() ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean)
   const on_missing = (String(formData.get("on_missing") ?? "deny")) as OnMissing
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
   const sentinelTag = "FILE_COURT"
 
-  if (!id || !matcher || !verifier) {
+  if (!id || !matcher || verifiers.length === 0) {
     redirect("/policies/new?mode=guided&step=1&err=invalid_input"); return
   }
   const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
 
+  const summary = verifiers.length === 1
+    ? `Require ${verifiers[0]}=pass before ${event}|${matcher}`
+    : `Require ${verifiers.length} verifiers (all pass) before ${event}|${matcher}`
   const draft: PolicyDraft = {
     id,
     version: "0.1",
-    description: description || `Require ${verifier}=pass before ${event}|${matcher}`,
+    description: description || summary,
     trigger: { host: "claude-code", event, matcher },
     sentinel_re,
-    requires: [{ step: verifier, verdict: "pass" }],
+    requires: verifiers.map((step) => ({ step, verdict: "pass" })),
     on_missing,
     on_signature_invalid: "deny",
     gate_binary: "/usr/local/bin/magi-gate.sh",
@@ -542,7 +574,9 @@ function buildWizardHref(state: WizardState, step: number): string {
   params.set("step", String(step))
   if (state.event) params.set("event", state.event)
   if (state.matcher) params.set("matcher", state.matcher)
-  if (state.verifier) params.set("verifier", state.verifier)
+  if (state.verifiers && state.verifiers.length > 0) {
+    params.set("verifiers", state.verifiers.join(","))
+  }
   if (state.on_missing) params.set("on_missing", state.on_missing)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
@@ -554,7 +588,9 @@ function HiddenState({ state }: { state: WizardState }) {
     <>
       {state.event && <input type="hidden" name="event" value={state.event} />}
       {state.matcher && <input type="hidden" name="matcher" value={state.matcher} />}
-      {state.verifier && <input type="hidden" name="verifier" value={state.verifier} />}
+      {state.verifiers && state.verifiers.length > 0 && (
+        <input type="hidden" name="verifiers" value={state.verifiers.join(",")} />
+      )}
       {state.on_missing && <input type="hidden" name="on_missing" value={state.on_missing} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
@@ -616,7 +652,12 @@ function GuidedWizard({
   const state: WizardState = {
     event: (searchParams.event as EventKind) || undefined,
     matcher: searchParams.matcher || undefined,
-    verifier: searchParams.verifier || undefined,
+    verifiers: ((): string[] | undefined => {
+      const list = parseVerifierList(
+        searchParams.verifiers ?? searchParams.verifier,
+      )
+      return list.length > 0 ? list : undefined
+    })(),
     on_missing: (searchParams.on_missing as OnMissing) || undefined,
     id: searchParams.id || undefined,
     description: searchParams.description || undefined,
@@ -690,6 +731,34 @@ function RadioCard({
           {recommended && (
             <Badge variant="ok">recommended</Badge>
           )}
+        </span>
+        <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{sub}</span>
+      </span>
+    </label>
+  )
+}
+
+function CheckboxCard({
+  name, value, defaultChecked, label, sub,
+}: {
+  name: string; value: string; defaultChecked?: boolean
+  label: string; sub: string
+}) {
+  return (
+    <label className="block cursor-pointer">
+      <input
+        type="checkbox"
+        name={name}
+        value={value}
+        defaultChecked={defaultChecked}
+        className="peer sr-only"
+      />
+      <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+        <span className="flex items-center gap-2 mb-1">
+          <span className="text-sm font-semibold text-[var(--color-text-primary)] flex-1">{label}</span>
+          <span aria-hidden="true" className="hidden peer-checked:inline-flex h-4 w-4 items-center justify-center rounded-full bg-[var(--color-accent)] text-white">
+            <CheckIcon className="h-3 w-3" strokeWidth={3} />
+          </span>
         </span>
         <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{sub}</span>
       </span>
@@ -802,6 +871,17 @@ function Step3Verifier({
   action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  // First visit (no prior picks) → preselect the first wired verifier
+  // so the user can hit Next immediately. Returning visits keep their
+  // multi-pick. The backend rejects an empty `requires` list so we
+  // need at least one box ticked; client-side enforcement happens at
+  // the form's `data-min-checked` attribute (defensive — server-side
+  // saveWizard also redirects to err=invalid_input).
+  const picked: Set<string> = new Set(
+    state.verifiers && state.verifiers.length > 0
+      ? state.verifiers
+      : wiredSteps.length > 0 ? [wiredSteps[0].step] : [],
+  )
   return (
     <StepShell
       t={t}
@@ -813,12 +893,15 @@ function Step3Verifier({
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{ event: state.event, matcher: state.matcher }} />
-        {wiredSteps.map(v => (
-          <RadioCard
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          {t("newPolicy.wizard.step3.multiHint")}
+        </p>
+        {wiredSteps.map((v) => (
+          <CheckboxCard
             key={v.step}
             name="verifier"
             value={v.step}
-            defaultChecked={(state.verifier ?? wiredSteps[0]?.step) === v.step}
+            defaultChecked={picked.has(v.step)}
             label={v.step}
             sub={v.description}
           />
@@ -861,7 +944,7 @@ function Step4OnMissing({
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="4" />
-        <HiddenState state={{ event: state.event, matcher: state.matcher, verifier: state.verifier }} />
+        <HiddenState state={{ event: state.event, matcher: state.matcher, verifiers: state.verifiers }} />
         {allowed.map((opt) => (
           <RadioCard
             key={opt}
@@ -897,7 +980,7 @@ function Step5Naming({
         <input type="hidden" name="_step" value="5" />
         <HiddenState state={{
           event: state.event, matcher: state.matcher,
-          verifier: state.verifier, on_missing: state.on_missing,
+          verifiers: state.verifiers, on_missing: state.on_missing,
         }} />
         <div>
           <label htmlFor="w-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
@@ -944,7 +1027,12 @@ function Step6Review({
   wiredSteps: { step: string; description: string }[]
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
-  const verifierDesc = wiredSteps.find(v => v.step === state.verifier)?.description ?? ""
+  const picked = state.verifiers ?? []
+  const verifierSummary = picked.length === 1
+    ? picked[0]
+    : picked.length === 0
+      ? "(none)"
+      : `${picked.join(" + ")} (all=pass)`
   return (
     <StepShell
       t={t}
@@ -959,7 +1047,7 @@ function Step6Review({
           {t("newPolicy.wizard.step6.summary", {
             event: state.event ?? "PreToolUse",
             matcher: state.matcher ?? "",
-            verifier: state.verifier ?? "",
+            verifier: verifierSummary,
             on_missing: state.on_missing ?? "deny",
           })}
         </p>
@@ -969,7 +1057,19 @@ function Step6Review({
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">trigger</dt>
           <dd><code className="font-mono">{state.event} · {state.matcher}</code></dd>
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">requires</dt>
-          <dd><code className="font-mono">{state.verifier}=pass</code> <span className="text-[var(--color-text-tertiary)]">— {verifierDesc}</span></dd>
+          <dd>
+            <ul className="space-y-1">
+              {picked.map((v) => {
+                const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
+                return (
+                  <li key={v}>
+                    <code className="font-mono">{v}=pass</code>{" "}
+                    <span className="text-[var(--color-text-tertiary)]">— {desc}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          </dd>
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">on_missing</dt>
           <dd className="text-[var(--color-text-secondary)]">{state.on_missing}</dd>
         </dl>
