@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
-import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -15,7 +15,7 @@ import {
 
 export const dynamic = "force-dynamic"
 
-type Mode = "nl" | "advanced"
+type Mode = "nl" | "guided" | "advanced"
 
 // ── server actions ──────────────────────────────────────────────────
 
@@ -108,6 +108,44 @@ async function saveAdvanced(formData: FormData): Promise<void> {
   await persistDraft(draft, source)
 }
 
+/** Guided form for the most common policy intent:
+ *  "Before tool X runs, require evidence step Y = pass; if missing, deny".
+ *  Fields are constrained dropdowns / simple inputs. The form maps them
+ *  into a complete PolicyDraft and reuses persistDraft.
+ */
+async function saveGuidedBlockTool(formData: FormData): Promise<void> {
+  "use server"
+  const id = String(formData.get("id") ?? "").trim()
+  const description = String(formData.get("description") ?? "").trim()
+  const event = String(formData.get("event") ?? "PreToolUse")
+  const matcher = String(formData.get("matcher") ?? "").trim()
+  const step = String(formData.get("step") ?? "").trim()
+  const onMissing = String(formData.get("on_missing") ?? "deny")
+  const sentinelTag = String(formData.get("sentinel_tag") ?? "FILE_COURT").trim()
+  const source = String(formData.get("source") ?? "org")
+
+  if (!id || !matcher || !step) {
+    redirect("/policies/new?mode=guided&err=invalid_input"); return
+  }
+  if (!/^[A-Z][A-Z0-9_]*$/.test(sentinelTag)) {
+    redirect("/policies/new?mode=guided&err=invalid_input"); return
+  }
+  const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
+
+  const draft: PolicyDraft = {
+    id,
+    version: "0.1",
+    description: description || `Require ${step}=pass before ${event}|${matcher}`,
+    trigger: { host: "claude-code", event: event as "PreToolUse" | "PostToolUse" | "Stop", matcher },
+    sentinel_re,
+    requires: [{ step, verdict: "pass" }],
+    on_missing: onMissing as "deny" | "ask" | "log" | "allow",
+    on_signature_invalid: "deny",
+    gate_binary: "/usr/local/bin/magi-gate.sh",
+  }
+  await persistDraft(draft, source)
+}
+
 // ── decoders ────────────────────────────────────────────────────────
 
 function decodeResult(r: string | undefined): (CompileResult & { nl: string }) | null {
@@ -155,7 +193,9 @@ export default async function NewPolicyPage({
       ? "advanced"
       : rawMode === "nl"
         ? "nl"
-        : null
+        : rawMode === "guided"
+          ? "guided"
+          : null
 
   // Decode possible compile result (only meaningful for nl mode).
   const fromQuery = decodeResult(searchParams.r)
@@ -171,7 +211,7 @@ export default async function NewPolicyPage({
     null
 
   let wiredSteps: string[] = []
-  if (mode === "advanced") {
+  if (mode === "advanced" || mode === "guided") {
     try {
       const presets = await cloud.listPresets()
       wiredSteps = Array.from(new Set(
@@ -231,6 +271,20 @@ export default async function NewPolicyPage({
           {compileResult && (
             <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />
           )}
+        </AuthoringShell>
+      )}
+
+      {mode === "guided" && (
+        <AuthoringShell
+          t={t}
+          modeTitle={t("newPolicy.mode.guidedAuthoring")}
+          info={{
+            tone: "info",
+            title: t("newPolicy.guided.info.title"),
+            body: t("newPolicy.guided.info.body"),
+          }}
+        >
+          <GuidedBlockToolForm t={t} wiredSteps={wiredSteps} saveAction={saveGuidedBlockTool} />
         </AuthoringShell>
       )}
 
@@ -307,13 +361,20 @@ function PickerLanding({
         </Link>
       </header>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <ChoiceCard
           href="/policies/new?mode=nl"
           icon={<SparklesIcon className="h-5 w-5" />}
           label={t("newPolicy.picker.nl.label")}
           description={t("newPolicy.picker.nl.description")}
           backing={t("newPolicy.picker.nl.backing")}
+        />
+        <ChoiceCard
+          href="/policies/new?mode=guided"
+          icon={<AdjustmentsHorizontalIcon className="h-5 w-5" />}
+          label={t("newPolicy.picker.guided.label")}
+          description={t("newPolicy.picker.guided.description")}
+          backing={t("newPolicy.picker.guided.backing")}
         />
         <ChoiceCard
           href="/policies/new?mode=advanced"
@@ -405,6 +466,169 @@ function AuthoringShell({
 
       {children}
     </div>
+  )
+}
+
+// ── guided block-tool form ──────────────────────────────────────
+
+const TOOL_PRESETS = ["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"] as const
+const EVENT_PRESETS = ["PreToolUse", "PostToolUse", "Stop"] as const
+const ON_MISSING_PRESETS = ["deny", "ask", "log", "allow"] as const
+
+function GuidedBlockToolForm({
+  t, wiredSteps, saveAction,
+}: {
+  wiredSteps: string[]
+  saveAction: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const stepChoices = wiredSteps.length > 0 ? wiredSteps : ["citation_verify"]
+  return (
+    <Card>
+      <form action={saveAction} className="space-y-4">
+        <div>
+          <label htmlFor="g-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.id")}
+          </label>
+          <input
+            id="g-id"
+            name="id"
+            required
+            maxLength={128}
+            pattern="[A-Za-z0-9._\\-/]{1,128}"
+            placeholder="legal-filing/v1"
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+          />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.idHint")}</p>
+        </div>
+
+        <div>
+          <label htmlFor="g-desc" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.description")}
+          </label>
+          <input
+            id="g-desc"
+            name="description"
+            maxLength={256}
+            placeholder={t("newPolicy.guided.field.descriptionPh")}
+            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="g-event" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+              {t("newPolicy.guided.field.event")}
+            </label>
+            <select
+              id="g-event"
+              name="event"
+              defaultValue="PreToolUse"
+              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
+            >
+              {EVENT_PRESETS.map(e => <option key={e} value={e}>{e}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="g-matcher" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+              {t("newPolicy.guided.field.matcher")}
+            </label>
+            <input
+              id="g-matcher"
+              name="matcher"
+              required
+              maxLength={128}
+              list="g-matcher-list"
+              placeholder="Bash"
+              spellCheck={false}
+              autoComplete="off"
+              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+            />
+            <datalist id="g-matcher-list">
+              {TOOL_PRESETS.map(tool => <option key={tool} value={tool} />)}
+            </datalist>
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.matcherHint")}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="g-step" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+              {t("newPolicy.guided.field.step")}
+            </label>
+            <select
+              id="g-step"
+              name="step"
+              required
+              defaultValue={stepChoices[0]}
+              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+            >
+              {stepChoices.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.stepHint")}</p>
+          </div>
+          <div>
+            <label htmlFor="g-onmissing" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+              {t("newPolicy.guided.field.onMissing")}
+            </label>
+            <select
+              id="g-onmissing"
+              name="on_missing"
+              defaultValue="deny"
+              className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
+            >
+              {ON_MISSING_PRESETS.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="g-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("newPolicy.guided.field.sentinelTag")}
+          </label>
+          <input
+            id="g-sentinel"
+            name="sentinel_tag"
+            required
+            defaultValue="FILE_COURT"
+            pattern="[A-Z][A-Z0-9_]{0,32}"
+            maxLength={32}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
+          />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
+            <code className="font-mono">TAG_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
+          </p>
+        </div>
+
+        <div>
+          <label htmlFor="g-source" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            {t("policies.source")}
+          </label>
+          <select
+            id="g-source"
+            name="source"
+            defaultValue="org"
+            className="w-full rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-sm leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20"
+          >
+            <option value="org">org</option>
+            <option value="team">team</option>
+            <option value="platform">platform</option>
+          </select>
+        </div>
+
+        <div className="pt-2">
+          <SubmitButton
+            label={t("newPolicy.savePolicy")}
+            pendingLabel={t("newPolicy.saving")}
+          />
+        </div>
+      </form>
+    </Card>
   )
 }
 
