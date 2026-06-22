@@ -295,12 +295,9 @@ export const cloud = {
     }
   },
 
-  /** Read-only verifier catalog. Backend merges built-in registry + the
-   * caller tenant's custom verifiers + vendor preview entries.
-   *
-   * Uses the tenant key so the backend can scope custom verifiers — if we
-   * issue this unauthenticated the response would only contain global
-   * built-ins + previews and lose the custom rows. */
+  /** Read-only verifier catalog from the registry + vendor preview
+   * entries. Pure-derivation pivot: tenant-scoped rows live under the
+   * /catalog/* surfaces below, not embedded here. */
   listVerifiers: async (): Promise<PresetEntry[]> => {
     const d = await _fetch<{ presets: PresetEntry[] }>(
       "/verifiers", { method: "GET", keyType: "api" },
@@ -308,47 +305,31 @@ export const cloud = {
     return d.presets
   },
 
-  /** Back-compat alias. Existing /presets page still references this; new
-   * /rules page calls listVerifiers() directly. */
+  /** Back-compat alias. /presets page still references this; /rules
+   * calls listVerifiers() directly. */
   listPresets: async (): Promise<PresetEntry[]> => {
     return await cloud.listVerifiers()
   },
 
-  /** Tenant-scoped custom verifier CRUD. The verifier appears in
-   * listVerifiers() output once enabled; `kind` is the runtime adapter
-   * to use ("regex" v1; "llm_judge" / "shacl" reserved). */
-  listCustomVerifiers: async (): Promise<CustomVerifierItem[]> => {
-    const d = await _fetch<{ items: CustomVerifierItem[] }>(
-      "/tenants/verifiers", { method: "GET", keyType: "api" },
+  /** Evidence-type catalog. Walks built-ins + steps referenced in
+   * stored policies and tags policy-derived steps that have no
+   * matching verifier as `enforcement: "missing"` (operators should
+   * see the broken reference). */
+  listEvidenceTypes: async (): Promise<EvidenceTypeEntry[]> => {
+    const d = await _fetch<{ items: EvidenceTypeEntry[] }>(
+      "/catalog/evidence-types", { method: "GET", keyType: "api" },
     )
     return d.items
   },
 
-  upsertCustomVerifier: async (
-    spec: CustomVerifierUpsertReq,
-  ): Promise<{ step: string; enabled: boolean }> => {
-    return await _fetch("/tenants/verifiers", {
-      method: "POST", keyType: "api",
-      body: JSON.stringify(spec),
-    })
-  },
-
-  setCustomVerifierEnabled: async (
-    step: string, enabled: boolean,
-  ): Promise<{ step: string; enabled: boolean }> => {
-    return await _fetch(
-      `/tenants/verifiers/${encodeURIComponent(step)}/enabled?enabled=${enabled}`,
-      { method: "POST", keyType: "api" },
+  /** Condition catalog. v1 surfaces sentinel_re patterns + tool
+   * matchers extracted from every stored policy. Read-only — entries
+   * change only when the originating policy is edited. */
+  listConditions: async (): Promise<ConditionEntry[]> => {
+    const d = await _fetch<{ items: ConditionEntry[] }>(
+      "/catalog/conditions", { method: "GET", keyType: "api" },
     )
-  },
-
-  deleteCustomVerifier: async (
-    step: string,
-  ): Promise<{ step: string; deleted: boolean }> => {
-    return await _fetch(
-      `/tenants/verifiers/${encodeURIComponent(step)}`,
-      { method: "DELETE", keyType: "api" },
-    )
+    return d.items
   },
 }
 
@@ -369,37 +350,31 @@ export type PresetEntry = {
   input_schema?: Record<string, unknown> | null
   /** Verifier class name (e.g. "verify_privilege_scan"). Wired only. */
   name?: string | null
-  /** True when this row is a tenant-authored custom verifier (vs built-in
-   * registry / vendor catalog). The /rules page uses this to render
-   * edit/delete affordances and a distinct "custom" badge. */
-  is_custom?: boolean
-  /** Custom-verifier kind ("regex" today). Present only on custom rows. */
-  kind?: string
-  /** Enabled flag for custom rows. Built-ins are always conceptually
-   * enabled; their on/off state lives in the disabled-presets store. */
-  enabled?: boolean
 }
 
-export type CustomVerifierItem = {
+/** Pure-derivation catalog row: an evidence-type step the runtime can
+ * fire. Either provided by a built-in verifier or referenced by a
+ * stored policy (in which case `enforcement = "missing"` until an
+ * operator wires a verifier for that step). */
+export type EvidenceTypeEntry = {
   step: string
-  name: string
-  category: PresetEntry["category"]
+  category: PresetEntry["category"] | null
   description: string
-  kind: string
-  config: Record<string, unknown>
-  enabled: boolean
-  ts_created: number
-  ts_updated: number
+  enforcement: "enforcing" | "always-on" | "preview" | "missing"
+  name: string | null
+  source: "builtin" | "policy-derived"
+  used_by_policies: string[]
 }
 
-export type CustomVerifierUpsertReq = {
-  step: string
-  name: string
-  category: PresetEntry["category"]
-  description: string
-  kind: "regex"
-  config: { pattern: string; on_match: "deny" | "review"; reasons: string[] }
-  enabled: boolean
+/** Pure-derivation catalog row: a condition extracted from a stored
+ * policy. v1 covers the two condition shapes the policy IR carries
+ * inline today — sentinel_re patterns and tool matchers. */
+export type ConditionEntry = {
+  kind: "sentinel_re" | "tool_match"
+  value: string
+  policy_id: string
+  trigger_event: string
+  tool_matcher: string
 }
 
 function _encId(id: string): string {

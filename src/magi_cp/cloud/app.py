@@ -19,12 +19,11 @@ Invariants enforced here:
 from __future__ import annotations
 import asyncio
 import hashlib
-import json
 import os
 import time
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -364,42 +363,6 @@ def create_app(
                     "step": v.step,
                     "input_schema": getattr(v, "input_schema", None),
                     "name": getattr(v, "name", None),
-                    "is_custom": False,
-                })
-                seen_ids.add(pid)
-
-        # Resolve tenant best-effort. The dashboard hits this without a
-        # tenant header sometimes (initial render), so a missing key is
-        # not an error; we just skip the custom merge.
-        custom_rows: list[dict] = []
-        try:
-            from .tenants import resolve_tenant_id_from_request
-            tenant_id = resolve_tenant_id_from_request(request, engine)
-        except Exception:
-            tenant_id = None
-        if tenant_id is not None:
-            from .custom_verifiers import CustomVerifierRepo
-            for row in CustomVerifierRepo(engine).list(tenant_id):
-                pid = row.step.replace("_", "-")
-                if pid in seen_ids:
-                    continue
-                custom_rows.append({
-                    "id": pid,
-                    "category": row.category,
-                    "description": row.description,
-                    "enforcement": (
-                        "enforcing" if row.enabled else "preview"
-                    ),
-                    "step": row.step,
-                    "input_schema": {
-                        "type": "object",
-                        "required": ["text"],
-                        "properties": {"text": {"type": "string"}},
-                    },
-                    "name": f"custom_{row.step}",
-                    "is_custom": True,
-                    "kind": row.kind,
-                    "enabled": row.enabled,
                 })
                 seen_ids.add(pid)
 
@@ -413,14 +376,13 @@ def create_app(
                     "step": None,
                     "input_schema": None,
                     "name": None,
-                    "is_custom": False,
                 }
                 for vp in vendor_catalog()
                 if vp.id not in seen_ids   # wired ID shadows vendor entry
             ),
             key=lambda p: p["id"],
         )
-        return {"presets": wired + custom_rows + vendor}
+        return {"presets": wired + vendor}
 
     @app.post("/verify/{step}", dependencies=[Depends(require_tenant_auth)])
     async def verify_dispatch(step: str, req: VerifyDispatchReq, request: Request) -> dict:
@@ -464,16 +426,6 @@ def create_app(
             )
         tenant_id = getattr(request.state, "tenant_id", "default")
         v = verifier_registry.get_by_step(step)
-        if v is None:
-            # Tenant-scoped fallback: try user-authored custom verifiers
-            # (regex/llm/etc.) registered via /admin/verifiers.
-            from .custom_verifiers import resolve_step_for_tenant, CustomVerifierRepo
-            v = resolve_step_for_tenant(
-                verifier_registry,
-                CustomVerifierRepo(engine),
-                tenant_id,
-                step,
-            )
         if v is None:
             raise HTTPException(404, f"no verifier registered for step {step!r}")
         try:
@@ -662,8 +614,8 @@ def create_app(
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     _attach_admin_tenant_routes(app, engine)
 
-    # ── /verifiers + admin CRUD for tenant-scoped custom verifiers ──
-    _attach_custom_verifier_routes(app, engine)
+    # ── /catalog/* — derived (read-only) evidence-type + condition view ──
+    _attach_catalog_routes(app, policy_store, verifier_registry)
 
     return app
 
@@ -1016,107 +968,83 @@ def _resolve_llm_provider_from_env(env_var: str) -> "object | None":
     return factory()
 
 
-class CustomVerifierSpecIn(BaseModel):
-    """Module-level POST body for /tenants/verifiers — defined at module
-    scope (not inside `_attach_custom_verifier_routes`) so Pydantic /
-    FastAPI can resolve forward references during request validation on
-    Python 3.14. A class nested in a function closure is invisible to
-    `TypeAdapter` rebuild, which surfaces as 'is not fully defined'."""
-    step: str = Field(..., min_length=1, max_length=64)
-    name: str = Field(..., min_length=1, max_length=128)
-    category: str = Field(..., min_length=1, max_length=32)
-    description: str = Field(default="", max_length=1024)
-    kind: str = Field(default="regex")
-    config: dict = Field(default_factory=dict)
-    enabled: bool = Field(default=True)
+def _attach_catalog_routes(
+    app: FastAPI,
+    policy_store: PolicyStore,
+    verifier_registry: VerifierRegistry | None,
+) -> None:
+    """Derived (read-only) catalog: evidence types + conditions.
 
+    Pure-derivation model — there is no separate storage. The catalog
+    walks the live state every request:
 
-def _attach_custom_verifier_routes(app: FastAPI, engine) -> None:  # type: ignore[no-untyped-def]
-    """Tenant-scoped CRUD over user-authored verifiers.
+      Evidence types  = (built-in verifier registry steps) ∪
+                        (step referenced in any policy's requires[])
+      Conditions      = (sentinel_re pattern of every policy) ∪
+                        (tool matchers from every policy's trigger)
 
-    Auth: X-Api-Key (tenant key) — same envelope as /verify/* + /ledger.
-    The tenant identified by the key owns the verifiers it creates;
-    rows are partitioned by tenant_id at the DB layer.
-
-    Endpoints:
-      GET    /tenants/verifiers                 — list custom verifiers for the tenant
-      POST   /tenants/verifiers                 — create or upsert
-      POST   /tenants/verifiers/{step}/enabled  — toggle enabled flag
-      DELETE /tenants/verifiers/{step}          — delete
-
-    The `enforcing` /verifiers entry exposed to the dashboard reflects
-    enabled+kind=regex; disabled rows still appear in the list but as
-    `preview` (the same convention used for vendor-catalog stubs).
+    Both are tenant-scoped because the policy list is. Users cannot
+    write to either tab; entries appear/disappear as the policies that
+    reference them are saved/deleted (mirrors the magi-agent customize
+    refactor — Policy is the only first-class entity).
     """
-    from .custom_verifiers import (
-        CustomVerifierRepo, CustomVerifierSpec,
-    )
 
-    @app.get("/tenants/verifiers", dependencies=[Depends(require_tenant_auth)])
-    def list_custom_verifiers(request: Request) -> dict:
-        tenant_id = getattr(request.state, "tenant_id", "default")
-        rows = CustomVerifierRepo(engine).list(tenant_id)
-        return {"items": [
-            {
-                "step": r.step,
-                "name": r.name,
-                "category": r.category,
-                "description": r.description,
-                "kind": r.kind,
-                "config": json.loads(r.config_json),
-                "enabled": r.enabled,
-                "ts_created": r.ts_created,
-                "ts_updated": r.ts_updated,
-            }
-            for r in rows
-        ]}
+    @app.get("/catalog/evidence-types", dependencies=[Depends(require_tenant_auth)])
+    def list_evidence_types() -> dict:
+        builtin: list[dict] = []
+        if verifier_registry is not None:
+            for v in verifier_registry.all():
+                builtin.append({
+                    "step": v.step,
+                    "category": v.category,
+                    "description": v.description,
+                    "enforcement": v.enforcement.value,
+                    "name": getattr(v, "name", None),
+                    "source": "builtin",
+                    "used_by_policies": [],
+                })
+        used_by: dict[str, list[str]] = {}
+        for entry in policy_store.load():
+            for req in entry.policy.requires:
+                used_by.setdefault(req.step, []).append(entry.policy.id)
+        for row in builtin:
+            row["used_by_policies"] = used_by.pop(row["step"], [])
+        derived: list[dict] = []
+        for step, policies in sorted(used_by.items()):
+            derived.append({
+                "step": step,
+                "category": None,
+                "description": "Referenced by a policy but not bound to "
+                               "any built-in verifier — runs will deny "
+                               "with no-verifier-registered.",
+                "enforcement": "missing",
+                "name": None,
+                "source": "policy-derived",
+                "used_by_policies": policies,
+            })
+        return {"items": builtin + derived}
 
-    @app.post("/tenants/verifiers", dependencies=[Depends(require_tenant_auth)])
-    def upsert_custom_verifier(request: Request, spec: CustomVerifierSpecIn = Body(...)) -> dict:
-        tenant_id = getattr(request.state, "tenant_id", "default")
-        try:
-            row = CustomVerifierRepo(engine).upsert(
-                tenant_id,
-                CustomVerifierSpec(
-                    step=spec.step, name=spec.name, category=spec.category,
-                    description=spec.description, kind=spec.kind,
-                    config=spec.config, enabled=spec.enabled,
-                ),
-            )
-        except ValueError as e:
-            raise HTTPException(422, str(e))
-        return {
-            "step": row.step,
-            "name": row.name,
-            "category": row.category,
-            "description": row.description,
-            "kind": row.kind,
-            "enabled": row.enabled,
-        }
-
-    @app.post(
-        "/tenants/verifiers/{step}/enabled",
-        dependencies=[Depends(require_tenant_auth)],
-    )
-    def set_custom_verifier_enabled(step: str, enabled: bool, request: Request) -> dict:
-        tenant_id = getattr(request.state, "tenant_id", "default")
-        try:
-            row = CustomVerifierRepo(engine).set_enabled(tenant_id, step, enabled)
-        except KeyError:
-            raise HTTPException(404, f"custom verifier {step!r} not found")
-        return {"step": row.step, "enabled": row.enabled}
-
-    @app.delete(
-        "/tenants/verifiers/{step}",
-        dependencies=[Depends(require_tenant_auth)],
-    )
-    def delete_custom_verifier(step: str, request: Request) -> dict:
-        tenant_id = getattr(request.state, "tenant_id", "default")
-        try:
-            CustomVerifierRepo(engine).delete(tenant_id, step)
-        except KeyError:
-            raise HTTPException(404, f"custom verifier {step!r} not found")
-        return {"step": step, "deleted": True}
+    @app.get("/catalog/conditions", dependencies=[Depends(require_tenant_auth)])
+    def list_conditions() -> dict:
+        items: list[dict] = []
+        for entry in policy_store.load():
+            p = entry.policy
+            items.append({
+                "kind": "sentinel_re",
+                "value": p.sentinel_re,
+                "policy_id": p.id,
+                "trigger_event": p.trigger.event,
+                "tool_matcher": p.trigger.matcher,
+            })
+            items.append({
+                "kind": "tool_match",
+                "value": p.trigger.matcher,
+                "policy_id": p.id,
+                "trigger_event": p.trigger.event,
+                "tool_matcher": p.trigger.matcher,
+            })
+        items.sort(key=lambda r: (r["kind"], r["value"], r["policy_id"]))
+        return {"items": items}
 
 
 def _build_production_app() -> FastAPI:

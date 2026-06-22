@@ -227,21 +227,6 @@ class ApiKeyRepo:
 
 
 # ── auth surface ───────────────────────────────────────────────────
-def resolve_tenant_id_from_request(request, engine: Engine) -> str | None:  # type: ignore[no-untyped-def]
-    """Best-effort tenant resolution. Reads request.state.tenant_id when
-    a require_tenant_auth dependency already ran on this request, else
-    re-runs authenticate_request against the X-Api-Key header.
-
-    Returns None when the request has no usable key — callers MUST
-    handle the None case (it just means "scope to global view")."""
-    cached = getattr(getattr(request, "state", None), "tenant_id", None)
-    if isinstance(cached, str) and cached:
-        return cached
-    key = request.headers.get("x-api-key") or request.headers.get("X-Api-Key")
-    auth = authenticate_request(engine, key)
-    return auth.tenant_id if auth is not None else None
-
-
 def authenticate_request(engine: Engine, presented: str | None) -> AuthOk | None:
     """Resolve a presented X-Api-Key to an AuthOk or None.
 
@@ -264,5 +249,5 @@ __all__ = [
     "Tenant", "ApiKey",
     "TenantRecord", "IssuedKey", "ListedKey", "AuthOk",
     "TenantRepo", "ApiKeyRepo",
-    "authenticate_request", "resolve_tenant_id_from_request",
+    "authenticate_request",
 ]

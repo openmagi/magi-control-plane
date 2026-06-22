@@ -145,22 +145,52 @@ describe("cloud client", () => {
     expect(h.get("X-Admin-Api-Key")).toBeNull()
   })
 
-  it("listVerifiers returns the verifier array (incl. is_custom rows)", async () => {
+  it("listVerifiers returns the verifier array", async () => {
     process.env.MAGI_CP_API_KEY = "tenant-test"
     global.fetch = vi.fn(async () => new Response(
       JSON.stringify({ presets: [
         { id: "citation-verify", category: "FACT", description: "x",
-          enforcement: "enforcing", step: "citation_verify", is_custom: false },
-        { id: "secret-leak", category: "SECURITY", description: "y",
-          enforcement: "enforcing", step: "secret_leak", is_custom: true,
-          kind: "regex", enabled: true },
+          enforcement: "enforcing", step: "citation_verify" },
+        { id: "answer-quality", category: "ANSWER", description: "y",
+          enforcement: "preview", step: null },
       ] }),
       { status: 200 }) as any)
     const r = await cloud.listVerifiers()
     expect(r).toHaveLength(2)
-    expect(r[0].is_custom).toBe(false)
-    expect(r[1].is_custom).toBe(true)
-    expect(r[1].kind).toBe("regex")
+    expect(r[0].id).toBe("citation-verify")
+    expect(r[1].step).toBeNull()
+  })
+
+  // ── /catalog/* — pure-derivation catalogs (no separate storage) ────
+  it("listEvidenceTypes hits /catalog/evidence-types with tenant key", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ items: [
+        { step: "citation_verify", category: "FACT", description: "",
+          enforcement: "enforcing", name: null, source: "builtin",
+          used_by_policies: [] },
+      ] }), { status: 200 }) as any
+    })
+    const r = await cloud.listEvidenceTypes()
+    expect(String(captured.url)).toBe("http://test/catalog/evidence-types")
+    expect(new Headers(captured.init?.headers || {}).get("X-Api-Key")).toBe("tenant-test")
+    expect(r).toHaveLength(1)
+    expect(r[0].source).toBe("builtin")
+  })
+
+  it("listConditions hits /catalog/conditions and parses kind/value rows", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({ items: [
+      { kind: "sentinel_re", value: "AKIA[0-9A-Z]{16}", policy_id: "x/v1",
+        trigger_event: "PostToolUse", tool_matcher: "Bash" },
+      { kind: "tool_match", value: "Bash", policy_id: "x/v1",
+        trigger_event: "PostToolUse", tool_matcher: "Bash" },
+    ] }), { status: 200 }) as any)
+    const r = await cloud.listConditions()
+    expect(r.map(c => c.kind)).toEqual(["sentinel_re", "tool_match"])
+    expect(r[0].policy_id).toBe("x/v1")
   })
 
   it("listVerifiers propagates 5xx as cloud N", async () => {
