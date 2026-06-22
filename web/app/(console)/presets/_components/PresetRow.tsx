@@ -41,25 +41,27 @@ export function PresetRow({
   const hasSpec = Boolean(hint || p.input_schema || p.step)
 
   return (
-    <details className="group rounded-xl border border-black/[0.04] bg-white overflow-hidden hover:border-black/[0.08] transition-colors duration-150">
-      <summary className="flex items-start gap-3 px-4 py-3 cursor-pointer list-none select-none">
-        <ChevronDownIcon
-          aria-hidden="true"
-          className="w-4 h-4 mt-1 text-[var(--color-text-tertiary)] shrink-0 transition-transform duration-200 group-open:rotate-0 -rotate-90"
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2 mb-1">
-            <span
-              className="font-mono text-[13px] font-semibold text-[var(--color-text-primary)]"
-              translate="no"
-            >
-              {p.id}
-            </span>
-            <EnforcementBadge kind={p.enforcement} />
+    <details className="group rounded-xl border border-black/[0.06] bg-white overflow-hidden hover:border-black/[0.10] transition-colors duration-150">
+      <summary className="flex items-start justify-between gap-4 px-4 py-3 cursor-pointer list-none select-none">
+        <div className="flex items-start gap-2.5 flex-1 min-w-0">
+          <ChevronDownIcon
+            aria-hidden="true"
+            className="w-4 h-4 mt-0.5 text-[var(--color-text-tertiary)] shrink-0 transition-transform duration-200 group-open:rotate-0 -rotate-90"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span
+                className="font-mono text-[13px] font-semibold text-[var(--color-text-primary)] truncate"
+                translate="no"
+              >
+                {p.id}
+              </span>
+              <EnforcementBadge kind={p.enforcement} />
+            </div>
+            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              {p.description}
+            </p>
           </div>
-          <p className="text-sm text-[var(--color-text-secondary)] leading-5 line-clamp-3">
-            {p.description}
-          </p>
         </div>
         <PresetToggle
           presetId={p.id}
