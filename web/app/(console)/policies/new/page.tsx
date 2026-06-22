@@ -15,6 +15,8 @@ import {
   Badge, Card, CodeBlock, ErrorState, PageHeader,
   SubmitButton, Textarea,
 } from "@/components/ui"
+import SentinelModeSection from "./_components/SentinelModeSection"
+import MinOneSubmit from "./_components/MinOneSubmit"
 
 export const dynamic = "force-dynamic"
 
@@ -163,13 +165,29 @@ interface WizardState {
   verifiers?: string[]
   id?: string
   description?: string
-  /** Sentinel tag prefix. saveWizard expands this into the policy's
-   * `sentinel_re` as `<TAG>_(?P<matter>…)_(?P<doc_id>…)`. */
+  /** D34: sentinel authoring split into two modes.
+   *   tag    — pick a prefix, wizard builds `<TAG>_(?P<matter>…)_(?P<doc_id>…)`.
+   *   custom — operator writes the full regex by hand; must still
+   *            include both named groups (backend invariant).
+   */
+  sentinel_mode?: "tag" | "custom"
   sentinel_tag?: string
+  sentinel_re_custom?: string
 }
 
-const SENTINEL_TAG_DEFAULT = "FILE_COURT"
+const SENTINEL_TAG_DEFAULT = "GATE"
 const SENTINEL_TAG_RE = /^[A-Z][A-Z0-9_]{0,31}$/
+
+function buildSentinelReFromTag(tag: string): string {
+  return `${tag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
+}
+
+function isValidCustomSentinelRe(raw: string): boolean {
+  return raw.length > 0
+    && raw.length <= 2000
+    && raw.includes("?P<matter>")
+    && raw.includes("?P<doc_id>")
+}
 
 function parseVerifierList(raw: string | undefined): string[] {
   if (!raw) return []
@@ -327,10 +345,14 @@ async function saveWizard(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "").trim()
   const description = String(formData.get("description") ?? "").trim()
   const source = String(formData.get("source") ?? "org")
+  const sentinelMode = (String(formData.get("sentinel_mode") ?? "tag") === "custom")
+    ? "custom" as const
+    : "tag" as const
   const sentinelTagRaw = String(formData.get("sentinel_tag") ?? "").trim()
   const sentinelTag = SENTINEL_TAG_RE.test(sentinelTagRaw)
     ? sentinelTagRaw
     : SENTINEL_TAG_DEFAULT
+  const sentinelCustomRaw = String(formData.get("sentinel_re_custom") ?? "").trim()
 
   if (archetype === "strip") {
     // Strip needs verifier-protocol mutation support that isn't built
@@ -347,7 +369,19 @@ async function saveWizard(formData: FormData): Promise<void> {
   if (!id || !matcher) {
     redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
   }
-  const sentinel_re = `${sentinelTag}_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)`
+  // D34: sentinel can be either tag-built or custom raw. Custom path
+  // still has to carry both named groups per backend invariant; reject
+  // here on validate-fail so the wizard can surface a precise error
+  // instead of letting the cloud 400 the PUT.
+  let sentinel_re: string
+  if (sentinelMode === "custom") {
+    if (!isValidCustomSentinelRe(sentinelCustomRaw)) {
+      redirect("/policies/new?mode=guided&step=4&err=bad_sentinel_custom"); return
+    }
+    sentinel_re = sentinelCustomRaw
+  } else {
+    sentinel_re = buildSentinelReFromTag(sentinelTag)
+  }
 
   const summary = isEmitSignal
     ? `Emit signal on every ${event}|${matcher} (no condition)`
@@ -701,7 +735,9 @@ function buildWizardHref(state: WizardState, step: number): string {
   }
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
+  if (state.sentinel_mode) params.set("sentinel_mode", state.sentinel_mode)
   if (state.sentinel_tag) params.set("sentinel_tag", state.sentinel_tag)
+  if (state.sentinel_re_custom) params.set("sentinel_re_custom", state.sentinel_re_custom)
   return `/policies/new?${params.toString()}`
 }
 
@@ -716,8 +752,14 @@ function HiddenState({ state }: { state: WizardState }) {
       )}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
+      {state.sentinel_mode && (
+        <input type="hidden" name="sentinel_mode" value={state.sentinel_mode} />
+      )}
       {state.sentinel_tag && (
         <input type="hidden" name="sentinel_tag" value={state.sentinel_tag} />
+      )}
+      {state.sentinel_re_custom && (
+        <input type="hidden" name="sentinel_re_custom" value={state.sentinel_re_custom} />
       )}
     </>
   )
@@ -786,7 +828,9 @@ function GuidedWizard({
     })(),
     id: searchParams.id || undefined,
     description: searchParams.description || undefined,
+    sentinel_mode: (searchParams.sentinel_mode === "custom" ? "custom" : "tag"),
     sentinel_tag: searchParams.sentinel_tag || undefined,
+    sentinel_re_custom: searchParams.sentinel_re_custom || undefined,
   }
 
   return (
@@ -971,6 +1015,18 @@ function Step2Archetype({
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ event: state.event }} />
+        {(() => {
+          const excluded = ARCHETYPE_PRESETS.filter((a) => !allowed.includes(a) && a !== "strip")
+          if (excluded.length === 0) return null
+          return (
+            <p className="text-[11px] text-[var(--color-text-tertiary)] -mt-1">
+              {t("newPolicy.wizard.step2.excludedNote", {
+                event,
+                excluded: excluded.join(" / "),
+              })}
+            </p>
+          )
+        })()}
         {allowed.map((arc) => {
           const isStrip = arc === "strip"
           const stripDisabled = isStrip && !STRIP_AVAILABLE
@@ -1041,7 +1097,7 @@ function Step3Condition({
       heading={t("newPolicy.wizard.step3.heading")}
       helper={t("newPolicy.wizard.step3.helper")}
     >
-      <form action={action} className="space-y-3">
+      <form id="wizard-step3-form" action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{ event: state.event, archetype: state.archetype }} />
         <p className="text-xs text-[var(--color-text-tertiary)]">
@@ -1061,7 +1117,12 @@ function Step3Condition({
             }
           />
         ))}
-        <NextButton label={t("newPolicy.wizard.next")} />
+        <MinOneSubmit
+          formId="wizard-step3-form"
+          inputName="verifier"
+          label={t("newPolicy.wizard.next")}
+          hint={t("newPolicy.wizard.step3.minOneHint")}
+        />
       </form>
     </StepShell>
   )
@@ -1151,30 +1212,61 @@ function Step4Specifics({
             </div>
           </>
         )}
-        <div>
-          <label htmlFor="w-sentinel" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("newPolicy.guided.field.sentinelTag")}
-          </label>
-          <input
-            id="w-sentinel"
-            name="sentinel_tag"
-            maxLength={32}
-            pattern="[A-Z][A-Z0-9_]{0,31}"
-            defaultValue={state.sentinel_tag ?? SENTINEL_TAG_DEFAULT}
-            placeholder={SENTINEL_TAG_DEFAULT}
-            spellCheck={false}
-            autoComplete="off"
-            className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
-          />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            {t("newPolicy.guided.field.sentinelTagHint")}{" "}
-            <code className="font-mono">{(state.sentinel_tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)</code>
-          </p>
-        </div>
+        {!isNoToolEvent && (
+          <details className="group rounded-xl border border-black/[0.06] bg-gray-50/60 px-4 py-2">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.1em] text-[var(--color-text-tertiary)] py-2 select-none">
+              {t("newPolicy.wizard.step4.otherPatterns.summary")}
+            </summary>
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 text-xs py-3 border-t border-black/[0.04]">
+              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">MCP</dt>
+              <dd className="text-[var(--color-text-secondary)]">
+                {t("newPolicy.wizard.step4.otherPatterns.mcp")}{" "}
+                <code className="font-mono px-1 py-0.5 rounded bg-white border border-black/[0.06]">mcp__server__tool</code>
+              </dd>
+              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">Multi</dt>
+              <dd className="text-[var(--color-text-secondary)]">
+                {t("newPolicy.wizard.step4.otherPatterns.alt")}{" "}
+                <code className="font-mono px-1 py-0.5 rounded bg-white border border-black/[0.06]">Bash|Edit|Write</code>
+              </dd>
+              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">All</dt>
+              <dd className="text-[var(--color-text-secondary)]">
+                {t("newPolicy.wizard.step4.otherPatterns.wildcard")}{" "}
+                <code className="font-mono px-1 py-0.5 rounded bg-white border border-black/[0.06]">*</code>
+              </dd>
+            </dl>
+          </details>
+        )}
+        <SentinelModeSection
+          initialMode={state.sentinel_mode ?? "tag"}
+          initialTag={state.sentinel_tag ?? ""}
+          initialCustom={state.sentinel_re_custom ?? ""}
+          labels={{
+            modeLabel:        t("newPolicy.wizard.step4.sentinel.modeLabel"),
+            modeTag:          t("newPolicy.wizard.step4.sentinel.modeTag"),
+            modeCustom:       t("newPolicy.wizard.step4.sentinel.modeCustom"),
+            tagFieldLabel:    t("newPolicy.guided.field.sentinelTag"),
+            tagFieldHint:     t("newPolicy.guided.field.sentinelTagHint"),
+            tagPreviewIntro:  t("newPolicy.wizard.step4.sentinel.tagPreviewIntro"),
+            customFieldLabel: t("newPolicy.wizard.step4.sentinel.customFieldLabel"),
+            customFieldHint:  t("newPolicy.wizard.step4.sentinel.customFieldHint"),
+            customGroupsHint: t("newPolicy.wizard.step4.sentinel.customGroupsMissing"),
+          }}
+        />
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
   )
+}
+
+function suggestPolicyId(state: WizardState): string {
+  const archetype = state.archetype ?? "block"
+  const event = state.event ?? "PreToolUse"
+  const matcherSlug = (state.matcher || "any")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "any"
+  return `${archetype}-${event.toLowerCase()}-${matcherSlug}/v1`
 }
 
 function Step5Naming({
@@ -1183,6 +1275,7 @@ function Step5Naming({
   state: WizardState; action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  const idDefault = state.id ?? suggestPolicyId(state)
   return (
     <StepShell
       t={t}
@@ -1196,7 +1289,9 @@ function Step5Naming({
         <HiddenState state={{
           event: state.event, archetype: state.archetype,
           matcher: state.matcher, verifiers: state.verifiers,
+          sentinel_mode: state.sentinel_mode,
           sentinel_tag: state.sentinel_tag,
+          sentinel_re_custom: state.sentinel_re_custom,
         }} />
         <div>
           <label htmlFor="w-id" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
@@ -1208,14 +1303,18 @@ function Step5Naming({
             required
             maxLength={128}
             pattern="[A-Za-z0-9._\-/]{1,128}"
-            defaultValue={state.id ?? ""}
+            defaultValue={idDefault}
             placeholder="legal-filing/v1"
             spellCheck={false}
             autoComplete="off"
             autoFocus
             className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-base leading-6 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
           />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{t("newPolicy.guided.field.idHint")}</p>
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+            {state.id
+              ? t("newPolicy.guided.field.idHint")
+              : t("newPolicy.wizard.step5.autoSuggested")}
+          </p>
         </div>
         <div>
           <label htmlFor="w-desc" className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
@@ -1298,6 +1397,14 @@ function Step6Review({
           )}
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">action (IR)</dt>
           <dd className="text-[var(--color-text-secondary)]">{archetypeToAction(archetype)}</dd>
+          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">sentinel_re</dt>
+          <dd>
+            <code className="font-mono text-[11.5px] break-all bg-gray-50 px-1.5 py-0.5 rounded border border-black/[0.06]">
+              {state.sentinel_mode === "custom" && state.sentinel_re_custom
+                ? state.sentinel_re_custom
+                : buildSentinelReFromTag(state.sentinel_tag || SENTINEL_TAG_DEFAULT)}
+            </code>
+          </dd>
         </dl>
       </Card>
       <form action={action}>
