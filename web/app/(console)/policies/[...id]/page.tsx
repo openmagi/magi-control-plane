@@ -61,7 +61,6 @@ export default async function PolicyDetailPage({
           <Link href="/policies" className="text-sm">{t("newPolicy.back")}</Link>
         </p>
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

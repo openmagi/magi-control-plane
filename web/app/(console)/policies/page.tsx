@@ -172,7 +172,6 @@ export default async function PoliciesPage({
       )}
       {err && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

@@ -88,7 +88,6 @@ export default async function HitlDetailPage({
           <Link href="/hitl" className="text-sm">{t("hitl.detail.back")}</Link>
         </p>
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

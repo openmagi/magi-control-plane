@@ -81,7 +81,6 @@ export default async function CompilePage({
     if (searchParams.err === "cloud_unreachable") {
       return (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("compile.llmNotConfigured")}
         />

@@ -162,7 +162,6 @@ export default async function VerifyPage({
 
       {listErr && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />
@@ -183,7 +182,6 @@ export default async function VerifyPage({
       )}
       {searchParams.err === "cloud_unreachable" && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

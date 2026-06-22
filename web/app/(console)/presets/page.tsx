@@ -68,7 +68,6 @@ export default async function PresetsPage() {
 
       {err && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

@@ -203,7 +203,6 @@ export default async function HitlPage({
       )}
       {err && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={err}
         />

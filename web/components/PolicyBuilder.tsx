@@ -32,7 +32,8 @@ type Props = {
     source: string
     save: string
     saving: string
-    fixIssues: (n: number) => string
+    fixIssueOne: string   // singular: "Fix 1 validation issue"
+    fixIssueMany: string  // plural template, `{n}` interpolated: "Fix {n} validation issues"
     unsavedWarning: string
     placeholderId: string
     placeholderMatcher: string
@@ -283,7 +284,7 @@ export default function PolicyBuilder({
           </Button>
           {submitted && errors.length > 0 && (
             <span role="status" className="text-xs text-[var(--color-deny-fg)]">
-              {labels.fixIssues(errors.length)}
+              {errors.length === 1 ? labels.fixIssueOne : labels.fixIssueMany.replace("{n}", String(errors.length))}
             </span>
           )}
         </div>

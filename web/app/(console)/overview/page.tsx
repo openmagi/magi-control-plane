@@ -46,7 +46,6 @@ export default async function Home() {
       <PageHeader title={t("overview.title")} />
       {summary.err ? (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
         />

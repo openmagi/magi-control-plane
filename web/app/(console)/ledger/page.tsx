@@ -32,7 +32,6 @@ export default async function LedgerPage({
 
       {err && (
         <ErrorState
-          status={t("common.cloudUnreachable")}
           title={t("common.cloudUnreachable")}
           body={err}
         />
