@@ -13,13 +13,18 @@ export interface PresetToggleProps {
 }
 
 /**
- * Compact switch (28×16 / thumb 12px). Optimistic flip via
- * useTransition so the thumb slides immediately on tap; server
- * action persists the cookie + path-revalidates.
+ * Toggle switch matching shadcn proportions (track 24×44, thumb 20×20)
+ * — wide enough that the thumb has breathing room on both ends, which
+ * the earlier 16×28 size lacked (the "blob" look).
  *
- * stopPropagation is essential — this button often lives inside a
- * <summary> element, where a regular click would also toggle the
- * <details> disclosure.
+ * - Transform-based slide (ease-out 200ms, not the cheaper width anim)
+ * - `role="switch"` + `aria-checked` for screen readers
+ * - Visible focus ring with white offset (light-mode contrast)
+ * - Optimistic UI via useTransition so the thumb slides instantly
+ * - stopPropagation()+preventDefault() because the button lives inside
+ *   a <summary> element — without it, clicking the switch would also
+ *   toggle the parent <details> disclosure
+ * - prefers-reduced-motion collapses the transition via globals.css
  */
 export function PresetToggle({
   presetId, enabled, action, labelOn, labelOff,
@@ -32,6 +37,7 @@ export function PresetToggle({
       role="switch"
       aria-checked={renderEnabled}
       aria-label={renderEnabled ? labelOn : labelOff}
+      aria-busy={pending || undefined}
       disabled={pending}
       onClick={(e: MouseEvent<HTMLButtonElement>) => {
         e.stopPropagation()
@@ -39,20 +45,22 @@ export function PresetToggle({
         startTransition(async () => { await action(presetId) })
       }}
       className={cn(
-        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full",
-        "transition-colors duration-150 cursor-pointer",
-        "outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]/30 focus-visible:ring-offset-2",
+        "group/sw relative inline-flex h-6 w-11 shrink-0 items-center rounded-full",
+        "transition-colors duration-200 ease-out cursor-pointer",
+        "outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+        "disabled:cursor-not-allowed disabled:opacity-70",
         renderEnabled
-          ? "bg-[var(--color-accent)]"
-          : "bg-gray-300 hover:bg-gray-400",
+          ? "bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] active:bg-[var(--color-accent-press)]"
+          : "bg-gray-200 hover:bg-gray-300 active:bg-gray-400",
       )}
     >
       <span
         aria-hidden="true"
         className={cn(
-          "inline-block h-3 w-3 rounded-full bg-white shadow-sm",
-          "transition-transform duration-150",
-          renderEnabled ? "translate-x-[14px]" : "translate-x-0.5",
+          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white",
+          "shadow-[0_1px_2px_rgba(15,23,42,0.16)] ring-1 ring-black/[0.04]",
+          "transition-transform duration-200 ease-out",
+          renderEnabled ? "translate-x-[22px]" : "translate-x-0.5",
         )}
       />
     </button>
