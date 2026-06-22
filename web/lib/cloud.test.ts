@@ -129,40 +129,57 @@ describe("cloud client", () => {
     }
   })
 
-  // ── v1.1: presets catalog (no auth) ────────────────────────────────
-  it("listPresets sends NO auth header", async () => {
+  // ── verifiers catalog (was /presets in v1.1, now /verifiers with auth
+  //    so the backend can merge tenant-scoped custom verifiers) ──────
+  it("listVerifiers hits /verifiers with the tenant key", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
     let captured: any
     global.fetch = vi.fn(async (url: any, init: any) => {
       captured = { url, init }
       return new Response(JSON.stringify({ presets: [] }), { status: 200 }) as any
     })
-    await cloud.listPresets()
-    expect(String(captured.url)).toBe("http://test/presets")
+    await cloud.listVerifiers()
+    expect(String(captured.url)).toBe("http://test/verifiers")
     const h = new Headers(captured.init?.headers || {})
-    expect(h.get("X-Api-Key")).toBeNull()
+    expect(h.get("X-Api-Key")).toBe("tenant-test")
     expect(h.get("X-Admin-Api-Key")).toBeNull()
-    expect(h.get("X-Hitl-Api-Key")).toBeNull()
   })
 
-  it("listPresets returns the presets array", async () => {
+  it("listVerifiers returns the verifier array (incl. is_custom rows)", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
     global.fetch = vi.fn(async () => new Response(
       JSON.stringify({ presets: [
         { id: "citation-verify", category: "FACT", description: "x",
-          enforcement: "enforcing", step: "citation_verify" },
-        { id: "answer-quality", category: "ANSWER", description: "y",
-          enforcement: "preview", step: null },
+          enforcement: "enforcing", step: "citation_verify", is_custom: false },
+        { id: "secret-leak", category: "SECURITY", description: "y",
+          enforcement: "enforcing", step: "secret_leak", is_custom: true,
+          kind: "regex", enabled: true },
       ] }),
       { status: 200 }) as any)
-    const r = await cloud.listPresets()
+    const r = await cloud.listVerifiers()
     expect(r).toHaveLength(2)
-    expect(r[0].id).toBe("citation-verify")
-    expect(r[0].enforcement).toBe("enforcing")
-    expect(r[1].step).toBeNull()
+    expect(r[0].is_custom).toBe(false)
+    expect(r[1].is_custom).toBe(true)
+    expect(r[1].kind).toBe("regex")
   })
 
-  it("listPresets propagates 5xx as cloud N", async () => {
+  it("listVerifiers propagates 5xx as cloud N", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
     global.fetch = vi.fn(async () => new Response("", { status: 503 }) as any)
-    await expect(cloud.listPresets()).rejects.toThrow("cloud 503")
+    await expect(cloud.listVerifiers()).rejects.toThrow("cloud 503")
+  })
+
+  // listPresets is a back-compat alias for listVerifiers — exercises
+  // the same path. Kept as a one-shot smoke check so refactors that
+  // accidentally break the alias surface here, not in pages.
+  it("listPresets is an alias of listVerifiers", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ presets: [
+        { id: "x", category: "ANSWER", description: "", enforcement: "preview", step: null },
+      ] }), { status: 200 }) as any)
+    const r = await cloud.listPresets()
+    expect(r).toHaveLength(1)
   })
 
   // ── v1.2-W1: compilePolicy ─────────────────────────────────────────

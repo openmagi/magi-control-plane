@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
-import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, BeakerIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -382,7 +382,7 @@ function PickerLanding({
         </Link>
       </header>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <ChoiceCard
           href="/policies/new?mode=nl"
           icon={<SparklesIcon className="h-5 w-5" />}
@@ -403,6 +403,13 @@ function PickerLanding({
           label={t("newPolicy.picker.advanced.label")}
           description={t("newPolicy.picker.advanced.description")}
           backing={t("newPolicy.picker.advanced.backing")}
+        />
+        <ChoiceCard
+          href="/rules/new/verifier"
+          icon={<BeakerIcon className="h-5 w-5" />}
+          label={t("newPolicy.picker.verifier.label")}
+          description={t("newPolicy.picker.verifier.description")}
+          backing={t("newPolicy.picker.verifier.backing")}
         />
       </div>
     </section>

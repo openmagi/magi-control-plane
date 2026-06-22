@@ -11,6 +11,8 @@ import { SidebarFooter } from "./SidebarFooter"
 /** Single source of truth — the longest-prefix matcher inside NavItem
  * uses this list to decide which item wins the active highlight. */
 const NAV_HREFS = [
+  "/rules",
+  "/rules/new",
   "/policies",
   "/policies/new",
   "/presets",
@@ -57,9 +59,8 @@ export async function Sidebar() {
       <nav className="space-y-1 flex-1 overflow-y-auto min-h-0 -mx-1 px-1" aria-label={t("nav.primary")}>
         <NavHrefsProvider hrefs={NAV_HREFS}>
           <NavGroup label={t("nav.group.authoring")}>
-            <NavItem href="/policies" label={t("nav.policies")} icon="policies" />
-            <NavItem href="/policies/new" label={t("nav.newPolicy")} icon="compile" />
-            <NavItem href="/presets" label={t("nav.presets")} icon="presets" />
+            <NavItem href="/rules" label={t("nav.rules")} icon="rules" />
+            <NavItem href="/rules/new" label={t("nav.newPolicy")} icon="compile" />
           </NavGroup>
 
           <NavGroup label={t("nav.group.runtime")}>

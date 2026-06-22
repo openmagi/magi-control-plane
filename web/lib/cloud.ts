@@ -295,19 +295,60 @@ export const cloud = {
     }
   },
 
-  /** Read-only preset catalog — backend has no auth requirement on /presets. */
-  listPresets: async (): Promise<PresetEntry[]> => {
-    const r = await fetch(`${_cloudUrl()}/presets`, {
-      method: "GET",
-      cache: "no-store",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!r.ok) {
-      console.error(`cloud ${r.status} /presets`)
-      throw new Error(`cloud ${r.status}`)
-    }
-    const d = await r.json() as { presets: PresetEntry[] }
+  /** Read-only verifier catalog. Backend merges built-in registry + the
+   * caller tenant's custom verifiers + vendor preview entries.
+   *
+   * Uses the tenant key so the backend can scope custom verifiers — if we
+   * issue this unauthenticated the response would only contain global
+   * built-ins + previews and lose the custom rows. */
+  listVerifiers: async (): Promise<PresetEntry[]> => {
+    const d = await _fetch<{ presets: PresetEntry[] }>(
+      "/verifiers", { method: "GET", keyType: "api" },
+    )
     return d.presets
+  },
+
+  /** Back-compat alias. Existing /presets page still references this; new
+   * /rules page calls listVerifiers() directly. */
+  listPresets: async (): Promise<PresetEntry[]> => {
+    return await cloud.listVerifiers()
+  },
+
+  /** Tenant-scoped custom verifier CRUD. The verifier appears in
+   * listVerifiers() output once enabled; `kind` is the runtime adapter
+   * to use ("regex" v1; "llm_judge" / "shacl" reserved). */
+  listCustomVerifiers: async (): Promise<CustomVerifierItem[]> => {
+    const d = await _fetch<{ items: CustomVerifierItem[] }>(
+      "/tenants/verifiers", { method: "GET", keyType: "api" },
+    )
+    return d.items
+  },
+
+  upsertCustomVerifier: async (
+    spec: CustomVerifierUpsertReq,
+  ): Promise<{ step: string; enabled: boolean }> => {
+    return await _fetch("/tenants/verifiers", {
+      method: "POST", keyType: "api",
+      body: JSON.stringify(spec),
+    })
+  },
+
+  setCustomVerifierEnabled: async (
+    step: string, enabled: boolean,
+  ): Promise<{ step: string; enabled: boolean }> => {
+    return await _fetch(
+      `/tenants/verifiers/${encodeURIComponent(step)}/enabled?enabled=${enabled}`,
+      { method: "POST", keyType: "api" },
+    )
+  },
+
+  deleteCustomVerifier: async (
+    step: string,
+  ): Promise<{ step: string; deleted: boolean }> => {
+    return await _fetch(
+      `/tenants/verifiers/${encodeURIComponent(step)}`,
+      { method: "DELETE", keyType: "api" },
+    )
   },
 }
 
@@ -328,6 +369,37 @@ export type PresetEntry = {
   input_schema?: Record<string, unknown> | null
   /** Verifier class name (e.g. "verify_privilege_scan"). Wired only. */
   name?: string | null
+  /** True when this row is a tenant-authored custom verifier (vs built-in
+   * registry / vendor catalog). The /rules page uses this to render
+   * edit/delete affordances and a distinct "custom" badge. */
+  is_custom?: boolean
+  /** Custom-verifier kind ("regex" today). Present only on custom rows. */
+  kind?: string
+  /** Enabled flag for custom rows. Built-ins are always conceptually
+   * enabled; their on/off state lives in the disabled-presets store. */
+  enabled?: boolean
+}
+
+export type CustomVerifierItem = {
+  step: string
+  name: string
+  category: PresetEntry["category"]
+  description: string
+  kind: string
+  config: Record<string, unknown>
+  enabled: boolean
+  ts_created: number
+  ts_updated: number
+}
+
+export type CustomVerifierUpsertReq = {
+  step: string
+  name: string
+  category: PresetEntry["category"]
+  description: string
+  kind: "regex"
+  config: { pattern: string; on_match: "deny" | "review"; reasons: string[] }
+  enabled: boolean
 }
 
 function _encId(id: string): string {
