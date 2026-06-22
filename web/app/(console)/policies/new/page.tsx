@@ -1,7 +1,6 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
-import { ChevronDownIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -15,19 +14,21 @@ import {
 
 export const dynamic = "force-dynamic"
 
+type Mode = "nl" | "advanced"
+
 // ── server actions ──────────────────────────────────────────────────
 
 async function compileNL(formData: FormData): Promise<void> {
   "use server"
   const nl = String(formData.get("nl") ?? "").trim()
   if (!nl) {
-    redirect("/policies/new?err=invalid_input&nl=" + encodeURIComponent(nl))
+    redirect("/policies/new?mode=nl&err=invalid_input&nl=" + encodeURIComponent(nl))
   }
   let result: CompileResult
   try {
     result = await cloud.compilePolicy(nl)
   } catch (e: unknown) {
-    redirect(`/policies/new?err=${codeForError(e)}&nl=${encodeURIComponent(nl)}`)
+    redirect(`/policies/new?mode=nl&err=${codeForError(e)}&nl=${encodeURIComponent(nl)}`)
   }
   const payload = JSON.stringify({ nl, ...result })
   if (payload.length > 1500) {
@@ -40,13 +41,12 @@ async function compileNL(formData: FormData): Promise<void> {
       maxAge: 60 * 5,
     })
     revalidatePath("/policies/new")
-    redirect("/policies/new?msg=large")
+    redirect("/policies/new?mode=nl&msg=large")
   }
   revalidatePath("/policies/new")
-  redirect(`/policies/new?r=${encodeURIComponent(payload)}`)
+  redirect(`/policies/new?mode=nl&r=${encodeURIComponent(payload)}`)
 }
 
-/** Shared persist routine — takes a PolicyDraft + source and PUTs to cloud. */
 async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   const errs = validateDraft(draft)
   if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
@@ -81,7 +81,6 @@ async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   } catch (e) {
     redirect(`/policies/new?err=${codeForError(e)}`); return
   }
-  // Best-effort: clear the compile cookie now that the policy is persisted.
   try {
     const { cookies } = await import("next/headers")
     cookies().delete("magi-cp-compile-result")
@@ -90,7 +89,6 @@ async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   redirect(`/policies/${encodeURI(draft.id)}?msg=saved`)
 }
 
-/** Direct save from the compile result card — no IR field editing. */
 async function saveCompiled(formData: FormData): Promise<void> {
   "use server"
   let draft: PolicyDraft
@@ -100,8 +98,6 @@ async function saveCompiled(formData: FormData): Promise<void> {
   await persistDraft(draft, source)
 }
 
-/** Save from the Advanced (manual IR) form — same draft_json shape as
- * PolicyBuilder's hidden field. */
 async function saveAdvanced(formData: FormData): Promise<void> {
   "use server"
   let draft: PolicyDraft
@@ -146,9 +142,16 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
 
 export default async function NewPolicyPage({
   searchParams,
-}: { searchParams: { err?: string; draft?: string; r?: string; msg?: string; nl?: string; advanced?: string } }) {
+}: { searchParams: { err?: string; draft?: string; r?: string; msg?: string; nl?: string; mode?: string } }) {
   const { t } = await getT()
   const flash = resolveFlash(undefined, searchParams.err)
+
+  // Determine mode. Legacy /policies/compile?draft=... hand-off opens advanced.
+  const mode: Mode =
+    searchParams.mode === "advanced" ||
+    (searchParams.mode === undefined && searchParams.draft != null)
+      ? "advanced"
+      : "nl"
 
   const fromQuery = decodeResult(searchParams.r)
   const compileResult =
@@ -160,16 +163,10 @@ export default async function NewPolicyPage({
     _parseDraftQuery(searchParams.draft) ??
     null
 
-  // Open the advanced disclosure when user is actively in it OR they came
-  // from /policies/compile?draft=... (no compileResult cookie, but a draft
-  // is supplied → legacy hand-off URL).
-  const advancedOpen =
-    searchParams.advanced === "1" || (initialDraft != null && !compileResult)
-
-  // Wired steps for the requires datalist (best-effort, only matters when
-  // the advanced form is open).
+  // Wired steps for the requires datalist — only fetched when advanced mode
+  // is active (the NL mode doesn't show that input).
   let wiredSteps: string[] = []
-  if (advancedOpen) {
+  if (mode === "advanced") {
     try {
       const presets = await cloud.listPresets()
       wiredSteps = Array.from(new Set(
@@ -192,60 +189,54 @@ export default async function NewPolicyPage({
         <ErrorState title={flash.text} severity="error" />
       )}
 
-      {/* ── Primary: NL → IR ────────────────────────────────────── */}
-      <Card className="mb-4">
-        <h2 className="text-md font-semibold m-0 mb-3">
-          {t("newPolicy.composeNL.title")}
-        </h2>
-        <form action={compileNL}>
-          <Textarea
-            id="nl"
-            name="nl"
-            rows={4}
-            defaultValue={nl}
-            label={t("compile.field.label")}
-            placeholder={t("compile.field.placeholder")}
-            required
-            spellCheck={false}
-            autoComplete="off"
-            monospace
-          />
-          <div className="mt-3 flex items-center gap-2">
-            <SubmitButton
-              label={t("compile.submit")}
-              pendingLabel={t("compile.submit.pending")}
-              progressHint={t("compile.progressHint")}
-            />
-            {compileResult && (
-              <Link href="/policies/new" className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
-                {t("newPolicy.composeNL.clear")}
-              </Link>
-            )}
-          </div>
-        </form>
-      </Card>
+      <ModeTabs t={t} mode={mode} />
 
-      {/* ── Compile result + direct Save ───────────────────────── */}
-      {compileResult && <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />}
+      {mode === "nl" ? (
+        <>
+          <Card>
+            <h2 className="text-md font-semibold m-0 mb-3">
+              {t("newPolicy.composeNL.title")}
+            </h2>
+            <form action={compileNL}>
+              <Textarea
+                id="nl"
+                name="nl"
+                rows={4}
+                defaultValue={nl}
+                label={t("compile.field.label")}
+                placeholder={t("compile.field.placeholder")}
+                required
+                spellCheck={false}
+                autoComplete="off"
+                monospace
+              />
+              <div className="mt-3 flex items-center gap-2">
+                <SubmitButton
+                  label={t("compile.submit")}
+                  pendingLabel={t("compile.submit.pending")}
+                  progressHint={t("compile.progressHint")}
+                />
+                {compileResult && (
+                  <Link href="/policies/new?mode=nl" className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
+                    {t("newPolicy.composeNL.clear")}
+                  </Link>
+                )}
+              </div>
+            </form>
+          </Card>
 
-      {/* ── Advanced: raw IR fields ────────────────────────────── */}
-      <details
-        open={advancedOpen}
-        className="group rounded-2xl border border-black/[0.06] bg-white overflow-hidden mt-2"
-      >
-        <summary className="flex items-center gap-3 px-5 py-3.5 cursor-pointer list-none select-none hover:bg-gray-50/60 transition-colors duration-150">
-          <ChevronDownIcon
-            aria-hidden="true"
-            className="w-4 h-4 text-[var(--color-text-tertiary)] transition-transform duration-200 group-open:rotate-0 -rotate-90"
-          />
-          <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0">
+          {compileResult && (
+            <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />
+          )}
+        </>
+      ) : (
+        <Card>
+          <h2 className="text-md font-semibold m-0 mb-3">
             {t("newPolicy.advanced.title")}
           </h2>
-          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">
+          <p className="text-xs text-[var(--color-text-tertiary)] mb-4">
             {t("newPolicy.advanced.hint")}
-          </span>
-        </summary>
-        <div className="p-5 border-t border-black/[0.04]">
+          </p>
           <PolicyBuilder
             submitAction={saveAdvanced}
             initial={initialDraft}
@@ -276,9 +267,67 @@ export default async function NewPolicyPage({
               placeholderMatcher: "Bash | mcp__court__file",
             }}
           />
-        </div>
-      </details>
+        </Card>
+      )}
     </>
+  )
+}
+
+// ── tabs ────────────────────────────────────────────────────────────
+
+function ModeTabs({
+  t, mode,
+}: {
+  mode: Mode
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label={t("newPolicy.modeLabel")}
+      className="inline-flex items-center gap-1 rounded-full border border-black/[0.06] bg-white p-1 mb-4"
+    >
+      <ModeTab
+        href="/policies/new?mode=nl"
+        active={mode === "nl"}
+        label={t("newPolicy.mode.nl")}
+        sub={t("newPolicy.mode.nlSub")}
+      />
+      <ModeTab
+        href="/policies/new?mode=advanced"
+        active={mode === "advanced"}
+        label={t("newPolicy.mode.advanced")}
+        sub={t("newPolicy.mode.advancedSub")}
+      />
+    </div>
+  )
+}
+
+function ModeTab({
+  href, active, label, sub,
+}: { href: string; active: boolean; label: string; sub: string }) {
+  return (
+    <Link
+      role="tab"
+      aria-selected={active}
+      href={href}
+      className={
+        active
+          ? "inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-semibold bg-[var(--color-accent)] text-white shadow-sm"
+          : "inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-gray-50"
+      }
+    >
+      {label}
+      <span
+        className={
+          active
+            ? "text-[10px] font-medium uppercase tracking-wider opacity-80"
+            : "text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]"
+        }
+      >
+        {sub}
+      </span>
+    </Link>
   )
 }
 
@@ -297,7 +346,7 @@ function CompileResultBlock({
   const draft = data.ir as unknown as PolicyDraft
 
   return (
-    <Card className="mb-4 border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
+    <Card className="mt-3 border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <h2 className="text-md font-semibold m-0">
           {t("compile.result.title")}
@@ -314,7 +363,6 @@ function CompileResultBlock({
         </Badge>
       </div>
 
-      {/* Human-readable summary */}
       <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-sm mb-3">
         <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">id</dt>
         <dd className="font-mono text-[13px]" translate="no">{draft.id}</dd>

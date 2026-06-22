@@ -113,6 +113,11 @@ const KO_RAW = {
   "newPolicy.composeNL.clear": "지우고 다시",
   "newPolicy.advanced.title": "Advanced — IR 필드 직접 편집",
   "newPolicy.advanced.hint": "스키마 알고 있는 사용자용. 위 NL 흐름이 우선",
+  "newPolicy.modeLabel": "정책 작성 모드",
+  "newPolicy.mode.nl": "자연어",
+  "newPolicy.mode.nlSub": "기본",
+  "newPolicy.mode.advanced": "Advanced",
+  "newPolicy.mode.advancedSub": "수동",
 
   /* ── verify ──────────────────────────────────────────────────── */
   "verify.title": "검증 실행",
@@ -352,7 +357,12 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.composeNL.handoffNote": "The IR fields below were filled from the compile result. Review and save.",
   "newPolicy.composeNL.clear": "Clear and start over",
   "newPolicy.advanced.title": "Advanced — edit raw IR fields",
-  "newPolicy.advanced.hint": "For users who know the schema. The NL flow above is the recommended path.",
+  "newPolicy.advanced.hint": "For users who know the IR schema.",
+  "newPolicy.modeLabel": "Authoring mode",
+  "newPolicy.mode.nl": "Natural language",
+  "newPolicy.mode.nlSub": "Default",
+  "newPolicy.mode.advanced": "Advanced",
+  "newPolicy.mode.advancedSub": "Manual",
 
   "verify.title": "Run a verifier",
   "verify.description": "Dispatches the chosen verifier. On {pass} an Ed25519 token is issued and appended to the audit ledger; on {deny} the reasons explain why. citation_verify uses a specialised path with NLI advisory — use the compile / policy forms for it.",
