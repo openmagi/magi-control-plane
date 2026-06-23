@@ -1,35 +1,39 @@
 import { setLocale } from "@/lib/i18n/actions"
 import { getT } from "@/lib/i18n/server"
 
-/** Locale switcher in the NavBar. Renders as a tiny <select> + submit
- * button so it works with JavaScript off; with JS, the same form posts. */
+/**
+ * Locale switcher. Two small pill buttons (KO / EN), each its own
+ * submit. Clicking either pill calls setLocale via a server action and
+ * the page re-renders in the picked locale. No "pick + confirm"
+ * handshake, no styled native <select> that fights the surrounding
+ * surface.
+ */
 export default async function LangSelect() {
   const { locale, t } = await getT()
   return (
-    <form action={setLocale} className="flex items-center gap-1">
-      <label className="sr-only" htmlFor="locale-select">
-        {t("nav.locale.label")}
-      </label>
-      <select
-        id="locale-select"
-        name="locale"
-        defaultValue={locale}
-        className="h-7 text-xs rounded-md px-2 border border-[var(--color-border-subtle)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
-        style={{
-          backgroundColor: "var(--color-surface-overlay)",
-          color: "var(--color-text-secondary)",
-        }}
-      >
-        <option value="ko">{t("nav.locale.ko")}</option>
-        <option value="en">{t("nav.locale.en")}</option>
-      </select>
-      <button
-        type="submit"
-        className="h-7 px-2 text-xs rounded-md border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-focus)] cursor-pointer"
-        aria-label={t("nav.locale.label")}
-      >
-        ↵
-      </button>
+    <form action={setLocale} className="inline-flex items-center gap-0.5 rounded-md border border-[var(--color-border-subtle)] bg-white/60 p-0.5">
+      <span className="sr-only">{t("nav.locale.label")}</span>
+      <LangPill value="ko" active={locale === "ko"} label="KO" />
+      <LangPill value="en" active={locale === "en"} label="EN" />
     </form>
+  )
+}
+
+function LangPill({ value, active, label }: { value: string; active: boolean; label: string }) {
+  return (
+    <button
+      type="submit"
+      name="locale"
+      value={value}
+      aria-pressed={active}
+      className={
+        "h-6 px-2 rounded text-[11px] font-semibold tracking-wide cursor-pointer transition-colors " +
+        (active
+          ? "bg-[var(--color-accent)] text-white"
+          : "bg-transparent text-[var(--color-text-tertiary)] hover:bg-black/[0.04] hover:text-[var(--color-text-secondary)]")
+      }
+    >
+      {label}
+    </button>
   )
 }

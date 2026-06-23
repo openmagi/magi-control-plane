@@ -54,10 +54,15 @@ type ConditionKind =
   | "none" | "regex" | "llm_critic"
   | "evidence_ref" | "shacl"
 
+// Coverage audit (D41+): before_tool_use needs regex + llm_critic on
+// the tool call args too. "Block git push when AWS key in diff" and
+// "block rm -rf /" are the most common Claude Code policies and they
+// gate on the tool INPUT, not on tool name alone. pre_final gets regex
+// too so "no secrets in the final answer" is one click away.
 const CONDITION_KINDS_BY_LIFECYCLE: Record<Lifecycle, readonly ConditionKind[]> = {
-  before_tool_use: ["tool_name", "fetch_domain", "domain_allowlist"],
+  before_tool_use: ["tool_name", "regex", "llm_critic", "fetch_domain", "domain_allowlist"],
   after_tool_use:  ["none", "regex", "llm_critic"],
-  pre_final:       ["evidence_ref", "shacl", "llm_critic"],
+  pre_final:       ["evidence_ref", "regex", "shacl", "llm_critic"],
 }
 
 const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
@@ -178,11 +183,14 @@ function parseCsv(raw: string): string[] {
 function actionHeaderEN(s: WizardState): string {
   if (s.conditionKind === "none") return "On every trigger,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "tool_name") return "When the tool runs,"
+  if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "When the tool args match,"
+  if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "When the LLM critic on tool args returns NO,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "When the fetch domain matches,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "domain_allowlist") return "When the domain is NOT in the allowlist,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "regex") return "When the output matches,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "llm_critic") return "When the LLM critic returns NO,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "evidence_ref") return "When the evidence ref FAILS,"
+  if (s.lifecycle === "pre_final"       && s.conditionKind === "regex") return "When the final answer matches,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "shacl") return "When the SHACL shape does NOT conform,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "llm_critic") return "When the LLM critic returns NO,"
   return "When the condition fires,"
@@ -191,11 +199,14 @@ function actionHeaderEN(s: WizardState): string {
 function actionHeaderKO(s: WizardState): string {
   if (s.conditionKind === "none") return "트리거가 일어날 때마다,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "tool_name") return "도구가 실행되려고 할 때,"
+  if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "도구 인자가 패턴에 매칭될 때,"
+  if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "도구 인자에 대한 LLM critic이 NO를 반환할 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "fetch 도메인이 매칭될 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "domain_allowlist") return "도메인이 허용 목록에 없을 때,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "regex") return "출력이 패턴에 매칭될 때,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "llm_critic") return "LLM critic이 NO를 반환할 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "evidence_ref") return "Evidence ref 가 FAIL일 때,"
+  if (s.lifecycle === "pre_final"       && s.conditionKind === "regex") return "최종 응답이 패턴에 매칭될 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "shacl") return "SHACL shape에 conform 하지 않을 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "llm_critic") return "LLM critic이 NO를 반환할 때,"
   return "조건이 발동할 때,"
@@ -893,9 +904,9 @@ function GuidedWizard({
     <div className="max-w-2xl mx-auto">
       <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} />
 
-      {effectiveStep === 1 && <Step1Lifecycle t={t} state={state} action={advanceAction} />}
-      {effectiveStep === 2 && <Step2ConditionKind t={t} state={state} action={advanceAction} />}
-      {effectiveStep === 3 && <Step3Specifics t={t} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
+      {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
+      {effectiveStep === 2 && <Step2ConditionKind t={t} locale={locale} state={state} action={advanceAction} />}
+      {effectiveStep === 3 && <Step3Specifics t={t} locale={locale} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
       {effectiveStep === 4 && <Step4Action t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
       {effectiveStep === 6 && <Step6Review t={t} locale={locale} state={state} action={saveAction} wiredSteps={wiredSteps} />}
@@ -1016,31 +1027,22 @@ function inputCls(): string {
 /* ─── Step 1. Lifecycle ──────────────────────────────────────────── */
 
 function Step1Lifecycle({
-  t, state, action,
+  t, locale, state, action,
 }: {
-  state: WizardState; action: (fd: FormData) => Promise<void>
+  state: WizardState; locale: "ko" | "en"
+  action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const current = state.lifecycle ?? "before_tool_use"
-  const labelKO: Record<Lifecycle, string> = {
-    before_tool_use: "도구 실행 전 (before_tool_use)",
-    after_tool_use:  "도구 실행 후 (after_tool_use)",
-    pre_final:       "최종 응답 직전 (pre_final)",
-  }
-  const labelEN: Record<Lifecycle, string> = {
-    before_tool_use: "Before a tool runs (before_tool_use)",
-    after_tool_use:  "After a tool returns (after_tool_use)",
-    pre_final:       "Before the final answer (pre_final)",
-  }
-  const subKO: Record<Lifecycle, string> = {
-    before_tool_use: "Bash, Edit, WebFetch 등 도구 호출이 실행되기 직전에 게이트가 발동합니다.",
-    after_tool_use:  "도구가 결과를 돌려준 직후, 출력을 검사하거나 후속 동작을 정합니다.",
-    pre_final:       "에이전트가 최종 응답을 사용자에게 내놓기 직전, 마지막 검증 단계.",
-  }
-  const subEN: Record<Lifecycle, string> = {
-    before_tool_use: "Fires right before a tool call (Bash, Edit, WebFetch, …) executes.",
-    after_tool_use:  "Fires right after a tool returns, lets you inspect or react to the output.",
-    pre_final:       "Last-chance verification before the agent sends its final answer to the user.",
+  const ko = locale === "ko"
+  const labels: Record<Lifecycle, { label: string; sub: string }> = ko ? {
+    before_tool_use: { label: "도구 실행 전 (before_tool_use)", sub: "Bash, Edit, WebFetch 등 도구 호출이 실행되기 직전에 게이트가 발동합니다." },
+    after_tool_use:  { label: "도구 실행 후 (after_tool_use)",  sub: "도구가 결과를 돌려준 직후, 출력을 검사하거나 후속 동작을 정합니다." },
+    pre_final:       { label: "최종 응답 직전 (pre_final)",       sub: "에이전트가 최종 응답을 사용자에게 내놓기 직전, 마지막 검증 단계." },
+  } : {
+    before_tool_use: { label: "Before a tool runs (before_tool_use)", sub: "Fires right before a tool call (Bash, Edit, WebFetch, …) executes." },
+    after_tool_use:  { label: "After a tool returns (after_tool_use)", sub: "Fires right after a tool returns, lets you inspect or react to the output." },
+    pre_final:       { label: "Before the final answer (pre_final)",   sub: "Last-chance verification before the agent sends its final answer to the user." },
   }
   return (
     <StepShell
@@ -1057,9 +1059,9 @@ function Step1Lifecycle({
             name="lifecycle"
             value={life}
             defaultChecked={current === life}
-            label={labelKO[life] || labelEN[life]}
-            sub={subKO[life] || subEN[life]}
-            badge={life === "before_tool_use" ? { variant: "ok", text: "recommended" } : undefined}
+            label={labels[life].label}
+            sub={labels[life].sub}
+            badge={life === "before_tool_use" ? { variant: "ok", text: ko ? "추천" : "recommended" } : undefined}
           />
         ))}
         <NextButton label={t("newPolicy.wizard.next")} />
@@ -1071,31 +1073,46 @@ function Step1Lifecycle({
 /* ─── Step 2. ConditionKind ──────────────────────────────────────── */
 
 function Step2ConditionKind({
-  t, state, action,
+  t, locale, state, action,
 }: {
-  state: WizardState; action: (fd: FormData) => Promise<void>
+  state: WizardState; locale: "ko" | "en"
+  action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const lifecycle = state.lifecycle ?? "before_tool_use"
   const kinds = CONDITION_KINDS_BY_LIFECYCLE[lifecycle]
   const defaultPick: ConditionKind = state.conditionKind && kinds.includes(state.conditionKind)
     ? state.conditionKind : kinds[0]
-  const labels: Record<ConditionKind, { label: string; sub: string }> = {
+  const ko = locale === "ko"
+  const labels: Record<ConditionKind, { label: string; sub: string }> = ko ? {
     tool_name:         { label: "도구 이름",        sub: "특정 도구가 호출될 때 (예: Bash, Edit, Write)." },
     fetch_domain:      { label: "Fetch 도메인",     sub: "WebFetch가 특정 도메인에 접근하려고 할 때." },
     domain_allowlist:  { label: "도메인 allowlist", sub: "허용 목록에 없는 외부 도메인 접근 차단." },
-    none:              { label: "조건 없이",        sub: "모든 후처리에 대해 발동합니다 (조건 없음)." },
+    none:              { label: "조건 없이",        sub: "모든 트리거에 대해 발동합니다 (조건 없음)." },
     regex:             { label: "정규식",           sub: "도구 출력이 Python re 패턴에 매칭되면." },
     llm_critic:        { label: "LLM critic",      sub: "자연어 기준을 LLM에 물어보고 NO면 발동." },
     evidence_ref:      { label: "Evidence ref",    sub: "프리셋 verifier 결과가 FAIL이면 발동." },
     shacl:             { label: "SHACL shape",     sub: "Turtle로 작성한 시맨틱 제약을 위반하면." },
+  } : {
+    tool_name:         { label: "Tool name",       sub: "Fires when a specific tool is invoked (e.g. Bash, Edit, Write)." },
+    fetch_domain:      { label: "Fetch domain",    sub: "Fires when WebFetch tries to hit a specific domain." },
+    domain_allowlist:  { label: "Domain allowlist", sub: "Blocks fetches to any domain not on the allowlist." },
+    none:              { label: "No condition",    sub: "Fires on every trigger (no per-call check)." },
+    regex:             { label: "Regex",           sub: "Fires when the tool output matches a Python re pattern." },
+    llm_critic:        { label: "LLM critic",      sub: "Asks an LLM a yes/no criterion; fires on NO." },
+    evidence_ref:      { label: "Evidence ref",    sub: "Fires when a wired verifier returns FAIL." },
+    shacl:             { label: "SHACL shape",     sub: "Fires when the evidence graph doesn't conform to a Turtle shape." },
   }
+  const badgeNone   = ko ? "Step 3 건너뜀" : "step 3 skipped"
+  const badgePrev   = ko ? "프리뷰" : "preview"
   return (
     <StepShell
       t={t}
       prevHref={buildWizardHref(state, 1)}
       heading={t("newPolicy.wizard.step2.heading")}
-      helper={`${lifecycle} 라이프사이클에서 검사할 조건을 고르세요.`}
+      helper={ko
+        ? `${lifecycle} 라이프사이클에서 검사할 조건을 고르세요.`
+        : `Pick the condition to check in the ${lifecycle} lifecycle.`}
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="2" />
@@ -1108,8 +1125,8 @@ function Step2ConditionKind({
             defaultChecked={defaultPick === k}
             label={labels[k].label}
             sub={labels[k].sub}
-            badge={k === "none" ? { variant: "info", text: "step 3 skipped" }
-              : k === "llm_critic" || k === "shacl" ? { variant: "info", text: "preview" }
+            badge={k === "none" ? { variant: "info", text: badgeNone }
+              : k === "llm_critic" || k === "shacl" ? { variant: "info", text: badgePrev }
               : undefined}
           />
         ))}
@@ -1122,12 +1139,14 @@ function Step2ConditionKind({
 /* ─── Step 3. Specifics ──────────────────────────────────────────── */
 
 function Step3Specifics({
-  t, state, wiredSteps, action,
+  t, locale, state, wiredSteps, action,
 }: {
-  state: WizardState; wiredSteps: WiredStep[]
+  state: WizardState; locale: "ko" | "en"
+  wiredSteps: WiredStep[]
   action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  const ko = locale === "ko"
   const kind = state.conditionKind ?? "tool_name"
   return (
     <StepShell
@@ -1141,7 +1160,7 @@ function Step3Specifics({
         <HiddenState state={{ lifecycle: state.lifecycle, conditionKind: state.conditionKind }} />
         {kind === "tool_name" && (
           <div>
-            <FieldLabel>도구 이름</FieldLabel>
+            <FieldLabel>{ko ? "도구 이름" : "Tool name"}</FieldLabel>
             <input
               name="toolName"
               required
@@ -1158,13 +1177,15 @@ function Step3Specifics({
               {TOOL_PRESETS.map((m) => <option key={m} value={m} />)}
             </datalist>
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              빌트인 도구 이름 또는 <code className="font-mono">mcp__server__tool</code> 패턴.
+              {ko
+                ? <>빌트인 도구 이름 또는 <code className="font-mono">mcp__server__tool</code> 패턴.</>
+                : <>A built-in tool name or an <code className="font-mono">mcp__server__tool</code> pattern.</>}
             </p>
           </div>
         )}
         {kind === "fetch_domain" && (
           <div>
-            <FieldLabel>Fetch 도메인</FieldLabel>
+            <FieldLabel>{ko ? "Fetch 도메인" : "Fetch domain"}</FieldLabel>
             <input
               name="fetchDomain"
               required
@@ -1177,13 +1198,15 @@ function Step3Specifics({
               className={inputCls() + " font-mono"}
             />
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              WebFetch가 해당 도메인 (또는 서브도메인)에 접근하려고 할 때 발동.
+              {ko
+                ? "WebFetch가 해당 도메인 (또는 서브도메인)에 접근하려고 할 때 발동."
+                : "Fires when WebFetch tries to hit this domain (or its subdomains)."}
             </p>
           </div>
         )}
         {kind === "domain_allowlist" && (
           <div>
-            <FieldLabel>허용 도메인 (쉼표로 구분)</FieldLabel>
+            <FieldLabel>{ko ? "허용 도메인 (쉼표 구분)" : "Allowed domains (comma-separated)"}</FieldLabel>
             <input
               name="allowlist"
               required
@@ -1196,13 +1219,15 @@ function Step3Specifics({
               className={inputCls() + " font-mono"}
             />
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              여기 명시한 도메인이 아니면 정책이 발동합니다 (negative match).
+              {ko
+                ? "여기 명시한 도메인이 아니면 정책이 발동합니다 (negative match)."
+                : "Anything not on this list fires the policy (negative match)."}
             </p>
           </div>
         )}
         {kind === "regex" && (
           <div>
-            <FieldLabel>정규식 패턴 (Python re)</FieldLabel>
+            <FieldLabel>{ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}</FieldLabel>
             <input
               name="pattern"
               required
@@ -1218,34 +1243,42 @@ function Step3Specifics({
         )}
         {kind === "llm_critic" && (
           <div>
-            <FieldLabel>LLM critic 기준</FieldLabel>
+            <FieldLabel>{ko ? "LLM critic 기준" : "LLM critic criterion"}</FieldLabel>
             <Textarea
               id="w-llm"
               name="llmCriterion"
               rows={3}
               required
               defaultValue={state.llmCriterion ?? ""}
-              placeholder="예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
+              placeholder={ko
+                ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
+                : "e.g. Does the output contain a guess the user did not ask for?"}
               spellCheck={false}
               autoComplete="off"
               monospace
               label=""
             />
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              자연어 기준 → 백엔드가 LLM에 yes/no로 물어봄. preview 단계.
+              {ko
+                ? "자연어 기준 → 백엔드가 LLM에 yes/no로 물어봄. preview 단계."
+                : "Natural-language criterion. Backend asks an LLM yes/no. Preview."}
             </p>
           </div>
         )}
         {kind === "evidence_ref" && (
           <div className="space-y-3">
-            <FieldLabel>참조할 evidence verifier (1개 이상)</FieldLabel>
+            <FieldLabel>{ko ? "참조할 evidence verifier (1개 이상)" : "Evidence verifier(s) to reference"}</FieldLabel>
             <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
-              아래 verifier의 결과가 FAIL이면 정책이 발동합니다. 여러 개 고르면 ALL이 PASS여야 통과.
+              {ko
+                ? "아래 verifier의 결과가 FAIL이면 정책이 발동합니다. 여러 개 고르면 ALL이 PASS여야 통과."
+                : "Fires when any picked verifier returns FAIL. If you pick multiple, ALL must PASS to clear."}
             </p>
             <div className="space-y-2">
               {wiredSteps.length === 0 && (
                 <p className="text-xs text-amber-700">
-                  연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요.
+                  {ko
+                    ? "연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요."
+                    : "No wired verifiers yet. Enable one under /presets first."}
                 </p>
               )}
               {wiredSteps.map((w) => (
@@ -1263,7 +1296,7 @@ function Step3Specifics({
         )}
         {kind === "shacl" && (
           <div>
-            <FieldLabel>SHACL shape (Turtle)</FieldLabel>
+            <FieldLabel>{ko ? "SHACL shape (Turtle)" : "SHACL shape (Turtle)"}</FieldLabel>
             <Textarea
               id="w-shacl"
               name="shaclTtl"
@@ -1277,7 +1310,9 @@ function Step3Specifics({
               label=""
             />
             <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              evidence 그래프가 이 shape에 conform하지 않으면 정책 발동. preview 단계.
+              {ko
+                ? "evidence 그래프가 이 shape에 conform하지 않으면 정책 발동. preview 단계."
+                : "Fires when the evidence graph does not conform to this shape. Preview."}
             </p>
           </div>
         )}
@@ -1300,19 +1335,25 @@ function Step4Action({
   const allowed = ACTIONS_BY_LIFECYCLE[lifecycle]
   const defaultPick: Action = state.action && allowed.includes(state.action)
     ? state.action : allowed[0]
-  const header = locale === "ko" ? actionHeaderKO(state) : actionHeaderEN(state)
-  const labels: Record<Action, { label: string; sub: string }> = {
+  const ko = locale === "ko"
+  const header = ko ? actionHeaderKO(state) : actionHeaderEN(state)
+  const labels: Record<Action, { label: string; sub: string }> = ko ? {
     block: { label: "Block",        sub: "호출 자체를 거부합니다. 에이전트가 동작을 못합니다." },
     ask:   { label: "Ask a human",  sub: "리뷰 큐로 보내고 사람이 승인해야 진행됩니다." },
     audit: { label: "Audit",        sub: "원장에만 기록하고 통과시킵니다 (관찰 모드)." },
-    strip: { label: "Strip",        sub: "출력에서 매칭된 부분을 제거합니다 (PostToolUse 전용)." },
+    strip: { label: "Strip",        sub: "출력에서 매칭된 부분을 제거합니다 (after_tool_use 전용)." },
+  } : {
+    block: { label: "Block",        sub: "Refuse the call. The agent cannot proceed." },
+    ask:   { label: "Ask a human",  sub: "Send to the review queue; a human must approve to proceed." },
+    audit: { label: "Audit",        sub: "Record to the ledger only; pass through (observe mode)." },
+    strip: { label: "Strip",        sub: "Remove the matched span from the output (after_tool_use only)." },
   }
   return (
     <StepShell
       t={t}
       prevHref={buildWizardHref(state, state.conditionKind === "none" ? 2 : 3)}
       heading={t("newPolicy.wizard.step4.heading")}
-      helper={header + " 어떤 동작을 할까요?"}
+      helper={header + (ko ? " 어떤 동작을 할까요?" : " what should this policy do?")}
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="4" />
