@@ -37,11 +37,53 @@ banner "Open Magi · Control Plane installer (self-host)"
 echo ""
 
 # ── docker check ────────────────────────────────────────────────────────
+# Platform-aware install hint when Docker is missing. We DON'T auto-install
+# Docker (heavy, requires admin, distro-specific). Instead we print the
+# one-liner the user can paste, then exit cleanly so they can re-run this
+# installer after Docker is up.
+detect_docker_install_hint() {
+  local os="$(uname -s)"
+  local arch="$(uname -m)"
+  case "$os" in
+    Darwin)
+      printf "  Install on macOS (%s):\n" "$arch"
+      printf "    brew install --cask docker         # easiest, then launch Docker.app\n"
+      printf "    # or download Docker Desktop:        https://www.docker.com/products/docker-desktop\n"
+      ;;
+    Linux)
+      if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        printf "  Install on Linux (%s %s):\n" "${ID:-linux}" "${VERSION_ID:-}"
+      else
+        printf "  Install on Linux:\n"
+      fi
+      printf "    curl -fsSL https://get.docker.com | sh        # official one-liner, works on most distros\n"
+      printf "    sudo usermod -aG docker \$USER && newgrp docker\n"
+      ;;
+    *)
+      printf "  Install:\n"
+      printf "    https://www.docker.com/products/docker-desktop\n"
+      ;;
+  esac
+  printf "\n  Then re-run:\n"
+  printf "    curl -fsSL %s/install.sh | bash\n" "$SITE_URL"
+}
+
 step "Checking Docker"
-command -v docker >/dev/null 2>&1 \
-  || fail "Docker not found. Install from https://docs.docker.com/get-docker then re-run."
-docker compose version >/dev/null 2>&1 \
-  || fail "Docker Compose v2 not found. Update Docker Desktop (or install the compose plugin), then re-run."
+if ! command -v docker >/dev/null 2>&1; then
+  printf "\033[1;31m✗\033[0m Docker not found.\n\n" >&2
+  detect_docker_install_hint >&2
+  printf "\n" >&2
+  exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  printf "\033[1;31m✗\033[0m Docker Compose v2 not found.\n" >&2
+  printf "  Docker is installed but the compose plugin isn't.\n" >&2
+  printf "  On Docker Desktop 20+ it ships built-in (update Docker Desktop).\n" >&2
+  printf "  On Linux: sudo apt-get install docker-compose-plugin  (or your distro equivalent).\n\n" >&2
+  exit 1
+fi
 DOCKER_VER=$(docker --version | awk '{print $3}' | tr -d ,)
 COMPOSE_VER=$(docker compose version --short)
 ok "docker $DOCKER_VER  +  compose $COMPOSE_VER"
