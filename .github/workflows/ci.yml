@@ -54,6 +54,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Design-system drift gate
+        run: node scripts/check-ds-drift.mjs components/ui/_ds
+
       - name: TypeScript check
         run: npx tsc --noEmit
 

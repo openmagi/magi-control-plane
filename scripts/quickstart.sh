@@ -144,20 +144,43 @@ for i in $(seq 1 90); do
 done
 [ "$HEALTHY" = "1" ] || fail "control plane did not become healthy in 90s. Check 'cd $INSTALL_DIR && docker compose logs cloud'."
 
+# ── wait for dashboard too ─────────────────────────────────────────────
+# The dashboard (Next.js) container serves /api/downloads/managed-settings
+# and /api/downloads/gate-binary. We fetched the dashboard image already
+# via compose; wait until it's accepting requests too. Healthcheck runs
+# every 15s with start_period=30s, so 60s total is comfortable.
+step "Waiting for dashboard at http://localhost:$DASH_PORT"
+DASH_T0=$(date +%s)
+DASH_OK=0
+for i in $(seq 1 60); do
+  if curl -fsS "http://localhost:$DASH_PORT/welcome" >/dev/null 2>&1; then
+    DASH_DT=$(( $(date +%s) - DASH_T0 ))
+    ok "dashboard ready after ${DASH_DT}s"
+    DASH_OK=1
+    break
+  fi
+  sleep 1
+done
+[ "$DASH_OK" = "1" ] || fail "dashboard did not become ready in 60s. Check 'cd $INSTALL_DIR && docker compose logs dashboard'."
+
 # ── claude code wiring ─────────────────────────────────────────────────
 API_URL="http://localhost:$CLOUD_PORT"
+# Downloads (managed-settings.json + magi-gate.sh) are dashboard routes
+# (Next.js /api/downloads/*), not cloud routes — fetch from the
+# dashboard port. The gate's runtime traffic still hits the cloud.
+DOWNLOADS_URL="http://localhost:$DASH_PORT"
 
 step "Wiring Claude Code (managed-settings.json + magi-gate.sh)"
 CLAUDE_DIR="$HOME/.claude"
 LBIN="$HOME/.local/bin"
 mkdir -p "$CLAUDE_DIR" "$LBIN"
 
-curl -fsSL "$API_URL/api/downloads/managed-settings" \
+curl -fsSL "$DOWNLOADS_URL/api/downloads/managed-settings" \
   -o "$CLAUDE_DIR/managed-settings.json" \
-  || fail "could not fetch managed-settings.json from $API_URL"
-curl -fsSL "$API_URL/api/downloads/gate-binary" \
+  || fail "could not fetch managed-settings.json from $DOWNLOADS_URL"
+curl -fsSL "$DOWNLOADS_URL/api/downloads/gate-binary" \
   -o "$LBIN/magi-gate.sh" \
-  || fail "could not fetch magi-gate.sh from $API_URL"
+  || fail "could not fetch magi-gate.sh from $DOWNLOADS_URL"
 chmod 0755 "$LBIN/magi-gate.sh"
 
 case ":$PATH:" in
