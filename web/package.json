@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3787",
-    "prebuild": "cp ../scripts/quickstart.sh public/install.sh",
+    "prebuild": "[ -f ../scripts/quickstart.sh ] && cp ../scripts/quickstart.sh public/install.sh || true",
     "build": "next build",
     "start": "next start -p 3787",
     "test": "vitest run",
