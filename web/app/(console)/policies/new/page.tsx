@@ -50,24 +50,31 @@ const LIFECYCLE_TO_EVENT: Record<Lifecycle, string> = {
 }
 
 type ConditionKind =
-  | "tool_name" | "fetch_domain" | "domain_allowlist"
-  | "none" | "regex" | "llm_critic"
+  | "none"
+  | "regex" | "llm_critic"
+  | "fetch_domain" | "domain_allowlist"
   | "evidence_ref" | "shacl"
 
-// Coverage audit (D41+): before_tool_use needs regex + llm_critic on
-// the tool call args too. "Block git push when AWS key in diff" and
-// "block rm -rf /" are the most common Claude Code policies and they
-// gate on the tool INPUT, not on tool name alone. pre_final gets regex
-// too so "no secrets in the final answer" is one click away.
+// D42 restructure. Tool scope is now its OWN step (Step 2). Condition
+// kinds are about WHAT TO CHECK, not WHICH TOOL.
+//   before_tool_use → tool scope first, then any condition that makes
+//                     sense on the tool input.
+//   after_tool_use  → tool scope first, then check on the tool output.
+//   pre_final       → tool scope is irrelevant (fires once before the
+//                     agent's final answer); Step 2 auto-skips.
+//
+// fetch_domain / domain_allowlist still surface as condition kinds but
+// only when WebFetch is in the picked tool scope; they're convenience
+// shortcuts that build a URL regex for you.
 const CONDITION_KINDS_BY_LIFECYCLE: Record<Lifecycle, readonly ConditionKind[]> = {
-  before_tool_use: ["tool_name", "regex", "llm_critic", "fetch_domain", "domain_allowlist"],
+  before_tool_use: ["none", "regex", "llm_critic", "fetch_domain", "domain_allowlist"],
   after_tool_use:  ["none", "regex", "llm_critic"],
-  pre_final:       ["evidence_ref", "regex", "shacl", "llm_critic"],
+  pre_final:       ["none", "evidence_ref", "regex", "shacl", "llm_critic"],
 }
 
 const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
-  "tool_name", "fetch_domain", "domain_allowlist",
   "none", "regex", "llm_critic",
+  "fetch_domain", "domain_allowlist",
   "evidence_ref", "shacl",
 ]
 
@@ -103,9 +110,13 @@ interface WiredStep {
 
 interface WizardState {
   lifecycle?: Lifecycle
+  // D42: Step 2. Which tool(s) this policy applies to.
+  //   undefined / "" / "*"  →  any tool
+  //   "Bash,Edit,Write"     →  alternation (matcher = "Bash|Edit|Write")
+  toolScope?: string
+  // D42: Step 3. What to check, with inline specifics in the same step.
   conditionKind?: ConditionKind
-  // per-kind specifics
-  toolName?: string                 // tool_name
+  // per-kind specifics (filled inline on Step 3)
   fetchDomain?: string              // fetch_domain
   allowlist?: string                // domain_allowlist (csv)
   pattern?: string                  // regex
@@ -123,26 +134,26 @@ const SENTINEL_RE_DEFAULT =
   "GATE_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)"
 
 function deriveMatcher(s: WizardState): string {
-  if (s.lifecycle === "before_tool_use") {
-    if (s.conditionKind === "tool_name") {
-      // toolName is a CSV (one or more tool names). Backend matcher
-      // supports `A|B|C` regex alternation.
-      const tools = parseCsv(s.toolName ?? "").filter(Boolean)
-      if (tools.length === 0) return "Bash"
-      if (tools.length === 1) return tools[0]
-      return tools.join("|")
-    }
-    if (s.conditionKind === "fetch_domain" || s.conditionKind === "domain_allowlist") {
-      return "WebFetch"
-    }
-  }
-  return "*"
+  // pre_final has no tool scope (fires once on the final answer).
+  if (s.lifecycle === "pre_final") return "*"
+  const scope = (s.toolScope ?? "").trim()
+  if (!scope || scope === "*") return "*"
+  // Single tool → use as-is. Multi → alternation.
+  const tools = parseCsv(scope).filter(Boolean)
+  if (tools.length === 0) return "*"
+  if (tools.length === 1) return tools[0]
+  return tools.join("|")
+}
+
+function toolScopeIncludesWebFetch(s: WizardState): boolean {
+  const scope = (s.toolScope ?? "").trim()
+  if (!scope || scope === "*") return true
+  return parseCsv(scope).some((t) => t === "WebFetch")
 }
 
 function deriveRequires(s: WizardState): PolicyDraft["requires"] {
   const kind = s.conditionKind
   switch (kind) {
-    case "tool_name":
     case "none":
       return []
     case "fetch_domain": {
@@ -186,8 +197,7 @@ function parseCsv(raw: string): string[] {
 
 // Step 4 dynamic header phrasing.
 function actionHeaderEN(s: WizardState): string {
-  if (s.conditionKind === "none") return "On every trigger,"
-  if (s.lifecycle === "before_tool_use" && s.conditionKind === "tool_name") return "When the tool runs,"
+  if (s.conditionKind === "none") return "On every matching tool call,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "When the tool args match,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "When the LLM critic on tool args returns NO,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "When the fetch domain matches,"
@@ -202,15 +212,14 @@ function actionHeaderEN(s: WizardState): string {
 }
 
 function actionHeaderKO(s: WizardState): string {
-  if (s.conditionKind === "none") return "트리거가 일어날 때마다,"
-  if (s.lifecycle === "before_tool_use" && s.conditionKind === "tool_name") return "도구가 실행되려고 할 때,"
+  if (s.conditionKind === "none") return "조건에 매칭되는 도구 호출마다,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "도구 인자가 패턴에 매칭될 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "도구 인자에 대한 LLM critic이 NO를 반환할 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "fetch 도메인이 매칭될 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "domain_allowlist") return "도메인이 허용 목록에 없을 때,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "regex") return "출력이 패턴에 매칭될 때,"
   if (s.lifecycle === "after_tool_use"  && s.conditionKind === "llm_critic") return "LLM critic이 NO를 반환할 때,"
-  if (s.lifecycle === "pre_final"       && s.conditionKind === "evidence_ref") return "Evidence ref 가 FAIL일 때,"
+  if (s.lifecycle === "pre_final"       && s.conditionKind === "evidence_ref") return "Evidence ref가 FAIL일 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "regex") return "최종 응답이 패턴에 매칭될 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "shacl") return "SHACL shape에 conform 하지 않을 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "llm_critic") return "LLM critic이 NO를 반환할 때,"
@@ -358,40 +367,43 @@ async function advanceWizard(formData: FormData): Promise<void> {
   for (const v of evSource) if (!evMerged.includes(v)) evMerged.push(v)
   if (evMerged.length > 0) params.set("evidence_refs", evMerged.join(","))
 
-  // Tool-name multi (Step 3 condition kind = tool_name). Merge chip
-  // checks + custom text into a single CSV `toolName` field.
-  const toolChipsRaw = formData
-    .getAll("toolName_chip")
+  // Tool scope (Step 2). Mode radio (`any` / `specific`) decides the
+  // shape; chip + custom CSV merge when `specific`.
+  const scopeMode = String(formData.get("toolScope_mode") ?? "")
+  const scopeChipsRaw = formData
+    .getAll("toolScope_chip")
     .filter((v): v is string => typeof v === "string")
     .map((v) => v.trim())
     .filter(Boolean)
-  const toolCustomRaw = String(formData.get("toolName_custom") ?? "")
+  const scopeCustomRaw = String(formData.get("toolScope_custom") ?? "")
     .split(",").map((s) => s.trim()).filter(Boolean)
-  const toolNameSubmitted = stepIn === 3 && (toolChipsRaw.length > 0 || toolCustomRaw.length > 0)
-  if (toolNameSubmitted) {
-    const merged: string[] = []
-    for (const v of [...toolChipsRaw, ...toolCustomRaw]) {
-      if (!merged.includes(v)) merged.push(v)
+  const scopeSubmitted = stepIn === 2 && scopeMode !== ""
+  if (scopeSubmitted) {
+    if (scopeMode === "any") {
+      params.set("toolScope", "*")
+    } else if (scopeMode === "specific") {
+      const merged: string[] = []
+      for (const v of [...scopeChipsRaw, ...scopeCustomRaw]) {
+        if (!merged.includes(v)) merged.push(v)
+      }
+      if (merged.length > 0) params.set("toolScope", merged.join(","))
     }
-    if (merged.length > 0) params.set("toolName", merged.join(","))
   }
 
   for (const [k, v] of formData.entries()) {
     if (typeof v !== "string") continue
     if (k.startsWith("$ACTION") || k === "_step") continue
     if (k === "evidence_ref" || k === "evidence_refs") continue
-    if (k === "toolName_chip" || k === "toolName_custom") continue
-    // The toolName hidden input may carry our sentinel; ignore it so
-    // the chip-merged CSV above wins on Step 3 submit.
-    if (k === "toolName" && (v === "__sentinel__" || toolNameSubmitted)) continue
+    if (k === "toolScope_mode" || k === "toolScope_chip" || k === "toolScope_custom") continue
+    if (k === "toolScope" && scopeSubmitted) continue
     if (!v.trim()) continue
     params.set(k, v.trim())
   }
 
-  // Auto-skip Step 3 (specifics) when conditionKind === "none".
-  const condK = params.get("conditionKind") as ConditionKind | null
-  if (stepIn === 2 && condK === "none") {
-    nextStep = 4
+  // pre_final has no tool scope; auto-skip Step 2.
+  const lifecycle = params.get("lifecycle") as Lifecycle | null
+  if (stepIn === 1 && lifecycle === "pre_final") {
+    nextStep = 3
   }
 
   params.set("step", String(nextStep))
@@ -411,28 +423,15 @@ async function saveWizard(formData: FormData): Promise<void> {
     redirect("/policies/new?mode=guided&step=4&err=strip_unsupported"); return
   }
 
-  // Re-derive toolName from chip + custom inputs if they're present
-  // (Step 3 submit case). Otherwise read the hidden toolName field.
-  const toolChips = formData.getAll("toolName_chip")
-    .filter((v): v is string => typeof v === "string")
-    .map((v) => v.trim()).filter(Boolean)
-  const toolCustom = String(formData.get("toolName_custom") ?? "")
-    .split(",").map((s) => s.trim()).filter(Boolean)
-  let toolName: string | undefined
-  if (toolChips.length > 0 || toolCustom.length > 0) {
-    const merged: string[] = []
-    for (const v of [...toolChips, ...toolCustom]) {
-      if (!merged.includes(v)) merged.push(v)
-    }
-    toolName = merged.length > 0 ? merged.join(",") : undefined
-  } else {
-    const raw = String(formData.get("toolName") ?? "").trim()
-    toolName = (raw && raw !== "__sentinel__") ? raw : undefined
-  }
+  // Resolve toolScope: prefer the hidden carry (most steps) over the
+  // Step 2 mode submission. Step 2 itself runs through advanceWizard
+  // which already wrote the merged value into the URL.
+  const toolScopeRaw = String(formData.get("toolScope") ?? "").trim()
+  const toolScope = toolScopeRaw || undefined
   const state: WizardState = {
     lifecycle,
+    toolScope,
     conditionKind,
-    toolName,
     fetchDomain: String(formData.get("fetchDomain") ?? "").trim() || undefined,
     allowlist: String(formData.get("allowlist") ?? "").trim() || undefined,
     pattern: String(formData.get("pattern") ?? "").trim() || undefined,
@@ -480,9 +479,6 @@ async function saveWizard(formData: FormData): Promise<void> {
 function validateSpecifics(s: WizardState): string | null {
   switch (s.conditionKind) {
     case "none":
-      return null
-    case "tool_name":
-      if (!s.toolName) return "invalid_input"
       return null
     case "fetch_domain":
       if (!s.fetchDomain) return "invalid_input"
@@ -710,8 +706,9 @@ const TEMPLATES: readonly Template[] = [
     ko: { title: "AWS 키 누출 차단", sub: "Bash 인자에서 AKIA…가 보이면 차단" },
     en: { title: "Block AWS keys", sub: "Block any tool call whose args contain AKIA…" },
     params: {
-      lifecycle: "before_tool_use", conditionKind: "regex",
-      pattern: "AKIA[A-Z0-9]{16}", action: "block",
+      lifecycle: "before_tool_use", toolScope: "*",
+      conditionKind: "regex", pattern: "AKIA[A-Z0-9]{16}",
+      action: "block",
     },
   },
   {
@@ -719,8 +716,9 @@ const TEMPLATES: readonly Template[] = [
     ko: { title: "sudo 차단", sub: "Bash에서 sudo 실행 시 차단" },
     en: { title: "Block sudo", sub: "Block any Bash call containing `sudo`" },
     params: {
-      lifecycle: "before_tool_use", conditionKind: "regex",
-      pattern: "(^|\\s)sudo\\s", action: "block",
+      lifecycle: "before_tool_use", toolScope: "Bash",
+      conditionKind: "regex", pattern: "(^|\\s)sudo\\s",
+      action: "block",
     },
   },
   {
@@ -728,8 +726,8 @@ const TEMPLATES: readonly Template[] = [
     ko: { title: "Bash 전부 감사", sub: "Bash 호출 시 원장에만 기록 (관찰 모드)" },
     en: { title: "Audit every Bash", sub: "Record every Bash call to the ledger (observe-only)" },
     params: {
-      lifecycle: "before_tool_use", conditionKind: "tool_name",
-      toolName: "Bash", action: "audit",
+      lifecycle: "before_tool_use", toolScope: "Bash",
+      conditionKind: "none", action: "audit",
     },
   },
   {
@@ -737,7 +735,8 @@ const TEMPLATES: readonly Template[] = [
     ko: { title: "WebFetch allowlist", sub: "허용 외 도메인은 사람 승인" },
     en: { title: "WebFetch allowlist", sub: "Ask a human for any non-allowlisted domain" },
     params: {
-      lifecycle: "before_tool_use", conditionKind: "domain_allowlist",
+      lifecycle: "before_tool_use", toolScope: "WebFetch",
+      conditionKind: "domain_allowlist",
       allowlist: "github.com, npmjs.com, api.openai.com",
       action: "ask",
     },
@@ -940,7 +939,7 @@ function buildWizardHref(state: WizardState, step: number): string {
   params.set("step", String(step))
   if (state.lifecycle) params.set("lifecycle", state.lifecycle)
   if (state.conditionKind) params.set("conditionKind", state.conditionKind)
-  if (state.toolName) params.set("toolName", state.toolName)
+  if (state.toolScope) params.set("toolScope", state.toolScope)
   if (state.fetchDomain) params.set("fetchDomain", state.fetchDomain)
   if (state.allowlist) params.set("allowlist", state.allowlist)
   if (state.pattern) params.set("pattern", state.pattern)
@@ -960,7 +959,7 @@ function HiddenState({ state }: { state: WizardState }) {
     <>
       {state.lifecycle && <input type="hidden" name="lifecycle" value={state.lifecycle} />}
       {state.conditionKind && <input type="hidden" name="conditionKind" value={state.conditionKind} />}
-      {state.toolName && <input type="hidden" name="toolName" value={state.toolName} />}
+      {state.toolScope && <input type="hidden" name="toolScope" value={state.toolScope} />}
       {state.fetchDomain && <input type="hidden" name="fetchDomain" value={state.fetchDomain} />}
       {state.allowlist && <input type="hidden" name="allowlist" value={state.allowlist} />}
       {state.pattern && <input type="hidden" name="pattern" value={state.pattern} />}
@@ -1041,8 +1040,8 @@ function GuidedWizard({
 
   const state: WizardState = {
     lifecycle,
+    toolScope: searchParams.toolScope || undefined,
     conditionKind,
-    toolName: searchParams.toolName || undefined,
     fetchDomain: searchParams.fetchDomain || undefined,
     allowlist: searchParams.allowlist || undefined,
     pattern: searchParams.pattern || undefined,
@@ -1054,17 +1053,17 @@ function GuidedWizard({
     description: searchParams.description || undefined,
   }
 
-  // Auto-skip Step 3 visually when conditionKind === "none". User
-  // navigating from Step 4 ← back lands on Step 2 instead.
-  const effectiveStep = state.conditionKind === "none" && step === 3 ? 4 : step
+  // pre_final auto-skips Step 2 (tool scope is irrelevant).
+  const effectiveStep =
+    state.lifecycle === "pre_final" && step === 2 ? 3 : step
 
   return (
     <div className="max-w-2xl mx-auto">
       <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} />
 
       {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
-      {effectiveStep === 2 && <Step2ConditionKind t={t} locale={locale} state={state} action={advanceAction} />}
-      {effectiveStep === 3 && <Step3Specifics t={t} locale={locale} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
+      {effectiveStep === 2 && <Step2ToolScope t={t} locale={locale} state={state} action={advanceAction} />}
+      {effectiveStep === 3 && <Step3Condition t={t} locale={locale} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
       {effectiveStep === 4 && <Step4Action t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
       {effectiveStep === 6 && <Step6Review t={t} locale={locale} state={state} action={saveAction} wiredSteps={wiredSteps} />}
@@ -1230,64 +1229,104 @@ function Step1Lifecycle({
 
 /* ─── Step 2. ConditionKind ──────────────────────────────────────── */
 
-function Step2ConditionKind({
+function Step2ToolScope({
   t, locale, state, action,
 }: {
   state: WizardState; locale: "ko" | "en"
   action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
-  const lifecycle = state.lifecycle ?? "before_tool_use"
-  const kinds = CONDITION_KINDS_BY_LIFECYCLE[lifecycle]
-  const defaultPick: ConditionKind = state.conditionKind && kinds.includes(state.conditionKind)
-    ? state.conditionKind : kinds[0]
   const ko = locale === "ko"
-  const labels: Record<ConditionKind, { label: string; sub: string }> = ko ? {
-    tool_name:         { label: "도구 이름",        sub: "특정 도구가 호출될 때 (예: Bash, Edit, Write)." },
-    fetch_domain:      { label: "Fetch 도메인",     sub: "WebFetch가 특정 도메인에 접근하려고 할 때." },
-    domain_allowlist:  { label: "도메인 allowlist", sub: "허용 목록에 없는 외부 도메인 접근 차단." },
-    none:              { label: "조건 없이",        sub: "모든 트리거에 대해 발동합니다 (조건 없음)." },
-    regex:             { label: "정규식",           sub: "도구 출력이 Python re 패턴에 매칭되면." },
-    llm_critic:        { label: "LLM critic",      sub: "자연어 기준을 LLM에 물어보고 NO면 발동." },
-    evidence_ref:      { label: "Evidence ref",    sub: "프리셋 verifier 결과가 FAIL이면 발동." },
-    shacl:             { label: "SHACL shape",     sub: "Turtle로 작성한 시맨틱 제약을 위반하면." },
-  } : {
-    tool_name:         { label: "Tool name",       sub: "Fires when a specific tool is invoked (e.g. Bash, Edit, Write)." },
-    fetch_domain:      { label: "Fetch domain",    sub: "Fires when WebFetch tries to hit a specific domain." },
-    domain_allowlist:  { label: "Domain allowlist", sub: "Blocks fetches to any domain not on the allowlist." },
-    none:              { label: "No condition",    sub: "Fires on every trigger (no per-call check)." },
-    regex:             { label: "Regex",           sub: "Fires when the tool output matches a Python re pattern." },
-    llm_critic:        { label: "LLM critic",      sub: "Asks an LLM a yes/no criterion; fires on NO." },
-    evidence_ref:      { label: "Evidence ref",    sub: "Fires when a wired verifier returns FAIL." },
-    shacl:             { label: "SHACL shape",     sub: "Fires when the evidence graph doesn't conform to a Turtle shape." },
-  }
-  const badgeNone   = ko ? "Step 3 건너뜀" : "step 3 skipped"
-  const badgePrev   = ko ? "프리뷰" : "preview"
+  const picked = parseCsv(state.toolScope ?? "")
+  const isAny = !state.toolScope || state.toolScope === "*"
+  const builtinChecks = new Set(picked.filter((p) => (TOOL_PRESETS as readonly string[]).includes(p)))
+  const customStr = picked.filter((p) => !(TOOL_PRESETS as readonly string[]).includes(p)).join(", ")
   return (
     <StepShell
       t={t}
       prevHref={buildWizardHref(state, 1)}
-      heading={t("newPolicy.wizard.step2.heading")}
+      heading={ko ? "어떤 도구에 적용할까요?" : "Which tool(s) does this policy apply to?"}
       helper={ko
-        ? `${lifecycle} 라이프사이클에서 검사할 조건을 고르세요.`
-        : `Pick the condition to check in the ${lifecycle} lifecycle.`}
+        ? "모든 도구를 검사하거나, 특정 도구만 골라 좁힐 수 있습니다."
+        : "Apply to every tool call, or narrow to a specific set."}
     >
-      <form action={action} className="space-y-3">
+      <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ lifecycle: state.lifecycle }} />
-        {kinds.map((k) => (
-          <RadioCard
-            key={k}
-            name="conditionKind"
-            value={k}
-            defaultChecked={defaultPick === k}
-            label={labels[k].label}
-            sub={labels[k].sub}
-            badge={k === "none" ? { variant: "info", text: badgeNone }
-              : k === "llm_critic" || k === "shacl" ? { variant: "info", text: badgePrev }
-              : undefined}
+
+        <label className="block cursor-pointer">
+          <input
+            type="radio"
+            name="toolScope_mode"
+            value="any"
+            defaultChecked={isAny}
+            className="peer sr-only"
           />
-        ))}
+          <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+            <span className="block text-sm font-semibold text-[var(--color-text-primary)]">
+              {ko ? "모든 도구" : "Any tool"}
+            </span>
+            <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
+              {ko ? "도구 종류 상관없이 모든 호출을 검사합니다." : "Match every tool call regardless of name."}
+            </span>
+          </span>
+          <input type="hidden" name="toolScope_any" value="1" disabled className="peer-checked:[&]:hidden hidden" />
+        </label>
+
+        <label className="block cursor-pointer">
+          <input
+            type="radio"
+            name="toolScope_mode"
+            value="specific"
+            defaultChecked={!isAny && (picked.length > 0)}
+            className="peer sr-only"
+          />
+          <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+            <span className="block text-sm font-semibold text-[var(--color-text-primary)]">
+              {ko ? "특정 도구만" : "Specific tools"}
+            </span>
+            <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
+              {ko ? "고른 도구 중 하나라도 호출되면 정책이 발동합니다." : "Match if any picked tool is invoked."}
+            </span>
+          </span>
+          <span className="mt-3 hidden peer-checked:block space-y-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {TOOL_PRESETS.map((tool) => (
+                <label key={tool} className="block cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="toolScope_chip"
+                    value={tool}
+                    defaultChecked={builtinChecks.has(tool)}
+                    className="peer sr-only"
+                  />
+                  <span className="block rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-center text-sm font-mono text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.06] peer-checked:text-[var(--color-text-primary)]">
+                    {tool}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div>
+              <FieldLabel>{ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)"}</FieldLabel>
+              <input
+                name="toolScope_custom"
+                maxLength={2000}
+                defaultValue={customStr}
+                placeholder="mcp__court__file, mcp__db__query"
+                spellCheck={false}
+                autoComplete="off"
+                className={inputCls() + " font-mono text-sm"}
+              />
+            </div>
+          </span>
+        </label>
+
+        {/* Carry a marker so advance/save know Step 2 is the submitter
+            and should merge chip + custom into toolScope. The "any"
+            mode is communicated via the toolScope_any field (separate
+            radio above keeps the keyboard semantics natural). */}
+        {/* If user picks "any" mode, the toolScope_any flag is filled
+            by a hidden input declared inside that label. */}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -1296,7 +1335,7 @@ function Step2ConditionKind({
 
 /* ─── Step 3. Specifics ──────────────────────────────────────────── */
 
-function Step3Specifics({
+function Step3Condition({
   t, locale, state, wiredSteps, action,
 }: {
   state: WizardState; locale: "ko" | "en"
@@ -1305,208 +1344,184 @@ function Step3Specifics({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const ko = locale === "ko"
-  const kind = state.conditionKind ?? "tool_name"
+  const lifecycle = state.lifecycle ?? "before_tool_use"
+  // Filter condition kinds by lifecycle AND by whether WebFetch is in
+  // the toolScope (for fetch_domain / domain_allowlist shortcuts).
+  const allowedRaw = CONDITION_KINDS_BY_LIFECYCLE[lifecycle]
+  const hasWebFetch = toolScopeIncludesWebFetch(state)
+  const kinds = allowedRaw.filter((k) =>
+    (k !== "fetch_domain" && k !== "domain_allowlist") || hasWebFetch
+  )
+  const defaultPick: ConditionKind = state.conditionKind && kinds.includes(state.conditionKind)
+    ? state.conditionKind : kinds[0]
+  const labels: Record<ConditionKind, { label: string; sub: string }> = ko ? {
+    none:              { label: "조건 없이",        sub: "도구 스코프에 매칭되는 모든 호출에 발동 (조건 없음)." },
+    fetch_domain:      { label: "Fetch 도메인",     sub: "WebFetch가 특정 도메인에 접근하려고 할 때." },
+    domain_allowlist:  { label: "도메인 allowlist", sub: "허용 목록에 없는 외부 도메인 접근 차단." },
+    regex:             { label: "정규식 (인자/출력)", sub: "도구 인자 또는 출력이 Python re 패턴에 매칭되면." },
+    llm_critic:        { label: "LLM critic",      sub: "자연어 기준을 LLM에 물어보고 NO면 발동." },
+    evidence_ref:      { label: "Evidence ref",    sub: "프리셋 verifier 결과가 FAIL이면 발동." },
+    shacl:             { label: "SHACL shape",     sub: "Turtle로 작성한 시맨틱 제약을 위반하면." },
+  } : {
+    none:              { label: "No condition",    sub: "Fires on every matching tool call (no per-call check)." },
+    fetch_domain:      { label: "Fetch domain",    sub: "Fires when WebFetch tries to hit a specific domain." },
+    domain_allowlist:  { label: "Domain allowlist", sub: "Blocks fetches to any domain not on the allowlist." },
+    regex:             { label: "Regex (args/output)", sub: "Fires when the tool args or output match a Python re pattern." },
+    llm_critic:        { label: "LLM critic",      sub: "Asks an LLM a yes/no criterion; fires on NO." },
+    evidence_ref:      { label: "Evidence ref",    sub: "Fires when a wired verifier returns FAIL." },
+    shacl:             { label: "SHACL shape",     sub: "Fires when the evidence graph doesn't conform to a Turtle shape." },
+  }
+  const previewBadge = ko ? "프리뷰" : "preview"
+  const prevStep = state.lifecycle === "pre_final" ? 1 : 2
+
   return (
     <StepShell
       t={t}
-      prevHref={buildWizardHref(state, 2)}
-      heading={t("newPolicy.wizard.step3.heading")}
-      helper={t("newPolicy.wizard.step3.helper")}
+      prevHref={buildWizardHref(state, prevStep)}
+      heading={ko ? "어떤 조건일 때 검사하나요?" : "Under what condition?"}
+      helper={ko
+        ? "조건을 고르면 바로 아래에 기준 입력 칸이 열립니다."
+        : "Pick a condition and the criteria input opens right below."}
     >
-      <form action={action} className="space-y-4">
+      <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
-        <HiddenState state={{ lifecycle: state.lifecycle, conditionKind: state.conditionKind }} />
-        {kind === "tool_name" && (() => {
-          const picked = parseCsv(state.toolName ?? "Bash")
-          const builtinChecks = new Set(picked.filter((p) => (TOOL_PRESETS as readonly string[]).includes(p)))
-          const customStr = picked.filter((p) => !(TOOL_PRESETS as readonly string[]).includes(p)).join(", ")
+        <HiddenState state={{
+          lifecycle: state.lifecycle,
+          toolScope: state.toolScope,
+        }} />
+        {kinds.map((k) => {
+          const badge = (k === "llm_critic" || k === "shacl")
+            ? { variant: "info" as const, text: previewBadge }
+            : undefined
           return (
-            <div className="space-y-3">
-              <FieldLabel>{ko ? "도구 (1개 이상)" : "Tools (one or more)"}</FieldLabel>
-              <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
-                {ko
-                  ? "선택한 도구 중 하나라도 호출되면 정책이 발동합니다."
-                  : "Fires if any of the picked tools is invoked."}
-              </p>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {TOOL_PRESETS.map((tool) => (
-                  <label key={tool} className="block cursor-pointer">
-                    <input
-                      type="checkbox"
-                      name="toolName_chip"
-                      value={tool}
-                      defaultChecked={builtinChecks.has(tool)}
-                      className="peer sr-only"
-                    />
-                    <span className="block rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-center text-sm font-mono text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.06] peer-checked:text-[var(--color-text-primary)]">
-                      {tool}
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <div>
-                <FieldLabel>{ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)"}</FieldLabel>
-                <input
-                  name="toolName_custom"
-                  maxLength={2000}
-                  defaultValue={customStr}
-                  placeholder="mcp__court__file, mcp__db__query"
-                  spellCheck={false}
-                  autoComplete="off"
-                  className={inputCls() + " font-mono text-sm"}
-                />
-                <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-                  {ko
-                    ? <>빌트인 외 도구 또는 <code className="font-mono">mcp__server__tool</code> 패턴을 쉼표로 구분해 추가.</>
-                    : <>Non-builtin tools or <code className="font-mono">mcp__server__tool</code> patterns. Separate by comma.</>}
-                </p>
-              </div>
-              {/* Carry the merged CSV via a hidden input so server actions
-                  see a stable `toolName` field regardless of which UI
-                  control submitted. */}
+            <label key={k} className="block cursor-pointer">
               <input
-                type="hidden"
-                name="toolName"
-                value="__sentinel__"
-                /* The actual value gets built by advanceWizard/saveWizard
-                   below from toolName_chip + toolName_custom. */
+                type="radio"
+                name="conditionKind"
+                value={k}
+                defaultChecked={defaultPick === k}
+                required
+                className="peer sr-only"
               />
-            </div>
+              <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+                <span className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[k].label}</span>
+                  {badge && <Badge variant={badge.variant}>{badge.text}</Badge>}
+                </span>
+                <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[k].sub}</span>
+              </span>
+              {/* Inline specifics: shown only when this radio is the
+                  peer-checked one. CSS-only reactive — no JS required. */}
+              <span className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-2">
+                {k === "fetch_domain" && (
+                  <div>
+                    <FieldLabel>{ko ? "Fetch 도메인" : "Fetch domain"}</FieldLabel>
+                    <input
+                      name="fetchDomain"
+                      maxLength={256}
+                      defaultValue={state.fetchDomain ?? ""}
+                      placeholder="example.com"
+                      spellCheck={false}
+                      autoComplete="off"
+                      className={inputCls() + " font-mono"}
+                    />
+                  </div>
+                )}
+                {k === "domain_allowlist" && (
+                  <div>
+                    <FieldLabel>{ko ? "허용 도메인 (쉼표 구분)" : "Allowed domains (comma-separated)"}</FieldLabel>
+                    <input
+                      name="allowlist"
+                      maxLength={2000}
+                      defaultValue={state.allowlist ?? ""}
+                      placeholder="api.openai.com, github.com, npmjs.com"
+                      spellCheck={false}
+                      autoComplete="off"
+                      className={inputCls() + " font-mono"}
+                    />
+                  </div>
+                )}
+                {k === "regex" && (
+                  <div>
+                    <FieldLabel>{ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}</FieldLabel>
+                    <input
+                      name="pattern"
+                      maxLength={2000}
+                      defaultValue={state.pattern ?? ""}
+                      placeholder="AKIA[A-Z0-9]{16}"
+                      spellCheck={false}
+                      autoComplete="off"
+                      className={inputCls() + " font-mono"}
+                    />
+                  </div>
+                )}
+                {k === "llm_critic" && (
+                  <div>
+                    <FieldLabel>{ko ? "LLM critic 기준" : "LLM critic criterion"}</FieldLabel>
+                    <Textarea
+                      id={`w-llm-${k}`}
+                      name="llmCriterion"
+                      rows={3}
+                      defaultValue={state.llmCriterion ?? ""}
+                      placeholder={ko
+                        ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
+                        : "e.g. Does the output contain a guess the user did not ask for?"}
+                      spellCheck={false}
+                      autoComplete="off"
+                      monospace
+                      label=""
+                    />
+                  </div>
+                )}
+                {k === "evidence_ref" && (
+                  <div className="space-y-2">
+                    <FieldLabel>{ko ? "참조할 verifier (1개 이상)" : "Verifier(s) to reference"}</FieldLabel>
+                    {wiredSteps.length === 0 && (
+                      <p className="text-xs text-amber-700">
+                        {ko
+                          ? "연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요."
+                          : "No wired verifiers yet. Enable one under /presets first."}
+                      </p>
+                    )}
+                    <div className="space-y-2">
+                      {wiredSteps.map((w) => (
+                        <CheckboxCard
+                          key={w.step}
+                          name="evidence_ref"
+                          value={w.step}
+                          defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
+                          label={w.step}
+                          sub={w.description}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {k === "shacl" && (
+                  <div>
+                    <FieldLabel>SHACL shape (Turtle)</FieldLabel>
+                    <Textarea
+                      id="w-shacl"
+                      name="shaclTtl"
+                      rows={6}
+                      defaultValue={state.shaclTtl ?? ""}
+                      placeholder={"@prefix sh: <http://www.w3.org/ns/shacl#> .\n…"}
+                      spellCheck={false}
+                      autoComplete="off"
+                      monospace
+                      label=""
+                    />
+                  </div>
+                )}
+                {k === "none" && (
+                  <p className="text-xs text-[var(--color-text-secondary)] m-0">
+                    {ko ? "기준 입력 없음. 매칭된 모든 호출에 대해 그대로 다음 단계로." : "No criteria to fill. The action runs on every matching call."}
+                  </p>
+                )}
+              </span>
+            </label>
           )
-        })()}
-        {kind === "fetch_domain" && (
-          <div>
-            <FieldLabel>{ko ? "Fetch 도메인" : "Fetch domain"}</FieldLabel>
-            <input
-              name="fetchDomain"
-              required
-              maxLength={256}
-              defaultValue={state.fetchDomain ?? ""}
-              placeholder="example.com"
-              spellCheck={false}
-              autoComplete="off"
-              autoFocus
-              className={inputCls() + " font-mono"}
-            />
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {ko
-                ? "WebFetch가 해당 도메인 (또는 서브도메인)에 접근하려고 할 때 발동."
-                : "Fires when WebFetch tries to hit this domain (or its subdomains)."}
-            </p>
-          </div>
-        )}
-        {kind === "domain_allowlist" && (
-          <div>
-            <FieldLabel>{ko ? "허용 도메인 (쉼표 구분)" : "Allowed domains (comma-separated)"}</FieldLabel>
-            <input
-              name="allowlist"
-              required
-              maxLength={2000}
-              defaultValue={state.allowlist ?? ""}
-              placeholder="api.openai.com, github.com, npmjs.com"
-              spellCheck={false}
-              autoComplete="off"
-              autoFocus
-              className={inputCls() + " font-mono"}
-            />
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {ko
-                ? "여기 명시한 도메인이 아니면 정책이 발동합니다 (negative match)."
-                : "Anything not on this list fires the policy (negative match)."}
-            </p>
-          </div>
-        )}
-        {kind === "regex" && (
-          <div>
-            <FieldLabel>{ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}</FieldLabel>
-            <input
-              name="pattern"
-              required
-              maxLength={2000}
-              defaultValue={state.pattern ?? ""}
-              placeholder="AKIA[A-Z0-9]{16}"
-              spellCheck={false}
-              autoComplete="off"
-              autoFocus
-              className={inputCls() + " font-mono"}
-            />
-          </div>
-        )}
-        {kind === "llm_critic" && (
-          <div>
-            <FieldLabel>{ko ? "LLM critic 기준" : "LLM critic criterion"}</FieldLabel>
-            <Textarea
-              id="w-llm"
-              name="llmCriterion"
-              rows={3}
-              required
-              defaultValue={state.llmCriterion ?? ""}
-              placeholder={ko
-                ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
-                : "e.g. Does the output contain a guess the user did not ask for?"}
-              spellCheck={false}
-              autoComplete="off"
-              monospace
-              label=""
-            />
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {ko
-                ? "자연어 기준 → 백엔드가 LLM에 yes/no로 물어봄. preview 단계."
-                : "Natural-language criterion. Backend asks an LLM yes/no. Preview."}
-            </p>
-          </div>
-        )}
-        {kind === "evidence_ref" && (
-          <div className="space-y-3">
-            <FieldLabel>{ko ? "참조할 evidence verifier (1개 이상)" : "Evidence verifier(s) to reference"}</FieldLabel>
-            <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
-              {ko
-                ? "아래 verifier의 결과가 FAIL이면 정책이 발동합니다. 여러 개 고르면 ALL이 PASS여야 통과."
-                : "Fires when any picked verifier returns FAIL. If you pick multiple, ALL must PASS to clear."}
-            </p>
-            <div className="space-y-2">
-              {wiredSteps.length === 0 && (
-                <p className="text-xs text-amber-700">
-                  {ko
-                    ? "연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요."
-                    : "No wired verifiers yet. Enable one under /presets first."}
-                </p>
-              )}
-              {wiredSteps.map((w) => (
-                <CheckboxCard
-                  key={w.step}
-                  name="evidence_ref"
-                  value={w.step}
-                  defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
-                  label={w.step}
-                  sub={w.description}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        {kind === "shacl" && (
-          <div>
-            <FieldLabel>{ko ? "SHACL shape (Turtle)" : "SHACL shape (Turtle)"}</FieldLabel>
-            <Textarea
-              id="w-shacl"
-              name="shaclTtl"
-              rows={6}
-              required
-              defaultValue={state.shaclTtl ?? ""}
-              placeholder={"@prefix sh: <http://www.w3.org/ns/shacl#> .\n…"}
-              spellCheck={false}
-              autoComplete="off"
-              monospace
-              label=""
-            />
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {ko
-                ? "evidence 그래프가 이 shape에 conform하지 않으면 정책 발동. preview 단계."
-                : "Fires when the evidence graph does not conform to this shape. Preview."}
-            </p>
-          </div>
-        )}
+        })}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
@@ -1542,7 +1557,7 @@ function Step4Action({
   return (
     <StepShell
       t={t}
-      prevHref={buildWizardHref(state, state.conditionKind === "none" ? 2 : 3)}
+      prevHref={buildWizardHref(state, 3)}
       heading={t("newPolicy.wizard.step4.heading")}
       helper={header + (ko ? " 어떤 동작을 할까요?" : " what should this policy do?")}
     >
@@ -1550,8 +1565,8 @@ function Step4Action({
         <input type="hidden" name="_step" value="4" />
         <HiddenState state={{
           lifecycle: state.lifecycle,
+          toolScope: state.toolScope,
           conditionKind: state.conditionKind,
-          toolName: state.toolName,
           fetchDomain: state.fetchDomain,
           allowlist: state.allowlist,
           pattern: state.pattern,
@@ -1598,8 +1613,8 @@ function Step4Action({
 function suggestPolicyId(state: WizardState): string {
   const life = state.lifecycle ?? "before_tool_use"
   const lifeSlug = life.replace(/_/g, "-")
-  const tail = state.toolName
-    ? state.toolName.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  const tail = state.toolScope && state.toolScope !== "*"
+    ? state.toolScope.toLowerCase().replace(/[^a-z0-9]+/g, "-")
     : state.fetchDomain
       ? state.fetchDomain.replace(/[^a-z0-9]+/g, "-")
       : state.conditionKind || "any"
@@ -1699,13 +1714,23 @@ function Step6Review({
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">lifecycle</dt>
           <dd className="text-[var(--color-text-secondary)]">{state.lifecycle}</dd>
 
+          {state.lifecycle !== "pre_final" && (
+            <>
+              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">tool scope</dt>
+              <dd className="text-[var(--color-text-secondary)]">
+                {!state.toolScope || state.toolScope === "*"
+                  ? <em>any tool</em>
+                  : <code className="font-mono">{state.toolScope}</code>}
+              </dd>
+            </>
+          )}
+
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">trigger (IR)</dt>
           <dd><code className="font-mono">{event} · {matcher}</code></dd>
 
           <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">condition</dt>
           <dd className="text-[var(--color-text-secondary)]">
             {state.conditionKind === "none" ? "—" : state.conditionKind}
-            {state.conditionKind === "tool_name" && state.toolName && <> · <code className="font-mono">{state.toolName}</code></>}
             {state.conditionKind === "fetch_domain" && state.fetchDomain && <> · <code className="font-mono">{state.fetchDomain}</code></>}
             {state.conditionKind === "domain_allowlist" && state.allowlist && <> · <code className="font-mono">{state.allowlist}</code></>}
             {state.conditionKind === "regex" && state.pattern && <> · <code className="font-mono">{state.pattern}</code></>}
