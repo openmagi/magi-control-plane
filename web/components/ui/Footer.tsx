@@ -13,7 +13,7 @@ export default function Footer() {
   return (
     <footer
       role="contentinfo"
-      className="mt-12 border-t border-[var(--color-border-subtle)] py-6 text-xs text-[var(--color-text-tertiary)]"
+      className="mt-12 border-t border-[var(--color-border-subtle)] py-6 text-sm text-[var(--color-text-tertiary)]"
       style={{ maxWidth: "var(--content-max)", margin: "32px auto 0", padding: "20px 20px 32px" }}
     >
       <div className="flex flex-wrap items-center justify-between gap-4">

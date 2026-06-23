@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * Source-level invariants for SidebarClient — guards the a11y
+ * Source-level invariants for SidebarClient. guards the a11y
  * + interaction contract without a full React Testing Library setup.
  * The runtime behaviours (drawer open/close, ESC, backdrop tap) are
  * exercised manually in the running dev server during D3 + D7.

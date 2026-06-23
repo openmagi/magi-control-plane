@@ -18,7 +18,7 @@ export const viewport: Viewport = {
 }
 
 /**
- * Root layout — minimal shell shared by both route groups:
+ * Root layout. minimal shell shared by both route groups:
  *   (marketing) → NavBarShell + Footer (see app/(marketing)/layout.tsx)
  *   (console)   → Sidebar + content    (see app/(console)/layout.tsx)
  *

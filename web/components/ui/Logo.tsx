@@ -1,6 +1,6 @@
 import Image from "next/image"
 
-/** Brand wordmark — Open Magi logo lockup, ~h-8. */
+/** Brand wordmark. Open Magi logo lockup, ~h-8. */
 export function Logo({ className = "" }: { className?: string }) {
   return (
     <Image
@@ -15,7 +15,7 @@ export function Logo({ className = "" }: { className?: string }) {
   )
 }
 
-/** Brand mark only — square icon, used when space is constrained. */
+/** Brand mark only. square icon, used when space is constrained. */
 export function LogoIcon({ className = "h-8 w-8" }: { className?: string }) {
   return (
     <Image

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * Source-level invariants for Sidebar — guards the IA contract:
+ * Source-level invariants for Sidebar. guards the IA contract:
  * 4 groups, 6 leaf items (1+2+2+1). Authoring group has one leaf
  * ("Rules") since policy authoring is reachable from the page's CTA;
  * /rules/new is not surfaced in the sidebar. All keyed to i18n +

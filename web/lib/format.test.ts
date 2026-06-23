@@ -8,11 +8,11 @@ describe("fmtUtc", () => {
   })
 
   it("returns em-dash on undefined", () => {
-    expect(fmtUtc(undefined)).toBe("—")
+    expect(fmtUtc(undefined)).toBe(", ")
   })
 
   it("returns em-dash on NaN", () => {
-    expect(fmtUtc(Number.NaN)).toBe("—")
+    expect(fmtUtc(Number.NaN)).toBe(", ")
   })
 })
 

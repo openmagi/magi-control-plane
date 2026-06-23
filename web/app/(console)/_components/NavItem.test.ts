@@ -6,7 +6,7 @@ import path from "node:path"
  * NavItem renders icons from a string-keyed registry (not a passed
  * ComponentType, because Next.js cannot serialize component references
  * across the server→client boundary). This test makes sure every key
- * referenced by the server Sidebar exists in the client ICONS map —
+ * referenced by the server Sidebar exists in the client ICONS map , 
  * a string typo would otherwise crash the page at runtime instead of
  * surfacing as a TS error.
  */

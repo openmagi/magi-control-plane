@@ -54,7 +54,7 @@ async function _loadWorkspaceUncached(): Promise<WorkspaceData> {
  * reject, policy enable/disable) call `revalidateTag(WORKSPACE_TAG)`
  * to invalidate sooner.
  *
- * The cache key is intentionally a single static array — every page
+ * The cache key is intentionally a single static array. every page
  * server-rendered under the (console) shell shares the same workspace
  * snapshot. There is no per-page variation.
  */

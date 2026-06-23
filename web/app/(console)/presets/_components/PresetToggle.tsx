@@ -13,7 +13,7 @@ export interface PresetToggleProps {
 
 /**
  * Toggle switch. Uses absolute positioning + inline-style transform
- * instead of Tailwind translate classes — earlier attempts using
+ * instead of Tailwind translate classes. earlier attempts using
  * `translate-x-6` / `translate-x-1` rendered the thumb in the middle
  * of the track (item layout collision inside an inline-flex), so we
  * pin the thumb absolutely and animate `transform` directly. No
@@ -22,8 +22,8 @@ export interface PresetToggleProps {
  * Dimensions:
  *   Track 24×44  (h-6 w-11), rounded-full
  *   Thumb 20×20  (h-5 w-5), pinned 2px from top, 2px from left
- *   On  → transform: translateX(20px) — thumb sits 2px from RIGHT edge
- *   Off → transform: translateX(0)    — thumb sits 2px from LEFT edge
+ *   On  → transform: translateX(20px). thumb sits 2px from RIGHT edge
+ *   Off → transform: translateX(0)   . thumb sits 2px from LEFT edge
  */
 export function PresetToggle({
   presetId, enabled, action, labelOn, labelOff,

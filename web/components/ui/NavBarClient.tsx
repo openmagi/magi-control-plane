@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useState, type ReactNode } from "react"
+import { LogoLockup } from "./LogoLockup"
 
 export type NavItem = { href: string; label: string }
 
@@ -42,9 +43,9 @@ export default function NavBarClient({
       <Link
         href="/"
         aria-label={`${brand} home`}
-        className="font-medium text-[var(--color-text-primary)] hover:no-underline"
+        className="hover:no-underline"
       >
-        {brand}
+        <LogoLockup size="md" />
       </Link>
 
       {/* Desktop nav */}
@@ -79,7 +80,7 @@ export default function NavBarClient({
       {/* Mobile menu trigger */}
       <button
         type="button"
-        className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md border border-[var(--color-border-subtle)] bg-transparent cursor-pointer"
+        className="md:hidden inline-flex items-center justify-center w-11 h-11 rounded-md border border-[var(--color-border-subtle)] bg-transparent cursor-pointer"
         aria-controls="primary-nav-drawer"
         aria-expanded={open}
         aria-label={open ? closeMenuLabel : openMenuLabel}

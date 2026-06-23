@@ -27,7 +27,7 @@ function CitationStatusTag({ s }: { s: string }) {
 }
 
 function NliTag({ label, score }: { label?: string; score?: number }) {
-  if (!label) return <span className="text-[var(--color-text-tertiary)]">—</span>
+  if (!label) return <span className="text-[var(--color-text-tertiary)]">, </span>
   const variant = label === "entailment" ? "ok"
                 : label === "contradiction" ? "deny"
                 : "review"
@@ -162,7 +162,7 @@ export default async function HitlDetailPage({
                   <td><CitationStatusTag s={c.status} /></td>
                   <td><NliTag label={c.nli_label} score={c.nli_score} /></td>
                   <td className="text-[var(--color-text-tertiary)]">
-                    {(c.reasons ?? []).length === 0 ? "—" : (c.reasons ?? []).join("; ")}
+                    {(c.reasons ?? []).length === 0 ? ", " : (c.reasons ?? []).join("; ")}
                   </td>
                 </tr>
               ))}
@@ -197,10 +197,10 @@ export default async function HitlDetailPage({
                   <td className="text-[var(--color-text-tertiary)]">{fmtUtc(e.ts)}</td>
                   <td>
                     {String(e.body?.verdict ?? "") &&
-                      <CitationStatusTag s={String(e.body?.verdict ?? "—")} />}
+                      <CitationStatusTag s={String(e.body?.verdict ?? ", ")} />}
                   </td>
                   <td className="text-[var(--color-text-tertiary)]">
-                    {String(e.body?.step ?? "—")}
+                    {String(e.body?.step ?? ", ")}
                   </td>
                   <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
                 </tr>

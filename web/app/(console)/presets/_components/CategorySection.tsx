@@ -12,7 +12,7 @@ export interface CategorySectionProps {
 }
 
 /**
- * Collapsible category container — list shell, not a grid. Children
+ * Collapsible category container. list shell, not a grid. Children
  * are PresetRow elements that supply their own border-bottom dividers
  * (last:border-b-0 strips the trailing one).
  *

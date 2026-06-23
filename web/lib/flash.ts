@@ -1,5 +1,5 @@
 /**
- * Flash messages — sanitize ?msg / ?err search params.
+ * Flash messages. sanitize ?msg / ?err search params.
  *
  * The previous design echoed arbitrary querystring text into "action error"
  * banners, which a phishing link could weaponize ("error: paste your API key
@@ -14,8 +14,8 @@ const OK_CODES: Record<string, string> = {
 }
 
 const ERR_CODES: Record<string, string> = {
-  cloud_unreachable: "Cloud unreachable — see server logs.",
-  config_error: "Server is misconfigured — see server logs.",
+  cloud_unreachable: "Cloud unreachable. see server logs.",
+  config_error: "Server is misconfigured. see server logs.",
   forbidden: "You are not authorized for this action.",
   not_found: "Not found.",
   invalid_id: "Invalid policy id.",

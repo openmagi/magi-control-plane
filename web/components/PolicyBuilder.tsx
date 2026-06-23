@@ -13,7 +13,7 @@ import { Select } from "@/components/ui/Select"
 type Props = {
   submitAction: (formData: FormData) => Promise<void> | void
   initial?: PolicyDraft | null
-  /** Known wired verifier steps (datalist) — drives compiler-step guessing UX. */
+  /** Known wired verifier steps (datalist). drives compiler-step guessing UX. */
   wiredSteps?: string[]
   labels: {
     irFields: string
@@ -192,14 +192,14 @@ export default function PolicyBuilder({
             {draft.requires.map((r, i) => {
               // PolicyBuilder edits step-kind rows inline. Non-step kinds
               // (regex/llm_critic/shacl) are authored via the Guided
-              // wizard or raw JSON IR — we just show a read-only chip.
+              // wizard or raw JSON IR. we just show a read-only chip.
               const kind = ("kind" in r ? r.kind : "step")
               const step = ("step" in r ? r.step : "")
               const verdict = ("verdict" in r ? r.verdict : "pass")
               if (kind !== "step") {
                 return (
                   <div key={i} className="rounded-md border border-black/[0.08] bg-gray-50 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
-                    <span className="font-mono">{kind}</span> — edit via the Guided wizard or raw IR mode.
+                    <span className="font-mono">{kind}</span>. edit via the Guided wizard or raw IR mode.
                   </div>
                 )
               }

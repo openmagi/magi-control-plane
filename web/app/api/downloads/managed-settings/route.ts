@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server"
 
-/** managed-settings.json — uses the dashboard's cloud URL so the user's
+/** managed-settings.json. uses the dashboard's cloud URL so the user's
  * locally-installed Claude Code knows where to call. The token isn't
  * embedded; the gate reads MAGI_CP_API_KEY at runtime, per /setup step 1. */
 export async function GET(req: NextRequest) {

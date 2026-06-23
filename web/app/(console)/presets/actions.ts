@@ -9,7 +9,7 @@ const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 /**
  * Cookie schema: comma-separated preset IDs that the operator has
  * explicitly *disabled*. We store the disabled set (not the enabled
- * set) because almost all presets are enabled by default — a much
+ * set) because almost all presets are enabled by default. a much
  * shorter list to persist.
  *
  * Phase 1 of the toggle UX: cookie-only, no backend wiring. The

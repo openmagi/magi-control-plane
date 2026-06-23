@@ -17,7 +17,7 @@ export interface WorkspaceCardProps {
  * Three render states:
  *   1. Pro+ subscriber: tenant prefix + plan
  *   2. Self-host / env-key tenant: "Self-host" label + cloud host
- *   3. Fetch failed: shown as offline (amber dot) — host still visible
+ *   3. Fetch failed: shown as offline (amber dot). host still visible
  */
 export function WorkspaceCard({ tenantId, plan, healthOk, host }: WorkspaceCardProps) {
   const locale = getLocale()
@@ -53,7 +53,7 @@ export function WorkspaceCard({ tenantId, plan, healthOk, host }: WorkspaceCardP
             {tenantId!.length > 16 ? `${tenantId!.slice(0, 14)}…` : tenantId}
           </div>
           <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
-            {isKo ? "플랜" : "Plan"}: <span className="text-[var(--color-text-secondary)] font-medium">{plan ?? "—"}</span>
+            {isKo ? "플랜" : "Plan"}: <span className="text-[var(--color-text-secondary)] font-medium">{plan ?? ", "}</span>
           </div>
         </>
       )}

@@ -47,7 +47,7 @@ async function approve(formData: FormData) {
     const msg = e instanceof Error ? e.message : String(e)
     redirect(`/hitl?err=${encodeURIComponent(msg)}`)
   }
-  // redirect() throws NEXT_REDIRECT — keep out of the try block.
+  // redirect() throws NEXT_REDIRECT. keep out of the try block.
   revalidatePath("/hitl")
   revalidateTag(WORKSPACE_TAG)
   redirect(`/hitl?msg=approved_${id}`)
@@ -118,7 +118,7 @@ function ItemCard({
                           {c.nli_label}
                           {typeof c.nli_score === "number" && ` · ${c.nli_score.toFixed(2)}`}
                         </span>
-                      : <span className="text-[var(--color-text-tertiary)]">—</span>}
+                      : <span className="text-[var(--color-text-tertiary)]">, </span>}
                   </td>
                   <td className="text-[var(--color-text-tertiary)]">
                     {(c.reasons ?? []).join("; ")}

@@ -1,5 +1,5 @@
 /**
- * Hardcoded usage hints for the 5 wired verifiers — these answer the
+ * Hardcoded usage hints for the 5 wired verifiers. these answer the
  * "when / how is it invoked" question that the backend metadata alone
  * can't (verifiers are payload-shaped; hook event + tool matcher is
  * decided by the policy IR that binds them).
@@ -57,6 +57,6 @@ export const PRESET_USAGE_HINTS: Record<string, UsageHint> = {
     verdict:
       "deny on citation that doesn't exist in the source corpus · review on existing-but-not-verbatim · pass on verbatim match",
     howItWorks:
-      "Each citation is checked against the source corpus (case-text, court archive). The verbatim quote match is advisory — exists-but-misquoted downgrades to HITL review.",
+      "Each citation is checked against the source corpus (case-text, court archive). The verbatim quote match is advisory. exists-but-misquoted downgrades to HITL review.",
   },
 }

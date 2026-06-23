@@ -7,7 +7,7 @@ import { codeForError } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 
 /** Toggle a stored policy's enabled flag. The only mutating action on
- * /rules — pure-derivation pivot retired the per-verifier toggle. */
+ * /rules. pure-derivation pivot retired the per-verifier toggle. */
 export async function togglePolicyAction(formData: FormData): Promise<void> {
   let id: string
   try {

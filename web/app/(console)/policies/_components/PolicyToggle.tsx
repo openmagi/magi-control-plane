@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/Switch"
 export interface PolicyToggleProps {
   policyId: string
   enabled: boolean
-  /** Server action — takes (id, enabled) and PUTs the new state. */
+  /** Server action. takes (id, enabled) and PUTs the new state. */
   action: (formData: FormData) => Promise<void>
   labelOn: string
   labelOff: string

@@ -5,7 +5,7 @@ const SITE_URL =
   process.env.MAGI_CP_PUBLIC_CLOUD_URL ||
   "https://cloud.openmagi.ai"
 
-/** Sitemap for crawlers. Only publicly-reachable pages — dashboard
+/** Sitemap for crawlers. Only publicly-reachable pages. dashboard
  * surfaces (/, /policies, /hitl, /admin/*) are excluded since they 401
  * without admin keys and shouldn't be indexed anyway. */
 export default function sitemap(): MetadataRoute.Sitemap {

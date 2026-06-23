@@ -16,7 +16,7 @@ export interface SwitchProps {
 }
 
 /**
- * Toggle switch — same proportions as the magi-agent Customize modal
+ * Toggle switch. same proportions as the magi-agent Customize modal
  * version. Track 24×44, thumb 20×20 absolutely positioned with inline
  * style transform. Optimistic flip via useTransition; the action
  * runs server-side and is expected to revalidate the surrounding

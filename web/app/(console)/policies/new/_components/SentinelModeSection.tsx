@@ -24,7 +24,7 @@ interface Props {
 /** D34: Sentinel authoring with tag/custom mode toggle.
  *
  * Client component because the visible field swaps reactively on radio
- * change — without state, the user would have to refresh the page to
+ * change. without state, the user would have to refresh the page to
  * switch modes. The form submit serialises `sentinel_mode`,
  * `sentinel_tag`, and `sentinel_re_custom` separately; saveWizard
  * picks the right one to assemble the final sentinel_re. */

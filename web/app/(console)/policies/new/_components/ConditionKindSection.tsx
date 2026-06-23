@@ -38,7 +38,7 @@ interface Props {
   }
 }
 
-/** D35: Step 3 client component — radio toggle between condition
+/** D35: Step 3 client component. radio toggle between condition
  * kinds + the kind-specific input panel. The wizard's submit-action
  * reads:
  *   condition_kind:  "step" | "regex" | "llm_critic" | "shacl"
@@ -109,7 +109,7 @@ export default function ConditionKindSection({
         <div className="space-y-2">
           {wiredSteps.length === 0 ? (
             <p className="text-xs text-[var(--color-text-tertiary)]">
-              (no wired verifiers — try regex / llm_critic / shacl kinds)
+              (no wired verifiers. try regex / llm_critic / shacl kinds)
             </p>
           ) : wiredSteps.map((v) => (
             <label key={v.step} className="block cursor-pointer">

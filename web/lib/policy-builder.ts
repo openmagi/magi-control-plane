@@ -1,5 +1,5 @@
 /**
- * Policy IR builder — shared utilities for the builder UI.
+ * Policy IR builder. shared utilities for the builder UI.
  *
  * The legal-combinations matrix lives in the Python backend; we mirror its
  * SHAPE here so the client can validate input locally before POSTing (good
@@ -47,13 +47,13 @@ export function classifyMatcher(matcher: string): MatcherClass | "unknown" {
 // D31: triples now use action archetype vocabulary (block / ask /
 // audit). Mirrors backend policy/matrix.LEGAL_COMBINATIONS exactly.
 const LEGAL = new Set<string>([
-  // PreToolUse — every action class is legal on every concrete matcher;
+  // PreToolUse. every action class is legal on every concrete matcher;
   // wildcard narrows to audit only.
   "PreToolUse|tool|block",     "PreToolUse|tool|ask",     "PreToolUse|tool|audit",
   "PreToolUse|mcp_tool|block", "PreToolUse|mcp_tool|ask", "PreToolUse|mcp_tool|audit",
   "PreToolUse|tool_alt|block", "PreToolUse|tool_alt|ask", "PreToolUse|tool_alt|audit",
   "PreToolUse|wildcard|audit",
-  // PostToolUse — tool already ran, only audit makes sense.
+  // PostToolUse. tool already ran, only audit makes sense.
   "PostToolUse|tool|audit",
   "PostToolUse|mcp_tool|audit",
   // No-tool-context events all use wildcard.
@@ -93,11 +93,11 @@ export function isLegal(
 }
 
 // D35: EvidenceReq is a discriminated union by kind.
-//   step       — existing: reference a wired verifier.
-//   regex      — inline pattern (Python re syntax) matched against
+//   step      . existing: reference a wired verifier.
+//   regex     . inline pattern (Python re syntax) matched against
 //                payload text at gate time.
-//   llm_critic — natural-language rule judged by LLM provider.
-//   shacl      — Turtle SHACL shape validated against payload dict.
+//   llm_critic. natural-language rule judged by LLM provider.
+//   shacl     . Turtle SHACL shape validated against payload dict.
 export type EvidenceKind = "step" | "regex" | "llm_critic" | "shacl"
 
 export type EvidenceReqDraft =

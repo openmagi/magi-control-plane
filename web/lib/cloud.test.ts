@@ -161,7 +161,7 @@ describe("cloud client", () => {
     expect(r[1].step).toBeNull()
   })
 
-  // ── /catalog/* — pure-derivation catalogs (no separate storage) ────
+  // ── /catalog/*. pure-derivation catalogs (no separate storage) ────
   it("listEvidenceTypes hits /catalog/evidence-types with tenant key", async () => {
     process.env.MAGI_CP_API_KEY = "tenant-test"
     let captured: any
@@ -199,7 +199,7 @@ describe("cloud client", () => {
     await expect(cloud.listVerifiers()).rejects.toThrow("cloud 503")
   })
 
-  // listPresets is a back-compat alias for listVerifiers — exercises
+  // listPresets is a back-compat alias for listVerifiers. exercises
   // the same path. Kept as a one-shot smoke check so refactors that
   // accidentally break the alias surface here, not in pages.
   it("listPresets is an alias of listVerifiers", async () => {

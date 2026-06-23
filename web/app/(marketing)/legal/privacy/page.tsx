@@ -8,11 +8,11 @@ const KO = `
 
 본 서비스 운영을 위해 회사는 다음 정보를 수집합니다.
 
-- **계정 정보**: 이메일, 소속 firm/회사 (Clawy Pro+ 결제 시 Stripe 경유)
-- **사용 데이터**: API 호출 시간 / endpoint / 응답 코드 — 사용자 식별 정보 미포함
-- **감사 원장**: 사용자가 작성한 정책, 검증 결과, HITL 의사결정 — 사용자
+- **계정 정보**: 이메일, 소속 firm/회사 (Open Magi Pro+ 결제 시 Stripe 경유)
+- **사용 데이터**: API 호출 시간 / endpoint / 응답 코드. 사용자 식별 정보 미포함
+- **감사 원장**: 사용자가 작성한 정책, 검증 결과, HITL 의사결정. 사용자
   테넌트 내에서만 보관
-- **로그**: 에러 트레이스, 인프라 메트릭 — IP/이메일 미연결
+- **로그**: 에러 트레이스, 인프라 메트릭. IP/이메일 미연결
 
 회사는 **사용자가 검증에 제출한 텍스트(payload) 본문을 저장하지 않습니다**.
 검증 결과(verdict, reasons)만 감사 원장에 기록됩니다.
@@ -27,7 +27,7 @@ const KO = `
 다음의 경우에만 제3자에게 정보를 제공합니다:
 
 - 법령에 따른 정부 요청 (영장, 수사 영장 등)
-- 인프라 제공업체 (호스팅, 모니터링) — 최소한의 운영 데이터만, DPA 체결 후
+- 인프라 제공업체 (호스팅, 모니터링). 최소한의 운영 데이터만, DPA 체결 후
 
 타사 AI API(Anthropic, OpenAI)에는 **/policies/compile 페이지에서 자연어를
 입력한 경우에만** 해당 자연어가 전송됩니다. 다른 사용자 데이터는 전송되지
@@ -75,11 +75,11 @@ const EN = `
 
 To operate the Service we collect:
 
-- **Account info**: email, firm/company (passed through from Stripe at Clawy Pro+ checkout)
-- **Usage data**: timestamp / endpoint / status code — no PII
-- **Audit ledger**: your policies, verifier verdicts, HITL decisions —
+- **Account info**: email, firm/company (passed through from Stripe at Open Magi Pro+ checkout)
+- **Usage data**: timestamp / endpoint / status code. no PII
+- **Audit ledger**: your policies, verifier verdicts, HITL decisions , 
   isolated to your tenant
-- **Logs**: error traces, infra metrics — not tied to IP/email
+- **Logs**: error traces, infra metrics. not tied to IP/email
 
 We **do not store the payload text** you submit to verifiers. Only the
 verdict (and reasons) is appended to the audit ledger.
@@ -94,7 +94,7 @@ alpha customers. **Never** for advertising, marketing, or model training.
 We only share data with third parties in these cases:
 
 - Legal compulsion (warrants, subpoenas)
-- Infrastructure providers (hosting, monitoring) — only operational data,
+- Infrastructure providers (hosting, monitoring). only operational data,
   under DPA
 
 External AI APIs (Anthropic, OpenAI) **only receive natural-language text

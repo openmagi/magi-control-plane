@@ -1,7 +1,7 @@
-/** magi-gate.sh — embeds the gate shim script. Operator copies to
+/** magi-gate.sh. embeds the gate shim script. Operator copies to
  * /usr/local/bin/magi-gate.sh + chmod +x. */
 const GATE_SH = `#!/usr/bin/env bash
-# magi-gate.sh — Claude Code PreToolUse hook
+# magi-gate.sh. Claude Code PreToolUse hook
 # Reads hook JSON on stdin, consults the magi-control-plane WAL for a
 # valid signed verdict token, and allows / denies the bash command.
 #
@@ -17,7 +17,7 @@ API_KEY="\${MAGI_CP_API_KEY:-}"
 
 if [ -z "$API_KEY" ]; then
   cat <<EOF
-{"deny": true, "reason": "MAGI_CP_API_KEY not set — see Setup wizard"}
+{"deny": true, "reason": "MAGI_CP_API_KEY not set. see Setup wizard"}
 EOF
   exit 1
 fi

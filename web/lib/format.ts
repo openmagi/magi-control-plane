@@ -6,7 +6,7 @@
  * with a 'Z' suffix is unambiguous and matches what evidence reviewers expect.
  */
 export function fmtUtc(epochSeconds: number | undefined): string {
-  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return "—"
+  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return ", "
   return new Date(epochSeconds * 1000).toISOString().replace("T", " ").replace(".000Z", "Z")
 }
 

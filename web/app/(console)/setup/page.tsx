@@ -124,7 +124,7 @@ export default async function SetupPage({
             </form>
           </Card>
 
-          {/* Recommended path — single curl|bash command */}
+          {/* Recommended path. single curl|bash command */}
           <Card className="mb-3 border-[var(--color-border-focus)]">
             <div className="flex items-center gap-2 mb-2">
               <Badge variant="ok">{t("setup.quickstart.recommended")}</Badge>
@@ -149,7 +149,7 @@ export default async function SetupPage({
 
           <h2 className="text-md font-semibold mb-3 mt-4">{t("setup.steps.title")}</h2>
 
-          {/* Step 1 — cloud URL */}
+          {/* Step 1. cloud URL */}
           <Card className="mb-3">
             <div className="text-sm font-medium mb-1">{t("setup.step1.title")}</div>
             <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
@@ -161,7 +161,7 @@ export MAGI_CP_API_KEY=${storedKey ?? "mcp_…"}`
             }</CodeBlock>
           </Card>
 
-          {/* Step 2 — install gate + plugin */}
+          {/* Step 2. install gate + plugin */}
           <Card className="mb-3">
             <div className="text-sm font-medium mb-1">{t("setup.step2.title")}</div>
             <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
@@ -192,7 +192,7 @@ sudo chmod +x /usr/local/bin/magi-gate.sh`
             }</CodeBlock>
           </Card>
 
-          {/* Step 3 — restart */}
+          {/* Step 3. restart */}
           <Card className="mb-3">
             <div className="text-sm font-medium mb-1">{t("setup.step3.title")}</div>
             <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
@@ -204,7 +204,7 @@ echo FILE_COURT_M1_D1`
             }</CodeBlock>
           </Card>
 
-          {/* Step 4 — try */}
+          {/* Step 4. try */}
           <Card>
             <div className="text-sm font-medium mb-1">{t("setup.step4.title")}</div>
             <p className="text-xs text-[var(--color-text-tertiary)] mb-3">

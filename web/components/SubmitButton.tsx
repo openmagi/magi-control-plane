@@ -10,7 +10,7 @@ import { useFormStatus } from "react-dom"
  *   - swaps to `pendingLabel`
  *   - shows a small animated dot string so the operator sees activity
  *     during the multi-second LLM call (compile path runs two sequential
- *     model requests — typical 5–20s).
+ *     model requests. typical 5–20s).
  *
  * `progressHint` renders only while pending; useful for spelling out
  * what's happening ("LLM compiler + critic running…").

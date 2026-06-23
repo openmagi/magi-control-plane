@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* ── Pretendard (Korean) — variable font from jsDelivr ──────────────── */
+/* ── Pretendard (Korean). variable font from jsDelivr ──────────────── */
 @font-face {
   font-family: "Pretendard Variable";
   font-weight: 45 920;
@@ -9,10 +9,10 @@
   src: url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/PretendardVariable.min.woff2") format("woff2-variations");
 }
 
-/* ── Plus Jakarta Sans (Latin) — magi-agent OSS dashboard font ────── */
+/* ── Plus Jakarta Sans (Latin). magi-agent OSS dashboard font ────── */
 @import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap");
 
-/* ── Design tokens — mirrors magi-agent OSS dashboard (light/purple) ──
+/* ── Design tokens. mirrors magi-agent OSS dashboard (light/purple) ──
    Source: magi-agent/apps/web/app/globals.css + dashboard/layout.tsx +
    components/dashboard/sidebar-nav.tsx. Theme is light with purple
    primary + emerald status accents. Semantic token names retained so
@@ -36,7 +36,7 @@
   --color-text-disabled:   #94A3B8;
   --color-text-on-accent:  #FFFFFF;
 
-  /* semantic status — emerald success matches magi-agent "Local" pill */
+  /* semantic status. emerald success matches magi-agent "Local" pill */
   --color-pass-fg:    #047857; /* emerald-700 */
   --color-pass-bg:    rgba(16, 185, 129, 0.10); /* emerald-500/10 */
   --color-review-fg:  #B45309; /* amber-700 */
@@ -46,7 +46,7 @@
   --color-info-fg:    #2563EB; /* blue-600 */
   --color-info-bg:    #DBEAFE; /* blue-100 */
 
-  /* accent (CTA — magi-agent --primary / --cta) */
+  /* accent (CTA. magi-agent --primary / --cta) */
   --color-accent:        #7C3AED; /* purple-600 */
   --color-accent-light:  #6D28D9; /* purple-700 (active nav text) */
   --color-accent-hover:  #6D28D9;

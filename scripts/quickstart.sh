@@ -1,99 +1,179 @@
 #!/usr/bin/env bash
-# magi-control-plane quickstart installer.
+# magi-control-plane quickstart installer (self-host).
 #
-# One-liner for alpha users:
-#   curl -fsSL https://cloud.openmagi.ai/install.sh | bash -s -- mcp_…
+# One command. Pulls the public docker images from GHCR, generates a
+# .env with random keys, brings up the control plane + dashboard in
+# docker, and wires Claude Code's PreToolUse hook to it.
+#
+#   curl -fsSL https://cp.openmagi.ai/install.sh | bash
 #
 # What it does:
-#   1) Verify python3.11+ on PATH (install hint if missing)
-#   2) pip install --user magi-cp-alpha @ git+https://github.com/openmagi/magi-control-plane
-#      (until we publish to PyPI; switches to PyPI when GA)
-#   3) Download managed-settings.json + magi-gate.sh from the cloud
-#   4) Drop them at ~/.claude/managed-settings.json + ~/.local/bin/magi-gate.sh
-#   5) Persist MAGI_CP_API_KEY + MAGI_CP_CLOUD_URL to ~/.config/magi-cp/env
-#   6) Run the smoke test to prove the gate fires
+#   * Check Docker + Docker Compose v2 are installed
+#   * Pick free host ports (default 3000 + 8787, auto-bump on conflict)
+#   * Download docker-compose.yml + magi-gate.sh from cp.openmagi.ai
+#   * Generate ~/.magi/control-plane/.env with random keys (idempotent)
+#   * docker compose up -d  (pulls magi-cp + magi-cp-dashboard images)
+#   * Wait for /healthz on the cloud
+#   * Drop ~/.claude/managed-settings.json + ~/.local/bin/magi-gate.sh
+#   * Persist key + URL to ~/.config/magi-cp/env (0600)
+#   * Source the env from ~/.zshrc and ~/.bashrc
 #
-# Re-running is idempotent: re-pip-installs (upgrade), overwrites files in
-# place. Persisted key is preserved unless you pass a new one explicitly.
+# Re-running is idempotent: existing .env keys are preserved, compose
+# just up's, ports already in use stay assigned.
 
 set -euo pipefail
 
-# DASH_URL = where the user reached this script (dashboard, Next.js on Vercel).
-# API_URL  = where the gate calls at runtime (FastAPI on K8s).
-# In split production deploys these are different hosts; install-config
-# tells us the API hostname so we don't have to hardcode it.
-DASH_URL="${MAGI_CP_DASH_URL:-https://cloud.openmagi.ai}"
-API_URL="${MAGI_CP_CLOUD_URL:-}"      # overridden below from install-config
-API_KEY="${1:-${MAGI_CP_API_KEY:-}}"
+step()   { printf "\033[1;34m→\033[0m %s\n" "$1"; }
+ok()     { printf "  \033[1;32m✓\033[0m %s\n" "$1"; }
+warn()   { printf "\033[1;33m!\033[0m %s\n" "$1" >&2; }
+fail()   { printf "\033[1;31m✗\033[0m %s\n" "$1" >&2; exit 1; }
+banner() { printf "\033[1;36m▸\033[0m %s\n" "$1"; }
 
-step() { printf "\033[1;34m→\033[0m %s\n" "$1"; }
-warn() { printf "\033[1;33m!\033[0m %s\n" "$1" >&2; }
-fail() { printf "\033[1;31m✗\033[0m %s\n" "$1" >&2; exit 1; }
-ok()   { printf "\033[1;32m✓\033[0m %s\n" "$1"; }
+SITE_URL="${MAGI_CP_SITE_URL:-https://cp.openmagi.ai}"
+INSTALL_DIR="${MAGI_CP_INSTALL_DIR:-$HOME/.magi/control-plane}"
 
-if [ -z "$API_KEY" ]; then
-  fail "usage: install.sh mcp_…   (your alpha API key, sent to you by email)"
+echo ""
+banner "Open Magi · Control Plane installer (self-host)"
+echo ""
+
+# ── docker check ────────────────────────────────────────────────────────
+step "Checking Docker"
+command -v docker >/dev/null 2>&1 \
+  || fail "Docker not found. Install from https://docs.docker.com/get-docker then re-run."
+docker compose version >/dev/null 2>&1 \
+  || fail "Docker Compose v2 not found. Update Docker Desktop (or install the compose plugin), then re-run."
+DOCKER_VER=$(docker --version | awk '{print $3}' | tr -d ,)
+COMPOSE_VER=$(docker compose version --short)
+ok "docker $DOCKER_VER  +  compose $COMPOSE_VER"
+
+# ── port pickup ─────────────────────────────────────────────────────────
+# Returns the first free port at or after $1, scanning up to $1+50.
+pick_port() {
+  local default="$1"
+  local p="$default"
+  local max=$(( default + 50 ))
+  while [ "$p" -le "$max" ]; do
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 || { echo "$p"; return 0; }
+    else
+      # bash builtin /dev/tcp fallback
+      (echo > "/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1 || { echo "$p"; return 0; }
+    fi
+    p=$(( p + 1 ))
+  done
+  return 1
+}
+
+mkdir -p "$INSTALL_DIR"
+ENV_FILE="$INSTALL_DIR/.env"
+
+# Reuse previously-assigned ports if present.
+PREV_DASH=""; PREV_CLOUD=""
+if [ -f "$ENV_FILE" ]; then
+  PREV_DASH=$(grep '^DASHBOARD_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  PREV_CLOUD=$(grep '^CLOUD_PORT='     "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
 fi
-case "$API_KEY" in
-  mcp_*) ;;
-  *) fail "API key must start with 'mcp_'. Got: ${API_KEY:0:8}…" ;;
+
+step "Picking host ports"
+DASH_PORT="${MAGI_CP_DASH_PORT:-${PREV_DASH:-$(pick_port 3000 || echo "")}}"
+CLOUD_PORT="${MAGI_CP_CLOUD_PORT:-${PREV_CLOUD:-$(pick_port 8787 || echo "")}}"
+[ -n "$DASH_PORT" ]  || fail "no free port near 3000. Set MAGI_CP_DASH_PORT=… explicitly."
+[ -n "$CLOUD_PORT" ] || fail "no free port near 8787. Set MAGI_CP_CLOUD_PORT=… explicitly."
+ok "dashboard → :$DASH_PORT  ·  cloud → :$CLOUD_PORT"
+
+# ── download compose + gate from cp.openmagi.ai ────────────────────────────
+step "Downloading docker-compose.yml from $SITE_URL"
+curl -fsSL "$SITE_URL/self-host/docker-compose.yml" \
+  -o "$INSTALL_DIR/docker-compose.yml" \
+  || fail "could not fetch docker-compose.yml from $SITE_URL"
+ok "wrote $INSTALL_DIR/docker-compose.yml"
+
+# ── .env generation (idempotent) ────────────────────────────────────────
+if [ -f "$ENV_FILE" ] && grep -q '^MAGI_CP_API_KEY=' "$ENV_FILE"; then
+  step "Reusing existing $ENV_FILE"
+  LOCAL_KEY=$(grep '^MAGI_CP_API_KEY=' "$ENV_FILE" | cut -d= -f2-)
+  # Make sure the ports we picked are written even on re-run.
+  TMP=$(mktemp)
+  grep -vE '^(DASHBOARD_PORT|CLOUD_PORT)=' "$ENV_FILE" > "$TMP" || true
+  {
+    cat "$TMP"
+    echo "DASHBOARD_PORT=$DASH_PORT"
+    echo "CLOUD_PORT=$CLOUD_PORT"
+  } > "$ENV_FILE"
+  rm -f "$TMP"
+  chmod 0600 "$ENV_FILE"
+  ok "key preserved, ports updated"
+else
+  step "Generating $ENV_FILE with random keys"
+  command -v openssl >/dev/null 2>&1 \
+    || fail "openssl not found (needed for key generation). Install via 'brew install openssl' or your package manager."
+  LOCAL_KEY="mcp_$(openssl rand -hex 24)"
+  HITL_KEY="hitl_$(openssl rand -hex 24)"
+  ADMIN_KEY="adm_$(openssl rand -hex 24)"
+  HMAC_SECRET=$(openssl rand -hex 32)
+  cat > "$ENV_FILE" <<EOF
+# Auto-generated by magi-cp installer. Do not edit unless you know what you're doing.
+MAGI_CP_HITL_API_KEY=$HITL_KEY
+MAGI_CP_API_KEY=$LOCAL_KEY
+MAGI_CP_ADMIN_API_KEY=$ADMIN_KEY
+MAGI_CP_ADMIN_HMAC_SECRET=$HMAC_SECRET
+DASHBOARD_PORT=$DASH_PORT
+CLOUD_PORT=$CLOUD_PORT
+EOF
+  chmod 0600 "$ENV_FILE"
+  ok "wrote .env (0600)"
+fi
+
+# ── compose up + health wait ────────────────────────────────────────────
+step "docker compose up -d  (pulling images: magi-cp + magi-cp-dashboard)"
+(cd "$INSTALL_DIR" && docker compose up -d >/tmp/magi-compose.log 2>&1) \
+  || { tail -30 /tmp/magi-compose.log >&2; fail "docker compose up failed. See /tmp/magi-compose.log"; }
+ok "compose up"
+
+step "Waiting for /healthz at http://localhost:$CLOUD_PORT"
+WAIT_T0=$(date +%s)
+HEALTHY=0
+for i in $(seq 1 90); do
+  if curl -fsS "http://localhost:$CLOUD_PORT/healthz" >/dev/null 2>&1; then
+    WAIT_DT=$(( $(date +%s) - WAIT_T0 ))
+    ok "healthy after ${WAIT_DT}s"
+    HEALTHY=1
+    break
+  fi
+  sleep 1
+done
+[ "$HEALTHY" = "1" ] || fail "control plane did not become healthy in 90s. Check 'cd $INSTALL_DIR && docker compose logs cloud'."
+
+# ── claude code wiring ─────────────────────────────────────────────────
+API_URL="http://localhost:$CLOUD_PORT"
+
+step "Wiring Claude Code (managed-settings.json + magi-gate.sh)"
+CLAUDE_DIR="$HOME/.claude"
+LBIN="$HOME/.local/bin"
+mkdir -p "$CLAUDE_DIR" "$LBIN"
+
+curl -fsSL "$API_URL/api/downloads/managed-settings" \
+  -o "$CLAUDE_DIR/managed-settings.json" \
+  || fail "could not fetch managed-settings.json from $API_URL"
+curl -fsSL "$API_URL/api/downloads/gate-binary" \
+  -o "$LBIN/magi-gate.sh" \
+  || fail "could not fetch magi-gate.sh from $API_URL"
+chmod 0755 "$LBIN/magi-gate.sh"
+
+case ":$PATH:" in
+  *":$LBIN:"*) ;;
+  *) warn "$LBIN is not on PATH. Add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell rc." ;;
 esac
 
-step "Resolving install endpoints from $DASH_URL"
-INSTALL_CFG=$(curl -fsSL "$DASH_URL/api/install-config" 2>/dev/null || true)
-if [ -n "$INSTALL_CFG" ]; then
-  # python -c is the safest portable JSON parser on a fresh macOS.
-  RESOLVED_API=$(printf '%s' "$INSTALL_CFG" | python3 -c \
-    'import json,sys;print(json.loads(sys.stdin.read()).get("apiUrl",""))' 2>/dev/null || true)
-  if [ -n "$RESOLVED_API" ]; then
-    API_URL="${API_URL:-$RESOLVED_API}"
-  fi
-fi
-API_URL="${API_URL:-$DASH_URL}"      # single-host dev: api == dash
-ok "dashboard=$DASH_URL  api=$API_URL"
-
-step "Detecting python3.11+"
+# Rewrite managed-settings to use per-user path + local cloud URL.
 PY=""
 for cand in python3.13 python3.12 python3.11 python3; do
   if command -v "$cand" >/dev/null 2>&1; then
-    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
-      PY="$cand"; break
-    fi
+    PY="$cand"; break
   fi
 done
-[ -n "$PY" ] || fail "python3.11+ not found. Install via 'brew install python@3.12' (macOS) or your distro package manager."
-ok "using $PY ($("$PY" --version))"
-
-step "Installing magi-cp Python package"
-"$PY" -m pip install --user --upgrade \
-  "magi-cp @ git+https://github.com/openmagi/magi-control-plane.git" \
-  >/tmp/magi-cp-install.log 2>&1 \
-  || fail "pip install failed — see /tmp/magi-cp-install.log"
-
-# ~/.local/bin must be on PATH so `magi-cp-gate` is callable from managed-settings.
-LBIN="$HOME/.local/bin"
-mkdir -p "$LBIN"
-case ":$PATH:" in
-  *":$LBIN:"*) ;;
-  *) warn "$LBIN is not on PATH — add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell rc" ;;
-esac
-ok "magi-cp installed"
-
-step "Downloading managed-settings.json + magi-gate.sh from $DASH_URL"
-CLAUDE_DIR="$HOME/.claude"
-mkdir -p "$CLAUDE_DIR"
-curl -fsSL "$DASH_URL/api/downloads/managed-settings" \
-  -o "$CLAUDE_DIR/managed-settings.json" \
-  || fail "could not fetch managed-settings.json from $DASH_URL"
-curl -fsSL "$DASH_URL/api/downloads/gate-binary" \
-  -o "$LBIN/magi-gate.sh" \
-  || fail "could not fetch magi-gate.sh from $DASH_URL"
-chmod 0755 "$LBIN/magi-gate.sh"
-ok "wrote $CLAUDE_DIR/managed-settings.json + $LBIN/magi-gate.sh"
-
-# managed-settings.json embeds /usr/local/bin/magi-gate.sh as the default
-# command path. Rewrite to the per-user path so we don't need sudo.
-"$PY" - "$CLAUDE_DIR/managed-settings.json" "$LBIN/magi-gate.sh" <<'PY'
+if [ -n "$PY" ]; then
+  "$PY" - "$CLAUDE_DIR/managed-settings.json" "$LBIN/magi-gate.sh" "$API_URL" <<'PY'
 import json, sys
 p = sys.argv[1]
 data = json.load(open(p))
@@ -102,25 +182,28 @@ for hooks in data.get("hooks", {}).values():
         for h in block.get("hooks", []):
             if h.get("type") == "command":
                 h["command"] = sys.argv[2]
+                env = h.setdefault("env", {})
+                env["MAGI_CP_CLOUD_URL"] = sys.argv[3]
 open(p, "w").write(json.dumps(data, indent=2, sort_keys=True) + "\n")
 PY
-ok "rewrote managed-settings to use $LBIN/magi-gate.sh"
+else
+  warn "python3 not found. managed-settings.json was downloaded as-is; you may need to set the command path by hand."
+fi
+ok "rewrote managed-settings → cloud=$API_URL"
 
-step "Persisting key + cloud URL"
+# ── persist key + url ───────────────────────────────────────────────────
+step "Persisting key + cloud URL → ~/.config/magi-cp/env"
 ENV_DIR="$HOME/.config/magi-cp"
 mkdir -p "$ENV_DIR"
 chmod 0700 "$ENV_DIR"
 cat > "$ENV_DIR/env" <<EOF
-# Auto-generated by magi-cp quickstart — do not edit unless you know what you're doing.
-MAGI_CP_API_KEY=$API_KEY
-# MAGI_CP_CLOUD_URL points at the FastAPI backend the gate calls at runtime.
-# In split production deploys this is api.openmagi.ai, not the dashboard.
+# Auto-generated by magi-cp installer. Do not edit unless you know what you're doing.
+MAGI_CP_API_KEY=$LOCAL_KEY
 MAGI_CP_CLOUD_URL=$API_URL
 EOF
 chmod 0600 "$ENV_DIR/env"
 ok "saved $ENV_DIR/env (0600)"
 
-# Source from common shell rcs (zsh + bash) if not already.
 for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
   [ -f "$rc" ] || continue
   if ! grep -q "magi-cp/env" "$rc" 2>/dev/null; then
@@ -129,38 +212,20 @@ for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
   fi
 done
 
-step "Smoke test — confirming the gate fires correctly"
-export MAGI_CP_API_KEY="$API_KEY"
-export MAGI_CP_CLOUD_URL="$API_URL"
-SMOKE_LOG=$(mktemp)
-# When invoked via `curl|bash`, $0 is bash and dirname isn't useful.
-# Pull smoke-test from the dashboard instead.
-SMOKE_SH=$(mktemp)
-curl -fsSL "$DASH_URL/install/smoke-test.sh" -o "$SMOKE_SH" \
-  || fail "could not fetch smoke-test.sh from $DASH_URL"
-if bash "$SMOKE_SH" >"$SMOKE_LOG" 2>&1; then
-  ok "smoke test passed"
-else
-  warn "smoke test failed — log: $SMOKE_LOG"
-  cat "$SMOKE_LOG" >&2
-  exit 1
-fi
-rm -f "$SMOKE_SH"
+# ── done ────────────────────────────────────────────────────────────────
+printf "\n\033[1;32m✓ Install complete.\033[0m\n\n"
 
 cat <<EOF
+  Dashboard:  http://localhost:$DASH_PORT
+  API:        http://localhost:$CLOUD_PORT
+  Repo:       $INSTALL_DIR
+  Env:        ~/.config/magi-cp/env (0600)
 
-\033[1;32m✓ Install complete.\033[0m
+  Open the dashboard URL in your browser to start.
 
-Endpoints configured:
-  dashboard = $DASH_URL    (sign-in, downloads, /welcome, /setup)
-  api       = $API_URL     (PreToolUse gate calls this at runtime)
-
-Next steps:
-  1) Restart your shell  (or: source ~/.config/magi-cp/env)
-  2) Restart Claude Code   (so it reads ~/.claude/managed-settings.json)
-  3) Open your dashboard:   $DASH_URL/welcome
-
-Verify install at any time:
-  bash <(curl -fsSL $DASH_URL/install/smoke-test.sh)
+  Useful:
+    Stop:   cd $INSTALL_DIR && docker compose down
+    Logs:   cd $INSTALL_DIR && docker compose logs -f
+    Pull:   cd $INSTALL_DIR && docker compose pull && docker compose up -d
 
 EOF

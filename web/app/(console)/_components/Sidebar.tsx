@@ -8,7 +8,7 @@ import { NavHrefsProvider } from "./NavItemContext"
 import { WorkspaceCard } from "./WorkspaceCard"
 import { SidebarFooter } from "./SidebarFooter"
 
-/** Single source of truth — the longest-prefix matcher inside NavItem
+/** Single source of truth. the longest-prefix matcher inside NavItem
  * uses this list to decide which item wins the active highlight. */
 const NAV_HREFS = [
   "/rules",

@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic"
 
 type Mode = "nl" | "guided" | "advanced"
 const WIZARD_TOTAL = 6
-// Built-in Claude Code tool list — MUST stay in sync with the backend's
+// Built-in Claude Code tool list. MUST stay in sync with the backend's
 // matrix._BUILTIN_TOOLS (otherwise wizard-built policies trip the IR
 // loader's "unknown matcher class" guard).
 const TOOL_PRESETS = [
@@ -115,7 +115,7 @@ function archetypesFor(event: EventKind): readonly Archetype[] {
   }
 }
 
-// Strip is reserved — backend Verifier protocol has no mutated-payload
+// Strip is reserved. backend Verifier protocol has no mutated-payload
 // channel yet, so picking it would save a policy the runtime can't
 // honor. We render the card with a Coming-soon badge instead.
 const STRIP_AVAILABLE = false
@@ -178,8 +178,8 @@ interface WizardState {
   id?: string
   description?: string
   /** D34: sentinel authoring split into two modes.
-   *   tag    — pick a prefix, wizard builds `<TAG>_(?P<matter>…)_(?P<doc_id>…)`.
-   *   custom — operator writes the full regex by hand; must still
+   *   tag   . pick a prefix, wizard builds `<TAG>_(?P<matter>…)_(?P<doc_id>…)`.
+   *   custom. operator writes the full regex by hand; must still
    *            include both named groups (backend invariant).
    */
   sentinel_mode?: "tag" | "custom"
@@ -306,7 +306,7 @@ async function advanceWizard(formData: FormData): Promise<void> {
   const stepIn = Number(formData.get("_step") ?? "1")
   let nextStep = stepIn + 1
 
-  // Multi-verifier merge — Step 3 (Condition) emits N checkboxes named
+  // Multi-verifier merge. Step 3 (Condition) emits N checkboxes named
   // "verifier"; other steps carry the comma-joined "verifiers" hidden
   // field. Step 3 is authoritative when it's the submitter so flipping
   // a checkbox off actually unsets it.
@@ -332,12 +332,12 @@ async function advanceWizard(formData: FormData): Promise<void> {
     params.set(k, v.trim())
   }
 
-  // D32 step routing — Step 2 picks an archetype, Step 3 is the
+  // D32 step routing. Step 2 picks an archetype, Step 3 is the
   // condition (skipped for emit-signal / strip), Step 4 is the
   // matcher/specifics form. Auto-skip rules:
   const archetype = (params.get("archetype") || "block") as Archetype
   if (stepIn === 2 && archetypeSkipsCondition(archetype)) {
-    // emit-signal and strip don't have a condition step — jump from
+    // emit-signal and strip don't have a condition step. jump from
     // "What to do?" straight to "Specifics".
     nextStep = 4
   }
@@ -1078,7 +1078,7 @@ function Step1Event({
   )
 }
 
-// Step 2 — What to do? Picks an archetype (block / ask / audit /
+// Step 2. What to do? Picks an archetype (block / ask / audit /
 // emit-signal / strip) filtered by the event from Step 1.
 function Step2Archetype({
   t, state, action,
@@ -1155,7 +1155,7 @@ function Step2Archetype({
   )
 }
 
-// Step 3 — Under what condition? Picks 1..N verifiers. Auto-skipped
+// Step 3. Under what condition? Picks 1..N verifiers. Auto-skipped
 // for emit-signal / strip via advanceWizard, so this only renders when
 // the archetype actually has a condition.
 function Step3Condition({
@@ -1223,7 +1223,7 @@ function Step3Condition({
   )
 }
 
-// Step 4 — Specifics. Matcher input + sentinel_tag. The matcher chip
+// Step 4. Specifics. Matcher input + sentinel_tag. The matcher chip
 // palette and free-text default both narrow to options legal under
 // (event × picked archetype's action). For no-tool events the matcher
 // is locked to "*" and the user only edits sentinel_tag.
@@ -1497,7 +1497,7 @@ function Step6Review({
                     return (
                       <li key={v}>
                         <code className="font-mono">{v}=pass</code>{" "}
-                        <span className="text-[var(--color-text-tertiary)]">— {desc}</span>
+                        <span className="text-[var(--color-text-tertiary)]">,  {desc}</span>
                       </li>
                     )
                   })}

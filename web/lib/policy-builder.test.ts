@@ -22,7 +22,7 @@ describe("classifyMatcher", () => {
   })
 })
 
-describe("isLegal — mirrors backend matrix", () => {
+describe("isLegal. mirrors backend matrix", () => {
   // EXHAUSTIVE coverage of the matrix so a backend drift gets caught by CI.
   // If the server adds or removes a triple, this client mirror's tests will
   // fail and force the mirror to be updated.

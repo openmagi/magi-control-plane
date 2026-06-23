@@ -6,7 +6,7 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
   interactive?: boolean
   /** `tone="alert"` swaps border to deny color; for error banners. */
   tone?: "default" | "alert" | "status"
-  /** drops the default p-4 — for cards that fill themselves (tables etc.) */
+  /** drops the default p-4. for cards that fill themselves (tables etc.) */
   noPadding?: boolean
 }
 

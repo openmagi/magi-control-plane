@@ -48,7 +48,7 @@ function StatusPill({
  * line, trailing status pill + toggle (or Locked pill for always-on).
  *
  * The row itself is a <details>: open pane reveals the operational
- * spec (when / matchers / verdict / how / input schema) — magi-cp
+ * spec (when / matchers / verdict / how / input schema). magi-cp
  * specific affordance that magi-agent's Row doesn't have.
  */
 export function PresetRow({

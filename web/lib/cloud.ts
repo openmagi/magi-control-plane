@@ -1,7 +1,7 @@
 /**
  * Server-side cloud client.
  *
- * Keys are server-only — never imported from client components. Every call has
+ * Keys are server-only. never imported from client components. Every call has
  * an explicit timeout to avoid wedging the dashboard on a hung cloud.
  */
 const _cloudUrl = (): string =>
@@ -67,7 +67,7 @@ async function _fetch<T>(
     signal: AbortSignal.timeout(init.timeoutMs ?? FETCH_TIMEOUT_MS),
   })
   if (!r.ok) {
-    // Do not echo cloud response body to callers — could include details
+    // Do not echo cloud response body to callers. could include details
     // useful for reconnaissance. Log to server stderr; expose status only.
     console.error(`cloud ${r.status} ${path}: ${await r.text().catch(() => "")}`)
     throw new Error(`cloud ${r.status}`)
@@ -223,7 +223,7 @@ export const cloud = {
       body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
     }),
 
-  /** Generic verifier dispatch — produces a signed token on pass/review. */
+  /** Generic verifier dispatch. produces a signed token on pass/review. */
   verifyDispatch: (
     step: string,
     payload: Record<string, unknown>,
@@ -269,7 +269,7 @@ export const cloud = {
     })
   },
 
-  /** Create tenant (HMAC). Idempotent — returns current state if exists. */
+  /** Create tenant (HMAC). Idempotent. returns current state if exists. */
   createTenant: (tenantId: string, plan: string = "alpha",
                  expiresAt: number | null = null): Promise<{
     id: string; status: string; plan: string; expires_at: number | null
@@ -277,7 +277,7 @@ export const cloud = {
     _hmacPost("/admin/tenants", { tenant_id: tenantId, plan, expires_at: expiresAt }),
 
   /** Issue API key for an existing tenant (HMAC). Cleartext key in response
-   * is shown ONCE — operator must hand it to applicant immediately. */
+   * is shown ONCE. operator must hand it to applicant immediately. */
   issueKey: (tenantId: string): Promise<{
     id: number; tenant_id: string; api_key: string; prefix: string
   }> =>
@@ -323,7 +323,7 @@ export const cloud = {
   },
 
   /** Condition catalog. v1 surfaces sentinel_re patterns + tool
-   * matchers extracted from every stored policy. Read-only — entries
+   * matchers extracted from every stored policy. Read-only. entries
    * change only when the originating policy is edited. */
   listConditions: async (): Promise<ConditionEntry[]> => {
     const d = await _fetch<{ items: ConditionEntry[] }>(
@@ -368,7 +368,7 @@ export type EvidenceTypeEntry = {
 
 /** Pure-derivation catalog row: a condition extracted from a stored
  * policy. v1 covers the two condition shapes the policy IR carries
- * inline today — sentinel_re patterns and tool matchers. */
+ * inline today. sentinel_re patterns and tool matchers. */
 export type ConditionEntry = {
   kind: "sentinel_re" | "tool_match" | "regex" | "llm_critic" | "shacl"
   value: string

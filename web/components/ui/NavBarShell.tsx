@@ -1,18 +1,18 @@
-import { getT } from "@/lib/i18n/server"
+import { getLocale, getT } from "@/lib/i18n/server"
 import NavBarClient, { type NavItem } from "./NavBarClient"
 import LangSelect from "./LangSelect"
 
-/** Server component shell — picks the locale, builds the localised nav
- * items, then renders the client navbar (which owns the mobile drawer
- * state) with the locale switcher pinned to the right. */
+/** Marketing server-side nav shell. Picks locale, builds marketing nav
+ * items (anchors + install + GitHub, not authed dashboard routes), then
+ * renders the client navbar with the locale switcher pinned right. */
 export default async function NavBarShell() {
   const { t } = await getT()
+  const locale = await getLocale()
+  const isKo = locale === "ko"
   const items: NavItem[] = [
-    { href: "/rules",            label: t("nav.rules") },
-    { href: "/verify",           label: t("nav.verify") },
-    { href: "/hitl",             label: t("nav.reviewQueue") },
-    { href: "/ledger",           label: t("nav.audit") },
-    { href: "/setup",            label: t("setup.title") },
+    { href: "/welcome#how", label: isKo ? "동작 방식" : "How it works" },
+    { href: "/install",     label: isKo ? "설치"       : "Install" },
+    { href: "https://github.com/openmagi", label: "GitHub" },
   ]
   return (
     <NavBarClient

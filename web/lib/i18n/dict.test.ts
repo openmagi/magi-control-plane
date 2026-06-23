@@ -6,7 +6,7 @@ import path from "node:path"
  * KO/EN drift gate.
  *
  * dict.ts has KO_RAW and EN object literals that the TS type system *would*
- * keep in sync — `EN: Record<keyof typeof KO_RAW, string>` would refuse to
+ * keep in sync. `EN: Record<keyof typeof KO_RAW, string>` would refuse to
  * compile if an EN key were missing. But the inverse direction (an EN-only
  * key) is silently allowed by the type checker because the index signature
  * only goes one way.
@@ -14,7 +14,7 @@ import path from "node:path"
  * This test parses the source file and asserts the two objects have the
  * exact same keys, in the same order (so reviewers can eyeball diffs by
  * line number). It also flags duplicate keys, which TS *does* warn about
- * at build time but only as duplicate-key warnings — not failures.
+ * at build time but only as duplicate-key warnings. not failures.
  */
 describe("i18n dict drift gate", () => {
   const src = readFileSync(path.join(__dirname, "dict.ts"), "utf-8")

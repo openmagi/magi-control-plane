@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn"
 export interface SidebarClientProps {
   /** Sidebar inner content rendered server-side (<Sidebar />). */
   children: ReactNode
-  /** Localised labels — we accept strings rather than refetching i18n
+  /** Localised labels. we accept strings rather than refetching i18n
    * because this component must be client-side for drawer state. */
   openMenuLabel: string
   closeMenuLabel: string
@@ -74,7 +74,7 @@ export function SidebarClient({
 
   return (
     <>
-      {/* Mobile header — hidden ≥md (desktop sidebar handles it). */}
+      {/* Mobile header. hidden ≥md (desktop sidebar handles it). */}
       <header
         className="md:hidden sticky top-0 z-30 flex items-center gap-3 h-[var(--header-height)] px-4 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)]"
         role="banner"

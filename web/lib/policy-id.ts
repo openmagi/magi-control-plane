@@ -1,5 +1,5 @@
 /**
- * Policy id validation — single source of truth for the browser↔cloud edge.
+ * Policy id validation. single source of truth for the browser↔cloud edge.
  *
  * Mirrors the cloud-side accepted shape (alphanumeric, dot/underscore/dash,
  * forward slashes for namespacing like "legal-filing/v1"). Rejects path

@@ -195,7 +195,7 @@ function PoliciesTab({
                       <Code className="text-sm">{item.id}</Code>
                     </Link>
                     <p className="mt-2 text-sm text-[var(--color-text-secondary)] line-clamp-3 break-words">
-                      {item.description || "—"}
+                      {item.description || ", "}
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-2">
@@ -208,8 +208,8 @@ function PoliciesTab({
                         policyId={item.id}
                         enabled={item.enabled}
                         action={togglePolicyAction}
-                        labelOn={`${t("policies.disable")} — ${item.id}`}
-                        labelOff={`${t("policies.enable")} — ${item.id}`}
+                        labelOn={`${t("policies.disable")}. ${item.id}`}
+                        labelOff={`${t("policies.enable")}. ${item.id}`}
                       />
                     </div>
                   </div>
