@@ -23,9 +23,13 @@ export const WORKSPACE_TAG = "workspace"
 
 async function _loadWorkspaceUncached(): Promise<WorkspaceData> {
   const apiKey = process.env.MAGI_CP_API_KEY
+  // Server-side fetches use the internal docker-network hostname
+  // (MAGI_CP_CLOUD_URL = http://cloud:8787 in compose) so the health
+  // probe doesn't hit the dashboard container's own loopback. The
+  // PUBLIC URL is only for browser-side links in the UI.
   const cloudUrl =
-    process.env.MAGI_CP_PUBLIC_CLOUD_URL ??
     process.env.MAGI_CP_CLOUD_URL ??
+    process.env.MAGI_CP_PUBLIC_CLOUD_URL ??
     "http://127.0.0.1:8787"
 
   const [tenant, healthOk, hitlPending] = await Promise.all([
