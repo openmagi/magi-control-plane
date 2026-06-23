@@ -1249,6 +1249,14 @@ function Step4Specifics({
         <HiddenState state={{
           event: state.event, archetype: state.archetype,
           verifiers: state.verifiers,
+          // D35: condition kind picks made on Step 3 must ride through
+          // Step 4 → 5 → 6, otherwise saveWizard re-validates with the
+          // default kind=step (empty verifiers) and redirects back
+          // to Step 3 with err=invalid_input.
+          condition_kind: state.condition_kind,
+          cond_pattern: state.cond_pattern,
+          cond_criterion: state.cond_criterion,
+          cond_shape_ttl: state.cond_shape_ttl,
         }} />
         {isNoToolEvent ? (
           <div className="rounded-xl border border-black/[0.08] bg-gray-50 px-4 py-3 text-sm text-[var(--color-text-secondary)]">
@@ -1377,6 +1385,13 @@ function Step5Naming({
         <HiddenState state={{
           event: state.event, archetype: state.archetype,
           matcher: state.matcher, verifiers: state.verifiers,
+          // D35: condition kind picks need to survive the Step 5 hop
+          // (otherwise Step 6 saveWizard re-defaults to kind=step and
+          // bounces back with err=invalid_input).
+          condition_kind: state.condition_kind,
+          cond_pattern: state.cond_pattern,
+          cond_criterion: state.cond_criterion,
+          cond_shape_ttl: state.cond_shape_ttl,
           sentinel_mode: state.sentinel_mode,
           sentinel_tag: state.sentinel_tag,
           sentinel_re_custom: state.sentinel_re_custom,

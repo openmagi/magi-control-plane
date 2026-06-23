@@ -1,18 +1,18 @@
 import type { Metadata } from "next"
 import Link from "next/link"
-import { getLocale, getT } from "@/lib/i18n/server"
+import { getLocale } from "@/lib/i18n/server"
 import { Badge, Button, Card, CardHeader } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
 export const metadata: Metadata = {
-  title: "Claude Code를 변호사가 안심하고 쓸 수 있게 — magi-control-plane",
+  title: "magi-control-plane — Guardrails for Claude Code",
   description:
-    "Claude Code의 모든 도구 호출을 정책으로 게이트하고, 위·변조 불가능한 감사 원장에 봉인합니다. 한국 로펌을 위한 비공개 알파 파일럿 — 무료.",
+    "Every action your agent takes — tool calls, prompts, session boundaries — checked against your rules at runtime. Block, ask a human, or audit. All sealed in a tamper-evident ledger.",
   openGraph: {
-    title: "magi-control-plane — Claude Code 거버넌스 게이트 (Alpha)",
+    title: "magi-control-plane — Guardrails for Claude Code",
     description:
-      "Claude Code 워크플로 변경 없음. 정책 위반 호출은 차단, 통과한 호출은 모두 Ed25519 서명 + 해시 체인 원장에 기록.",
+      "Run Claude Code on systems that matter. Magi catches every agent action before it ships — author rules in the dashboard, no agent changes.",
     type: "website",
     locale: "ko_KR",
     alternateLocale: "en_US",
@@ -22,68 +22,155 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 }
 
-/**
- * Public marketing landing for the alpha pilot.
- *
- * Korean-first (Korean legal firms = beachhead). Reuses the vendored UI
- * primitives so the marketing surface stays visually consistent with the
- * dashboard — no separate brand system, no shadcn drift.
- */
+/** D36: marketing landing — repositioned from "for lawyers" to a
+ * broader developer / platform-team narrative. The agent + governance
+ * story works for any team running Claude Code (or similar tool-use
+ * agents) where blast radius matters. */
 export default async function WelcomePage() {
   const locale = await getLocale()
   const isKo = locale === "ko"
   const C = isKo ? KO : EN
   return (
-    <div className="space-y-16 pb-16">
+    <div className="pb-24">
       <Hero c={C.hero} />
-      <Problems c={C.problems} />
+      <Capabilities c={C.capabilities} />
+      <Why c={C.why} />
       <How c={C.how} />
-      <Pricing c={C.pricing} isKo={isKo} />
+      <Pricing c={C.pricing} />
       <FAQ c={C.faq} />
       <CTA c={C.cta} />
     </div>
   )
 }
 
-type HeroCopy = { eyebrow: string; title: string; subtitle: string; cta: string; ctaSecondary: string; alpha: string }
-type ProblemsCopy = { heading: string; items: Array<{ q: string; a: string }> }
+// ── types ──────────────────────────────────────────────────────────
+type HeroCopy = {
+  eyebrow: string; title: string; subtitle: string
+  cta: string; ctaSecondary: string; alpha: string
+  terminalIntro: string
+  terminalUser: string
+  terminalDeny: string
+  terminalLedger: string
+}
+type CapabilitiesCopy = {
+  heading: string; sub: string
+  groups: Array<{ label: string; tagline: string; items: string[] }>
+}
+type WhyCopy = { heading: string; items: Array<{ q: string; a: string }> }
 type HowCopy = { heading: string; steps: Array<{ n: string; title: string; body: string }> }
-type PricingCopy = { heading: string; plans: Array<{ name: string; price: string; cap: string; features: string[]; cta: string; primary: boolean }> }
+type PricingCopy = {
+  heading: string; sub: string
+  plans: Array<{ name: string; price: string; cap: string; features: string[]; cta: string; primary: boolean }>
+}
 type FAQCopy = { heading: string; items: Array<{ q: string; a: string }> }
 type CTACopy = { heading: string; body: string; cta: string }
 
+// ── hero ───────────────────────────────────────────────────────────
 function Hero({ c }: { c: HeroCopy }) {
   return (
-    <section className="pt-12 pb-2 text-center">
-      <Badge variant="info">{c.eyebrow}</Badge>
-      <h1 className="mt-4 text-4xl md:text-5xl font-semibold tracking-tight text-balance text-[var(--color-text-primary)]">
-        {c.title}
-      </h1>
-      <p className="mt-5 mx-auto max-w-2xl text-base md:text-lg text-pretty text-[var(--color-text-secondary)] leading-7">
-        {c.subtitle}
-      </p>
-      <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-        <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
-          <Button variant="primary" size="lg">{c.cta}</Button>
-        </a>
-        <Link href="/install" prefetch={false}>
-          <Button variant="ghost" size="lg">{c.ctaSecondary}</Button>
-        </Link>
+    <section className="pt-12 md:pt-20 pb-12">
+      <div className="text-center">
+        <Badge variant="info">{c.eyebrow}</Badge>
+        <h1 className="mt-5 text-4xl md:text-6xl font-semibold tracking-tight text-balance text-[var(--color-text-primary)] leading-[1.05]">
+          {c.title}
+        </h1>
+        <p className="mt-6 mx-auto max-w-2xl text-base md:text-lg text-pretty text-[var(--color-text-secondary)] leading-7">
+          {c.subtitle}
+        </p>
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
+            <Button variant="primary" size="lg">{c.cta}</Button>
+          </a>
+          <Link href="/install" prefetch={false}>
+            <Button variant="ghost" size="lg">{c.ctaSecondary}</Button>
+          </Link>
+        </div>
+        <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">{c.alpha}</p>
       </div>
-      <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">{c.alpha}</p>
+
+      {/* Hero terminal mock — shows a real "deny" sequence so the
+          reader sees the product in motion without scrolling. */}
+      <div className="mt-12 mx-auto max-w-3xl">
+        <div className="rounded-2xl border border-[var(--color-border-subtle)] bg-[#0F1117] shadow-2xl shadow-[var(--color-accent)]/10 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.02]">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-400/80" />
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-300/80" />
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/80" />
+            <span className="ml-3 text-[11px] font-mono text-white/40">
+              claude-code · main agent · PreToolUse
+            </span>
+          </div>
+          <pre className="px-5 py-4 text-[12.5px] leading-6 font-mono text-white/85 whitespace-pre-wrap">
+            <span className="text-white/45">{c.terminalIntro}</span>{"\n"}
+            <span className="text-emerald-300">$</span>{" "}<span className="text-white">{c.terminalUser}</span>{"\n"}
+            <span className="text-rose-400">{c.terminalDeny}</span>{"\n"}
+            <span className="text-white/45">{c.terminalLedger}</span>
+          </pre>
+        </div>
+      </div>
     </section>
   )
 }
 
-function Problems({ c }: { c: ProblemsCopy }) {
+// ── capabilities grid ──────────────────────────────────────────────
+function Capabilities({ c }: { c: CapabilitiesCopy }) {
   return (
-    <section>
-      <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
-      <div className="mt-6 grid gap-4 md:grid-cols-3">
+    <section className="mt-8">
+      <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] text-center">
+        {c.heading}
+      </h2>
+      <p className="mt-3 mx-auto max-w-2xl text-sm text-[var(--color-text-tertiary)] text-center text-pretty">
+        {c.sub}
+      </p>
+      <div className="mt-8 grid gap-4 md:grid-cols-3">
+        {c.groups.map((g, i) => (
+          <div
+            key={i}
+            className="relative rounded-2xl border border-[var(--color-border-subtle)] bg-white p-6"
+          >
+            <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--color-text-tertiary)] font-semibold">
+              {g.label}
+            </p>
+            <h3 className="mt-1.5 text-lg font-semibold text-[var(--color-text-primary)] m-0">
+              {g.tagline}
+            </h3>
+            <ul className="mt-4 space-y-1.5">
+              {g.items.map((it) => (
+                <li
+                  key={it}
+                  className="flex items-start gap-2 text-sm text-[var(--color-text-secondary)] leading-6"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="mt-2 w-1 h-1 rounded-full bg-[var(--color-accent)] shrink-0"
+                  />
+                  <span>{it}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+// ── why ────────────────────────────────────────────────────────────
+function Why({ c }: { c: WhyCopy }) {
+  return (
+    <section className="mt-20">
+      <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] text-center">
+        {c.heading}
+      </h2>
+      <div className="mt-8 grid gap-4 md:grid-cols-3">
         {c.items.map((it, i) => (
-          <Card key={i}>
-            <CardHeader title={it.q} />
-            <p className="text-sm text-[var(--color-text-secondary)] leading-6 text-pretty">{it.a}</p>
+          <Card key={i} className="!p-6">
+            <h3 className="text-base font-semibold text-[var(--color-text-primary)] m-0">
+              {it.q}
+            </h3>
+            <p className="mt-3 text-sm text-[var(--color-text-secondary)] leading-6 text-pretty">
+              {it.a}
+            </p>
           </Card>
         ))}
       </div>
@@ -91,19 +178,25 @@ function Problems({ c }: { c: ProblemsCopy }) {
   )
 }
 
+// ── how it works ───────────────────────────────────────────────────
 function How({ c }: { c: HowCopy }) {
   return (
-    <section id="how">
-      <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
-      <ol className="mt-6 space-y-4">
-        {c.steps.map(s => (
-          <li key={s.n} className="flex gap-4">
-            <div className="shrink-0 w-9 h-9 rounded-md border border-[var(--color-border-subtle)] flex items-center justify-center text-sm font-medium text-[var(--color-text-secondary)]">
+    <section id="how" className="mt-20">
+      <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] text-center">
+        {c.heading}
+      </h2>
+      <ol className="mt-8 mx-auto max-w-3xl space-y-3">
+        {c.steps.map((s) => (
+          <li
+            key={s.n}
+            className="flex gap-4 rounded-2xl border border-[var(--color-border-subtle)] bg-white p-5"
+          >
+            <div className="shrink-0 w-9 h-9 rounded-full bg-[var(--color-accent)]/10 text-[var(--color-accent-light)] flex items-center justify-center text-sm font-semibold">
               {s.n}
             </div>
             <div className="min-w-0">
-              <h3 className="text-md font-medium text-[var(--color-text-primary)] m-0">{s.title}</h3>
-              <p className="mt-1 text-sm text-[var(--color-text-secondary)] leading-6 text-pretty">{s.body}</p>
+              <h3 className="text-base font-semibold text-[var(--color-text-primary)] m-0">{s.title}</h3>
+              <p className="mt-1.5 text-sm text-[var(--color-text-secondary)] leading-6 text-pretty">{s.body}</p>
             </div>
           </li>
         ))}
@@ -112,60 +205,89 @@ function How({ c }: { c: HowCopy }) {
   )
 }
 
-function Pricing({ c, isKo }: { c: PricingCopy; isKo: boolean }) {
+// ── pricing ────────────────────────────────────────────────────────
+function Pricing({ c }: { c: PricingCopy }) {
   return (
-    <section>
-      <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
+    <section className="mt-20">
+      <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] text-center">
+        {c.heading}
+      </h2>
+      <p className="mt-3 mx-auto max-w-2xl text-sm text-[var(--color-text-tertiary)] text-center">
+        {c.sub}
+      </p>
+      <div className="mt-8 grid gap-4 md:grid-cols-2 max-w-4xl mx-auto">
         {c.plans.map((p, i) => (
-          <Card key={i} className={p.primary ? "border-[var(--color-border-focus)]" : undefined}>
+          <div
+            key={i}
+            className={`relative rounded-2xl border p-6 ${
+              p.primary
+                ? "border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.04] shadow-lg shadow-[var(--color-accent)]/10"
+                : "border-[var(--color-border-subtle)] bg-white"
+            }`}
+          >
+            {p.primary && (
+              <span className="absolute -top-3 left-6 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-accent)] text-white">
+                recommended
+              </span>
+            )}
             <div className="flex items-baseline justify-between gap-3">
               <h3 className="text-lg font-semibold text-[var(--color-text-primary)] m-0">{p.name}</h3>
-              <div className="text-right">
-                <div className="text-xl font-semibold text-[var(--color-text-primary)]">{p.price}</div>
-                <div className="text-xs text-[var(--color-text-tertiary)]">{p.cap}</div>
-              </div>
+              <span className="text-2xl font-semibold text-[var(--color-text-primary)]">{p.price}</span>
             </div>
-            <ul className="mt-4 space-y-2 text-sm text-[var(--color-text-secondary)]">
-              {p.features.map((f, j) => (
-                <li key={j} className="flex items-start gap-2">
-                  <span aria-hidden="true" className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)]" />
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{p.cap}</p>
+            <ul className="mt-5 space-y-2">
+              {p.features.map((f) => (
+                <li key={f} className="flex items-start gap-2 text-sm text-[var(--color-text-secondary)] leading-6">
+                  <svg aria-hidden="true" className="mt-0.5 w-4 h-4 shrink-0 text-[var(--color-accent)]" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M16.7 5.3a1 1 0 010 1.4l-7 7a1 1 0 01-1.4 0l-3.5-3.5a1 1 0 011.4-1.4l2.8 2.8 6.3-6.3a1 1 0 011.4 0z" />
+                  </svg>
                   <span>{f}</span>
                 </li>
               ))}
             </ul>
-            <div className="mt-5">
-              {p.primary ? (
-                <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
-                  <Button variant="primary" size="md">{p.cta}</Button>
-                </a>
-              ) : (
-                <a href="https://github.com/openmagi/magi-control-plane" target="_blank" rel="noopener noreferrer">
-                  <Button variant="secondary" size="md">{p.cta}</Button>
-                </a>
-              )}
-            </div>
-          </Card>
+            <a
+              href={p.primary ? "https://clawy.pro/pricing" : "https://github.com/openmagi/magi-control-plane"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block mt-6"
+            >
+              <Button variant={p.primary ? "primary" : "ghost"} className="w-full">
+                {p.cta}
+              </Button>
+            </a>
+          </div>
         ))}
       </div>
-      <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">
-        {isKo
-          ? "알파 파일럿 기간 동안 모든 사용자에게 무료입니다. GA 출시 시 별도 안내드립니다."
-          : "Free for all users during the alpha pilot. We'll announce pricing well before GA."}
-      </p>
     </section>
   )
 }
 
+// ── faq ────────────────────────────────────────────────────────────
 function FAQ({ c }: { c: FAQCopy }) {
   return (
-    <section>
-      <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
-      <div className="mt-6 space-y-3">
+    <section className="mt-20">
+      <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] text-center">
+        {c.heading}
+      </h2>
+      <div className="mt-8 mx-auto max-w-3xl space-y-2">
         {c.items.map((it, i) => (
-          <details key={i} className="rounded-md border border-[var(--color-border-subtle)] p-4 open:bg-[var(--color-surface-overlay)]">
-            <summary className="cursor-pointer text-sm font-medium text-[var(--color-text-primary)]">{it.q}</summary>
-            <p className="mt-3 text-sm leading-6 text-[var(--color-text-secondary)] text-pretty">{it.a}</p>
+          <details
+            key={i}
+            className="group rounded-2xl border border-[var(--color-border-subtle)] bg-white open:bg-gray-50/60"
+          >
+            <summary className="flex items-center justify-between gap-3 cursor-pointer list-none px-5 py-4 select-none">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{it.q}</span>
+              <svg
+                aria-hidden="true"
+                className="w-4 h-4 text-[var(--color-text-tertiary)] transition-transform group-open:rotate-180 shrink-0"
+                viewBox="0 0 20 20" fill="currentColor"
+              >
+                <path d="M10 12.5l-4.7-4.7a1 1 0 011.4-1.4L10 9.7l3.3-3.3a1 1 0 011.4 1.4L10 12.5z" />
+              </svg>
+            </summary>
+            <div className="px-5 pb-5 -mt-1 text-sm text-[var(--color-text-secondary)] leading-6">
+              {it.a}
+            </div>
           </details>
         ))}
       </div>
@@ -173,90 +295,134 @@ function FAQ({ c }: { c: FAQCopy }) {
   )
 }
 
+// ── final CTA ──────────────────────────────────────────────────────
 function CTA({ c }: { c: CTACopy }) {
   return (
-    <section className="text-center rounded-lg border border-[var(--color-border-subtle)] p-10 bg-[var(--color-surface-overlay)]">
-      <h2 className="text-2xl font-semibold text-[var(--color-text-primary)]">{c.heading}</h2>
-      <p className="mt-3 mx-auto max-w-xl text-sm text-[var(--color-text-secondary)] text-pretty">{c.body}</p>
-      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-        <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
-          <Button variant="primary" size="lg">{c.cta}</Button>
-        </a>
-        <Link href="/install" prefetch={false}>
-          <Button variant="ghost" size="lg">Self-host →</Button>
-        </Link>
+    <section className="mt-20">
+      <div className="mx-auto max-w-3xl rounded-3xl border border-[var(--color-accent)]/25 bg-gradient-to-br from-[var(--color-accent)]/[0.06] via-white to-white p-10 text-center">
+        <h2 className="text-2xl md:text-3xl font-semibold text-[var(--color-text-primary)] m-0">
+          {c.heading}
+        </h2>
+        <p className="mt-3 mx-auto max-w-xl text-sm text-[var(--color-text-secondary)] leading-6">
+          {c.body}
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <a href="https://clawy.pro/pricing" target="_blank" rel="noopener noreferrer">
+            <Button variant="primary" size="lg">{c.cta}</Button>
+          </a>
+          <Link href="/install" prefetch={false}>
+            <Button variant="ghost" size="lg">Self-host</Button>
+          </Link>
+        </div>
       </div>
     </section>
   )
 }
 
+// ── copy ───────────────────────────────────────────────────────────
 const KO = {
   hero: {
     eyebrow: "Open Source · Apache 2.0",
-    title: "Claude Code를 변호사가 안심하고 쓸 수 있게.",
+    title: "Claude Code 의 모든 도구 호출을 정책으로 게이트.",
     subtitle:
-      "터미널 밖에서 작동하는 거버넌스 게이트. 모델이 무엇을 호출하든, 매번 정책을 통과한 호출만 실행되고, 모든 단계는 위·변조 불가능한 감사 원장에 기록됩니다. 자체 호스팅(무료)이거나 Clawy Pro+ 구독(호스티드 포함) 둘 다 가능.",
-    cta: "Pro+ 시작하기",
+      "PreToolUse hook 에 드롭인. 매 호출마다 block / ask / audit 중 하나로 판정하고, 모든 결정을 Ed25519 서명 + 해시 체인 원장에 봉인합니다. 자체 호스팅 무료, 호스티드는 Clawy Pro+ 에 포함.",
+    cta: "Pro+ 로 시작",
     ctaSecondary: "또는 자체 호스팅",
-    alpha: "Apache 2.0 OSS · 코드 전체 GitHub 공개 · 운영 부담 없으려면 Clawy Pro+",
+    alpha: "Apache 2.0 · GitHub 전체 공개 · 운영 부담 없으려면 Clawy Pro+",
+    terminalIntro: "# Claude Code → magi-gate (PreToolUse)",
+    terminalUser: "Bash: aws s3 rm s3://prod-backups --recursive",
+    terminalDeny: "✗ MAGI: aws_key_detected — 'AKIA…' regex matched payload (policy: block-prod-rm)",
+    terminalLedger: "# verdict deny · ledger entry h=8a6f… (signed, chained)",
   },
-  problems: {
-    heading: "왜 magi-control-plane인가",
+  capabilities: {
+    heading: "한 정책 모델로 표현 가능한 것",
+    sub: "8 hook events × 3 action archetypes × 4 condition kinds. 정책을 코드 변경 없이 위저드로 작성.",
+    groups: [
+      {
+        label: "WHEN — 8 hook events",
+        tagline: "라이프사이클 어느 시점에든",
+        items: [
+          "PreToolUse / PostToolUse — 도구 실행 전·후",
+          "UserPromptSubmit — 프롬프트가 LLM 으로 가기 직전",
+          "PreCompact — 컨텍스트 압축 직전 (증거 체인 보존)",
+          "Stop / SubagentStop — 에이전트 / 서브에이전트 종료",
+          "SessionStart / SessionEnd — 세션 경계",
+        ],
+      },
+      {
+        label: "WHAT — 3 archetypes",
+        tagline: "정책의 의도를 명확히",
+        items: [
+          "Block — 조건 fail 시 호출 자체를 차단",
+          "Ask — review queue 로 보내고 사람 승인 받음",
+          "Audit — ledger 에 기록만, 차단은 안 함",
+          "(condition 없는 emit-signal 도 archetype 으로 표현)",
+        ],
+      },
+      {
+        label: "CONDITION — 4 kinds",
+        tagline: "조건 표현 방식 다양",
+        items: [
+          "Wired verifier — 빌트인 검증자 (citation, privilege, …)",
+          "Inline regex — Python re 패턴 매칭",
+          "LLM critic — 자연어 기준 (LLM 호출, preview)",
+          "SHACL shape — Turtle 시맨틱 검증 (preview)",
+        ],
+      },
+    ],
+  },
+  why: {
+    heading: "왜 magi-control-plane 인가",
     items: [
       {
-        q: "AI 보조에 비밀유지 의무가 따라옵니다",
-        a: "Claude Code가 외부 도구를 호출할 때마다 클라이언트 자료가 노출될 위험이 있습니다. magi는 호출 시점에 정책을 강제하고, 정책을 통과하지 못한 호출은 차단합니다.",
+        q: "에이전트는 빠르게 발화합니다",
+        a: "도구 호출 결정이 사람보다 빠르게 흐르기 때문에, 한 번의 잘못된 호출이 바로 인프라/데이터/평판에 반영됩니다. PreToolUse hook 단에서 막아야 사후 복구 비용이 들지 않습니다.",
       },
       {
-        q: "감사를 견디는 증거 체인이 필요합니다",
-        a: "어떤 인용이 검증됐는지, 어떤 단계를 사람이 승인했는지 — 모두 Ed25519 서명 + 해시 체인으로 봉인된 원장에 저장. 사고 후 재구성하지 않아도 됩니다.",
+        q: "감사 체인은 재구성하지 못합니다",
+        a: "어떤 호출이 통과했고, 무엇이 차단됐고, 누가 승인했는지 — 사고 발생 후 로그를 모아 재구성하는 건 늦습니다. magi 는 매 결정을 Ed25519 서명 + SHA-256 해시 체인으로 그 자리에서 봉인합니다.",
       },
       {
-        q: "Claude Code를 그대로 쓰고 싶습니다",
-        a: "기존 워크플로 변경 없음. managed-settings.json + bash 게이트 한 줄. PreToolUse hook에서 우리 클라우드를 호출해 정책을 적용 — 변호사는 평소처럼 Claude Code를 씁니다.",
+        q: "에이전트 자체는 그대로 둡니다",
+        a: "Claude Code 의 managed-settings.json + 한 줄짜리 bash shim 만 있으면 됩니다. 에이전트 워크플로 변경 0, SDK 의존 0. PreToolUse hook 표준만 따라가면 다른 에이전트 호환도 빠릅니다.",
       },
     ],
   },
   how: {
-    heading: "동작 방식",
+    heading: "어떻게 동작하나",
     steps: [
-      { n: "1", title: "키 발급", body: "Clawy Pro+ 결제 시 자동으로 테넌트 생성+ API 키 이메일 전달. 자체 호스팅이면 본인 인스턴스에서 발급." },
-      { n: "2", title: "한 줄 설치", body: "`curl -fsSL <인스턴스>/install.sh | bash -s -- mcp_…` 한 줄. ~/.claude/managed-settings.json + bash 게이트 자동 배치." },
-      { n: "3", title: "정책 작성 또는 프리셋 선택", body: "자연어로 정책을 쓰면 LLM이 IR로 컴파일, 사람이 한 번 검토. 또는 한국 법무 도메인용 사전 정의 프리셋 사용." },
-      { n: "4", title: "Claude Code 사용", body: "변호사는 평소처럼 Claude Code 사용. 모델이 도구를 호출할 때마다 PreToolUse 게이트가 정책을 적용. 통과만 실행, 거부는 차단, 검토 필요는 큐로." },
-      { n: "5", title: "감사 원장 확인", body: "대시보드에서 모든 통과·거부·HITL 결정을 시간순으로 확인. 체인 무결성 검증은 한 번의 GET 요청." },
+      { n: "1", title: "키 발급", body: "Clawy Pro+ 결제 = 테넌트 + API 키 자동 발급, 이메일 전달. 자체 호스팅이면 본인 인스턴스에서 발급." },
+      { n: "2", title: "한 줄 설치", body: "curl -fsSL <인스턴스>/install.sh | bash -s -- mcp_… 한 줄. managed-settings.json + bash 게이트 자동 배치." },
+      { n: "3", title: "정책 작성", body: "Guided 위저드 6단계 (When → What → Condition → Specifics → Name → Review). 자연어로 쓰면 LLM 컴파일러가 IR 로 변환." },
+      { n: "4", title: "에이전트 사용", body: "Claude Code 평소처럼 사용. 매 도구 호출마다 PreToolUse 가 cloud 한테 verdict 물어보고, pass 만 실행, block/ask 는 막거나 HITL 큐." },
+      { n: "5", title: "원장 확인", body: "대시보드 /ledger 에서 모든 결정 시간순. 체인 무결성 검증은 GET 한 번. 모든 항목 서명되어 있어 위·변조 즉시 감지." },
     ],
   },
   pricing: {
-    heading: "두 가지 선택지",
+    heading: "두 가지 운영 방식",
+    sub: "기능은 동일. 운영을 본인이 하느냐, 우리가 하느냐의 차이입니다.",
     plans: [
       {
-        name: "Self-host",
-        price: "무료",
-        cap: "Apache 2.0 OSS · 영구",
+        name: "Self-host", price: "무료", cap: "Apache 2.0 · 영구",
         features: [
-          "전체 코드 GitHub 공개 (코드 직접 감사 가능)",
+          "전체 소스 GitHub 공개 (코드 직접 감사)",
           "Helm chart / fly.io / docker compose 다 지원",
-          "본인 인프라에 본인 데이터 (감사 원장 본인 PVC 안)",
-          "한국 법무 도메인 프리셋 포함",
+          "본인 인프라에 본인 데이터 (원장 본인 PVC)",
+          "Korean legal-domain 프리셋 포함",
           "GitHub Discussions 커뮤니티 지원",
         ],
-        cta: "GitHub 가서 보기",
-        primary: false,
+        cta: "GitHub 가서 보기", primary: false,
       },
       {
-        name: "Clawy Pro+",
-        price: "포함",
-        cap: "Pro+ 구독에 호스티드 포함",
+        name: "Clawy Pro+", price: "포함", cap: "Pro+ 구독에 호스티드 인스턴스 번들",
         features: [
-          "운영 부담 0 (저희가 호스티드 인스턴스 운영)",
-          "Pro+ 결제 자동 프로비저닝 (Stripe webhook → 키 이메일)",
-          "한국 리전 배포, 데이터 격리, 이메일 + Slack 지원",
-          "자동 키 회전, 감사 원장 백업 포함",
-          "GA SLA 99.5% (알파 기간엔 best-effort)",
+          "운영 부담 0 — 호스티드 인스턴스 저희가 운영",
+          "Stripe 결제 → 키 자동 발급 + 이메일",
+          "한국 리전 배포, 데이터 격리, Slack 지원",
+          "키 자동 회전 + 원장 백업",
+          "GA SLA 99.5% (알파 기간 best-effort)",
         ],
-        cta: "Pro+ 구독 시작",
-        primary: true,
+        cta: "Pro+ 시작", primary: true,
       },
     ],
   },
@@ -264,110 +430,174 @@ const KO = {
     heading: "자주 묻는 질문",
     items: [
       {
-        q: "우리 클라이언트 자료가 OpenMagi 서버로 전송되나요?",
-        a: "검증에 제출한 텍스트 본문은 저장하지 않습니다. 정책 결과(verdict, reasons)만 감사 원장에 저장. 자연어 정책 컴파일 시에만 외부 LLM(Anthropic/OpenAI)에 자연어 텍스트가 전송됩니다. 자세한 내용은 /legal/privacy 참조.",
+        q: "도구 호출 페이로드가 우리 서버로 전송되나요?",
+        a: "검증 시 payload 텍스트가 cloud 에 도달하지만 본문은 저장하지 않습니다. 저장되는 건 verdict + reasons + 정책 id 입니다. LLM critic kind 를 쓰면 criterion + payload 가 LLM 공급자(Anthropic/OpenAI) 로 가는데, 이건 정책마다 선택입니다.",
       },
       {
-        q: "Claude Code 외에 다른 AI 코딩 도구도 지원하나요?",
-        a: "현재는 Claude Code의 hooks 메커니즘에 통합. Cursor, Continue 등은 로드맵 검토 중. 알파 사용자 요청 우선 반영.",
+        q: "Claude Code 외 다른 에이전트도 지원하나요?",
+        a: "현재는 Claude Code 의 hooks 메커니즘에 통합. 동일 패턴(PreToolUse hook + JSON 응답)이면 다른 에이전트도 호환 가능. Cursor, Continue 등은 알파 사용자 수요에 따라 우선순위 조정 중.",
       },
       {
-        q: "온프레미스 배포가 가능한가요?",
-        a: "예. magi-control-plane 은 Apache 2.0 OSS. 코드 전체가 GitHub 에 있고 Helm chart / fly.io / docker compose 다 지원합니다. 운영 부담 없으려면 Clawy Pro+ 구독으로 저희 호스티드 인스턴스(cloud.openmagi.ai) 사용.",
+        q: "온프레미스 / Air-gapped 배포는?",
+        a: "OSS 이므로 가능합니다. 다만 LLM critic 와 SHACL 은 외부 의존 (각각 LLM 공급자 / pyshacl) 이 필요해서, air-gapped 환경에선 regex / wired verifier kind 만 사용 가능.",
       },
       {
-        q: "감사 원장은 정말 위·변조 불가능한가요?",
-        a: "각 항목은 SHA-256 해시 + 이전 항목 해시를 체인으로 연결, Ed25519 서명. 단일 항목 수정 시 모든 후속 해시가 깨져 즉시 감지. 키 회전(kid) 지원으로 키 유출 시에도 이력 보존.",
+        q: "원장이 정말 위·변조 불가능한가요?",
+        a: "각 항목은 SHA-256 으로 이전 항목과 체인 연결, Ed25519 로 서명. 단일 행 수정 시 모든 후속 해시가 깨져 무결성 검증에서 즉시 감지. 키 회전(kid) 지원으로 키 유출 시에도 이력 보존.",
       },
       {
-        q: "HITL(사람 승인) 큐는 어떻게 작동하나요?",
-        a: "정책이 'review' 판정한 호출은 HITL 큐에 들어가고, 대시보드 /hitl 에서 파트너 또는 지정된 검토자가 승인·거부. 승인 시 서명된 토큰이 발급되어 호출이 재개됩니다.",
+        q: "HITL 큐는?",
+        a: "정책이 'ask' archetype 인 정책은 조건 fail 시 review 큐에 들어갑니다. 대시보드 /hitl 에서 검토자가 승인·거부. 승인 시 서명 토큰이 발급되어 호출 재개.",
       },
     ],
   },
   cta: {
-    heading: "5분 안에 시작하세요",
-    body: "Clawy Pro+ 결제 = 자동 키 발급 + 호스티드 인스턴스. 또는 GitHub 에서 본인 인프라에 직접 호스팅.",
-    cta: "Pro+ 시작하기",
+    heading: "5분 안에 시작",
+    body: "Pro+ 결제 = 자동 키 + 호스티드 인스턴스. 또는 GitHub 에서 본인 인프라에 직접 호스팅.",
+    cta: "Pro+ 시작",
   },
 } satisfies {
-  hero: HeroCopy; problems: ProblemsCopy; how: HowCopy;
-  pricing: PricingCopy; faq: FAQCopy; cta: CTACopy
+  hero: HeroCopy; capabilities: CapabilitiesCopy; why: WhyCopy
+  how: HowCopy; pricing: PricingCopy; faq: FAQCopy; cta: CTACopy
 }
 
 const EN = {
   hero: {
     eyebrow: "Open Source · Apache 2.0",
-    title: "Make Claude Code safe for lawyers.",
+    title: "Govern every Claude Code tool call.",
     subtitle:
-      "An out-of-loop governance gate. Every tool call Claude Code makes is policy-checked at execution time. Only compliant calls run, and every step is sealed in a tamper-evident audit ledger. Self-host (free) or get it included with your Clawy Pro+ subscription.",
+      "A drop-in PreToolUse gate. Each call is judged block / ask / audit; every decision sealed in an Ed25519-signed, hash-chained ledger. Self-host free, hosted bundled into Clawy Pro+.",
     cta: "Start with Pro+",
     ctaSecondary: "Or self-host",
-    alpha: "Apache 2.0 open source. Full code on GitHub. Hosted via Clawy Pro+ when you'd rather not run ops.",
+    alpha: "Apache 2.0 · full source on GitHub · hosted via Clawy Pro+ when you'd rather not run ops.",
+    terminalIntro: "# Claude Code → magi-gate (PreToolUse)",
+    terminalUser: "Bash: aws s3 rm s3://prod-backups --recursive",
+    terminalDeny: "✗ MAGI: aws_key_detected — 'AKIA…' regex matched payload (policy: block-prod-rm)",
+    terminalLedger: "# verdict deny · ledger entry h=8a6f… (signed, chained)",
   },
-  problems: {
+  capabilities: {
+    heading: "Everything the policy model can express",
+    sub: "8 hook events × 3 action archetypes × 4 condition kinds. Authored from the dashboard wizard, no code change.",
+    groups: [
+      {
+        label: "WHEN — 8 hook events",
+        tagline: "At any lifecycle moment",
+        items: [
+          "PreToolUse / PostToolUse — before / after tool runs",
+          "UserPromptSubmit — before prompt reaches the LLM",
+          "PreCompact — before context compaction (protect evidence chain)",
+          "Stop / SubagentStop — main / sub agent stops",
+          "SessionStart / SessionEnd — session boundary markers",
+        ],
+      },
+      {
+        label: "WHAT — 3 archetypes",
+        tagline: "Name what the policy is for",
+        items: [
+          "Block — refuse the call when the condition fails",
+          "Ask — send to the review queue, human approves",
+          "Audit — record to the ledger, never blocks",
+          "(unconditional emit-signal also expressed as audit + no condition)",
+        ],
+      },
+      {
+        label: "CONDITION — 4 kinds",
+        tagline: "Express the rule the way it fits",
+        items: [
+          "Wired verifier — built-in checks (citation, privilege, …)",
+          "Inline regex — Python re pattern against the payload",
+          "LLM critic — natural-language rule (LLM-judged, preview)",
+          "SHACL shape — semantic Turtle validation (preview)",
+        ],
+      },
+    ],
+  },
+  why: {
     heading: "Why magi-control-plane",
     items: [
-      { q: "AI assistance comes with confidentiality duty",
-        a: "Every Claude Code tool call risks exposing client data. magi enforces policy at the call site — non-compliant calls are blocked before they execute." },
-      { q: "You need an evidence chain that survives audit",
-        a: "Which citations were verified, which steps a human approved — sealed in a Ed25519-signed, hash-chained ledger. No need to reconstruct after the fact." },
-      { q: "Lawyers want Claude Code unchanged",
-        a: "No workflow changes. One managed-settings.json + one bash gate script. PreToolUse hook calls our cloud and enforces policy — lawyers use Claude Code as before." },
+      {
+        q: "Agents fire faster than humans review",
+        a: "Tool-call decisions race past the operator. A single wrong call hits infra / data / reputation in real time. Catching it at the PreToolUse hook keeps recovery cost out of the picture.",
+      },
+      {
+        q: "You can't reconstruct an audit chain after the fact",
+        a: "Which calls passed, which were blocked, who approved what — collecting it from logs after the incident is too late. magi seals every decision with an Ed25519 signature and SHA-256 hash chain at the moment the verdict is reached.",
+      },
+      {
+        q: "Leave the agent untouched",
+        a: "One managed-settings.json + one bash shim. Zero agent workflow change, zero SDK dependency. Follows Claude Code's PreToolUse hook contract — other compatible agents are a small adapter away.",
+      },
     ],
   },
   how: {
     heading: "How it works",
     steps: [
-      { n: "1", title: "Get a key", body: "Subscribe to Clawy Pro+ — tenant + API key auto-provisioned, emailed within seconds. Self-hosting? Issue your own key locally." },
-      { n: "2", title: "One-line install", body: "`curl -fsSL <your-instance>/install.sh | bash -s -- mcp_…`. Drops ~/.claude/managed-settings.json + bash gate, runs a smoke test." },
-      { n: "3", title: "Author policy or pick a preset", body: "Write policy in natural language. LLM compiles to IR, human reviews. Or use the prebuilt Korean legal-domain preset." },
-      { n: "4", title: "Use Claude Code", body: "Lawyers work as usual. Every tool call triggers PreToolUse. Passes execute, denies block, reviews enter the HITL queue." },
-      { n: "5", title: "Inspect the audit ledger", body: "Dashboard shows every pass/deny/HITL decision in time order. Chain integrity verified with a single GET." },
+      { n: "1", title: "Get a key", body: "Subscribe to Clawy Pro+ — tenant + API key auto-provisioned and emailed. Self-hosting? Issue the key from your own instance." },
+      { n: "2", title: "One-line install", body: "curl -fsSL <your-instance>/install.sh | bash -s -- mcp_… drops ~/.claude/managed-settings.json + the bash gate." },
+      { n: "3", title: "Author a policy", body: "6-step Guided wizard (When → What → Condition → Specifics → Name → Review). Or describe the policy in natural language and the LLM compiler emits IR." },
+      { n: "4", title: "Use Claude Code", body: "Use the agent as before. Each tool call triggers PreToolUse → cloud verdict. Pass executes, block refuses, ask routes to the HITL queue." },
+      { n: "5", title: "Inspect the ledger", body: "Dashboard /ledger shows every decision in time order. Chain integrity verified by a single GET. Every entry signed; tampering caught instantly." },
     ],
   },
   pricing: {
     heading: "Two ways to run it",
+    sub: "Same feature set. The only difference is who runs the cloud instance.",
     plans: [
-      { name: "Self-host", price: "Free", cap: "Apache 2.0 OSS · forever",
+      {
+        name: "Self-host", price: "Free", cap: "Apache 2.0 · forever",
         features: [
           "Full source on GitHub (audit the code yourself)",
           "Helm chart / fly.io / docker compose supported",
-          "Your infra, your data (audit ledger on your PVC)",
+          "Your infra, your data (ledger on your PVC)",
           "Korean legal-domain preset included",
           "Community support via GitHub Discussions",
-        ], cta: "See on GitHub", primary: false },
-      { name: "Clawy Pro+", price: "Included", cap: "bundled into Pro+ subscription",
+        ],
+        cta: "See on GitHub", primary: false,
+      },
+      {
+        name: "Clawy Pro+", price: "Included", cap: "hosted instance bundled into Pro+ subscription",
         features: [
           "Zero ops — we run the hosted instance",
           "Auto-provisioned at subscribe time (Stripe → key emailed)",
           "Korea-region deploy, data isolation, email + Slack support",
-          "Auto key rotation + audit-ledger backups",
+          "Auto key rotation + ledger backups",
           "GA SLA 99.5% (best-effort during alpha)",
-        ], cta: "Start Pro+", primary: true },
+        ],
+        cta: "Start Pro+", primary: true,
+      },
     ],
   },
   faq: {
     heading: "FAQ",
     items: [
-      { q: "Does my client data go to OpenMagi servers?",
-        a: "We do NOT store the text payloads you submit to verifiers — only the verdict (and reasons) is sealed in the audit ledger. Natural-language policy compilation does send your description to external LLMs (Anthropic/OpenAI). See /legal/privacy for full detail." },
-      { q: "Do you support coding tools other than Claude Code?",
-        a: "Today we integrate via Claude Code's hooks mechanism. Cursor/Continue are on the roadmap; alpha-user demand drives priority." },
-      { q: "Can I deploy on-prem?",
-        a: "Yes — magi-control-plane is Apache 2.0. Full source on GitHub, Helm chart + fly.io + docker compose all supported. If you'd rather not run ops, our hosted instance (cloud.openmagi.ai) is bundled into every Clawy Pro+ subscription." },
-      { q: "Is the ledger really tamper-evident?",
-        a: "Each entry is SHA-256 hashed and chained to the previous entry's hash, then Ed25519-signed. Any single-row edit invalidates every subsequent hash. Key rotation (kid) preserves history even if a signing key is rotated." },
-      { q: "How does the HITL queue work?",
-        a: "Calls policy judges 'review' enter the HITL queue; a partner or designated reviewer approves/rejects from /hitl. Approval issues a signed token that resumes the call." },
+      {
+        q: "Does the tool-call payload reach your servers?",
+        a: "Payload text reaches the cloud at verify time but is NOT persisted — only the verdict, reasons, and policy id are sealed in the ledger. If you author an LLM critic condition, the criterion + payload are sent to the configured LLM provider; that's per-policy and opt-in.",
+      },
+      {
+        q: "Other agents besides Claude Code?",
+        a: "Today we integrate via Claude Code's hooks mechanism. Any agent that emits PreToolUse-style hooks with JSON responses can adapt with a small shim. Cursor / Continue are on the roadmap — alpha-user demand drives priority.",
+      },
+      {
+        q: "On-prem / air-gapped deploy?",
+        a: "Yes — the whole project is OSS. Note the LLM critic and SHACL kinds depend on external libs (LLM provider / pyshacl) so air-gapped installs are restricted to regex + wired-verifier conditions.",
+      },
+      {
+        q: "Is the ledger really tamper-evident?",
+        a: "Each entry is SHA-256-chained to its predecessor and Ed25519-signed. Any single-row mutation breaks every subsequent hash; the chain-integrity endpoint catches it instantly. Key rotation (kid) preserves history even when the signing key changes.",
+      },
+      {
+        q: "How does HITL work?",
+        a: "Policies with archetype = ask send a review-queue entry on condition fail. A reviewer approves / rejects from the dashboard /hitl page; approval issues a signed token that resumes the call.",
+      },
     ],
   },
   cta: {
     heading: "Get started in 5 minutes",
-    body: "Subscribe to Clawy Pro+ for auto-provisioned hosted. Or fork on GitHub and self-host on your own infra.",
+    body: "Subscribe to Pro+ for auto-provisioned hosted. Or fork on GitHub and self-host on your own infra.",
     cta: "Start Pro+",
   },
 } satisfies {
-  hero: HeroCopy; problems: ProblemsCopy; how: HowCopy;
-  pricing: PricingCopy; faq: FAQCopy; cta: CTACopy
+  hero: HeroCopy; capabilities: CapabilitiesCopy; why: WhyCopy
+  how: HowCopy; pricing: PricingCopy; faq: FAQCopy; cta: CTACopy
 }
