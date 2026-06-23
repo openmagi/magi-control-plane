@@ -167,8 +167,17 @@ EOF
 fi
 
 # ── compose up + health wait ────────────────────────────────────────────
-step "docker compose up -d  (pulling images: magi-cp + magi-cp-dashboard)"
-(cd "$INSTALL_DIR" && docker compose up -d >/tmp/magi-compose.log 2>&1) \
+step "Pulling latest images (magi-cp + magi-cp-dashboard)"
+(cd "$INSTALL_DIR" && docker compose pull >/tmp/magi-pull.log 2>&1) \
+  || { tail -30 /tmp/magi-pull.log >&2; fail "docker compose pull failed. See /tmp/magi-pull.log"; }
+ok "pulled"
+
+step "docker compose up -d  (recreates containers on image change)"
+# --force-recreate so a re-run after `docker compose pull` actually
+# swaps the running containers over to the new image. Without it,
+# compose sees the old containers as already-up and leaves them alone
+# even when the image digest changed.
+(cd "$INSTALL_DIR" && docker compose up -d --force-recreate >/tmp/magi-compose.log 2>&1) \
   || { tail -30 /tmp/magi-compose.log >&2; fail "docker compose up failed. See /tmp/magi-compose.log"; }
 ok "compose up"
 
