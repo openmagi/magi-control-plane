@@ -37,3 +37,4 @@ Thumbs.db
 /.deploy/
 _devdb.sqlite*
 _devpols.json
+_devdb/
