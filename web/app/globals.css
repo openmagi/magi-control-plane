@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* Canonical Open Magi design tokens (vendored, do not edit _ds). */
+@import "../components/ui/_ds/tokens.css";
 
 /* ── Pretendard (Korean). variable font from jsDelivr ──────────────── */
 @font-face {

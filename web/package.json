@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start -p 3787",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:ds-drift": "node scripts/check-ds-drift.mjs"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

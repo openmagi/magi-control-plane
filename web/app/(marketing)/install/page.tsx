@@ -17,13 +17,30 @@ export const metadata: Metadata = {
  *  command that boots a local control plane via docker compose, wires
  *  Claude Code at the user's per-user paths, runs smoke test. Page copy
  *  matches scripts/quickstart.sh exactly. */
-export default async function InstallPage() {
+export default async function InstallPage({
+  searchParams,
+}: {
+  searchParams: Record<string, string | undefined>
+}) {
   const locale = await getLocale()
   const isKo = locale === "ko"
   const C = isKo ? KO_INSTALL : EN_INSTALL
   const oneLiner = "curl -fsSL https://cp.openmagi.ai/install.sh | bash"
+  const redirectedFrom = searchParams.from
   return (
     <div className="bg-white">
+      {redirectedFrom && (
+        <div className="border-b border-amber-200 bg-amber-50">
+          <div
+            className="mx-auto px-5 md:px-8 py-3 text-sm text-amber-900"
+            style={{ maxWidth: "var(--content-max)" }}
+          >
+            {isKo
+              ? <>대시보드 페이지 <code className="font-mono">{redirectedFrom}</code> 는 자기 컨트롤 플레인을 self-host한 뒤 <code className="font-mono">http://localhost:3000{redirectedFrom}</code> 에서 보입니다. cp.openmagi.ai 는 install 안내만 호스팅합니다.</>
+              : <>The dashboard page <code className="font-mono">{redirectedFrom}</code> only exists in your self-hosted control plane. After install, open <code className="font-mono">http://localhost:3000{redirectedFrom}</code>. cp.openmagi.ai only hosts the install guide.</>}
+          </div>
+        </div>
+      )}
       {/* Hero band */}
       <section className="border-b border-[var(--color-border-subtle)] bg-[var(--canvas)]">
         <div
