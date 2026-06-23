@@ -1043,28 +1043,35 @@ function Step1Event({
       heading={t("newPolicy.wizard.step1.heading")}
       helper={t("newPolicy.wizard.step1.helper")}
     >
-      <form action={action} className="space-y-5">
+      <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="1" />
-        {EVENT_GROUPS.map((group) => (
-          <section key={group.labelKey} className="space-y-2">
-            <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-[var(--color-text-tertiary)]">
-              {t(group.labelKey)}
-            </h3>
-            <div className="space-y-2">
-              {group.events.map((ev) => (
-                <RadioCard
-                  key={ev}
-                  name="event"
-                  value={ev}
-                  defaultChecked={current === ev}
-                  label={ev}
-                  sub={t(`newPolicy.wizard.step1.event.${ev}.sub` as never)}
-                  recommended={ev === "PreToolUse"}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
+        {EVENT_GROUPS.map((group) => {
+          // D36: groups with >2 events render in a 2-column grid so the
+          // whole step fits one viewport. The 2-event tool-actions group
+          // stays single-column so PreToolUse keeps its full-width
+          // "recommended" emphasis.
+          const dense = group.events.length > 2
+          return (
+            <section key={group.labelKey} className="space-y-1.5">
+              <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-[var(--color-text-tertiary)]">
+                {t(group.labelKey)}
+              </h3>
+              <div className={dense ? "grid grid-cols-2 gap-2" : "space-y-2"}>
+                {group.events.map((ev) => (
+                  <RadioCard
+                    key={ev}
+                    name="event"
+                    value={ev}
+                    defaultChecked={current === ev}
+                    label={ev}
+                    sub={t(`newPolicy.wizard.step1.event.${ev}.sub` as never)}
+                    recommended={ev === "PreToolUse"}
+                  />
+                ))}
+              </div>
+            </section>
+          )
+        })}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
