@@ -125,7 +125,12 @@ const SENTINEL_RE_DEFAULT =
 function deriveMatcher(s: WizardState): string {
   if (s.lifecycle === "before_tool_use") {
     if (s.conditionKind === "tool_name") {
-      return (s.toolName ?? "").trim() || "Bash"
+      // toolName is a CSV (one or more tool names). Backend matcher
+      // supports `A|B|C` regex alternation.
+      const tools = parseCsv(s.toolName ?? "").filter(Boolean)
+      if (tools.length === 0) return "Bash"
+      if (tools.length === 1) return tools[0]
+      return tools.join("|")
     }
     if (s.conditionKind === "fetch_domain" || s.conditionKind === "domain_allowlist") {
       return "WebFetch"
@@ -353,10 +358,32 @@ async function advanceWizard(formData: FormData): Promise<void> {
   for (const v of evSource) if (!evMerged.includes(v)) evMerged.push(v)
   if (evMerged.length > 0) params.set("evidence_refs", evMerged.join(","))
 
+  // Tool-name multi (Step 3 condition kind = tool_name). Merge chip
+  // checks + custom text into a single CSV `toolName` field.
+  const toolChipsRaw = formData
+    .getAll("toolName_chip")
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean)
+  const toolCustomRaw = String(formData.get("toolName_custom") ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean)
+  const toolNameSubmitted = stepIn === 3 && (toolChipsRaw.length > 0 || toolCustomRaw.length > 0)
+  if (toolNameSubmitted) {
+    const merged: string[] = []
+    for (const v of [...toolChipsRaw, ...toolCustomRaw]) {
+      if (!merged.includes(v)) merged.push(v)
+    }
+    if (merged.length > 0) params.set("toolName", merged.join(","))
+  }
+
   for (const [k, v] of formData.entries()) {
     if (typeof v !== "string") continue
     if (k.startsWith("$ACTION") || k === "_step") continue
     if (k === "evidence_ref" || k === "evidence_refs") continue
+    if (k === "toolName_chip" || k === "toolName_custom") continue
+    // The toolName hidden input may carry our sentinel; ignore it so
+    // the chip-merged CSV above wins on Step 3 submit.
+    if (k === "toolName" && (v === "__sentinel__" || toolNameSubmitted)) continue
     if (!v.trim()) continue
     params.set(k, v.trim())
   }
@@ -384,10 +411,28 @@ async function saveWizard(formData: FormData): Promise<void> {
     redirect("/policies/new?mode=guided&step=4&err=strip_unsupported"); return
   }
 
+  // Re-derive toolName from chip + custom inputs if they're present
+  // (Step 3 submit case). Otherwise read the hidden toolName field.
+  const toolChips = formData.getAll("toolName_chip")
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim()).filter(Boolean)
+  const toolCustom = String(formData.get("toolName_custom") ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean)
+  let toolName: string | undefined
+  if (toolChips.length > 0 || toolCustom.length > 0) {
+    const merged: string[] = []
+    for (const v of [...toolChips, ...toolCustom]) {
+      if (!merged.includes(v)) merged.push(v)
+    }
+    toolName = merged.length > 0 ? merged.join(",") : undefined
+  } else {
+    const raw = String(formData.get("toolName") ?? "").trim()
+    toolName = (raw && raw !== "__sentinel__") ? raw : undefined
+  }
   const state: WizardState = {
     lifecycle,
     conditionKind,
-    toolName: String(formData.get("toolName") ?? "").trim() || undefined,
+    toolName,
     fetchDomain: String(formData.get("fetchDomain") ?? "").trim() || undefined,
     allowlist: String(formData.get("allowlist") ?? "").trim() || undefined,
     pattern: String(formData.get("pattern") ?? "").trim() || undefined,
@@ -541,7 +586,7 @@ export default async function NewPolicyPage({
         <ErrorState title={flash.text} severity="error" />
       )}
 
-      {mode === null && <PickerLanding t={t} />}
+      {mode === null && <PickerLanding t={t} locale={locale === "ko" ? "ko" : "en"} />}
 
       {mode === "nl" && (
         <AuthoringShell
@@ -649,51 +694,164 @@ export default async function NewPolicyPage({
 
 /* ─── picker landing ─────────────────────────────────────────────── */
 
-function PickerLanding({
-  t,
-}: { t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string }) {
-  return (
-    <section className="rounded-2xl border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/[0.02] p-5 shadow-sm">
-      <header className="mb-4 flex items-start justify-between">
-        <div>
-          <h1 className="text-lg font-bold text-[var(--color-text-primary)] m-0">
-            {t("newPolicy.picker.title")}
-          </h1>
-          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-            {t("newPolicy.picker.subtitle")}
-          </p>
-        </div>
-        <Link
-          href="/policies"
-          aria-label={t("newPolicy.picker.close")}
-          className="rounded-lg p-1.5 text-[var(--color-text-tertiary)] hover:bg-black/[0.04] hover:text-[var(--color-text-primary)] transition-colors"
-        >
-          <XMarkIcon className="h-4 w-4" />
-        </Link>
-      </header>
+/* Quick-start templates surfaced in the picker landing.
+ * Clicking one lands the user on Guided Step 5 (Naming) with the
+ * lifecycle / conditionKind / specifics / action pre-filled. The user
+ * still picks an id and reviews before saving. */
+type Template = {
+  id: string
+  ko: { title: string; sub: string }
+  en: { title: string; sub: string }
+  params: Record<string, string>
+}
+const TEMPLATES: readonly Template[] = [
+  {
+    id: "block-aws-keys",
+    ko: { title: "AWS 키 누출 차단", sub: "Bash 인자에서 AKIA…가 보이면 차단" },
+    en: { title: "Block AWS keys", sub: "Block any tool call whose args contain AKIA…" },
+    params: {
+      lifecycle: "before_tool_use", conditionKind: "regex",
+      pattern: "AKIA[A-Z0-9]{16}", action: "block",
+    },
+  },
+  {
+    id: "block-sudo",
+    ko: { title: "sudo 차단", sub: "Bash에서 sudo 실행 시 차단" },
+    en: { title: "Block sudo", sub: "Block any Bash call containing `sudo`" },
+    params: {
+      lifecycle: "before_tool_use", conditionKind: "regex",
+      pattern: "(^|\\s)sudo\\s", action: "block",
+    },
+  },
+  {
+    id: "audit-all-bash",
+    ko: { title: "Bash 전부 감사", sub: "Bash 호출 시 원장에만 기록 (관찰 모드)" },
+    en: { title: "Audit every Bash", sub: "Record every Bash call to the ledger (observe-only)" },
+    params: {
+      lifecycle: "before_tool_use", conditionKind: "tool_name",
+      toolName: "Bash", action: "audit",
+    },
+  },
+  {
+    id: "webfetch-allowlist",
+    ko: { title: "WebFetch allowlist", sub: "허용 외 도메인은 사람 승인" },
+    en: { title: "WebFetch allowlist", sub: "Ask a human for any non-allowlisted domain" },
+    params: {
+      lifecycle: "before_tool_use", conditionKind: "domain_allowlist",
+      allowlist: "github.com, npmjs.com, api.openai.com",
+      action: "ask",
+    },
+  },
+  {
+    id: "require-citations",
+    ko: { title: "인용 필수", sub: "최종 응답에 citation 검증 통과 강제" },
+    en: { title: "Require citations", sub: "Block final answer if citation_verify fails" },
+    params: {
+      lifecycle: "pre_final", conditionKind: "evidence_ref",
+      evidence_refs: "citation_verify", action: "block",
+    },
+  },
+  {
+    id: "no-secret-in-answer",
+    ko: { title: "응답 시크릿 차단", sub: "최종 응답에 시크릿 패턴이 있으면 차단" },
+    en: { title: "No secrets in answer", sub: "Block any final answer that contains AKIA… patterns" },
+    params: {
+      lifecycle: "pre_final", conditionKind: "regex",
+      pattern: "AKIA[A-Z0-9]+", action: "block",
+    },
+  },
+]
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <ChoiceCard
-          href="/policies/new?mode=nl"
-          icon={<SparklesIcon className="h-5 w-5" />}
-          label={t("newPolicy.picker.nl.label")}
-          description={t("newPolicy.picker.nl.description")}
-          backing={t("newPolicy.picker.nl.backing")}
-        />
-        <ChoiceCard
-          href="/policies/new?mode=guided&step=1"
-          icon={<AdjustmentsHorizontalIcon className="h-5 w-5" />}
-          label={t("newPolicy.picker.guided.label")}
-          description={t("newPolicy.picker.guided.description")}
-          backing={t("newPolicy.picker.guided.backing")}
-        />
-        <ChoiceCard
-          href="/policies/new?mode=advanced"
-          icon={<CodeBracketIcon className="h-5 w-5" />}
-          label={t("newPolicy.picker.advanced.label")}
-          description={t("newPolicy.picker.advanced.description")}
-          backing={t("newPolicy.picker.advanced.backing")}
-        />
+function templateHref(t: Template): string {
+  const p = new URLSearchParams({ mode: "guided", step: "5" })
+  for (const [k, v] of Object.entries(t.params)) p.set(k, v)
+  // suggest a sensible default id from the template id
+  p.set("id", `${t.id}/v1`)
+  return `/policies/new?${p.toString()}`
+}
+
+function PickerLanding({
+  t, locale,
+}: {
+  locale: "ko" | "en"
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const ko = locale === "ko"
+  return (
+    <section className="space-y-5">
+      {/* Quick start templates row */}
+      <div className="rounded-2xl border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/[0.02] p-5 shadow-sm">
+        <header className="mb-3 flex items-start justify-between">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[var(--color-accent)]">
+              {ko ? "빠른 시작" : "Quick start"}
+            </p>
+            <h2 className="mt-1 text-sm font-semibold text-[var(--color-text-primary)] m-0">
+              {ko ? "흔한 시나리오에서 바로 시작" : "Start from a common scenario"}
+            </h2>
+            <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+              {ko
+                ? "클릭하면 wizard의 마지막 단계로 이동합니다. 이름만 정하고 저장."
+                : "Each one jumps to the last wizard step pre-filled. Name it and save."}
+            </p>
+          </div>
+          <Link
+            href="/policies"
+            aria-label={t("newPolicy.picker.close")}
+            className="rounded-lg p-1.5 text-[var(--color-text-tertiary)] hover:bg-black/[0.04] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <XMarkIcon className="h-4 w-4" />
+          </Link>
+        </header>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {TEMPLATES.map((tpl) => (
+            <Link
+              key={tpl.id}
+              href={templateHref(tpl)}
+              className="group flex flex-col gap-1 rounded-xl border border-black/[0.06] bg-white px-3 py-2.5 text-left transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.04] hover:no-underline"
+            >
+              <span className="text-sm font-semibold text-[var(--color-text-primary)] leading-snug">
+                {ko ? tpl.ko.title : tpl.en.title}
+              </span>
+              <span className="text-[11px] text-[var(--color-text-tertiary)] leading-snug">
+                {ko ? tpl.ko.sub : tpl.en.sub}
+              </span>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      {/* 3-mode picker */}
+      <div className="rounded-2xl border border-black/[0.08] bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0 mb-1">
+          {ko ? "직접 만들기" : "Build it yourself"}
+        </h2>
+        <p className="text-xs text-[var(--color-text-secondary)] mb-4">
+          {t("newPolicy.picker.subtitle")}
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ChoiceCard
+            href="/policies/new?mode=nl"
+            icon={<SparklesIcon className="h-5 w-5" />}
+            label={t("newPolicy.picker.nl.label")}
+            description={t("newPolicy.picker.nl.description")}
+            backing={t("newPolicy.picker.nl.backing")}
+          />
+          <ChoiceCard
+            href="/policies/new?mode=guided&step=1"
+            icon={<AdjustmentsHorizontalIcon className="h-5 w-5" />}
+            label={t("newPolicy.picker.guided.label")}
+            description={t("newPolicy.picker.guided.description")}
+            backing={t("newPolicy.picker.guided.backing")}
+          />
+          <ChoiceCard
+            href="/policies/new?mode=advanced"
+            icon={<CodeBracketIcon className="h-5 w-5" />}
+            label={t("newPolicy.picker.advanced.label")}
+            description={t("newPolicy.picker.advanced.description")}
+            backing={t("newPolicy.picker.advanced.backing")}
+          />
+        </div>
       </div>
     </section>
   )
@@ -1158,31 +1316,64 @@ function Step3Specifics({
       <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{ lifecycle: state.lifecycle, conditionKind: state.conditionKind }} />
-        {kind === "tool_name" && (
-          <div>
-            <FieldLabel>{ko ? "도구 이름" : "Tool name"}</FieldLabel>
-            <input
-              name="toolName"
-              required
-              maxLength={128}
-              defaultValue={state.toolName ?? "Bash"}
-              list="tool-list"
-              placeholder="Bash"
-              spellCheck={false}
-              autoComplete="off"
-              autoFocus
-              className={inputCls() + " font-mono"}
-            />
-            <datalist id="tool-list">
-              {TOOL_PRESETS.map((m) => <option key={m} value={m} />)}
-            </datalist>
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {ko
-                ? <>빌트인 도구 이름 또는 <code className="font-mono">mcp__server__tool</code> 패턴.</>
-                : <>A built-in tool name or an <code className="font-mono">mcp__server__tool</code> pattern.</>}
-            </p>
-          </div>
-        )}
+        {kind === "tool_name" && (() => {
+          const picked = parseCsv(state.toolName ?? "Bash")
+          const builtinChecks = new Set(picked.filter((p) => (TOOL_PRESETS as readonly string[]).includes(p)))
+          const customStr = picked.filter((p) => !(TOOL_PRESETS as readonly string[]).includes(p)).join(", ")
+          return (
+            <div className="space-y-3">
+              <FieldLabel>{ko ? "도구 (1개 이상)" : "Tools (one or more)"}</FieldLabel>
+              <p className="text-xs text-[var(--color-text-tertiary)] -mt-1">
+                {ko
+                  ? "선택한 도구 중 하나라도 호출되면 정책이 발동합니다."
+                  : "Fires if any of the picked tools is invoked."}
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {TOOL_PRESETS.map((tool) => (
+                  <label key={tool} className="block cursor-pointer">
+                    <input
+                      type="checkbox"
+                      name="toolName_chip"
+                      value={tool}
+                      defaultChecked={builtinChecks.has(tool)}
+                      className="peer sr-only"
+                    />
+                    <span className="block rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-center text-sm font-mono text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.06] peer-checked:text-[var(--color-text-primary)]">
+                      {tool}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <FieldLabel>{ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)"}</FieldLabel>
+                <input
+                  name="toolName_custom"
+                  maxLength={2000}
+                  defaultValue={customStr}
+                  placeholder="mcp__court__file, mcp__db__query"
+                  spellCheck={false}
+                  autoComplete="off"
+                  className={inputCls() + " font-mono text-sm"}
+                />
+                <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+                  {ko
+                    ? <>빌트인 외 도구 또는 <code className="font-mono">mcp__server__tool</code> 패턴을 쉼표로 구분해 추가.</>
+                    : <>Non-builtin tools or <code className="font-mono">mcp__server__tool</code> patterns. Separate by comma.</>}
+                </p>
+              </div>
+              {/* Carry the merged CSV via a hidden input so server actions
+                  see a stable `toolName` field regardless of which UI
+                  control submitted. */}
+              <input
+                type="hidden"
+                name="toolName"
+                value="__sentinel__"
+                /* The actual value gets built by advanceWizard/saveWizard
+                   below from toolName_chip + toolName_custom. */
+              />
+            </div>
+          )
+        })()}
         {kind === "fetch_domain" && (
           <div>
             <FieldLabel>{ko ? "Fetch 도메인" : "Fetch domain"}</FieldLabel>
