@@ -324,47 +324,10 @@ describe("cloud client", () => {
     expect(r).toHaveLength(1)
   })
 
-  // ── v1.2-W1: compilePolicy ─────────────────────────────────────────
-  it("compilePolicy uses X-Admin-Api-Key + POSTs nl", async () => {
-    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
-    let captured: any
-    global.fetch = vi.fn(async (url: any, init: any) => {
-      captured = { url, init }
-      return new Response(JSON.stringify({
-        ir: { id: "x/v1" }, review: { ok: true, issues: [] }, schema_issues: [],
-      }), { status: 200 }) as any
-    })
-    await cloud.compilePolicy("법원 filing 정책 강제")
-    expect(String(captured.url)).toBe("http://test/policies/compile")
-    expect(captured.init.method).toBe("POST")
-    expect(captured.init.headers.get("X-Admin-Api-Key")).toBe("admin-test")
-    const body = JSON.parse(captured.init.body)
-    expect(body.nl).toBe("법원 filing 정책 강제")
-    expect(body.prior_turns).toBeNull()
-  })
-
-  it("compilePolicy passes prior_turns when given", async () => {
-    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
-    let captured: any
-    global.fetch = vi.fn(async (url: any, init: any) => {
-      captured = init
-      return new Response(JSON.stringify({
-        ir: { id: "x/v1" }, review: { ok: true, issues: [] }, schema_issues: [],
-      }), { status: 200 }) as any
-    })
-    await cloud.compilePolicy("Bash 도구만 게이트하자", [
-      { role: "user", content: "법률 정책" },
-      { role: "assistant", content: "어떤 도구?" },
-    ])
-    const body = JSON.parse(captured.body)
-    expect(body.prior_turns).toHaveLength(2)
-    expect(body.prior_turns[0].role).toBe("user")
-  })
-
-  it("compilePolicy maps 503 to cloud unreachable on the client", async () => {
-    global.fetch = vi.fn(async () => new Response("", { status: 503 }) as any)
-    await expect(cloud.compilePolicy("x")).rejects.toThrow("cloud 503")
-  })
+  // D56b: the v1.2-W1 `compilePolicy()` tests for the one-shot NL
+  // compose surface were removed alongside the client wrapper. The
+  // conversational compose endpoint is covered by tests under
+  // web/app/api/policies/compile-interactive/route.test.ts.
 
   // ── D53b: dryRunPolicy ─────────────────────────────────────────────
   it("dryRunPolicy uses X-Admin-Api-Key + POSTs ir/since/limit", async () => {

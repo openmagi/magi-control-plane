@@ -29,9 +29,10 @@ const KO = `
 - 법령에 따른 정부 요청 (영장, 수사 영장 등)
 - 인프라 제공업체 (호스팅, 모니터링). 최소한의 운영 데이터만, DPA 체결 후
 
-타사 AI API(Anthropic, OpenAI)에는 **/policies/compile 페이지에서 자연어를
-입력한 경우에만** 해당 자연어가 전송됩니다. 다른 사용자 데이터는 전송되지
-않습니다.
+타사 AI API(Anthropic, OpenAI)에는 **/policies/new?mode=conversational 페이지의
+대화형 정책 작성기에서 자연어를 입력한 경우에만** 해당 자연어가 전송됩니다
+(서버 측 /policies/compile-interactive 엔드포인트 경유). 다른 사용자 데이터는
+전송되지 않습니다.
 
 ## 4. 보관 기간
 
@@ -98,7 +99,9 @@ We only share data with third parties in these cases:
   under DPA
 
 External AI APIs (Anthropic, OpenAI) **only receive natural-language text
-you type into /policies/compile**. No other tenant data is sent.
+you type into the conversational policy builder at /policies/new?mode=conversational**
+(routed through the server-side /policies/compile-interactive endpoint). No
+other tenant data is sent.
 
 ## 4. Retention
 

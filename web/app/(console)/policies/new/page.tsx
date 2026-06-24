@@ -719,10 +719,11 @@ export default async function NewPolicyPage({
 
   const rawMode = searchParams.mode
   // D56b: NL compose mode retired. Conversational compose (D55) absorbs
-  // its use case — when the user types a complete, unambiguous
+  // its use case. When the user types a complete, unambiguous
   // description, the conversational compiler returns ready_to_save=true
   // on turn 1. URL backcompat: `/policies/new?mode=nl` lands users on
-  // the new conversational page, preserving any incoming nl= seed.
+  // the new conversational page, preserving any incoming nl= seed so a
+  // bookmarked `?mode=nl&nl=block+sudo` renders the seed in the input.
   if (rawMode === "nl") {
     const seed = searchParams.nl
     const tail = seed ? `&nl=${encodeURIComponent(seed)}` : ""
@@ -898,10 +899,17 @@ export default async function NewPolicyPage({
           {/* D55b: chat + live IR draft pane + dry-run on the same page.
               The save CTA at the bottom of the IrDraftPane posts to
               saveCompiled, the same server action the NL mode uses
-              (writes via persistDraft + PUT /policies). */}
+              (writes via persistDraft + PUT /policies).
+
+              D56b follow-up: when the page is reached via the
+              ?mode=nl backcompat redirect, the legacy `nl=` query
+              param is forwarded as the initial user message so a
+              bookmarked NL seed actually prefills the conversational
+              input instead of landing on an empty chat. */}
           <ConversationalCompose
             locale={locale === "ko" ? "ko" : "en"}
             saveAction={saveCompiled}
+            initialUserMessage={searchParams.nl ?? ""}
           />
         </AuthoringShell>
       )}

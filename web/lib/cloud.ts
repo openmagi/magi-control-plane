@@ -470,18 +470,15 @@ export const cloud = {
       body: JSON.stringify({ enabled }),
     }),
 
-  /** Compile a NL description to a Policy IR + critic review + schema issues.
-   *
-   * Long timeout: the compile path runs two sequential LLM calls (compiler +
-   * critic) which routinely take 5–20s. The default 5s fetch budget is for
-   * fast endpoints only; this needs a much wider window. */
-  compilePolicy: (nl: string, priorTurns?: Array<{ role: "user" | "assistant"; content: string }>):
-    Promise<CompileResult> =>
-    _fetch<CompileResult>("/policies/compile", {
-      method: "POST", keyType: "admin",
-      timeoutMs: 90_000,
-      body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
-    }),
+  // D56b: the client-side `compilePolicy()` wrapper for the one-shot
+  // NL compose endpoint (/policies/compile) was retired together with
+  // the dashboard NL mode. The cloud's POST /policies/compile route is
+  // still served by src/magi_cp/cloud/app.py for external SDK
+  // consumers; the dashboard now reaches the LLM compose surface via
+  // `/api/policies/compile-interactive` (D55a / conversational mode).
+  // CompileResult was deleted from this file's exports for the same
+  // reason. If you need to re-introduce a client wrapper, route it
+  // through the interactive endpoint, not the one-shot compile.
 
   /** D53b: replay a draft Policy IR against the last 24h / 7d of ledger
    * rows and report how many would have triggered the action.
@@ -669,11 +666,13 @@ export const cloud = {
   },
 }
 
-export type CompileResult = {
-  ir: Record<string, unknown>
-  review: { ok: boolean; issues: string[] }
-  schema_issues: string[]
-}
+// D56b: `CompileResult` (the one-shot NL→IR response type) was deleted
+// alongside the dashboard NL mode. The conversational compose surface
+// uses its own response shape declared inline in
+// app/(console)/policies/new/_components/ConversationalCompose.tsx
+// (InteractiveTurnResponse). External SDK consumers that still want a
+// typed wrapper around POST /policies/compile should declare it
+// against the cloud's OpenAPI spec.
 
 /** D53b: response from POST /policies/dry-run.
  *

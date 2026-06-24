@@ -424,6 +424,51 @@ describe("/policies/new page wiring (Conversational mode dispatch)", () => {
     expect(pageSrc).toContain('href="/policies/new?mode=conversational"')
     expect(pageSrc).toContain("newPolicy.picker.conversational.label")
   })
+
+  /**
+   * D56b backcompat. `/policies/new?mode=nl` (and the same URL with an
+   * `nl=<seed>` query param the legacy NL mode used to seed its
+   * textarea) must redirect to `/policies/new?mode=conversational` and
+   * preserve the seed through to the conversational input. The brief
+   * called out that the original commit landed the redirect with no
+   * test pinning it: a future refactor that drops the `if (rawMode ===
+   * "nl")` block would silently break a bookmarked legacy URL.
+   *
+   * These tests are source-level (matching the existing pageSrc grep
+   * style) so they don't depend on next/navigation harness setup; the
+   * `seed` round-trip is also covered by the `initialUserMessage`
+   * prop wire-up below.
+   */
+  it("D56b: rawMode === 'nl' triggers a redirect to ?mode=conversational", () => {
+    expect(pageSrc).toMatch(/if \(rawMode === "nl"\)/)
+    expect(pageSrc).toMatch(
+      /redirect\(\s*`\/policies\/new\?mode=conversational\$\{tail\}`\s*\)/,
+    )
+  })
+
+  it("D56b: legacy ?mode=nl&nl=<seed> preserves the seed in the redirect URL", () => {
+    // The redirect builder must compose `&nl=<seed>` when a seed is
+    // present. The encode/no-encode branch matters for any seed with
+    // spaces (URL would be munged).
+    expect(pageSrc).toMatch(/const seed = searchParams\.nl/)
+    expect(pageSrc).toMatch(/encodeURIComponent\(seed\)/)
+    expect(pageSrc).toMatch(/`&nl=\$\{encodeURIComponent\(seed\)\}`/)
+  })
+
+  it("D56b: ConversationalCompose receives the forwarded nl seed via initialUserMessage", () => {
+    // The page MUST thread `searchParams.nl` into the client component;
+    // otherwise the URL-bounce preserves the seed but the chat lands
+    // empty (the original "silently loses the user's intent" bug).
+    expect(pageSrc).toMatch(/initialUserMessage=\{searchParams\.nl\s*\?\?\s*""\}/)
+  })
+
+  it("D56b: ConversationalCompose accepts initialUserMessage on its props type", () => {
+    const compSrc = read("ConversationalCompose.tsx")
+    expect(compSrc).toMatch(/initialUserMessage\?:\s*string/)
+    // The state initializer must seed the input from the prop so the
+    // seed survives the empty-state pass.
+    expect(compSrc).toMatch(/useState\(initialUserMessage\s*\?\?\s*""\)/)
+  })
 })
 
 describe("D55b i18n key coverage", () => {

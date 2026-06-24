@@ -96,10 +96,15 @@ export interface ConversationalComposeProps {
    *  current draft to PUT /policies (same path the NL and Raw modes
    *  use). */
   saveAction: (fd: FormData) => Promise<void>
+  /** D56b: legacy `/policies/new?mode=nl&nl=<seed>` URLs redirect to
+   *  `?mode=conversational&nl=<seed>`. The server page forwards that
+   *  `nl=` query param here so the seed actually prefills the input
+   *  instead of landing on an empty chat. Empty string = no seed. */
+  initialUserMessage?: string
 }
 
 export function ConversationalCompose({
-  locale, saveAction,
+  locale, saveAction, initialUserMessage,
 }: ConversationalComposeProps) {
   const t: T = useMemo(
     () => (key, vars) => translate(locale, key, vars),
@@ -109,7 +114,12 @@ export function ConversationalCompose({
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [readyToSave, setReadyToSave] = useState(false)
   const [pending, setPending] = useState(false)
-  const [input, setInput] = useState("")
+  // D56b: prefill the input with the `?nl=` seed forwarded by the
+  // `?mode=nl` backcompat redirect so a bookmarked legacy URL renders
+  // the user's saved description instead of an empty chat. useState
+  // initializer (not useEffect) avoids the empty→prefilled flash and
+  // never clobbers the user's later edits.
+  const [input, setInput] = useState(initialUserMessage ?? "")
   const [picks, setPicks] = useState<Record<string, string[]>>({})
   /** Error state surfaces as an assistant bubble per the brief
    *  ("provider_unconfigured surfaces as an assistant bubble with the

@@ -211,7 +211,7 @@ echo FILE_COURT_M1_D1`
               {t("setup.step4.body")}
             </p>
             <div className="flex flex-wrap gap-2">
-              <Link href="/policies/compile">
+              <Link href="/policies/new?mode=conversational">
                 <Button variant="primary" size="sm">{t("setup.tryCompile")}</Button>
               </Link>
               <Link href="/verify">
