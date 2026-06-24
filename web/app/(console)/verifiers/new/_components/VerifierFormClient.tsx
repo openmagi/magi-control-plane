@@ -18,7 +18,7 @@
  * envelope, server validates, redirects).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 
 /**
  * Stable id generator for trigger rows. crypto.randomUUID is in the
@@ -180,6 +180,14 @@ export default function VerifierFormClient({ labels, initial }: Props) {
   const [callerAssemblyHint, setCallerAssemblyHint] = useState<string>(
     initial?.caller_assembly_hint ?? "",
   )
+  // D57c follow-up: useId-scoped name for the input-assembly radio
+  // group. The form previously hardcoded `name="input-assembly"`,
+  // which would merge two radio groups into one if the form ever
+  // mounted twice on the same page (a draft + a fresh form, or a
+  // wizard with a preview). useId() gives every mount a stable,
+  // unique name so the radio invariants hold per-instance.
+  const reactId = useId()
+  const inputAssemblyRadioName = `input-assembly-${reactId}`
 
   // D52d follow-up (a11y, WCAG 2.4.3 + 2.4.7): after the operator
   // clicks "Add check" or "Add trigger", focus has to move INTO the
@@ -283,20 +291,25 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     return null
   }, [fieldChecks, labels])
 
-  // D57c: caller_assembled rows MUST carry a 1-500 char explainer;
-  // cc_stdin rows MUST leave it blank (server re-validates the same
-  // pair). The error visibility gate behaves like the other inputs:
-  // surface on blur / first edit / submit attempt.
+  // D57c: caller_assembled rows MUST carry a 1-500 char explainer.
+  // The error visibility gate behaves like the other inputs: surface
+  // on blur / first edit / submit attempt.
+  //
+  // D57c follow-up (data-loss): when cc_stdin is selected the typed
+  // hint stays in component state (so switching back to
+  // caller_assembled restores it) but is excluded from the wire
+  // payload. The local "must leave blank" check is therefore not
+  // useful — the payload always satisfies the server invariant for
+  // cc_stdin rows. Keeping the `errCallerAssemblyHintOnCcStdin` label
+  // in `Props.labels` for back-compat; the server still raises if a
+  // hand-rolled client posts a hint while picking cc_stdin.
   const [touchedHint, setTouchedHint] = useState(false)
   const callerAssemblyHintError = useMemo(() => {
+    if (inputAssembly !== "caller_assembled") return null
     const trimmed = callerAssemblyHint.trim()
-    if (inputAssembly === "caller_assembled") {
-      if (!trimmed) return labels.errCallerAssemblyHint
-      if (callerAssemblyHint.length > MAX_CALLER_ASSEMBLY_HINT_LEN) {
-        return labels.errCallerAssemblyHint
-      }
-    } else {
-      if (trimmed) return labels.errCallerAssemblyHintOnCcStdin
+    if (!trimmed) return labels.errCallerAssemblyHint
+    if (callerAssemblyHint.length > MAX_CALLER_ASSEMBLY_HINT_LEN) {
+      return labels.errCallerAssemblyHint
     }
     return null
   }, [inputAssembly, callerAssemblyHint, labels])
@@ -324,8 +337,15 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     // D57c: forward the (input_assembly, caller_assembly_hint) pair.
     // The hint is trimmed to match the server invariant (cc_stdin
     // rows MUST leave it blank, not "blank with whitespace").
+    //
+    // D57c follow-up (data-loss): when cc_stdin is selected we keep
+    // the typed hint in component state (so switching back to
+    // caller_assembled restores it) but EXCLUDE it from the wire
+    // payload, which preserves the server invariant without forcing
+    // the operator to retype 500 chars if they bounce the radio.
     input_assembly: inputAssembly,
-    caller_assembly_hint: callerAssemblyHint.trim(),
+    caller_assembly_hint:
+      inputAssembly === "caller_assembled" ? callerAssemblyHint.trim() : "",
   })
 
   return (
@@ -840,27 +860,35 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         <div className="space-y-2" role="radiogroup" aria-labelledby="input-assembly-label">
           <InputAssemblyOption
             value="cc_stdin"
+            name={inputAssemblyRadioName}
             selected={inputAssembly === "cc_stdin"}
             label={labels.inputAssemblyCcStdin}
             helper={labels.inputAssemblyCcStdinHelper}
             onSelect={() => {
+              // D57c follow-up (data-loss): keep the typed hint in
+              // component state across the switch (excluded from the
+              // wire payload while cc_stdin is selected). The
+              // operator can switch back to caller_assembled and
+              // their prose is intact, no manual retype.
+              //
+              // D57c follow-up (a11y / WCAG 3.3.1): do NOT preempt
+              // touchedHint here. The textarea's own onBlur /
+              // onChange and submitAttempted already cover the
+              // visibility gate; toggling touchedHint on a radio
+              // click would render the "hint required" error the
+              // instant the textarea is revealed by the sibling
+              // option's first click.
               setInputAssembly("cc_stdin")
-              // Clear the hint when switching back to cc_stdin so
-              // the server-side "cc_stdin rows must leave the hint
-              // blank" invariant holds without the operator having
-              // to wipe the textarea manually.
-              setCallerAssemblyHint("")
-              if (!touchedHint) setTouchedHint(true)
             }}
           />
           <InputAssemblyOption
             value="caller_assembled"
+            name={inputAssemblyRadioName}
             selected={inputAssembly === "caller_assembled"}
             label={labels.inputAssemblyCallerAssembled}
             helper={labels.inputAssemblyCallerAssembledHelper}
             onSelect={() => {
               setInputAssembly("caller_assembled")
-              if (!touchedHint) setTouchedHint(true)
             }}
           />
         </div>
@@ -950,11 +978,17 @@ export default function VerifierFormClient({ labels, initial }: Props) {
  * label-wrapped radio so a click anywhere on the card selects the
  * option; the visually-hidden native radio is the keyboard-focusable
  * element so a screen reader announces "radiogroup, X selected" /
- * "Y not selected" as expected. */
+ * "Y not selected" as expected.
+ *
+ * D57c follow-up: `name` is threaded in from the parent's useId()
+ * so two instances of VerifierFormClient on the same page don't
+ * merge into one radio group (a draft + a fresh form, or a wizard
+ * with a preview). */
 function InputAssemblyOption({
-  value, selected, label, helper, onSelect,
+  value, name, selected, label, helper, onSelect,
 }: {
   value: InputAssemblyValue
+  name: string
   selected: boolean
   label: string
   helper: string
@@ -972,7 +1006,7 @@ function InputAssemblyOption({
       <span className="flex items-baseline gap-2">
         <input
           type="radio"
-          name="input-assembly"
+          name={name}
           value={value}
           checked={selected}
           onChange={onSelect}

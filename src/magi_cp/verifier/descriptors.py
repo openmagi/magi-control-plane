@@ -69,22 +69,33 @@ class InputField(TypedDict, total=False):
 
 
 class FieldCheck(TypedDict):
-    """D52d: one (CC stdin path, check description) pair the verifier
-    runs on each fire. The dashboard renders these as a tree:
+    """D52d: one (path, check description) pair the verifier runs on
+    each fire. The dashboard renders these as a tree:
 
         path                   description
         tool_input.url      -> hostname is in allowlist
         tool_response.output -> cited IDs exist in source corpus
+
+    The `path` carries one of two interpretations depending on the
+    verifier's `input_assembly`:
+
+      - For `cc_stdin` verifiers, `path` is a CC stdin payload path the
+        runtime delivers on the declared trigger (e.g. `tool_input.url`
+        for source_allowlist when bound to PreToolUse=tool).
+      - For `caller_assembled` verifiers, `path` is one of the
+        verifier's own input dict keys (`input_payload_paths`) that
+        the caller (recipe / wrapper) assembles before POSTing. The
+        `_assert_field_checks_paths_resolve()` gate explicitly accepts
+        rows whose path matches the verifier's own input keys.
 
     Why this is separate from `input_payload_paths`:
 
       - `input_payload_paths` describes the verifier's OWN input dict
         keys (the JSON body posted to /verify/{step}). It is the
         verifier-side contract.
-      - `field_checks` describes the CC stdin paths the verifier reads
-        from when bound to a (event, matcher) trigger. It is the
-        author-side contract: "if I bind this verifier, what fields
-        does it actually look at?"
+      - `field_checks` describes the per-row check semantics, in either
+        CC stdin terms (cc_stdin) or the verifier's own input dict
+        terms (caller_assembled).
 
     Authoring the catalog of field_checks gives the policy wizard's
     verifier picker something concrete to surface when the author picks
@@ -111,14 +122,21 @@ class VerifierDescriptor(TypedDict, total=False):
     renders type chips off this field so authors stop guessing — a path
     listed here is a real key the verifier reads.
 
-    `input_assembly` (D57c) distinguishes verifiers whose `run()` reads
-    CC stdin directly (`cc_stdin`) from verifiers whose input is a dict
-    the caller (recipe / wrapper / parser) assembles externally
-    (`caller_assembled`). `citation_verify` is the canonical
-    caller-assembled case: a wrapper parses the agent answer for quoted
-    spans + references, then POSTs `{citations: [...]}` to the verifier.
-    The dashboard surfaces this inline so authors do not assume the
-    cloud magically forwards CC stdin paths into the verifier.
+    `input_assembly` (D57c) distinguishes verifiers whose input dict
+    is a thin 1:1 routing of single CC stdin fields by a small
+    wrapper (`cc_stdin` — no parsing or synthesis required) from
+    verifiers whose input is a dict a caller (recipe / wrapper /
+    parser / regex / prompt step) has to extract or synthesize
+    externally (`caller_assembled`). `citation_verify` is the
+    canonical caller-assembled case: a wrapper parses the agent
+    answer for quoted spans + references, then POSTs
+    `{citations: [...]}` to the verifier. The dashboard surfaces
+    this inline so authors do not assume the cloud magically forwards
+    CC stdin paths into the verifier — the cloud's verifier dispatch
+    in fact forwards `req.payload` verbatim to `v.run()`, so even
+    `cc_stdin` rows require a thin POST wrapper around the CC stdin
+    field; the distinction is whether the wrapper is a pure routing
+    or a real assembly step.
 
     `caller_assembly_hint` (D57c, caller_assembled only) carries the
     one-paragraph prose the dashboard renders next to the notice. Names
@@ -137,13 +155,18 @@ class VerifierDescriptor(TypedDict, total=False):
     # falls back to its "preview mode" note in that case.
     field_checks: list[FieldCheck]
     # D57c: input-assembly contract. `cc_stdin` (default) means the
-    # runtime forwards the CC stdin envelope to the verifier as its
-    # input dict. `caller_assembled` means a wrapper outside the
-    # verifier (recipe, prompt step, regex post-processor) builds the
-    # input dict and POSTs it. The dashboard renders a distinct notice
-    # for caller_assembled so operators stop reading `tool_input.url`
-    # rows on caller-assembled verifiers as "the cloud will pull this
-    # off CC stdin for me".
+    # verifier's input keys are 1:1 routings of single CC stdin fields
+    # by a thin wrapper (no parsing or synthesis required); the
+    # dashboard tells the operator a small router maps each input key
+    # to one CC stdin field. `caller_assembled` means a wrapper outside
+    # the verifier (recipe, prompt step, regex post-processor) has to
+    # extract or synthesize the input dict before POSTing. Either way
+    # the cloud's verifier dispatch (`_verify_dispatch_impl`) forwards
+    # `req.payload` verbatim to `v.run()` — it does NOT auto-pull CC
+    # stdin paths into the verifier. The dashboard renders a distinct
+    # notice for caller_assembled so operators stop reading
+    # `tool_input.url` rows on caller-assembled verifiers as "the
+    # cloud will pull this off CC stdin for me".
     input_assembly: Literal["cc_stdin", "caller_assembled"]
     # D57c: short prose explaining the caller's role for
     # caller_assembled verifiers. Empty / missing on cc_stdin rows.
@@ -278,14 +301,27 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "privilege_scan": {
         "step": "privilege_scan",
-        # D57c: cc_stdin. The wrapper hands the verifier a `text` field
-        # but the runtime sources that text directly from CC stdin
-        # (Bash command body, Edit replacement body, Write file body,
-        # final message). No external assembly is required beyond
-        # picking which CC stdin path to read on the configured
-        # trigger.
-        "input_assembly": "cc_stdin",
-        "caller_assembly_hint": "",
+        # D57c follow-up: caller_assembled. The verifier's run() reads
+        # only `payload.get("text")` from its OWN input dict (see
+        # builtins.PrivilegeScanVerifier). The cloud's
+        # `_verify_dispatch_impl` forwards `req.payload` to v.run()
+        # as-is — there is NO runtime extractor that pulls
+        # `tool_input.command` / `tool_input.new_string` /
+        # `tool_input.content` (PreToolUse) or `final_message` (Stop)
+        # off the CC stdin envelope into the verifier's `text` key. A
+        # caller (recipe / wrapper) must do that routing before POSTing.
+        # The field_checks rows below document the CC stdin surfaces
+        # the caller should be reading FROM; the verifier itself only
+        # ever sees the assembled `text` value.
+        "input_assembly": "caller_assembled",
+        "caller_assembly_hint": (
+            "The caller (recipe / wrapper) reads the right CC stdin "
+            "surface for the trigger — `tool_input.command` / "
+            "`tool_input.new_string` / `tool_input.content` on "
+            "PreToolUse, `final_message` on Stop — and POSTs "
+            "`{text: <that value>}` to the verifier. The cloud does "
+            "not auto-forward CC stdin into this verifier."
+        ),
         "triggers": [
             {
                 "event": "PreToolUse",
@@ -338,12 +374,24 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "source_allowlist": {
         "step": "source_allowlist",
-        # D57c: cc_stdin. The runtime reads the URL (PreToolUse) or
-        # the URLs parsed off the tool response (PostToolUse) directly
-        # from CC stdin. `allowlist` is bound to the policy at compile
-        # time, not assembled per-fire by the caller.
-        "input_assembly": "cc_stdin",
-        "caller_assembly_hint": "",
+        # D57c follow-up: caller_assembled. The verifier's run() reads
+        # `payload.get("sources")` (a LIST of URLs) and
+        # `payload.get("allowlist")` from its OWN input dict (see
+        # builtins.SourceAllowlistVerifier). It does NOT read
+        # `tool_input.url` from CC stdin. A caller (recipe / wrapper)
+        # must read the URL (PreToolUse) or parse URLs from the tool
+        # response (PostToolUse), wrap them into `sources: [...]`,
+        # attach the policy-bound `allowlist`, and POST the assembled
+        # dict. The field_checks rows below document the CC stdin
+        # surfaces the caller should be reading FROM.
+        "input_assembly": "caller_assembled",
+        "caller_assembly_hint": (
+            "The caller reads `tool_input.url` (PreToolUse) or parses "
+            "URLs from the tool response (PostToolUse), wraps them "
+            "into `sources: [url, ...]`, attaches the policy-bound "
+            "`allowlist`, and POSTs to the verifier. The cloud does "
+            "not auto-forward CC stdin into this verifier."
+        ),
         "triggers": [
             {
                 "event": "PreToolUse",
@@ -473,12 +521,25 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "prompt_injection_screen": {
         "step": "prompt_injection_screen",
-        # D57c: cc_stdin. The runtime scans the incoming user prompt
-        # (UserPromptSubmit) or retrieved source text (PostToolUse) for
-        # jailbreak / override markers. Both paths are read directly
-        # off CC stdin.
-        "input_assembly": "cc_stdin",
-        "caller_assembly_hint": "",
+        # D57c follow-up: caller_assembled. The verifier's run() reads
+        # only `payload.get("text")` from its OWN input dict (see
+        # builtins.PromptInjectionScreenVerifier). The cloud's
+        # `_verify_dispatch_impl` forwards `req.payload` to v.run()
+        # as-is — there is NO runtime extractor that pulls `prompt`
+        # (UserPromptSubmit) or `tool_response.output` (PostToolUse)
+        # off the CC stdin envelope into the verifier's `text` key. A
+        # caller (recipe / wrapper) must do that routing before POSTing.
+        # The field_checks rows below document the CC stdin surfaces
+        # the caller should be reading FROM; the verifier itself only
+        # ever sees the assembled `text` value.
+        "input_assembly": "caller_assembled",
+        "caller_assembly_hint": (
+            "The caller (recipe / wrapper) routes `prompt` "
+            "(UserPromptSubmit) or `tool_response.output` "
+            "(PostToolUse) from CC stdin into the verifier's `text` "
+            "field and POSTs `{text: <that value>}`. The cloud does "
+            "not auto-forward CC stdin into this verifier."
+        ),
         "triggers": [
             {
                 "event": "UserPromptSubmit",

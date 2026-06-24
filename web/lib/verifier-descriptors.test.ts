@@ -115,17 +115,22 @@ describe("verifier descriptors mirror", () => {
     }
   })
 
-  it("citation_verify + structured_output are caller_assembled (the brief baseline)", () => {
-    const c = getVerifierDescriptor("citation_verify")
-    expect(c?.input_assembly).toBe("caller_assembled")
-    const s = getVerifierDescriptor("structured_output")
-    expect(s?.input_assembly).toBe("caller_assembled")
-  })
-
-  it("the three remaining built-ins are cc_stdin", () => {
-    for (const step of ["privilege_scan", "source_allowlist", "prompt_injection_screen"]) {
+  it("all five built-ins are caller_assembled (D57c follow-up)", () => {
+    // D57c follow-up: the cloud's `_verify_dispatch_impl` forwards
+    // `req.payload` verbatim to the verifier. None of the five
+    // built-ins auto-pull CC stdin into their input dict. citation_verify
+    // and structured_output were marked caller_assembled in the
+    // baseline; the follow-up flipped privilege_scan / source_allowlist /
+    // prompt_injection_screen to match the runtime contract.
+    for (const step of [
+      "citation_verify",
+      "structured_output",
+      "privilege_scan",
+      "source_allowlist",
+      "prompt_injection_screen",
+    ]) {
       const d = getVerifierDescriptor(step)
-      expect(d?.input_assembly, step).toBe("cc_stdin")
+      expect(d?.input_assembly, step).toBe("caller_assembled")
     }
   })
 })

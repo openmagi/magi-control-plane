@@ -569,13 +569,61 @@ class TestVerifierDescriptors:
         assert d["input_assembly"] == "caller_assembled"
         assert d["caller_assembly_hint"]
 
-    def test_privilege_scan_descriptor_is_cc_stdin(self, client):
-        """D57c: privilege_scan reads CC stdin directly; hint is blank."""
+    def test_privilege_scan_descriptor_is_caller_assembled(self, client):
+        """D57c follow-up: privilege_scan is caller_assembled.
+
+        The verifier's run() reads only `payload.get("text")` from its
+        OWN input dict, and the cloud's `_verify_dispatch_impl`
+        forwards `req.payload` verbatim — there is no runtime
+        extractor that pulls `tool_input.command` / `final_message`
+        off CC stdin into the verifier's `text` key. A caller has to
+        do that routing; the hint surfaces the contract on the
+        dashboard.
+        """
         r = client.get("/verifier-descriptors/privilege_scan")
         assert r.status_code == 200
         d = r.json()
-        assert d["input_assembly"] == "cc_stdin"
-        assert d.get("caller_assembly_hint", "") == ""
+        assert d["input_assembly"] == "caller_assembled"
+        assert d["caller_assembly_hint"]
+        # Hint names the CC stdin surfaces the caller has to read.
+        hint = d["caller_assembly_hint"].lower()
+        assert "tool_input.command" in hint
+        assert "final_message" in hint
+
+    def test_source_allowlist_descriptor_is_caller_assembled(self, client):
+        """D57c follow-up: source_allowlist is caller_assembled.
+
+        The verifier's run() reads `sources` (a LIST of URLs) and
+        `allowlist` from its OWN input dict. There is no runtime path
+        that pulls `tool_input.url` off CC stdin into `sources`; a
+        wrapper has to read the URL (or parse URLs out of the tool
+        response), wrap it as `[url]`, attach the policy-bound
+        `allowlist`, and POST.
+        """
+        r = client.get("/verifier-descriptors/source_allowlist")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["input_assembly"] == "caller_assembled"
+        assert d["caller_assembly_hint"]
+        hint = d["caller_assembly_hint"].lower()
+        assert "tool_input.url" in hint
+        assert "sources" in hint
+
+    def test_prompt_injection_screen_descriptor_is_caller_assembled(self, client):
+        """D57c follow-up: prompt_injection_screen is caller_assembled.
+
+        Same shape as privilege_scan: the verifier reads
+        `payload.get("text")` from its OWN input dict; the cloud does
+        not auto-forward `prompt` (UserPromptSubmit) or
+        `tool_response.output` (PostToolUse) into that field.
+        """
+        r = client.get("/verifier-descriptors/prompt_injection_screen")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["input_assembly"] == "caller_assembled"
+        assert d["caller_assembly_hint"]
+        hint = d["caller_assembly_hint"].lower()
+        assert "prompt" in hint or "tool_response.output" in hint
 
     def test_citation_verify_field_checks_shape(self, client):
         """D52d follow-up: citation_verify is a caller-assembled
@@ -627,10 +675,19 @@ class TestDescriptorFieldChecksModule:
 
     def test_descriptor_input_assembly_export(self):
         """D57c module-level guarantee: every descriptor declares an
-        input_assembly value, and caller_assembled rows carry a
-        non-empty hint. The matching assertion in descriptors.py runs
-        at import time; this surfaces the same guarantee in the test
-        suite for future contributors."""
+        input_assembly value, caller_assembled rows carry a
+        non-empty hint, and cc_stdin rows leave the hint blank. The
+        matching assertion in descriptors.py runs at import time;
+        this surfaces the same guarantee in the test suite for future
+        contributors.
+
+        D57c follow-up: all five current built-ins are
+        caller_assembled because the cloud's `_verify_dispatch_impl`
+        forwards `req.payload` verbatim and none of the built-ins
+        ship a CC-stdin-to-payload extractor. The shape check below
+        still tolerates a future cc_stdin row (if a real extractor
+        ever lands), so this test does not block adding one.
+        """
         from magi_cp.verifier.descriptors import all_descriptors
         seen_caller = 0
         seen_cc = 0
@@ -645,12 +702,12 @@ class TestDescriptorFieldChecksModule:
             else:
                 assert not hint.strip(), d["step"]
                 seen_cc += 1
-        # Sanity: at least one of each kind today (citation_verify +
-        # structured_output are caller-assembled; the other 3 are
-        # cc_stdin). Catches a future blanket-flip that would
-        # collapse the distinction.
-        assert seen_caller >= 2
-        assert seen_cc >= 3
+        # Every current built-in is caller_assembled (see docstring).
+        # Pin the count to the full set of 5 so a future cc_stdin
+        # flip is a deliberate decision the author has to revisit
+        # this test for.
+        assert seen_caller == 5
+        assert seen_cc == 0
 
 
 # ── fix-cycle: catalog / verifiers merge tenant-scoped customs ─────

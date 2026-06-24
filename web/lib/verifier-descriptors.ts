@@ -52,16 +52,26 @@ export type InputField = {
   example?: string
 }
 
-/** D52d: one (CC stdin path, check description) pair the verifier
- * runs on each fire. Rendered as a tree in the catalog expander and
- * inline below the wizard's verifier picker:
+/** D52d: one (path, check description) pair the verifier runs on
+ * each fire. Rendered as a tree in the catalog expander and inline
+ * below the wizard's verifier picker:
  *
  *   tool_input.url       -> hostname is in allowlist
  *   tool_response.output -> cited IDs exist in source corpus
  *
- * `path` is a CC stdin payload path (NOT the verifier's own input
- * dict key; for that, see `InputField` above). `check_description` is
- * human-readable prose (max 200 chars; the catalog cell budget). */
+ * `path` carries one of two interpretations depending on the
+ * verifier's `input_assembly`:
+ *
+ *   - For `cc_stdin` verifiers, `path` is a CC stdin payload path the
+ *     runtime delivers on the declared trigger.
+ *   - For `caller_assembled` verifiers, `path` is one of the
+ *     verifier's own input dict keys (`input_payload_paths`) that the
+ *     caller assembles before POSTing. The Python-side
+ *     `_assert_field_checks_paths_resolve()` gate accepts the dual
+ *     interpretation; the TS mirror keeps the same semantics.
+ *
+ * `check_description` is human-readable prose (max 200 chars; the
+ * catalog cell budget). */
 export type FieldCheck = {
   path: string
   check_description: string
@@ -69,17 +79,22 @@ export type FieldCheck = {
 
 /** D57c: input-assembly contract.
  *
- *   `cc_stdin` (default) — the runtime forwards the CC stdin envelope
- *     to the verifier as its input dict. The field_checks tree
+ *   `cc_stdin` (default) — the verifier's input keys are 1:1
+ *     routings of single CC stdin fields by a thin wrapper (no
+ *     parsing or synthesis required). The field_checks tree
  *     describes CC stdin payload paths the verifier reads.
  *
  *   `caller_assembled` — the verifier's run() reads from its OWN
- *     input dict (e.g. `{citations: [...]}` for citation_verify). A
- *     wrapper outside the verifier (recipe, prompt step, regex
- *     post-processor) builds that dict and POSTs it; the cloud does
- *     NOT forward CC stdin paths into the verifier. The field_checks
- *     tree then describes the verifier's own input dict shape, not
- *     CC stdin paths.
+ *     input dict (e.g. `{citations: [...]}` for citation_verify),
+ *     and a caller (recipe, prompt step, regex post-processor) has
+ *     to extract or synthesize that dict before POSTing. The
+ *     field_checks tree then describes the verifier's own input
+ *     dict shape, not CC stdin paths.
+ *
+ * Either way the cloud's verifier dispatch forwards `payload`
+ * verbatim to `v.run()`; it does NOT auto-pull CC stdin paths into
+ * the verifier. The distinction is whether the POST wrapper is a
+ * pure routing or a real assembly step.
  */
 export type InputAssembly = "cc_stdin" | "caller_assembled"
 
@@ -215,7 +230,17 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   privilege_scan: {
     step: "privilege_scan",
-    input_assembly: "cc_stdin",
+    // D57c follow-up: caller_assembled — the cloud forwards
+    // req.payload verbatim, so the caller has to extract the right
+    // CC stdin surface into `text` before POSTing.
+    input_assembly: "caller_assembled",
+    caller_assembly_hint:
+      "The caller (recipe / wrapper) reads the right CC stdin " +
+      "surface for the trigger — `tool_input.command` / " +
+      "`tool_input.new_string` / `tool_input.content` on " +
+      "PreToolUse, `final_message` on Stop — and POSTs " +
+      "`{text: <that value>}` to the verifier. The cloud does " +
+      "not auto-forward CC stdin into this verifier.",
     triggers: [
       {
         event: "PreToolUse",
@@ -264,7 +289,17 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   source_allowlist: {
     step: "source_allowlist",
-    input_assembly: "cc_stdin",
+    // D57c follow-up: caller_assembled — the cloud does not pull
+    // `tool_input.url` into the verifier's `sources` list. A wrapper
+    // has to read the URL (or parse the tool response), wrap it as
+    // `[url]`, attach `allowlist`, and POST.
+    input_assembly: "caller_assembled",
+    caller_assembly_hint:
+      "The caller reads `tool_input.url` (PreToolUse) or parses " +
+      "URLs from the tool response (PostToolUse), wraps them " +
+      "into `sources: [url, ...]`, attaches the policy-bound " +
+      "`allowlist`, and POSTs to the verifier. The cloud does " +
+      "not auto-forward CC stdin into this verifier.",
     triggers: [
       {
         event: "PreToolUse",
@@ -374,7 +409,16 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   prompt_injection_screen: {
     step: "prompt_injection_screen",
-    input_assembly: "cc_stdin",
+    // D57c follow-up: caller_assembled — the cloud forwards
+    // req.payload verbatim, so the caller has to route `prompt` /
+    // `tool_response.output` into `text` before POSTing.
+    input_assembly: "caller_assembled",
+    caller_assembly_hint:
+      "The caller (recipe / wrapper) routes `prompt` " +
+      "(UserPromptSubmit) or `tool_response.output` " +
+      "(PostToolUse) from CC stdin into the verifier's `text` " +
+      "field and POSTs `{text: <that value>}`. The cloud does " +
+      "not auto-forward CC stdin into this verifier.",
     triggers: [
       {
         event: "UserPromptSubmit",

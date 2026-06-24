@@ -322,8 +322,18 @@ def validate_input_assembly(
         raise CustomVerifierError(
             "caller_assembly_hint must be a string",
         )
+    # D57c follow-up (validation-consistency): canonicalize the hint
+    # via strip() and key BOTH the cc_stdin-must-be-blank and the
+    # length check off the same stripped value. The prior wire
+    # behaviour was a confusing mix: length check on the raw value
+    # (a 501-char string with whitespace at the ends rejected even
+    # though the persisted content was <=500), blank check on the
+    # stripped value (a whitespace-only "   " hint silently accepted
+    # on cc_stdin even though the message said "drop the hint"). The
+    # current shape: server normalizes via strip(), and the
+    # normalized hint is what we check + persist.
     hint_clean = caller_assembly_hint.strip()
-    if len(caller_assembly_hint) > _MAX_CALLER_ASSEMBLY_HINT_LEN:
+    if len(hint_clean) > _MAX_CALLER_ASSEMBLY_HINT_LEN:
         raise CustomVerifierError(
             f"caller_assembly_hint must be <= "
             f"{_MAX_CALLER_ASSEMBLY_HINT_LEN} chars",

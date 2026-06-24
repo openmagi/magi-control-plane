@@ -183,7 +183,12 @@ describe("VerifierFormClient source invariants", () => {
 
   it("D57c: serializes input_assembly + caller_assembly_hint into the payload", () => {
     expect(src).toContain("input_assembly: inputAssembly")
-    expect(src).toContain("caller_assembly_hint: callerAssemblyHint.trim()")
+    // D57c follow-up: caller_assembly_hint is emitted as trimmed
+    // prose for caller_assembled rows and as the empty string for
+    // cc_stdin rows. The conditional preserves the typed prose in
+    // component state across radio bounces (no data loss) while
+    // keeping the server invariant.
+    expect(src).toMatch(/caller_assembly_hint:\s*\n?\s*inputAssembly === "caller_assembled" \? callerAssemblyHint\.trim\(\) : ""/)
   })
 
   it("D57c: caller_assembled reveals the hint textarea inline", () => {
@@ -192,12 +197,47 @@ describe("VerifierFormClient source invariants", () => {
     expect(src).toContain("caller-assembly-hint")
   })
 
-  it("D57c: switching to cc_stdin clears the hint state (server invariant)", () => {
-    // cc_stdin rows must leave the hint blank; clearing on switch
-    // matches the server validate_input_assembly() invariant and
-    // keeps the operator from having to wipe the textarea by hand
-    // before submitting.
-    expect(src).toMatch(/setInputAssembly\("cc_stdin"\)\s*\n\s*\/\/[\s\S]*?setCallerAssemblyHint\(""\)/)
+  it("D57c follow-up: switching to cc_stdin preserves typed hint in state (no data loss)", () => {
+    // D57c follow-up: do NOT wipe the textarea on switch. The wire
+    // payload excludes the hint while cc_stdin is selected, which
+    // satisfies the server invariant; preserving the state means
+    // bouncing the radio doesn't cost the operator their up-to-500
+    // chars of authored prose. Lock the absence of setCallerAssemblyHint("")
+    // inside the cc_stdin handler so a future regression to wipe
+    // gets caught.
+    const ccHandlerMatch = src.match(/value="cc_stdin"[\s\S]*?onSelect=\{\(\) => \{[\s\S]*?\}\}/)
+    expect(ccHandlerMatch, "cc_stdin onSelect handler missing").not.toBeNull()
+    expect(ccHandlerMatch![0]).not.toMatch(/setCallerAssemblyHint\(""\)/)
+    expect(ccHandlerMatch![0]).toContain('setInputAssembly("cc_stdin")')
+  })
+
+  it("D57c follow-up: radio onSelect handlers do not unconditionally setTouchedHint", () => {
+    // WCAG 3.3.1: clicking the OTHER radio card should not preempt
+    // the touched gate. Otherwise selecting cc_stdin first then
+    // switching to caller_assembled would render the "hint required"
+    // error the instant the textarea is revealed, contradicting the
+    // documented "silent on initial render" design. The textarea's
+    // own onBlur / onChange + submitAttempted already cover the
+    // WCAG case.
+    const ccHandlerMatch = src.match(/value="cc_stdin"[\s\S]*?onSelect=\{\(\) => \{[\s\S]*?\}\}/)
+    const callerHandlerMatch = src.match(/value="caller_assembled"[\s\S]*?onSelect=\{\(\) => \{[\s\S]*?\}\}/)
+    expect(ccHandlerMatch, "cc_stdin onSelect handler missing").not.toBeNull()
+    expect(callerHandlerMatch, "caller_assembled onSelect handler missing").not.toBeNull()
+    expect(ccHandlerMatch![0]).not.toMatch(/setTouchedHint\(true\)/)
+    expect(callerHandlerMatch![0]).not.toMatch(/setTouchedHint\(true\)/)
+  })
+
+  it("D57c follow-up: radio name is scoped via useId() so two form instances don't merge groups", () => {
+    // The hardcoded `name="input-assembly"` literal would merge two
+    // simultaneously-mounted forms into one radio group. useId()
+    // produces a stable per-instance suffix that scopes the name.
+    expect(src).toContain("useId")
+    expect(src).toMatch(/inputAssemblyRadioName\s*=\s*`input-assembly-\$\{reactId\}`/)
+    // The InputAssemblyOption's <input type="radio"> takes `name`
+    // as a prop now (threaded down from the parent), not as a
+    // hardcoded literal. Catch any regression that re-introduces
+    // the static name on the JSX element.
+    expect(src).not.toMatch(/<input[\s\S]{0,160}?name="input-assembly"/)
   })
 
   it("D57c: blocks submit when (assembly, hint) pair is invalid", () => {
@@ -211,7 +251,12 @@ describe("VerifierFormClient source invariants", () => {
   })
 
   it("D57c: error messages route through labels (no hardcoded English)", () => {
+    // The caller_assembled "hint required" label is still wired
+    // through the local validator. The `errCallerAssemblyHintOnCcStdin`
+    // label is no longer surfaced by the client (the cc_stdin path
+    // strips the hint from the wire payload so the server invariant
+    // can never fail from this client), but the label still ships in
+    // the i18n dict for the server-side error replay surface.
     expect(src).toMatch(/labels\.errCallerAssemblyHint\b/)
-    expect(src).toMatch(/labels\.errCallerAssemblyHintOnCcStdin\b/)
   })
 })

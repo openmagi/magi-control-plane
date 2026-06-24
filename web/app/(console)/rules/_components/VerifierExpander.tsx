@@ -86,6 +86,20 @@ export function VerifierExpander({
     callerAssemblyHintOverride
     ?? descriptor?.caller_assembly_hint
     ?? ""
+  // D57c follow-up: a custom-source row that pre-dates D57c may have
+  // no input_assembly on the wire (the cloud field is Optional). The
+  // panel renders an "unspecified — please re-author" notice for that
+  // row instead of silently defaulting to cc_stdin (which would
+  // mis-tell the operator that the cloud auto-forwards CC stdin into
+  // the verifier). Built-in rows always carry input_assembly via the
+  // descriptor mirror; only the custom-no-descriptor path can be
+  // unspecified. The flag is forwarded to InputAssemblyPanel so the
+  // FieldChecksPanel below keeps its real type (`InputAssembly`) and
+  // its heading-swap logic does not need to learn a 3rd state.
+  const isCustomUnspecified =
+    descriptor === null
+    && inputAssemblyOverride === undefined
+    && source === "custom"
   // Distinct accessible name per row so a SR user scanning the list
   // hears "details, citation_verify" instead of five "details"s in a row.
   const summaryLabel = t("rules.verifier.expander.toggleWithStep", { step })
@@ -128,6 +142,7 @@ export function VerifierExpander({
                 <InputAssemblyPanel
                   inputAssembly={inputAssembly}
                   callerAssemblyHint={callerAssemblyHint}
+                  isUnspecified={isCustomUnspecified}
                   t={t}
                 />
                 <FieldChecksPanel
@@ -154,6 +169,7 @@ export function VerifierExpander({
             <InputAssemblyPanel
               inputAssembly={inputAssembly}
               callerAssemblyHint={callerAssemblyHint}
+              isUnspecified={false}
               t={t}
             />
             <FieldChecksPanel
@@ -344,30 +360,71 @@ function FieldChecksPanel({
  *     The notice renders an amber bordered block with the prose
  *     `callerAssemblyHint` so the contract is impossible to miss.
  *
- *   cc_stdin — the runtime forwards CC stdin paths into the
- *     verifier. The notice renders a one-line muted affirmation
- *     ("Input forwarded from CC stdin"). Rendering it on both branches
- *     means an operator sees a positive statement either way, instead
- *     of an absence-of-notice the brain reads as "default cc_stdin"
- *     for one row and "default caller_assembled" for the next.
+ *   cc_stdin — a thin 1:1 wrapper hands the verifier a CC stdin
+ *     field as its input. The notice renders a positive
+ *     mode-labelled block (cc_stdin badge + "Default" label + body
+ *     prose) so an operator reading a long Checks list sees the
+ *     same shape on every row instead of "some have notices, some
+ *     don't".
+ *
+ * D57c follow-up (a11y): the panel HEADING bakes the mode in
+ * ("Input assembly: caller-assembled" / "Input assembly: CC stdin")
+ * so a screen reader scanning headings can distinguish modes at
+ * heading speed instead of having to enter the body to learn the
+ * mode (WCAG 2.4.6). The data-input-assembly attribute is
+ * preserved for tests and CSS hooks.
+ *
+ * D57c follow-up (custom rows): a custom-source row that pre-dates
+ * D57c may have no `input_assembly` on the wire. We surface a
+ * neutral "unspecified — please re-author" notice for that row
+ * instead of silently mis-classifying it as cc_stdin. Built-in
+ * rows always carry input_assembly via the descriptor mirror.
  */
 function InputAssemblyPanel({
-  inputAssembly, callerAssemblyHint, t,
+  inputAssembly, callerAssemblyHint, isUnspecified, t,
 }: {
   inputAssembly: InputAssembly
   callerAssemblyHint: string
+  isUnspecified: boolean
   t: T
 }) {
   const isCallerAssembled = inputAssembly === "caller_assembled"
+  const headingKey = isUnspecified
+    ? "rules.verifier.expander.inputAssembly.unspecified"
+    : isCallerAssembled
+      ? "rules.verifier.expander.inputAssembly.callerAssembled"
+      : "rules.verifier.expander.inputAssembly.ccStdin"
+  // data-input-assembly carries one of {cc_stdin, caller_assembled,
+  // unspecified} so a future test / CSS hook can branch off the same
+  // resolution the heading uses, without re-deriving from props.
+  const dataAttr = isUnspecified ? "unspecified" : inputAssembly
   return (
     <div
       data-testid="verifier-expander-input-assembly"
-      data-input-assembly={inputAssembly}
+      data-input-assembly={dataAttr}
     >
       <PanelHeader>
-        {t("rules.verifier.expander.inputAssembly")}
+        {t(headingKey)}
       </PanelHeader>
-      {isCallerAssembled ? (
+      {isUnspecified ? (
+        <div
+          role="note"
+          data-testid="verifier-expander-input-assembly-unspecified-notice"
+          className="rounded-md border border-[var(--color-muted-fg,#374151)]/20 bg-[var(--color-muted-bg,#f3f4f6)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
+        >
+          <div className="mb-1 flex items-baseline gap-1.5">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-muted-fg,#374151)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+              {t("rules.verifier.expander.inputAssembly.unspecifiedBadge")}
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
+              {t("rules.verifier.expander.inputAssembly.unspecifiedLabel")}
+            </span>
+          </div>
+          <p className="text-[11.5px] text-[var(--color-text-secondary)]">
+            {t("rules.verifier.expander.inputAssembly.unspecifiedNote")}
+          </p>
+        </div>
+      ) : isCallerAssembled ? (
         <div
           role="note"
           data-testid="verifier-expander-input-assembly-caller-notice"
@@ -386,12 +443,28 @@ function InputAssemblyPanel({
           </p>
         </div>
       ) : (
-        <p
+        <div
+          role="note"
           data-testid="verifier-expander-input-assembly-cc-stdin-note"
-          className="text-[11.5px] text-[var(--color-text-tertiary)] leading-relaxed"
+          className="rounded-md border border-[var(--color-muted-fg,#374151)]/20 bg-[var(--color-muted-bg,#f3f4f6)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
         >
-          {t("rules.verifier.expander.inputAssembly.ccStdinNote")}
-        </p>
+          <div className="mb-1 flex items-baseline gap-1.5">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-muted-fg,#374151)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+              {t("rules.verifier.expander.inputAssembly.ccStdinBadge")}
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
+              {t("rules.verifier.expander.inputAssembly.ccStdinLabel")}
+            </span>
+          </div>
+          {/* D57c follow-up (WCAG 1.4.3): cc_stdin note moved off
+              text-tertiary on white (4.65:1) onto text-secondary on
+              the muted-bg surface card so the effective contrast
+              stays well clear of 4.5:1 even if the surrounding token
+              shifts. */}
+          <p className="text-[11.5px] text-[var(--color-text-secondary)]">
+            {t("rules.verifier.expander.inputAssembly.ccStdinNote")}
+          </p>
+        </div>
       )}
     </div>
   )
