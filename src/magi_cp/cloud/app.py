@@ -1979,6 +1979,14 @@ def _attach_catalog_routes(
                 # which entries came from their own /verifiers/new
                 # authoring vs the cloud's built-in registry.
                 used_by_this = used_by.pop(cv.name, [])
+                # D52d follow-up: surface the author-supplied
+                # field_checks the operator typed into /verifiers/new.
+                # Without this projection the catalog row could only
+                # ever render the "preview mode" placeholder for
+                # custom verifiers, defeating the field_checks editor
+                # the operator just used. The dashboard's
+                # VerifierFieldChecks accepts a descriptorOverride prop
+                # off this field for source='custom' rows.
                 custom.append({
                     "step": cv.name,
                     "category": None,
@@ -1987,6 +1995,13 @@ def _attach_catalog_routes(
                     "name": cv.name,
                     "source": "custom",
                     "used_by_policies": used_by_this,
+                    "field_checks": [
+                        {
+                            "path": fc.path,
+                            "check_description": fc.check_description,
+                        }
+                        for fc in cv.field_checks
+                    ],
                 })
 
         derived: list[dict] = []

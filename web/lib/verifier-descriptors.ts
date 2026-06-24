@@ -168,16 +168,19 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     field_checks: [
       {
-        path: "tool_input.url",
-        check_description: "hostname is in allowlist",
+        path: "citations[].quote",
+        check_description:
+          "verbatim / NLI match against the resolved source for citations[].ref",
       },
       {
-        path: "tool_response.output",
-        check_description: "cited IDs exist in source corpus",
+        path: "citations[].ref",
+        check_description:
+          "resolves to a source body via corpus_override or the default SourceResolver",
       },
       {
-        path: "transcript_path",
-        check_description: "verbatim quotes match",
+        path: "corpus_override",
+        check_description:
+          "ref → text dict the caller assembles (absent → verdict defers to review)",
       },
     ],
   },
@@ -209,12 +212,23 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     field_checks: [
       {
         path: "tool_input.command",
-        check_description: "matches privileged-marker regex",
+        check_description:
+          "Bash command body matches privileged-marker regex (PreToolUse=tool)",
       },
       {
-        path: "tool_response.output",
+        path: "tool_input.new_string",
         check_description:
-          "contains attorney-client / work-product / Korean RRN patterns",
+          "Edit replacement body matches privileged-marker regex (PreToolUse=tool, Edit only)",
+      },
+      {
+        path: "tool_input.content",
+        check_description:
+          "Write file body matches privileged-marker regex (PreToolUse=tool, Write only)",
+      },
+      {
+        path: "final_message",
+        check_description:
+          "agent's final answer contains attorney-client / work-product / Korean RRN patterns (Stop=final)",
       },
     ],
   },
@@ -252,7 +266,13 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     field_checks: [
       {
         path: "tool_input.url",
-        check_description: "hostname or parent-domain is in allowlist",
+        check_description:
+          "hostname or parent-domain is in allowlist (PreToolUse=tool)",
+      },
+      {
+        path: "tool_response.output",
+        check_description:
+          "URLs parsed from the tool response are suffix-matched against the allowlist (PostToolUse=tool)",
       },
     ],
   },
@@ -295,7 +315,12 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
       {
         path: "tool_response.output",
         check_description:
-          "matches the JSON schema (type/required/enum/properties/items)",
+          "tool response body parses as JSON and matches the JSON schema (PostToolUse=tool)",
+      },
+      {
+        path: "final_message",
+        check_description:
+          "agent's final answer parses as JSON and matches the JSON schema (Stop=final)",
       },
     ],
   },
@@ -326,9 +351,14 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     output_evidence: COMMON_OUTPUT_FIELDS,
     field_checks: [
       {
+        path: "prompt",
+        check_description:
+          "incoming user message scanned for override verbs / role-tag injection / jailbreak markers (UserPromptSubmit=no_tool)",
+      },
+      {
         path: "tool_response.output",
         check_description:
-          "scans for override verbs / role-tag injection / jailbreak markers",
+          "retrieved source text scanned for override verbs / role-tag injection / jailbreak markers (PostToolUse=tool)",
       },
     ],
   },

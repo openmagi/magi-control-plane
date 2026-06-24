@@ -382,6 +382,15 @@ function EvidenceTab({
                   // (the policy references a step nothing implements).
                   source={row.source}
                   enforcement={row.enforcement}
+                  // D52d follow-up: forward the operator's authored
+                  // field_checks for custom-source rows so the
+                  // expander renders the tree instead of falling
+                  // through to the "no descriptor" placeholder.
+                  // Built-in rows ignore this prop and use the
+                  // descriptor mirror.
+                  fieldChecksOverride={
+                    row.source === "custom" ? row.field_checks : undefined
+                  }
                 />
               </div>
             ))}

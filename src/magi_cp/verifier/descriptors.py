@@ -212,22 +212,27 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
                 "description": "Per-citation verdict from the NLI pipeline.",
             },
         ],
-        # D52d: citation_verify is a final-answer / post-fetch check.
-        # It reads research / fetch tool URLs (allowlist sanity), the
-        # cited corpus body the tool returned, and the agent's
-        # transcript for verbatim quote matching.
+        # D52d (D52d follow-up): citation_verify is a caller-assembled
+        # verifier. Its `run()` only reads two keys from its OWN input
+        # dict: `citations` (list of {quote, ref}) and `corpus_override`
+        # (ref → text dict). It does not open the CC stdin, the
+        # transcript_path, or the tool_response.output directly; the
+        # caller (a recipe / runtime adapter) assembles the input
+        # externally. The field_checks therefore describe paths in the
+        # verifier's own input dict, not CC stdin paths, and the
+        # _assert_field_checks_paths_resolve() invariant accepts that.
         "field_checks": [
             {
-                "path": "tool_input.url",
-                "check_description": "hostname is in allowlist",
+                "path": "citations[].quote",
+                "check_description": "verbatim / NLI match against the resolved source for citations[].ref",
             },
             {
-                "path": "tool_response.output",
-                "check_description": "cited IDs exist in source corpus",
+                "path": "citations[].ref",
+                "check_description": "resolves to a source body via corpus_override or the default SourceResolver",
             },
             {
-                "path": "transcript_path",
-                "check_description": "verbatim quotes match",
+                "path": "corpus_override",
+                "check_description": "ref → text dict the caller assembles (absent → verdict defers to review)",
             },
         ],
     },
@@ -258,17 +263,28 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "review", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
-        # D52d: privilege_scan walks two CC stdin surfaces depending on
-        # the trigger: Bash command text (Pre) or the agent's final
-        # message body (Stop). Both routes hit the same regex set.
+        # D52d (D52d follow-up): privilege_scan walks two CC stdin
+        # surfaces, one per declared trigger. PreToolUse=tool reads the
+        # tool-specific input field (Bash command body, Edit replacement
+        # body, Write file body); Stop=final reads the agent's final
+        # message text. Both routes feed the same regex pipeline against
+        # attorney-client / work-product / Korean RRN markers.
         "field_checks": [
             {
                 "path": "tool_input.command",
-                "check_description": "matches privileged-marker regex",
+                "check_description": "Bash command body matches privileged-marker regex (PreToolUse=tool)",
             },
             {
-                "path": "tool_response.output",
-                "check_description": "contains attorney-client / work-product / Korean RRN patterns",
+                "path": "tool_input.new_string",
+                "check_description": "Edit replacement body matches privileged-marker regex (PreToolUse=tool, Edit only)",
+            },
+            {
+                "path": "tool_input.content",
+                "check_description": "Write file body matches privileged-marker regex (PreToolUse=tool, Write only)",
+            },
+            {
+                "path": "final_message",
+                "check_description": "agent's final answer contains attorney-client / work-product / Korean RRN patterns (Stop=final)",
             },
         ],
     },
@@ -306,14 +322,18 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
-        # D52d: source_allowlist checks the URL the tool is about to
-        # fetch (Pre) or the URL the response carries (Post). Either
-        # way the host is suffix-matched against the configured
-        # allowlist; subdomains pass when the parent does.
+        # D52d (D52d follow-up): source_allowlist checks the URL the
+        # tool is about to fetch (Pre) or the URLs the response carries
+        # (Post). Either way the host is suffix-matched against the
+        # configured allowlist; subdomains pass when the parent does.
         "field_checks": [
             {
                 "path": "tool_input.url",
-                "check_description": "hostname or parent-domain is in allowlist",
+                "check_description": "hostname or parent-domain is in allowlist (PreToolUse=tool)",
+            },
+            {
+                "path": "tool_response.output",
+                "check_description": "URLs parsed from the tool response are suffix-matched against the allowlist (PostToolUse=tool)",
             },
         ],
     },
@@ -356,13 +376,18 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
-        # D52d: structured_output validates a JSON payload against a
-        # JSON-Schema subset. The payload comes from the tool response
-        # (PostToolUse) or the agent's final answer (Stop).
+        # D52d (D52d follow-up): structured_output validates a JSON
+        # payload against a JSON-Schema subset. The payload comes from
+        # the tool response (PostToolUse) or the agent's final answer
+        # (Stop) depending on the trigger the policy bound.
         "field_checks": [
             {
                 "path": "tool_response.output",
-                "check_description": "matches the JSON schema (type/required/enum/properties/items)",
+                "check_description": "tool response body parses as JSON and matches the JSON schema (PostToolUse=tool)",
+            },
+            {
+                "path": "final_message",
+                "check_description": "agent's final answer parses as JSON and matches the JSON schema (Stop=final)",
             },
         ],
     },
@@ -393,13 +418,19 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
-        # D52d: prompt_injection_screen scans retrieved source text
-        # (PostToolUse on fetch tools) or the incoming user prompt
-        # (UserPromptSubmit) for jailbreak / override markers.
+        # D52d (D52d follow-up): prompt_injection_screen scans the
+        # incoming user prompt (UserPromptSubmit) or retrieved source
+        # text (PostToolUse on fetch tools) for jailbreak / override
+        # markers. Both rows belong here because both triggers are
+        # declared above.
         "field_checks": [
             {
+                "path": "prompt",
+                "check_description": "incoming user message scanned for override verbs / role-tag injection / jailbreak markers (UserPromptSubmit=no_tool)",
+            },
+            {
                 "path": "tool_response.output",
-                "check_description": "scans for override verbs / role-tag injection / jailbreak markers",
+                "check_description": "retrieved source text scanned for override verbs / role-tag injection / jailbreak markers (PostToolUse=tool)",
             },
         ],
     },
@@ -483,8 +514,101 @@ def _assert_field_checks_shape() -> None:
                 )
 
 
+def _assert_field_checks_paths_resolve() -> None:
+    """D52d follow-up: enforce that every field_checks row's `path`
+    actually resolves either to:
+
+      1. a CC stdin field delivered on at least ONE of the verifier's
+         declared (event, matcher_class) triggers, per
+         policy/payload_schemas.available_fields; OR
+      2. one of the verifier's OWN input_payload_paths. For
+         caller-assembled verifiers (citation_verify) the field_checks
+         document the verifier's input contract, not the CC stdin.
+
+    This catches the silent-drift mode that produced the citation_verify
+    fabrication (`transcript_path`, `tool_response.output`) and the
+    privilege_scan / structured_output / prompt_injection_screen
+    trigger-vs-path mismatches. Without this cross-check the dashboard
+    will render a tree pointing at fields the runtime never delivers on
+    any declared trigger, which the brief explicitly calls out as worse
+    than no field_checks at all.
+
+    We import payload_schemas lazily (it lives in a sibling package) so
+    a circular-import surprise stays surface-level if the layout ever
+    flips.
+    """
+    from magi_cp.policy import payload_schemas  # local import to avoid cycle
+
+    # Coarse the matcher_class to a matcher string that
+    # available_fields() understands. The schema menu accepts a tool
+    # name OR a wildcard; passing "*" gives us the broadest field set
+    # for the tool-context buckets without committing to one specific
+    # tool (we want a UNION across all tools the trigger could fire on,
+    # which we approximate via the wildcard envelope plus the
+    # tool-specific spec sets explicitly).
+    _TOOL_NAMES = ("Bash", "WebFetch", "Edit", "Write", "Read")
+
+    def _resolved_paths_for_trigger(event: str, mc: str) -> set[str]:
+        if mc == "tool":
+            paths: set[str] = set()
+            # Generic envelope (catches tool_response.output etc.).
+            for f in payload_schemas.available_fields(event, "*"):
+                p = f.get("path")
+                if p:
+                    paths.add(p)
+            # Tool-specific extension envelopes (Bash → tool_input.command,
+            # Edit → tool_input.new_string, Write → tool_input.content).
+            for name in _TOOL_NAMES:
+                for f in payload_schemas.available_fields(event, name):
+                    p = f.get("path")
+                    if p:
+                        paths.add(p)
+            return paths
+        if mc == "no_tool":
+            return {
+                f["path"]
+                for f in payload_schemas.available_fields(event)
+                if "path" in f
+            }
+        if mc == "final":
+            return {
+                f["path"]
+                for f in payload_schemas.available_fields(event)
+                if "path" in f
+            }
+        return set()
+
+    for step, d in _DESCRIPTORS.items():
+        own_paths = set(d.get("input_payload_paths") or ())
+        union: set[str] = set(own_paths)
+        for tr in d.get("triggers", []):
+            union |= _resolved_paths_for_trigger(
+                tr.get("event", ""), tr.get("matcher_class", ""),
+            )
+        if not union:
+            # No triggers + no own paths means we can't cross-check.
+            # Leave it to the human reviewer (no built-in is in this
+            # state today; this branch keeps the gate from hard-failing
+            # on a future descriptor that legitimately has no input
+            # contract).
+            continue
+        for i, fc in enumerate(d.get("field_checks", [])):
+            path = fc.get("path", "")
+            if path in union:
+                continue
+            raise AssertionError(
+                f"descriptor {step!r}: field_checks[{i}].path = {path!r} "
+                f"does not resolve to any field the runtime delivers on "
+                f"the declared triggers, and is not one of the verifier's "
+                f"own input_payload_paths. This is the exact silent-drift "
+                f"mode the gate was added for. Fix the row or update "
+                f"the triggers list."
+            )
+
+
 _assert_input_fields_cover_paths()
 _assert_field_checks_shape()
+_assert_field_checks_paths_resolve()
 
 
 __all__ = [

@@ -1752,33 +1752,55 @@ function Step3Condition({
                       </p>
                     )}
                     <div className="space-y-2">
-                      {wiredSteps.map((w) => (
-                        <div key={w.step} className="space-y-1.5">
-                          <CheckboxCard
-                            name="evidence_ref"
-                            value={w.step}
-                            defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
-                            label={w.step}
-                            sub={w.description}
-                          />
-                          {/* D52d: surface the same field_checks tree
-                              the catalog expander uses, inline below
-                              the picker so the author sees what each
-                              verifier actually inspects (path → check
-                              description) before saving the policy.
-                              No extra click; render on mount. */}
-                          <div className="ml-3 rounded-lg border border-black/[0.05] bg-[var(--color-surface-1,#f9fafb)]/40 px-3 py-2">
-                            <p className="mb-1.5 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
-                              {t("newPolicy.wizard.verifier.checksLabel")}
-                            </p>
-                            <VerifierFieldChecks
-                              step={w.step}
-                              t={t}
-                              showFooter
+                      {wiredSteps.map((w) => {
+                        // D52d follow-up (a11y): the field_checks tree
+                        // is positioned visually below the
+                        // CheckboxCard but was not programmatically
+                        // linked to it. We wrap the tree in
+                        // role='group' aria-labelledby pointing to a
+                        // per-row label that names the verifier step,
+                        // so a SR user navigating the picker hears
+                        // "group, citation_verify checks: …" instead
+                        // of orphaned content with no relationship to
+                        // the picker entry above. The id includes the
+                        // step name to keep multiple pickers on the
+                        // same page distinct.
+                        const labelId = `verifier-checks-label-${w.step}`
+                        return (
+                          <div key={w.step} className="space-y-1.5">
+                            <CheckboxCard
+                              name="evidence_ref"
+                              value={w.step}
+                              defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
+                              label={w.step}
+                              sub={w.description}
                             />
+                            {/* D52d: surface the same field_checks tree
+                                the catalog expander uses, inline below
+                                the picker so the author sees what each
+                                verifier actually inspects (path → check
+                                description) before saving the policy.
+                                No extra click; render on mount. */}
+                            <div
+                              role="group"
+                              aria-labelledby={labelId}
+                              className="ml-3 rounded-lg border border-black/[0.05] bg-[var(--color-surface-1,#f9fafb)]/40 px-3 py-2"
+                            >
+                              <p
+                                id={labelId}
+                                className="mb-1.5 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]"
+                              >
+                                {t("newPolicy.wizard.verifier.checksLabel")}: <span className="font-mono normal-case tracking-normal text-[var(--color-text-secondary)]">{w.step}</span>
+                              </p>
+                              <VerifierFieldChecks
+                                step={w.step}
+                                t={t}
+                                showFooter
+                              />
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 )}

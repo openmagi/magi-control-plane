@@ -33,7 +33,7 @@ import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
 export function VerifierExpander({
-  step, t, recentEmissions24h, nfFormat, source, enforcement,
+  step, t, recentEmissions24h, nfFormat, source, enforcement, fieldChecksOverride,
 }: {
   step: string
   t: T
@@ -50,6 +50,11 @@ export function VerifierExpander({
    * references a step name nothing implements). */
   source?: "builtin" | "custom" | "policy-derived"
   enforcement?: "enforcing" | "always-on" | "preview" | "missing"
+  /** D52d follow-up: author-supplied field_checks for `source:
+   * "custom"` rows (where getVerifierDescriptor returns null). Passed
+   * through to VerifierFieldChecks so the catalog renders the
+   * operator's authored tree instead of the preview placeholder. */
+  fieldChecksOverride?: Array<{ path: string; check_description: string }>
 }) {
   const descriptor = getVerifierDescriptor(step)
   // Distinct accessible name per row so a SR user scanning the list
@@ -78,9 +83,25 @@ export function VerifierExpander({
 
       <div className="px-3 pb-3 pt-1">
         {descriptor === null ? (
-          <p className="text-xs text-[var(--color-text-tertiary)] italic">
-            {t("rules.verifier.expander.noDescriptor")}
-          </p>
+          <>
+            {/* D52d follow-up: a custom-source row has no descriptor
+                but DOES carry an operator-authored field_checks list.
+                Render the tree from that list so the catalog row stops
+                misleading the operator that their authoring "didn't
+                stick". Fall back to the neutral "no descriptor" notice
+                only when there are no authored rows either. */}
+            {fieldChecksOverride && fieldChecksOverride.length > 0 ? (
+              <FieldChecksPanel
+                step={step}
+                t={t}
+                fieldChecksOverride={fieldChecksOverride}
+              />
+            ) : (
+              <p className="text-xs text-[var(--color-text-tertiary)] italic">
+                {t("rules.verifier.expander.noDescriptor")}
+              </p>
+            )}
+          </>
         ) : (
           <>
             <TriggersPanel triggers={descriptor.triggers} t={t} />
@@ -204,14 +225,28 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
  * description` tree the brief asks for, between the Triggers panel and
  * the existing Input panel (which keeps showing the verifier-side
  * input schema; field_checks is the CC-stdin-side contract, so the two
- * panels do not duplicate). */
-function FieldChecksPanel({ step, t }: { step: string; t: T }) {
+ * panels do not duplicate).
+ *
+ * D52d follow-up: optional `fieldChecksOverride` so custom-source
+ * catalog rows (no registered descriptor) can still render the
+ * operator's authored tree. */
+function FieldChecksPanel({
+  step, t, fieldChecksOverride,
+}: {
+  step: string
+  t: T
+  fieldChecksOverride?: Array<{ path: string; check_description: string }>
+}) {
   return (
     <div data-testid="verifier-expander-field-checks">
       <PanelHeader>
         {t("rules.verifier.expander.fieldChecks")}
       </PanelHeader>
-      <VerifierFieldChecks step={step} t={t} />
+      <VerifierFieldChecks
+        step={step}
+        t={t}
+        fieldChecksOverride={fieldChecksOverride}
+      />
     </div>
   )
 }

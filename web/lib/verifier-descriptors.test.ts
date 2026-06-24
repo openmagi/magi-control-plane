@@ -172,6 +172,57 @@ describe("verifier descriptors parity with descriptors.py", () => {
     }
   })
 
+  it("field_checks paths match per step", () => {
+    // D52d follow-up: extend the parity gate to cover field_checks.
+    // The TS and Python sides shipped ~5 field_checks rows each with
+    // no drift gate; this test would catch a future edit that
+    // updates one side without the other. We assert the PATH set per
+    // step (path strings are short and stable); the prose tolerance
+    // the description tests grant elsewhere applies here too, so we
+    // do not pin char-level descriptions.
+    for (const d of allVerifierDescriptors()) {
+      const stepRe = new RegExp(
+        `"${d.step}":\\s*\\{[\\s\\S]*?"field_checks":\\s*\\[`,
+        "m",
+      )
+      const m = pySrc.match(stepRe)
+      expect(m, `field_checks block not found for ${d.step}`).not.toBeNull()
+      const startIdx = (m!.index ?? 0) + m![0].length
+      // Walk bracket depth manually because path strings can carry
+      // `[]` literals (citation_verify's `citations[].quote`).
+      let depth = 1
+      let i = startIdx
+      let inString = false
+      while (i < pySrc.length && depth > 0) {
+        const ch = pySrc[i]
+        if (inString) {
+          if (ch === "\\") {
+            i += 2
+            continue
+          }
+          if (ch === '"') inString = false
+        } else {
+          if (ch === '"') inString = true
+          else if (ch === "[") depth += 1
+          else if (ch === "]") depth -= 1
+        }
+        i += 1
+        if (depth === 0) break
+      }
+      const body = pySrc.slice(startIdx, i - 1)
+      // Each row is a dict literal with `"path": "..."`. We only need
+      // the path strings; pull them in source order.
+      const pyPaths = Array.from(
+        body.matchAll(/"path":\s*"([^"]+)"/g),
+      ).map((mm) => mm[1])
+      const tsPaths = (d.field_checks ?? []).map((fc) => fc.path)
+      expect(
+        pyPaths,
+        `field_checks path set drift on ${d.step}`,
+      ).toEqual(tsPaths)
+    }
+  })
+
   it("trigger event names match per step", () => {
     for (const d of allVerifierDescriptors()) {
       // Pull the `"<step>": { triggers: [ {event: "..."} ... ] }` block.

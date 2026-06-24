@@ -544,6 +544,15 @@ export type EvidenceTypeEntry = {
   name: string | null
   source: "builtin" | "custom" | "policy-derived"
   used_by_policies: string[]
+  /** D52d follow-up: present on `source: "custom"` rows so the catalog
+   * expander can render the operator's author-supplied (path,
+   * check_description) tree instead of the "preview mode" placeholder.
+   * Absent on built-ins (those resolve via getVerifierDescriptor) and
+   * on policy-derived rows (no descriptor exists). */
+  field_checks?: Array<{
+    path: string
+    check_description: string
+  }>
 }
 
 /** Pure-derivation catalog row: a condition extracted from a stored

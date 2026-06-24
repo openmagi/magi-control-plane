@@ -443,15 +443,23 @@ class TestVerifierDescriptors:
                 assert len(fc["check_description"]) <= 200, (d["step"], i)
 
     def test_citation_verify_field_checks_shape(self, client):
-        """Spot-check one descriptor end-to-end: brief calls out three
-        rows for citation_verify (url / response / transcript)."""
+        """D52d follow-up: citation_verify is a caller-assembled
+        verifier; its run() reads `citations` and `corpus_override`
+        from its OWN input dict, not CC stdin paths. The catalog row
+        therefore documents the verifier's input contract, not CC
+        stdin paths. The earlier brief asking for `tool_input.url` /
+        `tool_response.output` / `transcript_path` was fabrication.
+        descriptors.py:_assert_field_checks_paths_resolve() now hard-
+        fails import if any built-in carries a row that resolves
+        neither to a CC stdin path on a declared trigger nor to one of
+        the verifier's own input_payload_paths."""
         r = client.get("/verifier-descriptors/citation_verify")
         assert r.status_code == 200
         d = r.json()
         paths = [fc["path"] for fc in d["field_checks"]]
-        assert "tool_input.url" in paths
-        assert "tool_response.output" in paths
-        assert "transcript_path" in paths
+        assert "citations[].quote" in paths
+        assert "citations[].ref" in paths
+        assert "corpus_override" in paths
 
 
 # ── D52d module-level descriptor invariants ────────────────────────

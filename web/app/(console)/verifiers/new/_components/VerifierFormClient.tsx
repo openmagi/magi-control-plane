@@ -18,7 +18,7 @@
  * envelope, server validates, redirects).
  */
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 /**
  * Stable id generator for trigger rows. crypto.randomUUID is in the
@@ -147,6 +147,41 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         : [{ path: "", check_description: "" }]
     return seed.map((r) => ({ ...r, _id: _genRowId() }))
   })
+
+  // D52d follow-up (a11y, WCAG 2.4.3 + 2.4.7): after the operator
+  // clicks "Add check" or "Add trigger", focus has to move INTO the
+  // newly inserted row's first input. Otherwise focus sits on the
+  // (now visually-below-the-row) Add button and a keyboard / SR user
+  // has to tab through every existing row's 2-3 inputs + remove
+  // button to reach the new row. The pending id is set inside the
+  // Add onClick; the matching useEffect resolves it once React has
+  // committed the new row to the DOM, focuses the path/event input,
+  // and clears the flag. The remove path restores focus to the Add
+  // button if the last removable row was deleted, otherwise to the
+  // adjacent row's first input (so a "delete the wrong row" undo
+  // path lands near the deletion point).
+  const [pendingFocusFieldCheckId, setPendingFocusFieldCheckId] = useState<string | null>(null)
+  const [pendingFocusTriggerId, setPendingFocusTriggerId] = useState<string | null>(null)
+  const fieldChecksAddBtnRef = useRef<HTMLButtonElement | null>(null)
+  const triggersAddBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (!pendingFocusFieldCheckId) return
+    const el = document.getElementById(`field-check-path-${pendingFocusFieldCheckId}`)
+    if (el && typeof (el as HTMLInputElement).focus === "function") {
+      (el as HTMLInputElement).focus()
+    }
+    setPendingFocusFieldCheckId(null)
+  }, [pendingFocusFieldCheckId])
+
+  useEffect(() => {
+    if (!pendingFocusTriggerId) return
+    const el = document.getElementById(`trigger-event-${pendingFocusTriggerId}`)
+    if (el && typeof (el as HTMLSelectElement).focus === "function") {
+      (el as HTMLSelectElement).focus()
+    }
+    setPendingFocusTriggerId(null)
+  }, [pendingFocusTriggerId])
 
   // Touched state: only show "X is required" once the operator has
   // engaged with the field (focus → blur OR first edit) or has
@@ -351,13 +386,21 @@ export default function VerifierFormClient({ labels, initial }: Props) {
             <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
           </span>
           <button
+            ref={triggersAddBtnRef}
             type="button"
-            onClick={() =>
+            onClick={() => {
+              // D52d follow-up (a11y): generate the id up-front so the
+              // useEffect can find the row right after React commits
+              // it. Using a server-stable id keeps the focus path the
+              // same regardless of the order setState's batched
+              // updates resolve.
+              const newId = _genRowId()
               setTriggers((rows) => [
                 ...rows,
-                { event: "PreToolUse", matcher_class: "tool", _id: _genRowId() },
+                { event: "PreToolUse", matcher_class: "tool", _id: newId },
               ])
-            }
+              setPendingFocusTriggerId(newId)
+            }}
             className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
           >
             {labels.triggerAdd}
@@ -425,7 +468,30 @@ export default function VerifierFormClient({ labels, initial }: Props) {
                 <button
                   type="button"
                   aria-label={labels.triggerRemove}
-                  onClick={() => setTriggers((rows) => rows.filter((r) => r._id !== tr._id))}
+                  onClick={() => {
+                    // D52d follow-up (a11y): restore focus after a
+                    // remove so the operator does not get dropped at
+                    // the document root. Prefer the previous row's
+                    // event input; fall back to the Add button when
+                    // the removed row was the first (or only) one.
+                    setTriggers((rows) => {
+                      const removeIdx = rows.findIndex((r) => r._id === tr._id)
+                      const next = rows.filter((r) => r._id !== tr._id)
+                      const restore = removeIdx > 0 ? next[removeIdx - 1] : next[0]
+                      // Defer the focus restore until after commit.
+                      queueMicrotask(() => {
+                        if (restore) {
+                          const el = document.getElementById(`trigger-event-${restore._id}`)
+                          if (el && typeof (el as HTMLSelectElement).focus === "function") {
+                            (el as HTMLSelectElement).focus()
+                            return
+                          }
+                        }
+                        triggersAddBtnRef.current?.focus()
+                      })
+                      return next
+                    })
+                  }}
                   className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
                 >
                   {/* aria-hidden so SR keys on the aria-label only; the
@@ -533,13 +599,16 @@ export default function VerifierFormClient({ labels, initial }: Props) {
             <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
           </span>
           <button
+            ref={fieldChecksAddBtnRef}
             type="button"
-            onClick={() =>
+            onClick={() => {
+              const newId = _genRowId()
               setFieldChecks((rows) => [
                 ...rows,
-                { path: "", check_description: "", _id: _genRowId() },
+                { path: "", check_description: "", _id: newId },
               ])
-            }
+              setPendingFocusFieldCheckId(newId)
+            }}
             className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
           >
             {labels.fieldCheckAdd}
@@ -549,72 +618,130 @@ export default function VerifierFormClient({ labels, initial }: Props) {
           {labels.fieldChecksHelper}
         </p>
         <div className="space-y-2">
-          {fieldChecks.map((fc) => (
-            <div
-              key={fc._id}
-              data-testid="field-check-row"
-              className="flex flex-wrap items-end gap-2 rounded-md border border-black/[0.06] bg-[var(--color-surface-1,#fafafa)]/40 p-2"
-            >
-              <div className="flex-1 min-w-[180px]">
-                <label
-                  htmlFor={`field-check-path-${fc._id}`}
-                  className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
-                >
-                  {labels.fieldCheckPath}
-                </label>
-                <input
-                  id={`field-check-path-${fc._id}`}
-                  type="text"
-                  value={fc.path}
-                  maxLength={MAX_FIELD_CHECK_PATH_LEN}
-                  placeholder="tool_input.url"
-                  onChange={(e) =>
-                    setFieldChecks((rows) =>
-                      rows.map((r) =>
-                        r._id === fc._id ? { ...r, path: e.target.value } : r,
-                      ),
-                    )
-                  }
-                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
-                />
+          {fieldChecks.map((fc) => {
+            // D52d follow-up (WCAG 3.3.1): per-row validity. The
+            // group-level error ("Add at least one (path, description)
+            // check. …") cannot tell the operator WHICH of N rows is
+            // the offender. We compute per-field invalidity and bind
+            // aria-invalid + aria-describedby to a row-local <p> so
+            // SR users tabbing into the offending input hear "invalid
+            // entry, <row reason>" rather than a silent input. The
+            // group-level error stays as a summary.
+            const pathTrim = fc.path.trim()
+            const descTrim = fc.check_description.trim()
+            const pathInvalid = !pathTrim || pathTrim.length > MAX_FIELD_CHECK_PATH_LEN
+            const descInvalid = !descTrim || descTrim.length > MAX_FIELD_CHECK_DESC_LEN
+            const showRowError = submitAttempted && (pathInvalid || descInvalid)
+            const rowErrorId = `field-check-${fc._id}-error`
+            let rowErrorMsg: string | null = null
+            if (showRowError) {
+              if (pathInvalid && descInvalid) rowErrorMsg = labels.errFieldChecks
+              else if (pathInvalid)
+                rowErrorMsg = pathTrim.length > MAX_FIELD_CHECK_PATH_LEN
+                  ? `path must be <= ${MAX_FIELD_CHECK_PATH_LEN} chars`
+                  : "path is required"
+              else
+                rowErrorMsg = descTrim.length > MAX_FIELD_CHECK_DESC_LEN
+                  ? `description must be <= ${MAX_FIELD_CHECK_DESC_LEN} chars`
+                  : "description is required"
+            }
+            return (
+              <div
+                key={fc._id}
+                data-testid="field-check-row"
+                className="flex flex-wrap items-end gap-2 rounded-md border border-black/[0.06] bg-[var(--color-surface-1,#fafafa)]/40 p-2"
+              >
+                <div className="flex-1 min-w-[180px]">
+                  <label
+                    htmlFor={`field-check-path-${fc._id}`}
+                    className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                  >
+                    {labels.fieldCheckPath}
+                  </label>
+                  <input
+                    id={`field-check-path-${fc._id}`}
+                    type="text"
+                    value={fc.path}
+                    maxLength={MAX_FIELD_CHECK_PATH_LEN}
+                    placeholder="tool_input.url"
+                    aria-invalid={showRowError && pathInvalid ? "true" : undefined}
+                    aria-describedby={showRowError && pathInvalid ? rowErrorId : undefined}
+                    onChange={(e) =>
+                      setFieldChecks((rows) =>
+                        rows.map((r) =>
+                          r._id === fc._id ? { ...r, path: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                  />
+                </div>
+                <div className="flex-[2] min-w-[220px]">
+                  <label
+                    htmlFor={`field-check-desc-${fc._id}`}
+                    className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                  >
+                    {labels.fieldCheckDescription}
+                  </label>
+                  <input
+                    id={`field-check-desc-${fc._id}`}
+                    type="text"
+                    value={fc.check_description}
+                    maxLength={MAX_FIELD_CHECK_DESC_LEN}
+                    placeholder="hostname is in allowlist"
+                    aria-invalid={showRowError && descInvalid ? "true" : undefined}
+                    aria-describedby={showRowError && descInvalid ? rowErrorId : undefined}
+                    onChange={(e) =>
+                      setFieldChecks((rows) =>
+                        rows.map((r) =>
+                          r._id === fc._id
+                            ? { ...r, check_description: e.target.value }
+                            : r,
+                        ),
+                      )
+                    }
+                    className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                  />
+                </div>
+                {fieldChecks.length > 1 && (
+                  <button
+                    type="button"
+                    aria-label={labels.fieldCheckRemove}
+                    onClick={() => {
+                      setFieldChecks((rows) => {
+                        const removeIdx = rows.findIndex((r) => r._id === fc._id)
+                        const next = rows.filter((r) => r._id !== fc._id)
+                        const restore = removeIdx > 0 ? next[removeIdx - 1] : next[0]
+                        queueMicrotask(() => {
+                          if (restore) {
+                            const el = document.getElementById(`field-check-path-${restore._id}`)
+                            if (el && typeof (el as HTMLInputElement).focus === "function") {
+                              (el as HTMLInputElement).focus()
+                              return
+                            }
+                          }
+                          fieldChecksAddBtnRef.current?.focus()
+                        })
+                        return next
+                      })
+                    }}
+                    className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                )}
+                {showRowError && rowErrorMsg && (
+                  <p
+                    id={rowErrorId}
+                    role="alert"
+                    className="w-full text-[11px] text-[var(--color-deny-fg)]"
+                  >
+                    {rowErrorMsg}
+                  </p>
+                )}
               </div>
-              <div className="flex-[2] min-w-[220px]">
-                <label
-                  htmlFor={`field-check-desc-${fc._id}`}
-                  className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
-                >
-                  {labels.fieldCheckDescription}
-                </label>
-                <input
-                  id={`field-check-desc-${fc._id}`}
-                  type="text"
-                  value={fc.check_description}
-                  maxLength={MAX_FIELD_CHECK_DESC_LEN}
-                  placeholder="hostname is in allowlist"
-                  onChange={(e) =>
-                    setFieldChecks((rows) =>
-                      rows.map((r) =>
-                        r._id === fc._id
-                          ? { ...r, check_description: e.target.value }
-                          : r,
-                      ),
-                    )
-                  }
-                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
-                />
-              </div>
-              {fieldChecks.length > 1 && (
-                <button
-                  type="button"
-                  aria-label={labels.fieldCheckRemove}
-                  onClick={() => setFieldChecks((rows) => rows.filter((r) => r._id !== fc._id))}
-                  className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
-                >
-                  <span aria-hidden="true">×</span>
-                </button>
-              )}
-            </div>
-          ))}
+            )
+          })}
         </div>
         {showFieldChecksError && fieldChecksError && (
           <p

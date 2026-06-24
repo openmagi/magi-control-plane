@@ -30,9 +30,22 @@ describe("VerifierFieldChecks source invariants", () => {
     expect(src).toContain("@/lib/verifier-descriptors")
   })
 
-  it("renders the preview branch when descriptor is null or field_checks is empty", () => {
-    expect(src).toMatch(/descriptor === null \|\| fieldChecks\.length === 0/)
+  it("renders the preview branch when the resolved field_checks list is empty", () => {
+    // D52d follow-up: the preview branch now triggers on
+    // `fieldChecks.length === 0`. `fieldChecks` resolves to the
+    // explicit `fieldChecksOverride` when the caller passes one (for
+    // custom-source catalog rows) and falls back to the descriptor
+    // mirror otherwise. A non-empty override therefore renders the
+    // tree even when getVerifierDescriptor returns null.
+    expect(src).toMatch(/fieldChecks\.length === 0/)
     expect(src).toContain("verifier-field-checks-preview")
+  })
+
+  it("accepts a fieldChecksOverride prop so custom-source catalog rows render the tree", () => {
+    // D52d follow-up: the prop is the seam the rules catalog uses to
+    // hand author-supplied field_checks from EvidenceTypeEntry into
+    // the shared component, replacing the prior placeholder render.
+    expect(src).toMatch(/fieldChecksOverride\?:\s*FieldCheck\[\]/)
   })
 
   it("uses a semantic <dl> for the path -> description mapping", () => {
@@ -75,13 +88,23 @@ describe("VerifierFieldChecks data parity vs the descriptor mirror", () => {
     }
   })
 
-  it("citation_verify carries the three rows the brief specifies", () => {
+  it("citation_verify field_checks mirror the verifier's own input dict (caller-assembled)", () => {
+    // D52d follow-up: citation_verify is a caller-assembled verifier
+    // (its `run()` reads `citations` + `corpus_override` from the
+    // posted dict, NOT a CC stdin path). The catalog row therefore
+    // documents the verifier's input contract, not CC stdin paths.
+    // The earlier brief that asked for `tool_input.url` /
+    // `tool_response.output` / `transcript_path` was fabrication;
+    // _assert_field_checks_paths_resolve() in descriptors.py now hard-
+    // fails import if any built-in carries a row that resolves
+    // neither to a CC stdin path on a declared trigger nor to one of
+    // the verifier's own input_payload_paths.
     const d = getVerifierDescriptor("citation_verify")
     expect(d).not.toBeNull()
     const paths = (d!.field_checks ?? []).map((f) => f.path)
-    expect(paths).toContain("tool_input.url")
-    expect(paths).toContain("tool_response.output")
-    expect(paths).toContain("transcript_path")
+    expect(paths).toContain("citations[].quote")
+    expect(paths).toContain("citations[].ref")
+    expect(paths).toContain("corpus_override")
   })
 
   it("source_allowlist field_check description names allowlist semantics", () => {

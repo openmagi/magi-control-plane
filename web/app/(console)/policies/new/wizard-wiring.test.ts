@@ -86,4 +86,28 @@ describe("policies/new wizard — P9 steering wiring", () => {
       /wiredSteps\.map\([\s\S]*?VerifierFieldChecks[\s\S]*?showFooter/,
     )
   })
+
+  // D52d follow-up: pin the boundary between author-flow (/verifiers/new
+  // creates a custom verifier with field_checks) and consumer-flow
+  // (wizard evidence_ref picker). Today the wizard hides
+  // enforcement=preview entries on purpose: a custom verifier has no
+  // runtime binding yet, so binding a policy to one would compile a
+  // step the runtime can't satisfy. The catalog expander still
+  // surfaces the authored field_checks tree (per the
+  // VerifierFieldChecks fieldChecksOverride seam) so the operator can
+  // confirm their authoring landed; promoting the entry into the
+  // wizard waits on a runtime binding hook. This test pins that
+  // boundary so a future widen-the-filter change is intentional, not
+  // incidental.
+  it("D52d follow-up: wizard wiredSteps filter remains enforcing-only", () => {
+    expect(src).toMatch(
+      /p\.enforcement === "enforcing"[\s\S]*?wiredSteps\.push/,
+    )
+    // Negative: no custom-source short-circuit smuggled into the same
+    // loop. Catching this drift early because including preview
+    // entries would compile policies the runtime can't honor.
+    expect(src).not.toMatch(
+      /p\.enforcement === "preview"[\s\S]*?wiredSteps\.push/,
+    )
+  })
 })
