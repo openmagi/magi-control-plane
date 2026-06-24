@@ -189,6 +189,50 @@ class CompileReq(BaseModel):
     prior_turns: list[PriorTurnIn] | None = Field(default=None, max_length=20)
 
 
+# D55a: conversational compile (turn-by-turn variant of /policies/compile).
+# Shares MAX_HISTORY_TURNS / MAX_USER_MESSAGE_CHARS / MAX_QUESTIONS_PER_TURN
+# with the library module so the cap surface is single-source-of-truth.
+from ..policy.nl_compiler_interactive import (
+    MAX_HISTORY_TURNS as _D55A_MAX_HISTORY_TURNS,
+    MAX_USER_MESSAGE_CHARS as _D55A_MAX_USER_MESSAGE_CHARS,
+)
+
+
+class InteractiveTurnIn(BaseModel):
+    """One {role, content} pair in the conversational compile history.
+
+    Same shape as PriorTurnIn but with the D55a per-turn user cap
+    (2_000 chars vs PriorTurnIn's 10_000) so a chatty operator can't
+    drown the LLM budget. Assistant turns are unbounded by spec — they
+    are echoes of what we sent last; if the client carries them back
+    over the wire that's our own bytes coming home.
+    """
+    model_config = {"extra": "forbid"}
+
+    role: str = Field(..., pattern=r"^(user|assistant)$")
+    # Library applies the same user-message cap on the way in; we
+    # enforce on user turns at the pydantic boundary so a clearly bad
+    # request 422s before the LLM ever spins up.
+    content: str = Field(..., min_length=1,
+                          max_length=max(_D55A_MAX_USER_MESSAGE_CHARS,
+                                          10_000))
+
+
+class InteractiveCompileReq(BaseModel):
+    """Body for POST /policies/compile-interactive.
+
+    `draft_so_far` and `answers` are loose dicts at this boundary; the
+    library module does the type-narrow merge.
+    """
+    model_config = {"extra": "forbid"}
+
+    history: list[InteractiveTurnIn] | None = Field(
+        default=None, max_length=_D55A_MAX_HISTORY_TURNS,
+    )
+    draft_so_far: dict | None = None
+    answers: dict[str, str] | None = None
+
+
 # D53b: replay-against-last-24h dry-run authoring affordance.
 class DryRunReq(BaseModel):
     """POST /policies/dry-run body. Replays a draft IR over recent
@@ -603,6 +647,53 @@ def create_app(
         except ValueError as e:
             # compiler parse error — operator's prompt or model produced
             # something non-JSON. 422 because the input could be reformulated.
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/policies/compile-interactive",
+              dependencies=[Depends(require_admin_key)])
+    async def policies_compile_interactive(
+        req: "InteractiveCompileReq",
+    ) -> dict:
+        """D55a — conversational policy compiler.
+
+        Turn-by-turn variant of /policies/compile. Each call accepts the
+        running history + draft + the user's most recent answers and
+        returns the next conversational turn (assistant message + at
+        most 2 clarifying questions + an updated draft).
+
+        Stateless: every call reconstructs state from the request body.
+        The CLIENT does not mutate the draft; only this endpoint writes
+        to it (via the library module's `step_compile`).
+
+        Same 503-on-unconfigured-provider shape as /policies/compile so
+        the dashboard's existing provider_unconfigured flash mapping
+        lights up without a second code path.
+        """
+        if llm_compiler is None:
+            raise HTTPException(
+                503, "LLM providers not configured on this deployment",
+            )
+        from ..policy.nl_compiler_interactive import (
+            InteractiveInputError, step_compile,
+        )
+        from .nl_compiler import PrecheckError
+        history = [t.model_dump() for t in (req.history or [])]
+        try:
+            return await asyncio.to_thread(
+                step_compile,
+                llm_compiler,
+                history=history,
+                draft_so_far=req.draft_so_far,
+                answers=req.answers,
+            )
+        except InteractiveInputError as e:
+            raise HTTPException(422, str(e)) from e
+        except PrecheckError as e:
+            raise HTTPException(422, f"precheck: {e}") from e
+        except ValueError as e:
+            # LLM produced something that didn't parse as JSON — same
+            # 422 as /policies/compile so the dashboard renders the same
+            # actionable banner.
             raise HTTPException(422, str(e)) from e
 
     @app.post("/policies/dry-run", dependencies=[Depends(require_admin_key)])
