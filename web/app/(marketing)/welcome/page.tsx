@@ -136,7 +136,7 @@ function PrimaryCTA({ href, children, size = "md" }: { href: string; children: R
   const external = href.startsWith("http")
   const sizeCls = size === "lg" ? "px-6 py-3.5 text-base" : "px-5 py-3 text-sm"
   const cls =
-    `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-[var(--cta)] ${sizeCls} ` +
+    `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[var(--cta)] ${sizeCls} ` +
     "font-semibold text-white shadow-sm hover:bg-[var(--cta-hover)] " +
     "transition-colors duration-200 cursor-pointer " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cta)] " +
@@ -149,7 +149,7 @@ function GhostCTA({ href, children, size = "md" }: { href: string; children: Rea
   const external = href.startsWith("http")
   const sizeCls = size === "lg" ? "px-6 py-3.5 text-base" : "px-5 py-3 text-sm"
   const cls =
-    `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-[var(--ink)]/10 bg-white ${sizeCls} ` +
+    `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-[var(--ink)]/10 bg-white ${sizeCls} ` +
     "font-semibold text-[var(--ink)] " +
     "hover:border-[var(--ink)]/25 hover:bg-[var(--mist)] transition-colors duration-200 cursor-pointer " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ink)]/30 " +
@@ -186,7 +186,7 @@ function SectionHead({ eyebrow, heading, sub }: { eyebrow?: string; heading: str
   return (
     <div className="text-center">
       {eyebrow && <Eyebrow>{eyebrow}</Eyebrow>}
-      <h2 className="mt-3 text-3xl md:text-4xl font-bold text-[var(--ink)] tracking-tight text-balance">
+      <h2 className="mt-3 text-3xl md:text-4xl font-black text-[var(--ink)] tracking-tight text-balance">
         {heading}
       </h2>
       {sub && (
@@ -241,8 +241,8 @@ function Hero({ c, isKo }: { c: HeroCopy; isKo: boolean }) {
       style={{
         backgroundColor: "var(--canvas)",
         backgroundImage:
-          "linear-gradient(to right, rgba(11,15,25,0.045) 1px, transparent 1px), linear-gradient(to bottom, rgba(11,15,25,0.045) 1px, transparent 1px)",
-        backgroundSize: "56px 56px",
+          "linear-gradient(to right, rgba(17,24,39,0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(17,24,39,0.05) 1px, transparent 1px)",
+        backgroundSize: "44px 44px",
       }}
     >
       <div
@@ -256,7 +256,7 @@ function Hero({ c, isKo }: { c: HeroCopy; isKo: boolean }) {
               {c.chips.map((chip) => <Chip key={chip}>{chip}</Chip>)}
             </div>
             <h1
-              className={`mt-6 text-5xl md:text-[64px] font-bold tracking-tight text-balance text-[var(--ink)] leading-[1.08] md:leading-[1.06] ${
+              className={`mt-6 text-5xl md:text-[64px] font-black tracking-tight text-balance text-[var(--ink)] leading-[1.08] md:leading-[1.06] ${
                 isKo ? "max-w-[22ch]" : "max-w-[14ch]"
               }`}
             >

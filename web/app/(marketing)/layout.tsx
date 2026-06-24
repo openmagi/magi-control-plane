@@ -59,11 +59,7 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
         color: "#0B0F19",
       }}
     >
-      <div className="sticky top-0 z-30 backdrop-blur bg-white/85 border-b border-[var(--color-border-subtle)]">
-        <div className="mx-auto" style={{ maxWidth: "var(--content-max)" }}>
-          <NavBarShell />
-        </div>
-      </div>
+      <NavBarShell />
       <main id="main-content" tabIndex={-1} className="outline-none">
         {children}
       </main>
