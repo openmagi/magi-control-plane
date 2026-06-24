@@ -211,6 +211,27 @@ def compile_files(policy_paths: list[str], out_path: str) -> dict:
     layout for back-compat. The digest written to the file is the
     sha256 of the bytes the gate hashes (so dashboard
     `compiled_sha256` and gate `active_policy_digest` align).
+
+    ⚠ DEPLOY TRAP — compile-to-stage-then-move:
+    Sidecars are written to `<dirname(out_path)>/context-templates/`
+    at compile time. The runtime shim (`gate.context_write_cli`)
+    defaults to `<dirname(MAGI_CP_MANAGED_SETTINGS_PATH or
+    ~/.claude/managed-settings.json)>/context-templates/` — i.e. the
+    INSTALL location, not the BUILD location. If the operator does:
+
+        compile_files(["p.json"], "/tmp/managed-settings.json")
+        mv /tmp/managed-settings.json ~/.claude/managed-settings.json
+
+    the sidecars stay behind in `/tmp/context-templates/` and the
+    shim silently emits empty stdout (fail-open: every
+    context_injection silently never fires). Safe install patterns:
+      (a) compile straight to the install target — sidecars land in
+          the right place by default;
+      (b) move both `managed-settings.json` AND `context-templates/`
+          together as a single bundle;
+      (c) export `MAGI_CP_CONTEXT_TEMPLATES_DIR` on the runtime
+          pointing at the actual sidecar location. The shim's
+          `_context_templates_dir()` docstring restates this.
     """
     import os
     policies = [load_policy(p) for p in policy_paths]

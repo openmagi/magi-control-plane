@@ -547,9 +547,14 @@ class ContextInjectionPolicy:
     # D58: type-checker sees the full event surface (same Literal that
     # Trigger.event uses) so a `ContextInjectionPolicy(event="…")`
     # call site catches typos at lint time. The runtime check below
-    # still validates against the canonical _SUPPORTED_EVENTS set so
-    # a JSON-deserialized event that bypasses the Literal still
-    # raises if it names an unknown hook.
+    # is the ONLY guard against JSON-deserialized events that bypass
+    # the Literal (mypy enforces the union at construction time but
+    # `policy_from_dict` accepts any string). D57f-1 fix-followup:
+    # `_CONTEXT_EVENT_LITERALS` is the canonical `_SUPPORTED_EVENTS`
+    # frozen-set sorted; widening the candidate set MUST also expand
+    # the matrix-coherence gate in `validate()` (per-tool matcher
+    # classes are illegal on no-tool-context events even when the
+    # event name is recognized).
     event: EventLiteral
     template: str
     matcher: str = "*"
@@ -574,6 +579,41 @@ class ContextInjectionPolicy:
             raise ValueError(
                 f"ContextInjectionPolicy '{self.id}': template too long "
                 f"(>16000)"
+            )
+        # D57f-1 follow-up (P1): matrix-coherence gate. Without this,
+        # a hand-rolled IR (direct PUT, NL-compiled draft, or a stale
+        # persisted dict) can land event=SessionStart with matcher=Bash
+        # — the compiler dutifully emits hooks.SessionStart=[{matcher:
+        # "Bash", ...}] and CC silently drops it (no enforcement) or
+        # rejects the whole managed-settings bundle (cascading
+        # fail-open across every policy in it). We mirror the
+        # EvidencePolicy gate by routing through matcher_class_of +
+        # only allowing per-tool matcher classes on the four
+        # tool-context events; everything else must be wildcard.
+        from .matrix import (
+            MatcherClass, _AUDIT_ONLY_WILDCARD_EVENTS, matcher_class_of,
+        )
+        _TOOL_CONTEXT_EVENTS = frozenset({
+            "PreToolUse", "PostToolUse",
+            "PostToolUseFailure", "PostToolBatch",
+        })
+        try:
+            kls = matcher_class_of(self.matcher)
+        except ValueError as e:
+            raise ValueError(
+                f"ContextInjectionPolicy '{self.id}': matcher "
+                f"{self.matcher!r} {e}"
+            ) from e
+        if self.event in _TOOL_CONTEXT_EVENTS:
+            # tool / mcp_tool / tool_alt / wildcard all legal here
+            return
+        # Every other event family is keyed without a per-tool matcher
+        # in the CC binary's payload — only wildcard is meaningful.
+        if kls is not MatcherClass.wildcard:
+            raise ValueError(
+                f"ContextInjectionPolicy '{self.id}': event {self.event!r} "
+                f"has no per-tool matcher in the CC payload; matcher must "
+                f"be '*' (got {self.matcher!r}, class={kls.value})"
             )
 
 

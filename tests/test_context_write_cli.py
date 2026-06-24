@@ -111,6 +111,82 @@ def test_shim_silent_on_unknown_event_name(monkeypatch, capsys, sidecar_dir):
     assert out == ""
 
 
+def test_shim_silent_on_well_formed_but_unsupported_event(
+    monkeypatch, capsys, sidecar_dir,
+):
+    """P1 follow-up: the shape regex used to be the only gate, so a
+    well-formed-but-unknown name like "NotARealHook" would still emit
+    a `hookSpecificOutput` JSON keyed on a hook CC won't recognize
+    (silent fail-open across the policy bundle). The shim now
+    cross-checks against `_SUPPORTED_EVENTS`."""
+    # Place a sidecar so the only reason we'd refuse is the event name.
+    template = "would have been injected"
+    tpl_id = hashlib.sha256(template.encode("utf-8")).hexdigest()
+    (sidecar_dir / f"{tpl_id}.txt").write_text(template, encoding="utf-8")
+    out = _run_shim(monkeypatch, capsys, event="NotARealHook", tpl_id=tpl_id)
+    assert out == ""
+
+
+def test_shim_refuses_world_writable_template(monkeypatch, capsys, sidecar_dir):
+    """P2 follow-up: a world-writable sidecar means an attacker can
+    rewrite the template the model sees. The shim refuses silently
+    instead of emitting attacker-chosen additionalContext."""
+    template = "would-be malicious context"
+    tpl_id = hashlib.sha256(template.encode("utf-8")).hexdigest()
+    p = sidecar_dir / f"{tpl_id}.txt"
+    p.write_text(template, encoding="utf-8")
+    os.chmod(p, 0o666)
+    out = _run_shim(monkeypatch, capsys, event="UserPromptSubmit", tpl_id=tpl_id)
+    assert out == ""
+
+
+def test_compile_to_stage_then_move_trap_documented(monkeypatch, capsys, tmp_path):
+    """P2 follow-up: pin the deploy invariant. `compile_files(['p.json'],
+    '/tmp/managed-settings.json')` lands sidecars at
+    `/tmp/context-templates/<sha>.txt`, and the shim — when pointed at
+    the same install location via `MAGI_CP_MANAGED_SETTINGS_PATH=/tmp/
+    managed-settings.json` — must find them. The test makes the
+    install-path coupling executable so a future refactor that splits
+    build- and install-dirs fails this assertion instead of silently
+    fail-opening every context_injection.
+    """
+    import json as _json
+    from magi_cp.policy.compiler import compile_files
+
+    pol_path = tmp_path / "ctx.json"
+    pol_path.write_text(
+        _json.dumps({
+            "type": "context_injection",
+            "id": "ctx/v1",
+            "description": "",
+            "version": "0.1",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+            "template": "warn before bash",
+        }),
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "managed-settings.json"
+    compile_files([str(pol_path)], str(out_path))
+    # Sidecar landed next to managed-settings.json
+    side_dir = tmp_path / "context-templates"
+    assert side_dir.is_dir()
+    sidecars = list(side_dir.glob("*.txt"))
+    assert len(sidecars) == 1
+    sha = sidecars[0].stem
+
+    # Now point the shim at the SAME install path. Without
+    # MAGI_CP_CONTEXT_TEMPLATES_DIR set, the shim resolves to
+    # dirname(managed-settings.json)/context-templates/ — which is
+    # where compile_files dropped the sidecar.
+    monkeypatch.setenv("MAGI_CP_MANAGED_SETTINGS_PATH", str(out_path))
+    monkeypatch.delenv("MAGI_CP_CONTEXT_TEMPLATES_DIR", raising=False)
+    out = _run_shim(monkeypatch, capsys, event="PreToolUse", tpl_id=sha)
+    obj = json.loads(out)
+    assert obj["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert obj["hookSpecificOutput"]["additionalContext"] == "warn before bash"
+
+
 def test_compiled_command_resolves_to_a_real_sidecar(
     monkeypatch, capsys, tmp_path,
 ):

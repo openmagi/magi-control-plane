@@ -24,6 +24,8 @@ const ERR_CODES: Record<string, string> = {
   invalid_id: "Invalid policy id.",
   invalid_input: "Invalid input.",
   conflict: "Action conflicted with current state.",
+  template_too_long: "Inject template is too long (max 16000 chars).",
+  strip_unsupported: "Strip action is not available for this lifecycle.",
 }
 
 export function resolveFlash(

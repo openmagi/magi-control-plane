@@ -1081,25 +1081,54 @@ async function saveWizard(formData: FormData): Promise<void> {
   // (the wizard surfaces inject_context as a per-lifecycle archetype;
   // a per-tool injection would need a different authoring flow).
   if (action === "inject_context") {
-    const lifecycleRawInj = String(formData.get("lifecycle") ?? "before_tool_use")
-    const lifecycleInj: Lifecycle = (LIFECYCLES as readonly string[]).includes(lifecycleRawInj)
-      ? (lifecycleRawInj as Lifecycle) : "before_tool_use"
-    const eventInj = LIFECYCLE_TO_EVENT[lifecycleInj]
+    // P2 follow-up: reuse the already-resolved `lifecycle`; the
+    // duplicated `lifecycleRawInj`/`lifecycleInj` block added no
+    // safety and risked diverging from the parent block's coercion.
+    // Also run the matrix-action guard before the matcher pipeline
+    // so a future ACTIONS_BY_LIFECYCLE narrowing of inject_context
+    // catches here instead of silently persisting an illegal pair.
+    if (!allowedActionsForCombination(lifecycle, undefined).includes("inject_context")) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    const eventInj = LIFECYCLE_TO_EVENT[lifecycle]
     const template = String(formData.get("injectTemplate") ?? "").trim()
     if (!template) {
       redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    // P2 follow-up: mirror the IR's 16000-char cap so the operator
+    // lands on the right step with a precise error code instead of
+    // a generic 4xx flash from the cloud. Catches the "scripted POST
+    // bypasses the textarea's maxLength" attack surface and the
+    // browser-trimmed paste case the textarea silently drops.
+    if (template.length > 16_000) {
+      redirect("/policies/new?mode=guided&step=4&err=template_too_long"); return
     }
     const idInj = String(formData.get("id") ?? "").trim()
     if (!idInj) {
       redirect("/policies/new?mode=guided&step=5&err=invalid_input"); return
     }
+    // P2 follow-up (ux-internal-leak): the previous fallback
+    // `Inject context on ${eventInj}` leaked the raw CC event name
+    // ("PreToolUse", "UserPromptSubmit", etc.) into the dashboard's
+    // policy description. AGENTS.md mandates "never expose internal
+    // terms" on NL/conversational surfaces; the LIFECYCLE_LABEL_*
+    // tables exist precisely to render lifecycle slugs in human
+    // terms. Mirror plainSummary's behavior so the description and
+    // the summary stay aligned.
+    const { locale: actionLocale } = await getT()
+    const fallbackLifecycleLabel =
+      actionLocale === "ko"
+        ? LIFECYCLE_LABEL_KO[lifecycle]
+        : LIFECYCLE_LABEL_EN[lifecycle]
     const descriptionInj = String(formData.get("description") ?? "").trim()
-      || `Inject context on ${eventInj}`
+      || (actionLocale === "ko"
+            ? `${fallbackLifecycleLabel}, 모델 컨텍스트에 텍스트 주입`
+            : `Inject context ${fallbackLifecycleLabel}`)
     // Tool scope: when the lifecycle carries a tool context the
     // operator's pick rides through; everything else collapses to
     // wildcard, matching deriveMatcher's behavior on evidence flows.
     let matcherInj = "*"
-    if (lifecycleHasToolScope(lifecycleInj)) {
+    if (lifecycleHasToolScope(lifecycle)) {
       const scope = String(formData.get("toolScope") ?? "").trim()
       if (scope && scope !== "*") {
         const first = scope.split(",").map((s) => s.trim()).filter(Boolean)[0] ?? scope
@@ -1331,9 +1360,23 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
     const tpl = (ir as unknown as { template?: string }).template ?? ""
     const matcherRaw = (ir as unknown as { matcher?: string }).matcher ?? "*"
     const lifecycleCi: Lifecycle | undefined = EVENT_TO_LIFECYCLE[ev]
+    // P2 follow-up (wizard-flow): mirror the evidence-shape branch's
+    // alternation drop. Without this, a context_injection IR with
+    // matcher='Bash|Edit' would round-trip into toolScope='Bash|Edit'
+    // and silently collapse to 'Bash' downstream (the GuidedWizard
+    // state-build seam splits on '|'), with no banner explaining the
+    // loss. Surface `_droppedAlternation` so Step 2 renders the
+    // already-existing "we trimmed your alternation" banner.
     let toolScopeCi: string | undefined
+    let droppedAlternationCi: string | undefined
     if (lifecycleHasToolScope(lifecycleCi) && matcherRaw && matcherRaw !== "*") {
-      toolScopeCi = matcherRaw
+      if (matcherRaw.includes("|")) {
+        const parts = matcherRaw.split("|").map((s) => s.trim()).filter(Boolean)
+        toolScopeCi = parts[0] ?? undefined
+        if (parts.length > 1) droppedAlternationCi = matcherRaw
+      } else {
+        toolScopeCi = matcherRaw
+      }
     }
     return {
       lifecycle: lifecycleCi,
@@ -1343,6 +1386,7 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
       injectTemplate: tpl,
       id: (ir.id ?? "").toString() || undefined,
       description: ir.description?.toString() || undefined,
+      _droppedAlternation: droppedAlternationCi,
     }
   }
   // event -> lifecycle. D56c covered the original 8 hooks; D58
@@ -2181,6 +2225,22 @@ function GuidedWizard({
       ? 3 : step
   if (effectiveStep === 3 && state.action === "inject_context") {
     effectiveStep = 4
+  }
+  // P2 follow-up (wizard-state): scrub condition-side fields when
+  // action=inject_context so a previously-authored
+  // pattern/llmCriterion/shaclTtl/evidence_refs does not silently
+  // resurrect if the operator changes their mind back to
+  // block/audit. The inject_context branch in saveWizard ignores
+  // these anyway, but a back-and-forth Edit-jump would otherwise
+  // ferry stale condition state through the URL.
+  if (state.action === "inject_context") {
+    state.conditionKind = "none"
+    state.pattern = undefined
+    state.llmCriterion = undefined
+    state.shaclTtl = undefined
+    state.fetchDomain = undefined
+    state.allowlist = undefined
+    state.evidenceRefs = undefined
   }
 
   return (
@@ -3082,6 +3142,42 @@ function Step3Condition({
             : `Verifier(s) that do not fire on ${lifecycleLabel} were removed: ${state._droppedEvidenceRefs.join(", ")}. Pick a different verifier or change the lifecycle.`}
         </div>
       )}
+      {/* P1 follow-up (wizard-flow): "Just inject context" shortcut so
+          the operator can route to Step 4 without picking a condition
+          kind that saveWizard will discard the moment they pick
+          inject_context on Step 4. The card sits ABOVE the condition
+          picker so a fresh authoring path discovers the
+          context_injection archetype without wasted clicks. The link
+          jumps straight to Step 4 with state.action=inject_context
+          (GuidedWizard's effectiveStep gate then keeps the operator
+          on Step 4 even if they navigate back). */}
+      <Link
+        data-testid="step3-inject-context-shortcut"
+        href={buildWizardHref(
+          { ...state, action: "inject_context", conditionKind: "none" },
+          4,
+        )}
+        className="block rounded-xl border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/[0.04] p-4 transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.08]"
+      >
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+            {ko
+              ? "조건 없이 컨텍스트만 추가하기"
+              : "Just inject extra context"}
+          </span>
+          <Badge variant="info">{ko ? "지름길" : "shortcut"}</Badge>
+        </div>
+        <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+          {ko
+            ? "검사 없이 모델에 정적인 텍스트만 추가하고 싶다면 바로 다음 단계로 넘어가세요."
+            : "If you only want to add static text to the model's context (no gating, no checks), skip ahead to Step 4."}
+        </p>
+      </Link>
+      <p className="text-xs text-[var(--color-text-tertiary)] leading-relaxed m-0">
+        {ko
+          ? "또는 아래에서 검사 조건을 선택하세요:"
+          : "Or pick a condition below to gate on:"}
+      </p>
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{
@@ -3435,6 +3531,15 @@ function Step4Action({
     >
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="4" />
+        {/* P2 follow-up (wizard-flow round-trip): carry every state
+            field that lives beyond Step 4 (id, description, inject_*).
+            The radio for `action` is submitted by the visible input
+            so we deliberately omit it from HiddenState (avoid double
+            submission of the same name). The visible textarea inside
+            the inject_context card owns the canonical `injectTemplate`
+            value; the hidden carry only matters when the operator
+            picks a non-inject action and we still want to remember
+            their previously-authored template. */}
         <HiddenState state={{
           lifecycle: state.lifecycle,
           toolScope: state.toolScope,
@@ -3445,6 +3550,18 @@ function Step4Action({
           llmCriterion: state.llmCriterion,
           evidenceRefs: state.evidenceRefs,
           shaclTtl: state.shaclTtl,
+          id: state.id,
+          description: state.description,
+          injectLabelKo: state.injectLabelKo,
+          injectLabelEn: state.injectLabelEn,
+          // injectTemplate intentionally omitted: when the visible
+          // editor renders, its textarea (name="injectTemplate") is
+          // the source of truth and a duplicate hidden input would
+          // confuse advanceWizard's `formData.entries()` write loop
+          // (last-wins, but order isn't guaranteed). When the editor
+          // is display:none (operator picked a non-inject action),
+          // the textarea still defaults to state.injectTemplate so
+          // the value survives the round-trip via the visible input.
         }} />
         {allowed.map((a) => {
           const stripDisabled = a === "strip" && !STRIP_AVAILABLE
@@ -3489,7 +3606,17 @@ function Step4Action({
                   </span>
                   <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
                 </span>
-                <span
+                {/* P1 follow-up (html-validation): the editor wraps
+                    block-level descendants (<p>, <div>, <textarea>,
+                    grid wrappers). HTML5 forbids flow content inside
+                    phrasing content; using a <span> here triggers
+                    validateDOMNesting warnings and browsers may
+                    hoist the block descendants out of the span,
+                    breaking the peer-checked sibling reveal. The
+                    parent <label> legally accepts flow content, so
+                    a <div> here is fine and the `peer-checked ~`
+                    general-sibling selector still matches. */}
+                <div
                   data-testid="step4b-inject-editor"
                   className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
                 >
@@ -3514,6 +3641,19 @@ function Step4Action({
                       spellCheck={false}
                       className={inputCls() + " font-mono"}
                     />
+                    {/* P2 follow-up (wizard-flow oversized text): the
+                        textarea's maxLength only stops direct
+                        typing/IME — a >16000-char paste is silently
+                        truncated and a scripted POST bypasses the
+                        cap entirely. saveWizard mirrors the IR's
+                        16000 cap server-side; this counter surfaces
+                        the limit before the operator pastes so the
+                        truncation isn't a surprise. */}
+                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                      {ko
+                        ? "최대 16000자. 더 긴 본문은 저장 단계에서 거부됩니다."
+                        : "Max 16000 chars. Longer templates are refused at save."}
+                    </p>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
@@ -3541,7 +3681,7 @@ function Step4Action({
                       />
                     </div>
                   </div>
-                </span>
+                </div>
               </label>
             )
           }

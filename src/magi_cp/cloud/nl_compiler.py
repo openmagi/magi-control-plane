@@ -118,21 +118,50 @@ Archetypes (set `type` accordingly):
     PreToolUse, SubagentStart, Notification, FileChanged, etc.).
     Pick the event that matches WHEN the operator wants the text to
     appear in context.
+
+    ⚠ DISAMBIGUATION — "warn" / "remind" intent:
+    - "warn / remind the model itself" (text only, never gates the
+      run): → context_injection.
+    - "warn the operator / interrupt the run / require approval"
+      (HUMAN sees a prompt, run pauses or blocks): → permission with
+      permission=ask or evidence with action=ask.
+    - "refuse / block / prevent / forbid": → permission with
+      permission=deny or evidence with action=block.
+    If the user's NL uses enforcement vocabulary (block, refuse,
+    prevent, forbid, require approval, interrupt) the answer is NOT
+    context_injection. context_injection passes through every time;
+    the model just sees extra text.
+
+    MATCHER RULE (mandatory): set matcher to a tool name ONLY when
+    event is one of PreToolUse, PostToolUse, PostToolUseFailure,
+    PostToolBatch (the four events whose payload carries a tool
+    name). Every other event (SessionStart, SubagentStop, Notification,
+    UserPromptSubmit, etc.) MUST use matcher="*" — CC keys those hooks
+    without a per-tool field, so a tool matcher there is silently
+    dropped or refused at settings load.
+
     Schema:
       {{"type": "context_injection", "id": "<id>", "version": "0.1",
         "description": "...",
         "event": "<CC hook event>",
         "matcher": "*",
         "template": "<text injected as additionalContext>"}}
-    Examples:
+    Examples (model-warning vs user-warning contrast):
       "inject team coding standards into every prompt"
-        → event=UserPromptSubmit
+        → event=UserPromptSubmit, matcher="*"
       "add a safety reminder at session start"
-        → event=SessionStart
-      "add a warning before every Bash command"
-        → event=PreToolUse, matcher="Bash"
+        → event=SessionStart, matcher="*"
+      "remind the model to double-check destructive bash"
+        → event=PreToolUse, matcher="Bash"  (model-warning, no gate)
+      "warn me / require approval before sudo runs"
+        → NOT context_injection — emit
+           type=permission, permission=ask, pattern="Bash(sudo*)"
+           (user-warning gates the run)
+      "block rm -rf"
+        → NOT context_injection — emit
+           type=permission, permission=deny, pattern="Bash(rm -rf /*)"
       "document the spawned child's mandate on subagent start"
-        → event=SubagentStart
+        → event=SubagentStart, matcher="*"
 
   type=evidence    — gate that runs a verifier (or inline regex / SHACL /
                      LLM critic) at hook time. Use this when the rule
@@ -194,10 +223,33 @@ def _step_block(registry: "object | None") -> str:
 _SYSTEM_REVIEWER_TMPL = """You are a Policy IR reviewer.
 
 Given a Policy IR JSON object and the original natural-language intent, judge
-whether the IR faithfully captures the intent and is internally consistent
-(trigger event makes sense for the matcher, action is legal for the
-(event, matcher_class) pair, and a requires=[] list is paired with
-action="audit").
+whether the IR faithfully captures the intent and is internally consistent.
+
+For EVERY archetype, flag:
+  - trigger event makes sense for the matcher,
+  - action is legal for the (event, matcher_class) pair,
+  - requires=[] is paired with action="audit".
+
+For type=context_injection specifically, ALSO flag (each maps to ok=False
++ a concrete issue string):
+  1. Enforcement vocabulary mismatch — the original NL uses
+     "block/refuse/forbid/prevent/require approval/interrupt/warn the
+     user" but the IR is context_injection. context_injection NEVER
+     gates the run; the user almost certainly meant
+     permission(ask/deny) or evidence(action=ask/block). Issue:
+     "context_injection cannot gate — NL asks to gate/block; consider
+     permission or evidence".
+  2. Per-tool matcher on a no-tool-context event — matcher is a tool
+     name (e.g. "Bash", "Read", "mcp__github__create_issue") on any
+     event NOT in {{PreToolUse, PostToolUse, PostToolUseFailure,
+     PostToolBatch}}. CC silently drops these or refuses to load.
+     Issue: "matcher=<x> on event=<y> — CC keys this event without a
+     per-tool field; matcher must be '*'".
+  3. Wildcard matcher on a tool-context event whose NL names a specific
+     tool — matcher='*' but the NL says "before bash" / "after
+     WebFetch" / "on mcp__github__create_issue". The matcher is
+     probably the wrong tool. Issue: "matcher='*' on event=<y> but NL
+     names a specific tool — was a tool matcher intended?".
 
 Output ONLY a JSON object: {{"ok": <bool>, "issues": [<string>, ...]}}.
 

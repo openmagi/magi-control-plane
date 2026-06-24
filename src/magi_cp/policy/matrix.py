@@ -87,9 +87,15 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # Mitigations applied in this commit:
 #   - the unverified-21 are flagged via `_UNVERIFIED_EVENTS` so future
 #     readers see exactly which entries lack a binary fixture proof;
-#   - `ContextInjectionPolicy` is narrowed back to the two events with
-#     a documented `additionalContext` consumption seam in ir.py
-#     (`_CONTEXT_EVENT_LITERALS` in ir.py is the gate);
+#   - `ContextInjectionPolicy` is wired to the full hook surface (see
+#     `_CONTEXT_EVENT_LITERALS` in ir.py = sorted `_SUPPORTED_EVENTS`)
+#     because CC's hookSpecificOutput JSON schema accepts
+#     `additionalContext` on every hook event; the unverified-22
+#     silent-fail-open paths still apply to context_injection
+#     authoring, mitigated by the matrix-coherence gate added to
+#     `ContextInjectionPolicy.validate()` (per-tool matcher classes
+#     are illegal on no-tool-context events even when the event name
+#     is recognized);
 #   - tests/test_policy_matrix.py asserts set-equality (not just the
 #     count) so a future binary refresh has to explicitly name added /
 #     removed events.

@@ -333,11 +333,16 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // (PreToolUse, wildcard, block) — lifecycle-legal but matrix-
       // illegal — gets caught here. Pin the combination helper instead
       // of the now-superseded lifecycle-only lookup.
-      // D57f-1: slice widened to 6500 chars because the inject_context
-      // early-return branch sits above the matrix-action gate now.
+      // D57f-1: slice widened (originally 6500) because the
+      // inject_context early-return branch sits above the
+      // matrix-action gate. The 06-24 follow-up grew the branch with
+      // a template-length guard, a matrix-action guard, locale-aware
+      // description fallback, and the prose comments documenting the
+      // ux-internal-leak fix — so the slice widened again to keep the
+      // tail (matrix-action gate) inside the window.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 6500)
+      const body = src.slice(start, start + 9000)
       expect(body).toMatch(/allowedActionsForCombination\(lifecycle,\s*toolScope\)/)
       expect(body).toMatch(/!allowedActions\.includes\(action\)/)
       // D56d (P1 #2): also rejects matrix-illegal matcher classes
@@ -565,9 +570,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // collapses to first-token, otherwise a stale `Bash,Edit` would
       // silently persist a Bash matcher under the multi-tool URL.
       // Pin the early-refusal block and the redirect target.
+      // Slice widened to accommodate the 06-24 inject_context branch
+      // growth above the multi-tool refusal.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 5000)
+      const body = src.slice(start, start + 8000)
       // Multi detection (CSV or alternation)
       expect(body).toMatch(/parseCsv\(toolScope\)\.length\s*>\s*1/)
       expect(body).toMatch(/toolScope\.includes\("\|"\)/)
@@ -582,8 +589,12 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // Step 2. Normalize toolScope to undefined before the matcher-
       // class check so the save can proceed without bouncing the user
       // back to Step 2 and dropping their wizard progress.
+      // Slice widened (5000→8000) per the 06-24 inject_context branch
+      // growth (template-length guard + matrix-action guard + locale-
+      // aware fallback push the wildcard-only normalize step further
+      // down the function body).
       const start = src.indexOf("async function saveWizard")
-      const body = src.slice(start, start + 5000)
+      const body = src.slice(start, start + 8000)
       expect(body).toMatch(/!lifecycleHasToolScope\(lifecycle\)/)
       expect(body).toMatch(/toolScope = undefined/)
     })

@@ -527,6 +527,18 @@ def _context_templates_dir() -> str:
     `context-templates/`. Operators with a custom managed-settings
     layout override the dir explicitly via
     `MAGI_CP_CONTEXT_TEMPLATES_DIR`.
+
+    Compile-to-stage-then-move trap: `compile_files(policy_paths, "/tmp/m.json")`
+    writes sidecars to `/tmp/context-templates/<sha>.txt`. When the
+    operator later moves `m.json` to `~/.claude/managed-settings.json`
+    without also moving the sidecar dir, this resolver falls back to
+    `~/.claude/context-templates` and the shim's read fails silently
+    (FileNotFoundError → return 0 with empty stdout, CC continues
+    with no `additionalContext`). Two safe install patterns:
+    (a) compile straight to the install target (`compile_files(paths,
+    "~/.claude/managed-settings.json")` — sidecars land in the right
+    place by default); (b) set `MAGI_CP_CONTEXT_TEMPLATES_DIR` on the
+    runtime to wherever the sidecars actually live.
     """
     env = os.environ.get("MAGI_CP_CONTEXT_TEMPLATES_DIR")
     if env:
@@ -542,11 +554,15 @@ def _context_templates_dir() -> str:
 # compiler always passes a 64-hex sha; anything else means a tampered
 # managed-settings.json.
 _CONTEXT_ID_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
-# Every event name the IR recognizes (D57f-1: the full surface). A
-# `--event` argument outside this set means a stale managed-settings
-# bundle authored against a newer CC build; we still emit the JSON, but
-# the empty hookEventName guard below catches an obvious typo.
-_CONTEXT_EVENT_HEX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+# Shape gate for the `--event` arg. Matches the CC event-name grammar
+# (PascalCase identifier-shaped, ≤64 chars). The shape pass is
+# necessary but NOT sufficient — `context_write_cli` also cross-checks
+# against `_SUPPORTED_EVENTS` so a well-formed name CC won't recognize
+# (e.g. "NotARealHook") fails silently instead of emitting a hookSpecificOutput
+# JSON keyed on a hook event CC will then drop or refuse. Old name was
+# `_CONTEXT_EVENT_HEX_RE`, which was a misnomer (the regex matches
+# event-name shapes, not hex).
+_CONTEXT_EVENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
 def _emit_additional_context(event: str, template: str) -> None:
@@ -588,7 +604,11 @@ def context_write_cli() -> int:
       - sidecar dir missing
       - sidecar file missing
       - sidecar file empty / unreadable
+      - sidecar file is world/group writable (refused)
       - malformed CLI args
+      - `--event` value outside `_SUPPORTED_EVENTS`
+        (well-formed-but-unknown event names exit silently rather than
+        emit a `hookEventName` CC will drop or refuse)
 
     Args are parsed without argparse so a single missing flag does
     not raise SystemExit-2 (which CC would surface as a hook error).
@@ -608,7 +628,19 @@ def context_write_cli() -> int:
             i += 2
             continue
         i += 1
-    if not event or not _CONTEXT_EVENT_HEX_RE.match(event):
+    if not event or not _CONTEXT_EVENT_NAME_RE.match(event):
+        return 0
+    # P1 follow-up: the shape regex was the only event-name gate; a
+    # well-formed-but-unsupported name (e.g. "NotARealHook") would
+    # still emit a `{hookSpecificOutput: {hookEventName: ..., ...}}`
+    # JSON that CC then either silently drops (no enforcement; operator
+    # sees a green check) or refuses at settings load (cascading
+    # fail-open across every policy in the bundle). Cross-check the
+    # IR's canonical `_SUPPORTED_EVENTS` so unknown names exit silently
+    # (matches the existing fail-open-on-absence contract on missing
+    # sidecars and malformed args).
+    from ..policy.ir import _SUPPORTED_EVENTS
+    if event not in _SUPPORTED_EVENTS:
         return 0
     if not tpl_id or not _CONTEXT_ID_RE.match(tpl_id):
         return 0
@@ -621,6 +653,23 @@ def context_write_cli() -> int:
         # template lands on disk.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except (FileNotFoundError, OSError):
+        return 0
+    # P2 follow-up: refuse world/group-writable template files. The
+    # sidecar's role is "text the model sees" — if anyone other than
+    # the operator can rewrite the file, an attacker can inject
+    # arbitrary additionalContext into the model's view. Mirrors the
+    # `_read_cached` pubkey hygiene we already apply to MAGI_CP_LOCAL_DIR
+    # so context templates get the same handling as the heartbeat
+    # cache. The compiler writes with the process umask which on a
+    # typical operator workstation gives 0o644; reject 0o66x / 0o67x /
+    # any world-writable mode regardless.
+    try:
+        st = os.fstat(fd)
+        if st.st_mode & 0o022:
+            os.close(fd)
+            return 0
+    except OSError:
+        os.close(fd)
         return 0
     try:
         data = b""

@@ -591,13 +591,17 @@ def test_context_injection_event_mismatch_raises():
 
 
 def test_context_injection_matcher_mismatch_raises():
+    # D57f-1 follow-up: the matrix gate refuses per-tool matchers on
+    # no-tool-context events, so the parent/child pair has to live on
+    # PreToolUse where matcher='Bash' is meaningful. The point of the
+    # test (matcher discriminator mismatch raises) is preserved.
     parent = ContextInjectionPolicy(
         id="x/v1", description="",
-        event="UserPromptSubmit", template="parent text", matcher="*",
+        event="PreToolUse", template="parent text", matcher="Bash",
     )
     child = ContextInjectionPolicy(
         id="x/v1", description="",
-        event="UserPromptSubmit", template="child text", matcher="MyAgent",
+        event="PreToolUse", template="child text", matcher="Edit",
     )
     with pytest.raises(ValueError, match="discriminator mismatch"):
         tighten_against(parent, child, strict=True)

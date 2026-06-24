@@ -295,6 +295,74 @@ def test_context_injection_accepts_full_cc_hook_surface():
         assert f"--event {ev}" in entry["command"]
 
 
+def test_context_injection_rejects_per_tool_matcher_on_no_tool_event():
+    """D57f-1 follow-up (P1): the matrix-coherence gate added to
+    `ContextInjectionPolicy.validate()` refuses (event, matcher)
+    pairs where the event has no per-tool payload (SessionStart,
+    SubagentStop, UserPromptSubmit, Notification, etc.). Without
+    the gate, a hand-rolled IR (direct PUT, NL-compiled draft, or
+    stale persisted dict) would land hooks.<event>=[{matcher: 'Bash',
+    ...}] which CC silently drops (no enforcement) or refuses
+    settings load (cascading fail-open).
+    """
+    from magi_cp.policy.ir import _SUPPORTED_EVENTS
+
+    _TOOL_CONTEXT_EVENTS = {
+        "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+    }
+    bad_matchers = ["Bash", "Read", "mcp__github__create_issue", "Bash|Edit"]
+    for ev in sorted(_SUPPORTED_EVENTS - _TOOL_CONTEXT_EVENTS):
+        for idx, m in enumerate(bad_matchers):
+            with pytest.raises(ValueError, match="no per-tool matcher"):
+                ContextInjectionPolicy(
+                    id=f"ctx-{ev.lower()}-{idx}/v1",
+                    description="bogus pairing",
+                    event=ev,  # type: ignore[arg-type]
+                    matcher=m,
+                    template="x",
+                )
+
+
+def test_context_injection_rejects_garbage_matcher_class():
+    """Matcher strings that don't classify (unknown tool names,
+    not-mcp-shape) raise via `matcher_class_of` — same gate evidence
+    policies use, so authoring a typoed tool name fails fast at
+    construction instead of round-tripping into managed-settings."""
+    with pytest.raises(ValueError, match="unknown matcher class"):
+        ContextInjectionPolicy(
+            id="ctx-garbage/v1",
+            description="bogus matcher",
+            event="PreToolUse",
+            matcher="NotARealTool",
+            template="x",
+        )
+
+
+def test_context_injection_accepts_tool_matcher_on_tool_context_events():
+    """The four tool-context events (Pre/PostToolUse + Failure +
+    Batch) still accept the full matcher set (tool / mcp_tool /
+    tool_alt / wildcard) — the matrix gate only narrows the
+    no-tool-context families."""
+    p = ContextInjectionPolicy(
+        id="ctx-bash-pre/v1", description="",
+        event="PreToolUse", matcher="Bash",
+        template="warn before bash",
+    )
+    ms = compile_to_managed_settings([p])
+    assert ms["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
+
+    p2 = ContextInjectionPolicy(
+        id="ctx-mcp/v1", description="",
+        event="PostToolUse", matcher="mcp__github__create_issue",
+        template="audit github writes",
+    )
+    ms2 = compile_to_managed_settings([p2])
+    assert (
+        ms2["hooks"]["PostToolUse"][0]["matcher"]
+        == "mcp__github__create_issue"
+    )
+
+
 # ── EvidencePolicy backward compat ───────────────────────────────────
 
 
