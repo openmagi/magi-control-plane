@@ -307,26 +307,74 @@ Policy = EvidencePolicy
 
 _PERMISSION_LITERALS = ("allow", "deny", "ask")
 _MCP_ACTION_LITERALS = ("allow", "deny")
-# D57f-1 — context_injection is now available on every hook event the
-# matrix recognizes. The CC binary's hookSpecificOutput JSON schema
-# accepts `additionalContext` on every event (per the bundled CC docs
+# D57f-1 — context_injection lives on the CC hookSpecificOutput JSON
+# schema's `additionalContext` channel (per the bundled CC docs
 # referenced in docs/architecture/claude-code-cli/08-coding-harness-
 # internals.md:233 — "JSON stdout returns {decision, updatedInput,
-# additionalContext, continue}"), so authoring an injection on
-# e.g. PreToolUse turns into a per-tool note prepended to the model's
-# view of the tool input; on SubagentStart it documents the spawned
-# child's mandate; on Notification it tags the runtime's notification
-# record.
+# additionalContext, continue}"). For most events that wire-shape is
+# the right one: authoring an injection on PreToolUse turns into a
+# per-tool note prepended to the model's view of the tool input; on
+# SubagentStart it documents the spawned child's mandate; on
+# Notification it tags the runtime's notification record.
 #
-# The previous D58-followup narrowing to only UserPromptSubmit /
-# SessionStart was an artificial limit driven by the absence of an
-# end-to-end binary fixture on the other events. The wizard authoring
-# surface is what feeds this set — see web/app/(console)/policies/new/
-# page.tsx Step 4 "Inject extra context" action card. The runtime gate
-# (gate.py) emits the additionalContext JSON keyed by `hookEventName`
-# so CC's hook reader applies the field whichever way that event's
-# downstream consumer reads it.
-_CONTEXT_EVENT_LITERALS: tuple[str, ...] = tuple(sorted(_SUPPORTED_EVENTS))
+# D59 — four hooks are SPECIALIZED. Their hookSpecificOutput shape
+# carries a different channel and `additionalContext` is silently
+# ignored at runtime ("Hook JSON output had unrecognized keys
+# (ignored)" in the CC binary). Authoring a ContextInjectionPolicy on
+# any of these would compile and persist cleanly, then no-op at
+# runtime with no operator-visible feedback — exactly the silent
+# fail-open the matrix gate exists to prevent. We narrow the
+# authoring surface:
+#
+#   Elicitation        — uses hookSpecificOutput.elicitationDecision
+#                        (accept / decline an MCP elicitation request).
+#   ElicitationResult  — uses hookSpecificOutput to override the action
+#                        or content BEFORE the response is sent to the
+#                        MCP server. Not an injection target.
+#   WorktreeCreate     — uses hookSpecificOutput.worktreePath (the gate
+#                        returns the path of the worktree the runtime
+#                        should use).
+#   MessageDisplay     — display-only. CC replaces the on-screen delta
+#                        without changing the stored message or feeding
+#                        anything back into the model context.
+#
+# EvidencePolicy (audit-only) is NOT narrowed on these four — see
+# matrix.LEGAL_COMBINATIONS — because audit only records the trigger
+# firing; it does not need `additionalContext` at all.
+#
+# The wizard authoring surface mirrors this set — see
+# web/app/(console)/policies/new/page.tsx Step 4 "Inject extra
+# context" action card; the picker is greyed out for these four
+# lifecycles with a tooltip naming the alternate output channel.
+_CONTEXT_INJECTION_EXCLUDED_EVENTS: frozenset[str] = frozenset({
+    "Elicitation", "ElicitationResult",
+    "WorktreeCreate", "MessageDisplay",
+})
+_CONTEXT_EVENT_LITERALS: tuple[str, ...] = tuple(sorted(
+    _SUPPORTED_EVENTS - _CONTEXT_INJECTION_EXCLUDED_EVENTS,
+))
+# Per-event alternate channel description used in the ValueError when
+# an operator tries to author a ContextInjectionPolicy on an excluded
+# event. The description names the actual hookSpecificOutput field
+# that hook uses so the error tells the operator where to look next.
+_CONTEXT_INJECTION_ALTERNATE_CHANNEL: dict[str, str] = {
+    "Elicitation": (
+        "hookSpecificOutput.elicitationDecision (accept / decline an "
+        "MCP elicitation request)"
+    ),
+    "ElicitationResult": (
+        "hookSpecificOutput overrides the action or content before the "
+        "response is sent to the MCP server"
+    ),
+    "WorktreeCreate": (
+        "hookSpecificOutput.worktreePath (the gate returns a worktree "
+        "path)"
+    ),
+    "MessageDisplay": (
+        "display-only — CC replaces the on-screen delta without "
+        "changing the stored message or feeding the model context"
+    ),
+}
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 
@@ -567,6 +615,25 @@ class ContextInjectionPolicy:
     def validate(self) -> None:
         _validate_id(self.id)
         if self.event not in _CONTEXT_EVENT_LITERALS:
+            # D59: the excluded set (Elicitation / ElicitationResult /
+            # WorktreeCreate / MessageDisplay) has a SPECIALIZED
+            # hookSpecificOutput shape — additionalContext is the wrong
+            # channel and CC silently ignores it at runtime ("Hook JSON
+            # output had unrecognized keys (ignored)"). Name the actual
+            # channel that hook uses in the error so the operator can
+            # pivot to the right archetype (EvidencePolicy audit, or
+            # the alternate output channel) without a round-trip
+            # through the docs.
+            if self.event in _CONTEXT_INJECTION_EXCLUDED_EVENTS:
+                channel = _CONTEXT_INJECTION_ALTERNATE_CHANNEL[self.event]
+                raise ValueError(
+                    f"ContextInjectionPolicy '{self.id}': event "
+                    f"{self.event!r} does not accept additionalContext "
+                    f"injection — this hook uses {channel}, not "
+                    f"additionalContext. EvidencePolicy (audit) is "
+                    f"still legal on this event if you want to record "
+                    f"the trigger firing."
+                )
             raise ValueError(
                 f"ContextInjectionPolicy '{self.id}': event {self.event!r} "
                 f"is not a recognized CC hook"

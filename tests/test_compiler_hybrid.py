@@ -266,20 +266,29 @@ def test_context_injection_rejects_unknown_event():
 
 def test_context_injection_accepts_full_cc_hook_surface():
     """D57f-1: ContextInjectionPolicy accepts every hook event the
-    matrix recognizes. The CC hookSpecificOutput JSON schema accepts
-    `additionalContext` on every event (per
+    matrix recognizes for additionalContext injection. The CC
+    hookSpecificOutput JSON schema accepts `additionalContext` on
+    most events (per
     docs/architecture/claude-code-cli/08-coding-harness-internals.md:233
     — "JSON stdout returns {decision, updatedInput, additionalContext,
     continue}"), so the wizard's "Inject extra context" archetype
-    routes here on every Step-1 lifecycle.
+    routes here on every Step-1 lifecycle that has the right channel.
 
-    Every event round-trips through compile_to_managed_settings into
-    a hooks.<event>[] command entry naming the magi-cp-context-write
-    shim — byte-identical shape across events so the shim path
-    works the same for each kind."""
-    from magi_cp.policy.ir import _SUPPORTED_EVENTS
+    D59: four hooks (Elicitation / ElicitationResult / WorktreeCreate /
+    MessageDisplay) carry a SPECIALIZED hookSpecificOutput shape where
+    `additionalContext` is silently ignored at runtime. The authorable
+    surface for ContextInjectionPolicy narrows to the 26 events in
+    `_CONTEXT_EVENT_LITERALS` — see test_ir_context_injection_narrow.py
+    for the narrow-set invariants. EvidencePolicy (audit) still works
+    on all 30 events, so the matrix is asymmetric on purpose.
 
-    for ev in sorted(_SUPPORTED_EVENTS):
+    Every authorable event round-trips through
+    compile_to_managed_settings into a hooks.<event>[] command entry
+    naming the magi-cp-context-write shim — byte-identical shape
+    across events so the shim path works the same for each kind."""
+    from magi_cp.policy.ir import _CONTEXT_EVENT_LITERALS
+
+    for ev in _CONTEXT_EVENT_LITERALS:
         p = ContextInjectionPolicy(
             id=f"ctx-{ev.lower()}/v1",
             description=f"context on {ev}",
@@ -305,13 +314,26 @@ def test_context_injection_rejects_per_tool_matcher_on_no_tool_event():
     ...}] which CC silently drops (no enforcement) or refuses
     settings load (cascading fail-open).
     """
-    from magi_cp.policy.ir import _SUPPORTED_EVENTS
+    # D59: skip the four events excluded from ContextInjectionPolicy
+    # entirely — those raise the "does not accept additionalContext"
+    # error from the narrower `_CONTEXT_EVENT_LITERALS` gate BEFORE
+    # reaching the per-tool matcher gate. See
+    # test_ir_context_injection_narrow.py for the narrowed-set
+    # invariants and the alternate-channel wording.
+    from magi_cp.policy.ir import (
+        _CONTEXT_EVENT_LITERALS, _CONTEXT_INJECTION_EXCLUDED_EVENTS,
+    )
 
     _TOOL_CONTEXT_EVENTS = {
         "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
     }
     bad_matchers = ["Bash", "Read", "mcp__github__create_issue", "Bash|Edit"]
-    for ev in sorted(_SUPPORTED_EVENTS - _TOOL_CONTEXT_EVENTS):
+    candidates = (
+        set(_CONTEXT_EVENT_LITERALS)
+        - _TOOL_CONTEXT_EVENTS
+        - _CONTEXT_INJECTION_EXCLUDED_EVENTS
+    )
+    for ev in sorted(candidates):
         for idx, m in enumerate(bad_matchers):
             with pytest.raises(ValueError, match="no per-tool matcher"):
                 ContextInjectionPolicy(

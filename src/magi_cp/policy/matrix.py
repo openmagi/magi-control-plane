@@ -87,15 +87,21 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # Mitigations applied in this commit:
 #   - the unverified-21 are flagged via `_UNVERIFIED_EVENTS` so future
 #     readers see exactly which entries lack a binary fixture proof;
-#   - `ContextInjectionPolicy` is wired to the full hook surface (see
-#     `_CONTEXT_EVENT_LITERALS` in ir.py = sorted `_SUPPORTED_EVENTS`)
-#     because CC's hookSpecificOutput JSON schema accepts
-#     `additionalContext` on every hook event; the unverified-22
-#     silent-fail-open paths still apply to context_injection
-#     authoring, mitigated by the matrix-coherence gate added to
-#     `ContextInjectionPolicy.validate()` (per-tool matcher classes
-#     are illegal on no-tool-context events even when the event name
-#     is recognized);
+#   - `ContextInjectionPolicy` was originally wired to the full hook
+#     surface, then narrowed in D59 to exclude four hooks whose
+#     hookSpecificOutput shape carries a SPECIALIZED channel that
+#     ignores `additionalContext` at runtime (Elicitation /
+#     ElicitationResult / WorktreeCreate / MessageDisplay; see
+#     `_CONTEXT_INJECTION_EXCLUDED_EVENTS` and
+#     `_CONTEXT_EVENT_LITERALS` in ir.py). The 26 remaining events
+#     are the full `_SUPPORTED_EVENTS` minus those four. EvidencePolicy
+#     (audit-only) still works on all 30 because audit just records
+#     the trigger firing — it does not need additionalContext at all,
+#     so the matrix is asymmetric on purpose: EvidencePolicy = 30,
+#     ContextInjectionPolicy = 26. The matrix-coherence gate added to
+#     `ContextInjectionPolicy.validate()` is still in place (per-tool
+#     matcher classes are illegal on no-tool-context events even when
+#     the event name is recognized);
 #   - tests/test_policy_matrix.py asserts set-equality (not just the
 #     count) so a future binary refresh has to explicitly name added /
 #     removed events.

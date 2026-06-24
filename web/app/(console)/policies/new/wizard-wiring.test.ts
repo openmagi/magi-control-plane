@@ -920,6 +920,136 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
   })
 
+  /* D59 — `inject_context` archetype narrowed for specialized hooks.
+   *
+   * Four hooks carry a SPECIALIZED hookSpecificOutput shape where
+   * `additionalContext` is silently ignored at runtime:
+   *   - Elicitation       → hookSpecificOutput.elicitationDecision
+   *   - ElicitationResult → action / content override before MCP reply
+   *   - WorktreeCreate    → hookSpecificOutput.worktreePath
+   *   - MessageDisplay    → display-only
+   *
+   * The wizard renders the inject_context card with a disabled state
+   * + tooltip on these four lifecycles instead of hiding it, so the
+   * operator understands why the archetype is unavailable. The
+   * matching `ContextInjectionPolicy.validate()` raise on the cloud
+   * is the canonical refusal; this dashboard surface short-circuits
+   * the round-trip.
+   */
+  describe("D59 — inject_context disabled on specialized hooks", () => {
+    it("CONTEXT_INJECTION_EXCLUDED_LIFECYCLES names the 4 lifecycle slugs", () => {
+      const m = src.match(
+        /CONTEXT_INJECTION_EXCLUDED_LIFECYCLES[\s\S]*?=\s*new Set<Lifecycle>\(\[([\s\S]+?)\]\)/,
+      )
+      expect(m).not.toBeNull()
+      const body = m![1]
+      for (const slug of [
+        "elicitation", "elicitation_result",
+        "worktree_create", "message_display",
+      ]) {
+        expect(body).toContain(`"${slug}"`)
+      }
+    })
+
+    it("lifecycleAllowsInjectContext returns false for each excluded lifecycle", () => {
+      // Source-level pin (the test harness is source-inspection-only,
+      // matching the existing wizard-wiring patterns above). The
+      // helper must be defined and named so the rest of the wizard
+      // can call it; we pin the predicate body to ensure a future
+      // refactor flipping the polarity is intentional.
+      const start = src.indexOf("function lifecycleAllowsInjectContext")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 400)
+      expect(body).toMatch(/CONTEXT_INJECTION_EXCLUDED_LIFECYCLES\.has\(life\)/)
+      // Negated has() = "allows" semantic
+      expect(body).toMatch(/!CONTEXT_INJECTION_EXCLUDED_LIFECYCLES/)
+    })
+
+    it("Step 4 renders the inject_context card disabled when lifecycle excludes it", () => {
+      // The disabled branch must (a) check
+      // `!lifecycleAllowsInjectContext(lifecycle)`, (b) render the
+      // radio input with `disabled`, (c) carry a per-event tooltip via
+      // `title=` AND the data-testid hook so a browser-driven test
+      // can assert the disabled card.
+      const start = src.indexOf("function Step4Action")
+      const end = src.indexOf("/* ─── Step 5", start)
+      expect(start).toBeGreaterThan(-1)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(
+        /a === "inject_context"[\s\S]*?!lifecycleAllowsInjectContext\(lifecycle\)/,
+      )
+      expect(body).toContain("step4-inject-context-disabled")
+      expect(body).toMatch(/disabled\s*\n?\s*aria-disabled="true"/)
+      // Per-event tooltip text reads from `injectContextDisabledCopy`.
+      expect(body).toContain("injectContextDisabledCopy(lifecycle, locale)")
+    })
+
+    it("Step 4 unreachable template editor when picker disabled (no peer-checked sibling render)", () => {
+      // The disabled branch must NOT render the Step 4b inline editor
+      // — the editor's `data-testid="step4b-inject-editor"` only
+      // appears in the *active* branch. Pin source-level distance so
+      // a future merge that hoists the editor into the disabled
+      // branch is loud.
+      const start = src.indexOf("function Step4Action")
+      const end = src.indexOf("/* ─── Step 5", start)
+      const body = src.slice(start, end)
+      // The disabled-branch slice ends BEFORE the active branch
+      // begins; capture both and assert the editor sits in the
+      // active branch only.
+      const disabledStart = body.indexOf("step4-inject-context-disabled")
+      const activeStart = body.indexOf("step4b-inject-editor")
+      expect(disabledStart).toBeGreaterThan(-1)
+      expect(activeStart).toBeGreaterThan(disabledStart)
+    })
+
+    it("saveWizard refuses inject_context on excluded lifecycle", () => {
+      // Defense in depth: a stale URL pasted with
+      // `?action=inject_context&lifecycle=elicitation` must NOT reach
+      // persistDraft. The redirect target lands the operator back on
+      // Step 4 so the disabled-card tooltip is visible.
+      const start = src.indexOf("if (action === \"inject_context\")")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 2000)
+      expect(body).toMatch(/!lifecycleAllowsInjectContext\(lifecycle\)/)
+      expect(body).toMatch(/policies\/new\?mode=guided&step=4&err=invalid_input/)
+    })
+
+    it("GuidedWizard does NOT auto-skip Step 3 for excluded lifecycles", () => {
+      // Standard inject_context flow skips Step 3 → 4. For the four
+      // excluded lifecycles we keep Step 3 reachable so the operator
+      // can re-author with an alternate archetype after seeing the
+      // disabled Step 4 card.
+      const start = src.indexOf("function GuidedWizard")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(
+        /effectiveStep === 3 && state\.action === "inject_context"\s*\n?\s*&&\s*lifecycleAllowsInjectContext\(state\.lifecycle\)/,
+      )
+    })
+
+    it("lifecycleCardCopy carries the channel caveat for each excluded lifecycle (KO + EN)", () => {
+      // The 4 lifecycle helper-text rows must mention the alternate
+      // output channel so the Step 1 picker hints at the constraint
+      // before the operator reaches Step 4.
+      const start = src.indexOf("function lifecycleCardCopy")
+      const end = src.indexOf("// D56c: lifecycles grouped", start)
+      expect(start).toBeGreaterThan(-1)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // EN caveats — exact phrase pinned from the brief.
+      expect(body).toMatch(/MCP elicitation channel/)
+      expect(body).toMatch(/hookSpecificOutput\.worktreePath/)
+      // KO caveats
+      expect(body).toMatch(/MCP elicitation 채널/)
+      expect(body).toMatch(/hookSpecificOutput\.worktreePath/)
+      // MessageDisplay already had a display-only caveat pre-D59; we
+      // pin the "Inject extra context" mention so the picker copy
+      // surfaces the archetype gate in the same line.
+      expect(body).toMatch(/Display-only[\s\S]*?Inject extra context/)
+    })
+  })
+
   /* D57f-2 follow-up — input_rewrite saveWizard branch.
    *
    * The original D57f-2 commit's input_rewrite branch passed

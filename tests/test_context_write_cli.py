@@ -59,8 +59,19 @@ def _run_shim(monkeypatch, capsys, *, event: str, tpl_id: str) -> str:
 def test_shim_emits_additional_context_for_every_supported_event(
     monkeypatch, capsys, sidecar_dir,
 ):
-    """Each event in `_SUPPORTED_EVENTS` is a legal ContextInjection
-    target after D57f-1. The shim must:
+    """Each event in `_SUPPORTED_EVENTS` is recognized by the shim.
+
+    D57f-1 wired ContextInjectionPolicy onto the full 30-event surface
+    via additionalContext. D59 narrowed the *authoring* surface to 26
+    (Elicitation / ElicitationResult / WorktreeCreate / MessageDisplay
+    use a specialized hookSpecificOutput shape and silently ignore
+    additionalContext at runtime). The SHIM still accepts all 30
+    `_SUPPORTED_EVENTS` names because a legacy managed-settings bundle
+    on disk may still name them, and the shim's job is to produce a
+    well-formed hookSpecificOutput JSON for whatever event CC fires —
+    not to second-guess authoring.
+
+    The shim must:
       - find the sidecar file by sha,
       - print exactly one hookSpecificOutput JSON with `hookEventName`
         set to the requested event and `additionalContext` set to the

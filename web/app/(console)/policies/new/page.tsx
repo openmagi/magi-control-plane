@@ -190,6 +190,67 @@ function lifecycleHasToolScope(life: Lifecycle | undefined): boolean {
   return life !== undefined && TOOL_CONTEXT_LIFECYCLES.has(life)
 }
 
+// D59: four lifecycles map to CC hooks whose hookSpecificOutput shape
+// is SPECIALIZED — additionalContext is ignored at runtime and the
+// hook uses a different channel. Mirrors
+// `_CONTEXT_INJECTION_EXCLUDED_EVENTS` in src/magi_cp/policy/ir.py;
+// adding a row there must add the lifecycle slug here too.
+//
+//   elicitation         — hookSpecificOutput.elicitationDecision
+//   elicitation_result  — hookSpecificOutput action / content override
+//   worktree_create     — hookSpecificOutput.worktreePath
+//   message_display     — display-only (no model-context channel)
+//
+// Step 4's "Inject extra context" card is rendered with a disabled
+// state + tooltip on these four lifecycles. EvidencePolicy (audit) is
+// still legal on every one of them — only the inject_context
+// archetype is gated. The matching ContextInjectionPolicy.validate()
+// raise is the canonical refusal; this set drives the dashboard's
+// authoring affordance so the operator never reaches the cloud's
+// 4xx flash.
+const CONTEXT_INJECTION_EXCLUDED_LIFECYCLES: ReadonlySet<Lifecycle> =
+  new Set<Lifecycle>([
+    "elicitation", "elicitation_result",
+    "worktree_create", "message_display",
+  ])
+
+function lifecycleAllowsInjectContext(life: Lifecycle | undefined): boolean {
+  return life !== undefined &&
+    !CONTEXT_INJECTION_EXCLUDED_LIFECYCLES.has(life)
+}
+
+// Per-lifecycle tooltip explaining the alternate channel (mirror of
+// `_CONTEXT_INJECTION_ALTERNATE_CHANNEL` in src/magi_cp/policy/ir.py).
+// Surfaces on the greyed-out inject_context card on Step 4 and as a
+// caveat in the Step 1 lifecycleCardCopy helper text.
+function injectContextDisabledCopy(
+  life: Lifecycle, locale: "ko" | "en",
+): string {
+  const ko = locale === "ko"
+  switch (life) {
+    case "elicitation":
+      return ko
+        ? "이 hook 은 hookSpecificOutput.elicitationDecision 를 씁니다 (MCP elicitation 수락 / 거부). additionalContext 채널이 아니므로 추가 정보 주입은 불가합니다."
+        : "This hook uses hookSpecificOutput.elicitationDecision (accept / decline an MCP elicitation request); the additionalContext channel does not apply here. Inject extra context is not available."
+    case "elicitation_result":
+      return ko
+        ? "이 hook 은 MCP 서버로 응답을 보내기 전에 hookSpecificOutput 으로 action / 내용을 덮어씁니다. additionalContext 채널이 아니므로 추가 정보 주입은 불가합니다."
+        : "This hook uses hookSpecificOutput to override the action or content before the response is sent to the MCP server; the additionalContext channel does not apply. Inject extra context is not available."
+    case "worktree_create":
+      return ko
+        ? "이 hook 은 hookSpecificOutput.worktreePath 로 워크트리 경로를 반환합니다. additionalContext 채널이 아니므로 추가 정보 주입은 불가합니다."
+        : "This hook uses hookSpecificOutput.worktreePath (the gate returns a worktree path); the additionalContext channel does not apply. Inject extra context is not available."
+    case "message_display":
+      return ko
+        ? "이 hook 은 표시 전용 — 화면의 delta 만 바꾸고 저장된 메시지나 모델 컨텍스트는 건드리지 않습니다. 추가 정보 주입은 불가합니다."
+        : "This hook is display-only — it replaces the on-screen delta without changing the stored message or feeding the model context. Inject extra context is not available."
+    default:
+      return ko
+        ? "이 hook 은 다른 출력 채널을 씁니다. 추가 정보 주입은 불가합니다."
+        : "This hook uses a different output channel; inject extra context is not available here."
+  }
+}
+
 type ConditionKind =
   | "none"
   | "regex" | "llm_critic"
@@ -1154,6 +1215,16 @@ async function saveWizard(formData: FormData): Promise<void> {
     // so a future ACTIONS_BY_LIFECYCLE narrowing of inject_context
     // catches here instead of silently persisting an illegal pair.
     if (!allowedActionsForCombination(lifecycle, undefined).includes("inject_context")) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    // D59: refuse the four lifecycles whose hookSpecificOutput shape
+    // ignores additionalContext at runtime (Elicitation,
+    // ElicitationResult, WorktreeCreate, MessageDisplay). The cloud's
+    // ContextInjectionPolicy.validate() is the canonical refusal; this
+    // dashboard-side guard fires the same redirect path so the
+    // operator lands back on Step 4 with the disabled-card tooltip
+    // visible instead of round-tripping through a generic 4xx flash.
+    if (!lifecycleAllowsInjectContext(lifecycle)) {
       redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
     }
     const eventInj = LIFECYCLE_TO_EVENT[lifecycle]
@@ -2520,7 +2591,13 @@ function GuidedWizard({
   let effectiveStep =
     step === 2 && state.lifecycle && !lifecycleHasToolScope(state.lifecycle)
       ? 3 : step
-  if (effectiveStep === 3 && state.action === "inject_context") {
+  if (effectiveStep === 3 && state.action === "inject_context"
+      && lifecycleAllowsInjectContext(state.lifecycle)) {
+    // D59: only auto-skip Step 3 when the chosen lifecycle still
+    // surfaces inject_context as an active card. For the four
+    // excluded lifecycles the operator lands on Step 4 with the
+    // disabled-card tooltip visible so they can pivot to an audit
+    // archetype without losing wizard progress.
     effectiveStep = 4
   }
   // D57f-2: same skip for input_rewrite — InputRewritePolicy has no
@@ -2791,11 +2868,11 @@ function lifecycleCardCopy(
     },
     elicitation: {
       label: "유저 응답 요청 직전 (Elicitation)",
-      sub: "런타임이 유저에게 추가 정보를 묻기 직전. 정책으로 차단/승인 가능.",
+      sub: "런타임이 유저에게 추가 정보를 묻기 직전. 정책으로 차단/승인 가능. MCP elicitation 채널이므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     elicitation_result: {
       label: "유저 응답 수신 (ElicitationResult)",
-      sub: "유저가 elicitation 에 답한 직후. 응답 내용 감사용.",
+      sub: "유저가 elicitation 에 답한 직후. 응답 내용 감사용. MCP elicitation 채널이므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     subagent_start: {
       label: "서브에이전트 시작 (SubagentStart)",
@@ -2831,7 +2908,7 @@ function lifecycleCardCopy(
     },
     worktree_create: {
       label: "워크트리 생성 (WorktreeCreate)",
-      sub: "isolation:worktree 가 git worktree 를 새로 만들 때.",
+      sub: "isolation:worktree 가 git worktree 를 새로 만들 때. hookSpecificOutput.worktreePath 로 경로를 반환하는 채널이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     worktree_remove: {
       label: "워크트리 제거 (WorktreeRemove)",
@@ -2851,7 +2928,7 @@ function lifecycleCardCopy(
     },
     message_display: {
       label: "메시지 표시 (MessageDisplay)",
-      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동. 표시 전용 — 저장된 메시지나 모델 컨텍스트를 바꾸지 않습니다.",
+      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동. 표시 전용 — 저장된 메시지나 모델 컨텍스트를 바꾸지 않으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
   } : {
     before_tool_use: {
@@ -2913,11 +2990,11 @@ function lifecycleCardCopy(
     },
     elicitation: {
       label: "Before elicitation (Elicitation)",
-      sub: "Right before the runtime prompts the user for extra info. Block / ask / audit.",
+      sub: "Right before the runtime prompts the user for extra info. Block / ask / audit. MCP elicitation channel — “Inject extra context” is not available here.",
     },
     elicitation_result: {
       label: "Elicitation answered (ElicitationResult)",
-      sub: "Fires when the user has answered an elicitation. Audit the response.",
+      sub: "Fires when the user has answered an elicitation. Audit the response. MCP elicitation channel — “Inject extra context” is not available here.",
     },
     subagent_start: {
       label: "Subagent starting (SubagentStart)",
@@ -2953,7 +3030,7 @@ function lifecycleCardCopy(
     },
     worktree_create: {
       label: "Worktree created (WorktreeCreate)",
-      sub: "Fires when isolation:worktree creates a new git worktree.",
+      sub: "Fires when isolation:worktree creates a new git worktree. The hook returns the worktree path via hookSpecificOutput.worktreePath — “Inject extra context” is not available here.",
     },
     worktree_remove: {
       label: "Worktree removed (WorktreeRemove)",
@@ -2973,7 +3050,7 @@ function lifecycleCardCopy(
     },
     message_display: {
       label: "Message displayed (MessageDisplay)",
-      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context.",
+      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context — “Inject extra context” is not available here.",
     },
   }
 }
@@ -3814,8 +3891,22 @@ function Step4Action({
   const allowed = combinationAllowed.length > 0
     ? combinationAllowed
     : ACTIONS_BY_LIFECYCLE[lifecycle]
-  const defaultPick: Action = state.action && allowed.includes(state.action)
-    ? state.action : allowed[0]
+  // D59: inject_context renders as a disabled radio when the chosen
+  // lifecycle has a specialized hookSpecificOutput shape (see
+  // `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES`). It still appears in
+  // `allowed` so the disabled card surfaces a tooltip explaining
+  // why the archetype is unavailable, but the operator must NOT land
+  // with a stale `?action=inject_context` URL silently pre-selecting
+  // a disabled radio. The picker filter below drops inject_context
+  // for the auto-default fallback when the lifecycle is excluded.
+  const pickableForDefault = lifecycleAllowsInjectContext(lifecycle)
+    ? allowed
+    : allowed.filter((a) => a !== "inject_context")
+  const fallbackPick: Action =
+    pickableForDefault.length > 0 ? pickableForDefault[0] : allowed[0]
+  const defaultPick: Action =
+    state.action && pickableForDefault.includes(state.action)
+      ? state.action : fallbackPick
   const ko = locale === "ko"
   const header = ko ? actionHeaderKO(state) : actionHeaderEN(state)
   // D56d (P2 #5): "recommended" badge only renders when block is
@@ -3901,6 +3992,56 @@ function Step4Action({
                     <Badge variant="info">coming soon</Badge>
                   </span>
                   <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                </span>
+              </label>
+            )
+          }
+          // D59: four lifecycles map to hooks whose hookSpecificOutput
+          // shape is SPECIALIZED — additionalContext is silently
+          // ignored at runtime, so the wizard greys the card out and
+          // surfaces a per-event tooltip naming the actual channel
+          // that hook uses. The visible state is disabled-but-rendered
+          // (not hidden) so the operator understands WHY the archetype
+          // they were looking for is unavailable; EvidencePolicy
+          // (audit) is still legal on every one of these via the
+          // matrix, so the operator can pivot without losing wizard
+          // progress. Step 4b (template editor) sits inside the same
+          // <label> branch we're skipping — it's unreachable here
+          // because the radio input itself is `disabled`, the peer-
+          // checked sibling can never match.
+          if (a === "inject_context"
+              && !lifecycleAllowsInjectContext(lifecycle)) {
+            const tip = injectContextDisabledCopy(lifecycle, locale)
+            return (
+              <label
+                key={a}
+                className="block cursor-not-allowed opacity-60"
+                title={tip}
+                data-testid="step4-inject-context-disabled"
+                data-disabled-lifecycle={lifecycle}
+              >
+                <input
+                  type="radio"
+                  name="action"
+                  value={a}
+                  disabled
+                  aria-disabled="true"
+                  className="peer sr-only"
+                />
+                <span
+                  data-action-tone="inject_context"
+                  className={
+                    "block rounded-xl border bg-white p-4 transition-colors " +
+                    "border-black/[0.08]"
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                    <Badge variant="info">
+                      {ko ? "이 hook 에서는 비활성" : "not available"}
+                    </Badge>
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{tip}</span>
                 </span>
               </label>
             )
