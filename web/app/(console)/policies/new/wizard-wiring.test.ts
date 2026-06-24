@@ -1142,4 +1142,190 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(wildcardLine![1]).not.toContain("input_rewrite")
     })
   })
+
+  /* D62 — Step 3 → Step 4 advance validates conditionKind specifics.
+   *
+   * Recurring live-verification problem: the operator picks a
+   * conditionKind on Step 3 (e.g. llm_critic) but leaves the
+   * criterion blank, hits Next, and the wizard happily lands them on
+   * Step 4 (action picker) — then bounces them on Step 5 with a
+   * generic "Invalid input" banner with NO inline pointer. They
+   * cannot tell what was wrong.
+   *
+   * Fix: advanceWizard now refuses the Step 3 → Step 4 advance when
+   * the chosen conditionKind's specifics are empty, redirecting back
+   * to step=3 with a precise err code. Step 3 renders an inline
+   * banner + per-input red ring + helper copy that names exactly
+   * what's missing, replacing the generic "Invalid input" page-level
+   * flash.
+   */
+  describe("D62 — Step 3 advance refuses empty conditionKind specifics", () => {
+    it("validateStep3Specifics gates each conditionKind on its required field", () => {
+      // Pin the per-kind specifics gate. The function is private (no
+      // export) but the wizard-wiring tests are source-inspection-
+      // only, mirroring the pattern the rest of this file uses.
+      const start = src.indexOf("function validateStep3Specifics")
+      expect(start).toBeGreaterThan(-1)
+      const end = src.indexOf("\n}\n", start)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // Each err code maps to exactly ONE empty-field check; pin the
+      // (code, field) pair so a future refactor cannot silently swap
+      // codes or omit a kind.
+      expect(body).toMatch(/return "pick_condition"/)
+      expect(body).toMatch(/case "fetch_domain":\s*\n[\s\S]*?"missing_domain"/)
+      expect(body).toMatch(/case "domain_allowlist":[\s\S]*?"missing_allowlist"/)
+      expect(body).toMatch(/case "regex":\s*\n[\s\S]*?"missing_pattern"/)
+      expect(body).toMatch(/case "llm_critic":\s*\n[\s\S]*?"missing_criterion"/)
+      expect(body).toMatch(/case "evidence_ref":\s*\n[\s\S]*?"missing_evidence"/)
+      expect(body).toMatch(/case "shacl":\s*\n[\s\S]*?"missing_shacl"/)
+      // "none" passes through (no specifics to check) — pin the
+      // explicit `case "none": return null` so a refactor that drops
+      // the early-return is loud.
+      expect(body).toMatch(/case "none":\s*\n\s*return null/)
+    })
+
+    it("advanceWizard wires validateStep3Specifics into the Step 3 → 4 advance", () => {
+      // The gate must fire when stepIn === 3, BEFORE the
+      // `params.set("step", String(nextStep))` line that lands the
+      // operator on Step 4. Pin both the conditional and the
+      // redirect target so a refactor cannot move the call site
+      // past the redirect.
+      const start = src.indexOf("async function advanceWizard")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 8000)
+      expect(body).toMatch(/if \(stepIn === 3\)/)
+      expect(body).toMatch(/validateStep3Specifics\(/)
+      expect(body).toMatch(/params\.set\("step",\s*"3"\)/)
+      expect(body).toMatch(/params\.set\("err",\s*stepThreeErr\)/)
+    })
+
+    it("ERR_CODES carries the D62 per-kind missing-* codes", () => {
+      // Pin in lib/flash.ts so resolveFlash maps each code to a
+      // top-of-page banner — replaces the previous generic
+      // "Invalid input" rendering for these cases.
+      const flashSrc = readFileSync(
+        path.join(__dirname, "..", "..", "..", "..", "lib", "flash.ts"),
+        "utf-8",
+      )
+      for (const code of [
+        "pick_condition",
+        "missing_criterion",
+        "missing_pattern",
+        "missing_shacl",
+        "missing_domain",
+        "missing_allowlist",
+        "missing_evidence",
+      ]) {
+        const re = new RegExp(`\\b${code}:\\s*"`)
+        expect(flashSrc).toMatch(re)
+      }
+    })
+
+    it("Step 3 component surfaces inline err banner + per-input helper", () => {
+      // The page-level flash banner already renders when err=... is
+      // on the URL (via resolveFlash); D62 adds an INLINE banner +
+      // per-input red-ring helper that names exactly which field is
+      // empty so the operator can fix it in one trip. Pin both
+      // surfaces.
+      const start = src.indexOf("function Step3Condition")
+      expect(start).toBeGreaterThan(-1)
+      // Slice runs to the next top-level function so the entire
+      // Step3Condition body is in scope (the function is large
+      // because it carries six per-kind specifics blocks).
+      const end = src.indexOf("\nfunction Step4Action", start)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // wizardErr prop wired through from GuidedWizard.
+      expect(body).toMatch(/wizardErr\?:\s*string/)
+      // Inline top-of-form banner with precise helper text.
+      expect(body).toContain("step3-specifics-err-banner")
+      // Per-kind inline helpers (red ring + text) for each empty
+      // specifics case; one data-testid per kind so the live-verify
+      // operator and tests can target them directly.
+      expect(body).toContain("step3-fetch-domain-helper")
+      expect(body).toContain("step3-allowlist-helper")
+      expect(body).toContain("step3-regex-helper")
+      expect(body).toContain("step3-llm-critic-helper")
+      expect(body).toContain("step3-shacl-helper")
+      expect(body).toContain("step3-evidence-ref-helper")
+    })
+
+    it("Step 3 renders localized helper copy per empty-specifics case (KO+EN)", () => {
+      // Pin every helper copy key in lib/i18n/dict.ts so a refactor
+      // that drops a code's localized copy fails loud. The keys
+      // mirror the err codes 1:1.
+      const dictSrc = readFileSync(
+        path.join(__dirname, "..", "..", "..", "..", "lib", "i18n", "dict.ts"),
+        "utf-8",
+      )
+      for (const key of [
+        "newPolicy.wizard.step3.err.pickCondition",
+        "newPolicy.wizard.step3.err.missingCriterion",
+        "newPolicy.wizard.step3.err.missingPattern",
+        "newPolicy.wizard.step3.err.missingShacl",
+        "newPolicy.wizard.step3.err.missingDomain",
+        "newPolicy.wizard.step3.err.missingAllowlist",
+        "newPolicy.wizard.step3.err.missingEvidence",
+      ]) {
+        // Each key must appear at least twice (KO block + EN block).
+        const occurrences = dictSrc.split(`"${key}"`).length - 1
+        expect(occurrences).toBeGreaterThanOrEqual(2)
+      }
+    })
+
+    /* ── Per-case redirect assertions ─────────────────────────────
+     *
+     * For each empty-specifics case the gate must (a) refuse the
+     * advance and (b) redirect to step=3 with the right err code.
+     * The function is source-inspection-only; we pin the (case,
+     * code) pair on the function body so a refactor that swaps a
+     * code, or that introduces a `nextStep` early-return shortcut
+     * past the gate, is loud.
+     */
+    it("redirect target carries step=3 with the precise err code per kind", () => {
+      // The advanceWizard gate writes `step=3` and `err=<code>`
+      // together. Pin both writes plus the conditional that fires
+      // them — a refactor that lands one of these out of sync is the
+      // exact silent-pass-through bug D62 closes.
+      const start = src.indexOf("async function advanceWizard")
+      const body = src.slice(start, start + 8000)
+      expect(body).toMatch(/if \(stepThreeErr\)/)
+      expect(body).toMatch(/params\.set\("step",\s*"3"\)/)
+      expect(body).toMatch(/params\.set\("err",\s*stepThreeErr\)/)
+      // The validateStep3Specifics call must precede the standard
+      // `params.set("step", String(nextStep))` so the empty-
+      // specifics case never reaches the Step 4 redirect path.
+      const gateIdx = body.indexOf("validateStep3Specifics")
+      const nextStepIdx = body.indexOf("params.set(\"step\", String(nextStep))")
+      expect(gateIdx).toBeGreaterThan(-1)
+      expect(nextStepIdx).toBeGreaterThan(-1)
+      expect(gateIdx).toBeLessThan(nextStepIdx)
+    })
+
+    it("each empty-specifics conditionKind maps to its own err code (no shared 'invalid_input')", () => {
+      // Negative pin: the gate must NOT fall back to the generic
+      // "invalid_input" code (the old Step 5 round-trip behavior).
+      // We compute the exact set of err codes the gate emits by
+      // grepping the function body for return-string literals and
+      // assert each precise code appears AND `invalid_input` does
+      // NOT appear inside the gate.
+      const start = src.indexOf("function validateStep3Specifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      const expected = [
+        "pick_condition",
+        "missing_domain",
+        "missing_allowlist",
+        "missing_pattern",
+        "missing_criterion",
+        "missing_evidence",
+        "missing_shacl",
+      ]
+      for (const code of expected) expect(body).toContain(`"${code}"`)
+      // The gate must NOT short-circuit to "invalid_input" — that
+      // was the original silent-pass-through-to-Step-5 bug.
+      expect(body).not.toContain("\"invalid_input\"")
+    })
+  })
 })

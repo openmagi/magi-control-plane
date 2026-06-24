@@ -189,6 +189,16 @@ const KO_RAW = {
   "newPolicy.wizard.step3.shacl.label": "SHACL shape (Turtle)",
   "newPolicy.wizard.step3.shacl.hint":  "pyshacl 설치 시 페이로드 dict 를 데이터로 검증, 미설치 시 모든 호출이 review (preview).",
   "newPolicy.wizard.step3.shacl.placeholder": "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\nex:OutputShape a sh:NodeShape ; sh:targetClass ex:Output .",
+  // D62: per-kind inline highlights for empty specifics. Surface on
+  // Step 3 next to the empty input (red ring + helper) when
+  // advanceWizard refuses the Step 3 → Step 4 advance.
+  "newPolicy.wizard.step3.err.pickCondition":     "먼저 조건을 선택하세요.",
+  "newPolicy.wizard.step3.err.missingCriterion":  "LLM critic 기준을 입력하세요 (예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?).",
+  "newPolicy.wizard.step3.err.missingPattern":    "정규식 패턴을 입력하세요 (예: AKIA[0-9A-Z]{16}).",
+  "newPolicy.wizard.step3.err.missingShacl":      "SHACL shape 를 Turtle 로 입력하세요 (위의 chips 를 클릭해서 stub 삽입).",
+  "newPolicy.wizard.step3.err.missingDomain":     "감시할 도메인을 입력하세요 (예: api.openai.com).",
+  "newPolicy.wizard.step3.err.missingAllowlist":  "허용 도메인을 최소 1개 입력하세요 (쉼표로 구분, 예: api.openai.com, github.com).",
+  "newPolicy.wizard.step3.err.missingEvidence":   "최소 1개의 verifier 를 선택하세요.",
   "newPolicy.wizard.step4.heading": "구체적인 매칭 패턴은?",
   "newPolicy.wizard.step4.helper": "어떤 도구/도구패턴이 트리거 대상인지, 그리고 정책이 매칭할 sentinel tag 를 지정하세요.",
   "newPolicy.wizard.step4.matcherLocked": "이 시점 이벤트는 도구 컨텍스트가 없어 wildcard 로 고정됩니다.",
@@ -879,6 +889,16 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.wizard.step3.shacl.label": "SHACL shape (Turtle)",
   "newPolicy.wizard.step3.shacl.hint":  "Evaluated against the payload dict when pyshacl is installed; otherwise every call routes to review (preview).",
   "newPolicy.wizard.step3.shacl.placeholder": "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <http://example.com/> .\nex:OutputShape a sh:NodeShape ; sh:targetClass ex:Output .",
+  // D62: per-kind inline highlights for empty specifics. Surface on
+  // Step 3 next to the empty input (red ring + helper) when
+  // advanceWizard refuses the Step 3 → Step 4 advance.
+  "newPolicy.wizard.step3.err.pickCondition":     "Pick a condition before continuing.",
+  "newPolicy.wizard.step3.err.missingCriterion":  "Enter the LLM critic criterion (e.g. Does the output contain a guess the user did not ask for?).",
+  "newPolicy.wizard.step3.err.missingPattern":    "Enter your regex pattern (e.g. AKIA[0-9A-Z]{16}).",
+  "newPolicy.wizard.step3.err.missingShacl":      "Enter a SHACL shape in Turtle (click a chip above to insert a stub).",
+  "newPolicy.wizard.step3.err.missingDomain":     "Enter the fetch domain to watch (e.g. api.openai.com).",
+  "newPolicy.wizard.step3.err.missingAllowlist":  "Enter at least one allowed domain (comma-separated, e.g. api.openai.com, github.com).",
+  "newPolicy.wizard.step3.err.missingEvidence":   "Pick at least one verifier to reference.",
   "newPolicy.wizard.step4.heading": "Specifics: tool matcher + sentinel",
   "newPolicy.wizard.step4.helper": "Which tool / pattern the trigger applies to, and the sentinel tag the policy matches in the call body.",
   "newPolicy.wizard.step4.matcherLocked": "This event has no tool context: matcher is locked to wildcard.",

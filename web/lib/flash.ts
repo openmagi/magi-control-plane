@@ -26,6 +26,17 @@ const ERR_CODES: Record<string, string> = {
   conflict: "Action conflicted with current state.",
   template_too_long: "Inject template is too long (max 16000 chars).",
   strip_unsupported: "Strip action is not available for this lifecycle.",
+  // D62: Step 3 specifics validation. Each code points the operator
+  // back to the empty input on Step 3 with an inline highlight; the
+  // banner copy is intentionally generic so the inline helper copy
+  // (KO+EN) does the per-kind heavy lifting.
+  pick_condition: "Pick a condition before continuing.",
+  missing_criterion: "Enter the LLM critic criterion before continuing.",
+  missing_pattern: "Enter a regex pattern before continuing.",
+  missing_shacl: "Enter the SHACL shape before continuing.",
+  missing_domain: "Enter the fetch domain before continuing.",
+  missing_allowlist: "Enter at least one allowed domain before continuing.",
+  missing_evidence: "Pick at least one verifier before continuing.",
 }
 
 export function resolveFlash(
