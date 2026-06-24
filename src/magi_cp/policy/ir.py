@@ -833,6 +833,148 @@ class InputRewritePolicy:
             raise ValueError(f"policy '{self.id}': {e}") from e
 
 
+# D63 — RunCommandPolicy. Lets the operator point a CC hook at an inline
+# shell command or an uploaded script file. The command's stdout JSON
+# becomes the hook's `hookSpecificOutput` payload (the uniform CC stdout
+# contract across all 30 hook events), so this archetype is legal on
+# every event in `_SUPPORTED_EVENTS`. There is no allowlist or registry
+# gate beyond what CC itself enforces:
+#
+#   - Self-host single-tenant: the operator installs and owns the
+#     scripts on their own machine, equivalent to a CC native hook
+#     `{type: "command"}` entry. There is no RCE concern that CC's own
+#     hook surface does not already expose.
+#   - Hosted (future): the cloud factory respects the `MAGI_CP_ALLOW_RUN_COMMAND`
+#     env knob (default "1" on the OSS / self-host docker compose image;
+#     hosted overrides to "0"). When "0", /scripts and any
+#     RunCommandPolicy save are refused at the REST boundary.
+RunCommandRuntime = Literal["bash", "python3", "node"]
+_RUN_COMMAND_RUNTIMES: tuple[str, ...] = ("bash", "python3", "node")
+_MAX_RUN_COMMAND_INLINE_LEN = 4_000
+_MAX_RUN_COMMAND_TIMEOUT_MS = 30_000
+_MIN_RUN_COMMAND_TIMEOUT_MS = 100
+_DEFAULT_RUN_COMMAND_TIMEOUT_MS = 5_000
+_MAX_RUN_COMMAND_ARGS = 16
+_MAX_RUN_COMMAND_ARG_LEN = 256
+# Script id shape: 64-hex sha256 hash (the canonical script id is the
+# sha256 of the file body). We accept any 16..64 hex segment so future
+# id schemes (e.g. shortened display ids) don't break authoring; the
+# script_store still uses 64-hex internally.
+_SCRIPT_ID_RE = re.compile(r"^[A-Fa-f0-9]{16,64}$")
+
+
+@dataclass
+class RunCommandPolicy:
+    """Run an inline shell command or attached script in response to a
+    CC hook event.
+
+    The command's stdout is interpreted as CC's standard hook
+    `hookSpecificOutput` JSON. The local gate executes it under the
+    runtime named in `runtime` and returns whatever the command printed
+    (subject to the stdout/stderr cap in :mod:`magi_cp.local.gate`).
+
+    Security model (self-host): identical to CC's own
+    `{type: "command"}` hook entries — the operator owns the machine
+    and the file on disk. No allowlist; the only gate that applies is
+    matrix-coherence (event must accept run_command; matcher class must
+    match the per-event rule). Hosted deployments add a cloud-side
+    env-gated refusal (see `MAGI_CP_ALLOW_RUN_COMMAND`).
+
+    Exactly one of `command` or `script_path` must be set. The
+    runtime selects how the inline command is interpreted (`bash -c` /
+    `python3 -c` / `node -e`); script_path runs as `runtime <path>
+    <args...>`.
+    """
+    id: str
+    description: str
+    trigger: Trigger
+    runtime: RunCommandRuntime = "bash"
+    command: str = ""
+    script_path: str = ""
+    args: list[str] = field(default_factory=list)
+    timeout_ms: int = _DEFAULT_RUN_COMMAND_TIMEOUT_MS
+    fail_closed: bool = False
+    version: str = "0.1"
+    type: Literal["run_command"] = "run_command"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _validate_id(self.id)
+        if self.runtime not in _RUN_COMMAND_RUNTIMES:
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': runtime must be one of "
+                f"{_RUN_COMMAND_RUNTIMES}; got {self.runtime!r}"
+            )
+        has_command = bool(self.command and self.command.strip())
+        has_script = bool(self.script_path and self.script_path.strip())
+        if has_command == has_script:
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': exactly one of `command` "
+                f"or `script_path` must be set (got "
+                f"command={'yes' if has_command else 'no'}, "
+                f"script_path={'yes' if has_script else 'no'})"
+            )
+        if has_command and len(self.command) > _MAX_RUN_COMMAND_INLINE_LEN:
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': inline command too long "
+                f"(>{_MAX_RUN_COMMAND_INLINE_LEN} chars)"
+            )
+        if has_script and not _SCRIPT_ID_RE.match(self.script_path):
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': script_path must be a "
+                f"16..64 hex script id (got {self.script_path!r})"
+            )
+        if not isinstance(self.args, list):
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': args must be a list"
+            )
+        if len(self.args) > _MAX_RUN_COMMAND_ARGS:
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': too many args "
+                f"(>{_MAX_RUN_COMMAND_ARGS})"
+            )
+        for i, a in enumerate(self.args):
+            if not isinstance(a, str):
+                raise ValueError(
+                    f"RunCommandPolicy '{self.id}': args[{i}] must be a string"
+                )
+            if len(a) > _MAX_RUN_COMMAND_ARG_LEN:
+                raise ValueError(
+                    f"RunCommandPolicy '{self.id}': args[{i}] too long "
+                    f"(>{_MAX_RUN_COMMAND_ARG_LEN} chars)"
+                )
+        if not isinstance(self.timeout_ms, int) or isinstance(
+            self.timeout_ms, bool,
+        ):
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': timeout_ms must be an int"
+            )
+        if not (
+            _MIN_RUN_COMMAND_TIMEOUT_MS
+            <= self.timeout_ms
+            <= _MAX_RUN_COMMAND_TIMEOUT_MS
+        ):
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': timeout_ms must be in "
+                f"[{_MIN_RUN_COMMAND_TIMEOUT_MS}, "
+                f"{_MAX_RUN_COMMAND_TIMEOUT_MS}] (got {self.timeout_ms})"
+            )
+        if self.trigger.event not in _SUPPORTED_EVENTS:
+            raise ValueError(
+                f"RunCommandPolicy '{self.id}': trigger.event "
+                f"unsupported: {self.trigger.event}"
+            )
+        from .matrix import validate_combination
+        try:
+            validate_combination(
+                self.trigger.event, self.trigger.matcher, "run_command",
+            )
+        except ValueError as e:
+            raise ValueError(f"policy '{self.id}': {e}") from e
+
+
 # Union of every IR policy type. The compiler dispatches on
 # `isinstance(p, X)` rather than on the `type` field so the runtime
 # stays string-key-free internally — `type` only matters when crossing
@@ -840,6 +982,7 @@ class InputRewritePolicy:
 AnyPolicy = (
     EvidencePolicy | PermissionPolicy | SubagentPolicy
     | McpGatingPolicy | ContextInjectionPolicy | InputRewritePolicy
+    | RunCommandPolicy
 )
 
 
@@ -942,6 +1085,19 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             rewriter=raw["rewriter"],
             version=raw.get("version", "0.1"),
         )
+    if type_ == "run_command":
+        return RunCommandPolicy(
+            id=raw["id"],
+            description=raw.get("description", ""),
+            trigger=Trigger(**raw["trigger"]),
+            runtime=raw.get("runtime", "bash"),
+            command=raw.get("command", ""),
+            script_path=raw.get("script_path", ""),
+            args=list(raw.get("args", [])),
+            timeout_ms=int(raw.get("timeout_ms", _DEFAULT_RUN_COMMAND_TIMEOUT_MS)),
+            fail_closed=bool(raw.get("fail_closed", False)),
+            version=raw.get("version", "0.1"),
+        )
     raise ValueError(f"unknown policy type: {type_!r}")
 
 
@@ -1015,5 +1171,18 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
             "trigger": {"host": p.trigger.host, "event": p.trigger.event,
                         "matcher": p.trigger.matcher},
             "rewriter": p.rewriter,
+        }
+    if isinstance(p, RunCommandPolicy):
+        return {
+            "type": "run_command",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "runtime": p.runtime,
+            "command": p.command,
+            "script_path": p.script_path,
+            "args": list(p.args),
+            "timeout_ms": p.timeout_ms,
+            "fail_closed": p.fail_closed,
         }
     raise ValueError(f"unknown policy type: {type(p).__name__}")

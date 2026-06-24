@@ -38,7 +38,8 @@ import sys
 
 from .ir import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
-    McpGatingPolicy, PermissionPolicy, SubagentPolicy, load_policy,
+    McpGatingPolicy, PermissionPolicy, RunCommandPolicy, SubagentPolicy,
+    load_policy,
 )
 
 
@@ -53,6 +54,11 @@ DEFAULT_CONTEXT_WRITE_SHIM = "/usr/local/bin/magi-cp-context-write"
 # rewriter spec — it forwards the cloud's reply unchanged. A leaked
 # policy file therefore cannot translate into novel local-side mutation.
 DEFAULT_INPUT_REWRITE_SHIM = "/usr/local/bin/magi-cp-input-rewrite"
+# D63: the run-command shim resolves the policy id back to the inline
+# command body / attached script body via the cloud, executes it, and
+# prints the stdout JSON. The policy id is the only thing baked into
+# the hook command line; the cloud resolves the spec at gate time.
+DEFAULT_RUN_COMMAND_SHIM = "/usr/local/bin/magi-cp-run-command"
 
 
 def _context_template_hash(template: str) -> str:
@@ -189,6 +195,21 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
                     "type": "command",
                     "command": (
                         f"{DEFAULT_INPUT_REWRITE_SHIM} --policy {p.id}"
+                    ),
+                }],
+            })
+        elif isinstance(p, RunCommandPolicy):
+            # D63: emit a `{type: "command"}` hook entry pointing at
+            # the run-command shim. The shim asks the cloud for the
+            # resolved spec (so a leaked managed-settings.json leaks
+            # the policy id but not the inline command body / script
+            # bytes), runs the command, and prints its stdout JSON.
+            hooks.setdefault(p.trigger.event, []).append({
+                "matcher": p.trigger.matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": (
+                        f"{DEFAULT_RUN_COMMAND_SHIM} --policy {p.id}"
                     ),
                 }],
             })

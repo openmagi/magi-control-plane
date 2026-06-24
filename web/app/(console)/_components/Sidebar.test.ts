@@ -26,9 +26,11 @@ describe("Sidebar IA invariants", () => {
     ])
   })
 
-  it("contains exactly 7 NavItem entries (1+2+3+1)", () => {
+  it("contains exactly 8 NavItem entries (1+2+3+2)", () => {
+    // D63: setup group adds /scripts alongside /setup so run_command
+    // policies have a management surface.
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(7)
+    expect(items).toHaveLength(8)
   })
 
   it("audit group surfaces the P10 /endpoints attestation page", () => {

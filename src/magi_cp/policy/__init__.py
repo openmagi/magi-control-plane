@@ -2,7 +2,7 @@
 from .ir import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, EvidenceReq,
     InputRewritePolicy, McpGatingPolicy, PermissionPolicy, Policy,
-    SubagentPolicy, Trigger,
+    RunCommandPolicy, SubagentPolicy, Trigger,
     load_policy, policy_from_dict, policy_to_dict,
 )
 from .compiler import compile_to_managed_settings, compile_files
@@ -24,7 +24,8 @@ from .rewriters import (
 __all__ = [
     "Policy", "EvidencePolicy", "Trigger", "EvidenceReq", "load_policy",
     "PermissionPolicy", "SubagentPolicy", "McpGatingPolicy",
-    "ContextInjectionPolicy", "InputRewritePolicy", "AnyPolicy",
+    "ContextInjectionPolicy", "InputRewritePolicy", "RunCommandPolicy",
+    "AnyPolicy",
     "policy_from_dict", "policy_to_dict",
     "compile_to_managed_settings", "compile_files",
     "LEGAL_COMBINATIONS", "MatcherClass",

@@ -15,6 +15,7 @@ const NAV_HREFS = [
   "/policies",
   "/policies/new",
   "/presets",
+  "/scripts",
   "/verify",
   "/hitl",
   "/overview",
@@ -79,6 +80,7 @@ export async function Sidebar() {
 
           <NavGroup label={t("nav.group.setup")}>
             <NavItem href="/setup" label={t("setup.title")} icon="setup" />
+            <NavItem href="/scripts" label={t("nav.scripts")} icon="setup" />
           </NavGroup>
         </NavHrefsProvider>
       </nav>

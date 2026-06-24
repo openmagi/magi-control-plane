@@ -267,6 +267,32 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
     for ev in _AUDIT_ONLY_WILDCARD_EVENTS:
         out.add((ev, MatcherClass.wildcard, "audit"))
 
+    # D63 — run_command. The CC hook stdout JSON contract
+    # (`hookSpecificOutput`) is uniform across all 30 events; an
+    # operator can author a run_command policy on any hook. The
+    # matcher class follows the same rule the existing archetypes
+    # use: the four tool-context events accept per-tool / mcp_tool /
+    # tool_alt / wildcard matchers; every other event is wildcard
+    # only (the payload has no tool name to filter on).
+    _TOOL_CONTEXT_EVENTS_RC = frozenset({
+        "PreToolUse", "PostToolUse",
+        "PostToolUseFailure", "PostToolBatch",
+    })
+    # Use _SUPPORTED_EVENTS as the canonical list of 30. Import lazily
+    # at call time to avoid an import cycle with ir.py.
+    from .ir import _SUPPORTED_EVENTS
+    for ev in _SUPPORTED_EVENTS:
+        if ev in _TOOL_CONTEXT_EVENTS_RC:
+            for kls in (
+                MatcherClass.tool,
+                MatcherClass.mcp_tool,
+                MatcherClass.tool_alt,
+                MatcherClass.wildcard,
+            ):
+                out.add((ev, kls, "run_command"))
+        else:
+            out.add((ev, MatcherClass.wildcard, "run_command"))
+
     return frozenset(out)
 
 

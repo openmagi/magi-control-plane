@@ -84,8 +84,11 @@ def test_legal_combinations_are_tuples_of_three():
         assert isinstance(ev, str)
         assert isinstance(kls, MatcherClass)
         # D57f-2 widened the action vocabulary to include input_rewrite
-        # (PreToolUse only). Earlier rounds covered block / ask / audit.
-        assert action in {"block", "ask", "audit", "input_rewrite"}
+        # (PreToolUse only). D63 added run_command (legal on every
+        # supported event). Earlier rounds covered block / ask / audit.
+        assert action in {
+            "block", "ask", "audit", "input_rewrite", "run_command",
+        }
 
 
 def test_supported_events_covers_full_cc_surface():

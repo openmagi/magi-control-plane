@@ -856,5 +856,331 @@ def input_rewrite_cli() -> int:
     return 0   # unreachable; _emit_updated_input exits
 
 
+# D63 — run_command shim. The compiler emits a hook entry of shape
+# `magi-cp-run-command --policy <id>`. The shim asks the cloud which
+# policy fires, executes the inline command (or attached script) under
+# the named runtime with a wall-clock timeout, captures stdout/stderr,
+# writes a ledger row, and prints whatever the command emitted to CC
+# (subject to the canonical hookSpecificOutput shape).
+#
+# Self-host model: the command runs as the magi-cp process. The brief
+# explicitly accepts this — D63 ships under MAGI_CP_ALLOW_RUN_COMMAND=1
+# on the docker compose default, =0 on the hosted image. Equivalent to
+# CC's own `{type: "command"}` hook entries: the operator owns the
+# machine and the script body.
+_RUN_COMMAND_POLICY_ID_RE = _INPUT_REWRITE_POLICY_ID_RE
+_RUN_COMMAND_MAX_STDOUT = 64 * 1024
+_RUN_COMMAND_MAX_STDERR = 16 * 1024
+_RUN_COMMAND_TRUNCATED_TAG = "...[truncated]"
+
+
+def _ledger_path() -> str:
+    """Append-only JSONL ledger the run_command shim writes execution
+    receipts to. Operators can tail this file for an audit trail of
+    every shell command the gate spawned.
+    """
+    return os.environ.get(
+        "MAGI_CP_RUN_COMMAND_LEDGER",
+        os.path.join(_local_dir(), "run_command_ledger.jsonl"),
+    )
+
+
+def _ledger_append(row: dict) -> None:
+    """Best-effort JSONL append. Silent on disk-full / permission errors
+    so a logging gap never blocks the gate's response to CC."""
+    path = _ledger_path()
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _truncate(text: str, cap: int) -> tuple[str, bool]:
+    """Cap a string at `cap` UTF-8 chars. Returns (trimmed, truncated?)."""
+    if len(text) <= cap:
+        return text, False
+    return text[: cap - len(_RUN_COMMAND_TRUNCATED_TAG)] + _RUN_COMMAND_TRUNCATED_TAG, True
+
+
+def execute_run_command(
+    *,
+    policy_id: str,
+    runtime: str,
+    command: str = "",
+    script_path: str = "",
+    args: list[str] | None = None,
+    timeout_ms: int = 5_000,
+    fail_closed: bool = False,
+    working_dir: str | None = None,
+) -> dict:
+    """Run an inline command or attached script under a runtime.
+
+    Returns the dict that should be emitted on the CC hook stdout
+    channel — either the JSON the command itself printed, or the
+    canonical allow/deny shape on a soft failure / fail-closed lane.
+
+    Soft failures (default = allow, ledger records the reason):
+      - non-zero exit + fail_closed=False
+      - stdout parse failure (not valid JSON)
+      - timeout (the partial stdout is parsed if possible)
+
+    Fail-closed lane: when `fail_closed=True`, non-zero exit and
+    timeouts both emit a deny shape with permissionDecisionReason
+    pointing at the run_command policy.
+    """
+    import subprocess as _sp
+    import time as _time
+    args = list(args or [])
+    if (bool(command) == bool(script_path)):
+        # Defensive: validator already enforces this, but the gate is
+        # the trust boundary for any policy that slipped past authoring.
+        _ledger_append({
+            "ts": int(_time.time()),
+            "policy_id": policy_id,
+            "kind": "run_command_execution",
+            "exit_code": None,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr_summary": (
+                "config error: exactly one of command / script_path must be set"
+            ),
+            "error": "config",
+        })
+        if fail_closed:
+            return _deny_dict(
+                f"run_command policy '{policy_id}': config error"
+            )
+        return _allow_dict()
+
+    if command:
+        if runtime == "bash":
+            argv = ["bash", "-c", command, "magi-cp-run-command", *args]
+        elif runtime == "python3":
+            argv = ["python3", "-c", command, "magi-cp-run-command", *args]
+        elif runtime == "node":
+            argv = ["node", "-e", command, "magi-cp-run-command", *args]
+        else:
+            _ledger_append({
+                "ts": int(_time.time()),
+                "policy_id": policy_id,
+                "kind": "run_command_execution",
+                "exit_code": None,
+                "duration_ms": 0,
+                "stdout": "",
+                "stderr_summary": f"unknown runtime {runtime!r}",
+                "error": "runtime",
+            })
+            if fail_closed:
+                return _deny_dict(
+                    f"run_command policy '{policy_id}': unknown runtime"
+                )
+            return _allow_dict()
+    else:
+        # Attached script: runtime + path + args.
+        argv = [runtime, script_path, *args]
+
+    started = _time.monotonic()
+    timeout_s = max(0.1, min(30.0, timeout_ms / 1000.0))
+    truncated_stdout = False
+    truncated_stderr = False
+    proc_stdout = ""
+    proc_stderr = ""
+    exit_code: int | None = None
+    timed_out = False
+    error: str | None = None
+    try:
+        proc = _sp.run(
+            argv,
+            cwd=working_dir,
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        proc_stdout = proc.stdout or ""
+        proc_stderr = proc.stderr or ""
+        exit_code = proc.returncode
+    except _sp.TimeoutExpired as e:
+        timed_out = True
+        proc_stdout = (e.stdout.decode("utf-8", errors="replace")
+                       if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or ""))
+        proc_stderr = (e.stderr.decode("utf-8", errors="replace")
+                       if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or ""))
+        exit_code = None
+        error = "timeout"
+    except (FileNotFoundError, OSError) as e:
+        error = f"spawn:{type(e).__name__}"
+
+    duration_ms = int((_time.monotonic() - started) * 1000)
+    proc_stdout, truncated_stdout = _truncate(proc_stdout, _RUN_COMMAND_MAX_STDOUT)
+    proc_stderr, truncated_stderr = _truncate(proc_stderr, _RUN_COMMAND_MAX_STDERR)
+
+    parsed: dict | None = None
+    parse_error: str | None = None
+    if proc_stdout:
+        try:
+            decoded = json.loads(proc_stdout)
+            if isinstance(decoded, dict):
+                parsed = decoded
+            else:
+                parse_error = "stdout is not a JSON object"
+        except json.JSONDecodeError as e:
+            parse_error = f"stdout JSON parse: {e}"
+
+    _ledger_append({
+        "ts": int(__import__("time").time()),
+        "policy_id": policy_id,
+        "kind": "run_command_execution",
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "stdout": proc_stdout,
+        "stdout_truncated": truncated_stdout,
+        "stderr_summary": proc_stderr,
+        "stderr_truncated": truncated_stderr,
+        "timed_out": timed_out,
+        "parse_error": parse_error,
+        "error": error,
+    })
+
+    # Decide the return shape.
+    if error == "timeout":
+        if fail_closed:
+            return _deny_dict(
+                f"run_command policy '{policy_id}': timeout after "
+                f"{timeout_ms}ms"
+            )
+        if parsed is not None:
+            return parsed
+        return _allow_dict()
+    if error is not None:
+        if fail_closed:
+            return _deny_dict(
+                f"run_command policy '{policy_id}': {error}"
+            )
+        return _allow_dict()
+    if exit_code is not None and exit_code != 0:
+        if fail_closed:
+            return _deny_dict(
+                f"run_command policy '{policy_id}': non-zero exit "
+                f"({exit_code})"
+            )
+        # Audit + continue.
+        if parsed is not None:
+            return parsed
+        return _allow_dict()
+    if parsed is not None:
+        return parsed
+    # Empty / unparseable stdout on a 0 exit → allow (the command
+    # ran cleanly, just had nothing to say). Brief: "On stdout parse
+    # failure, default to {decision: 'allow'} but log the parse error
+    # to ledger" — the parse_error already landed above.
+    return _allow_dict()
+
+
+def _allow_dict() -> dict:
+    return {
+        "hookSpecificOutput": {
+            "permissionDecision": "allow",
+        }
+    }
+
+
+def _deny_dict(reason: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"MAGI: {reason}",
+        }
+    }
+
+
+def run_command_cli() -> int:
+    """`magi-cp-run-command` entry point.
+
+    Reads the CC hook payload on stdin, asks the cloud for the
+    resolved RunCommandPolicy spec, executes it, and prints whatever
+    the command emitted as the hookSpecificOutput JSON.
+
+    Failure modes (every one exits 0; the gate is fail-soft):
+      - missing / malformed `--policy <id>` argv
+      - missing / unparseable stdin payload
+      - cloud unreachable / non-200 / unknown policy id
+      - subprocess spawn error
+      - (under fail_closed=True) timeout / non-zero exit → deny JSON
+    """
+    argv = sys.argv[1:]
+    policy_id = ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--policy" and i + 1 < len(argv):
+            policy_id = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    if not policy_id or not _RUN_COMMAND_POLICY_ID_RE.match(policy_id):
+        return 0
+
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    if len(raw) > 256_000:
+        return 0
+    payload: dict | None = None
+    if raw:
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                payload = decoded
+        except json.JSONDecodeError:
+            payload = None
+
+    cloud = _cloud_url()
+    try:
+        _enforce_url_scheme(cloud)
+    except ValueError:
+        return 0
+
+    body = json.dumps({
+        "policy_id": policy_id,
+        "payload": payload or {},
+    }, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    forwarded_key = os.environ.get("MAGI_CP_API_KEY")
+    if forwarded_key:
+        headers["X-Api-Key"] = forwarded_key
+    req = urllib.request.Request(
+        cloud + "/policies/run_command",
+        method="POST",
+        data=body,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            reply = json.loads(r.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(reply, dict) or not reply.get("matched"):
+        return 0
+    spec = reply.get("spec") or {}
+    if not isinstance(spec, dict):
+        return 0
+
+    out = execute_run_command(
+        policy_id=policy_id,
+        runtime=str(spec.get("runtime", "bash")),
+        command=str(spec.get("command", "")),
+        script_path=str(spec.get("script_path", "")),
+        args=list(spec.get("args", []) or []),
+        timeout_ms=int(spec.get("timeout_ms", 5_000)),
+        fail_closed=bool(spec.get("fail_closed", False)),
+        working_dir=spec.get("working_dir"),
+    )
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(cli())

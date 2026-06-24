@@ -320,14 +320,17 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
       expect(m).not.toBeNull()
       const body = m![1]
-      expect(body).toMatch(/pre_final:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
-      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
-      expect(body).toMatch(/session_start:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
-      expect(body).toMatch(/session_end:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
-      // user_prompt has the full pre-event action set + inject_context.
-      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit",\s*"inject_context"\s*\]/)
-      // pre_compact has block + audit + inject_context.
-      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit",\s*"inject_context"\s*\]/)
+      // D63: run_command joins inject_context as a 6th archetype legal
+      // on every lifecycle (uniform CC stdout JSON contract). The pin
+      // shifts to admit the trailing "run_command" entry on every list.
+      expect(body).toMatch(/pre_final:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      expect(body).toMatch(/session_start:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      expect(body).toMatch(/session_end:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      // user_prompt has the full pre-event action set + inject_context + run_command.
+      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      // pre_compact has block + audit + inject_context + run_command.
+      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
       // D57f-1: block / ask are still NOT legal on the audit-only
       // lifecycles — the new archetype rides alongside audit, it
       // doesn't loosen the block/ask gates.
@@ -353,9 +356,12 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // D57f-2: input_rewrite added another early-return branch
       // to saveWizard so the matrix-action gate sits further down;
       // widen the slice to 16000 to keep the gate inside the window.
+      // D63: run_command added a 3rd early-return branch (script
+      // upload + runtime + args + timeout + fail_closed), so widen
+      // the slice again to keep the matrix-action gate visible.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 16000)
+      const body = src.slice(start, start + 22000)
       expect(body).toMatch(/allowedActionsForCombination\(lifecycle,\s*toolScope\)/)
       expect(body).toMatch(/!allowedActions\.includes\(action\)/)
       // D56d (P1 #2): also rejects matrix-illegal matcher classes

@@ -35,8 +35,8 @@ from ..evidence import sign_token
 from ..policy import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
     McpGatingPolicy, PermissionPolicy, PolicyOverride,
-    SubagentPolicy, apply_rewriter, compile_to_managed_settings,
-    matcher_covers,
+    RunCommandPolicy, SubagentPolicy, apply_rewriter,
+    compile_to_managed_settings, matcher_covers,
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
@@ -48,6 +48,10 @@ from .custom_verifier_store import (
     serialize as serialize_custom_verifier,
 )
 from .policy_store import PolicyStore, _evidence_req_to_dict
+from .script_store import (
+    MAX_SCRIPT_BYTES, ScriptStore, ScriptStoreConflict, ScriptStoreError,
+    ScriptStoreInUseError, serialize as serialize_script_entry,
+)
 from .db import (
     EndpointHeartbeatRepo, HitlRepo, LedgerRepo,
     init_schema, is_stale, make_engine,
@@ -662,6 +666,16 @@ def create_app(
             str(Path.home() / ".magi-cp" / "custom_verifiers.json"),
         ),
     )
+    # D63: ScriptStore lives alongside the policy store. The directory
+    # holds the bodies + an index.json — see `script_store.py` for
+    # layout. Default-on rooted at ~/.magi-cp/ matches the rest of the
+    # self-host install.
+    script_store = ScriptStore(
+        dir=os.environ.get(
+            "MAGI_CP_SCRIPT_STORE_DIR",
+            str(Path.home() / ".magi-cp"),
+        ),
+    )
 
     # cache pubkey + derive kid (key id)
     pubkey_pem = ks.public_pem()
@@ -676,6 +690,9 @@ def create_app(
     # the same on-disk state and the second save would overwrite the
     # first's row.
     custom_verifier_lock = asyncio.Lock()
+    # D63: script-store mutation lock. Same lost-update defense
+    # PolicyStore + CustomVerifierStore use for concurrent POSTs.
+    script_store_lock = asyncio.Lock()
 
     app = FastAPI(title="magi-control-plane cloud", version="0.0.1")
     # Order matters: outer → inner. Body cap first, then rate limit, then CORS.
@@ -1846,6 +1863,12 @@ def create_app(
     # ── /endpoints — P10 endpoint attestation ─────────────────────────
     _attach_endpoint_routes(app, engine, policy_store=policy_store)
 
+    # ── /scripts — D63 run_command policy script storage ────────────
+    _attach_script_store_routes(
+        app, script_store, script_store_lock,
+        policy_store=policy_store,
+    )
+
     return app
 
 
@@ -2034,6 +2057,19 @@ def _serialize_policy_for_api(p: AnyPolicy) -> dict:
                         "matcher": p.trigger.matcher},
             "rewriter": p.rewriter,
         }
+    if isinstance(p, RunCommandPolicy):
+        return {
+            "type": "run_command",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "runtime": p.runtime,
+            "command": p.command,
+            "script_path": p.script_path,
+            "args": list(p.args),
+            "timeout_ms": p.timeout_ms,
+            "fail_closed": p.fail_closed,
+        }
     raise HTTPException(500, f"unserializable policy type: {type(p).__name__}")
 
 
@@ -2103,7 +2139,7 @@ class PolicyIn(BaseModel):
                      pattern=_POLICY_ID_PATTERN)
     type: str | None = Field(
         default=None,
-        pattern=r"^(evidence|permission|subagent|mcp_gating|context_injection|input_rewrite)$",
+        pattern=r"^(evidence|permission|subagent|mcp_gating|context_injection|input_rewrite|run_command)$",
     )
 
 
@@ -2167,7 +2203,39 @@ class InputRewriteReq(BaseModel):
         return v
 
 
+class RunCommandReq(BaseModel):
+    """D63 — request body for the `magi-cp-run-command` shim's POST
+    /policies/run_command call.
+
+    The shim sends the policy id + the raw CC hook payload it
+    received on stdin; the cloud resolves the RunCommandPolicy and
+    returns the spec the shim should execute. `payload` is kept as a
+    free-form dict — the shim may forward the CC payload as additional
+    context for future conditional run_command logic, but the v1
+    cloud-side resolver does not inspect it.
+    """
+    model_config = {"extra": "forbid"}
+    policy_id: str = Field(..., min_length=1, max_length=128,
+                            pattern=_POLICY_ID_PATTERN)
+    payload: dict = Field(default_factory=dict)
+
+
 _RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
+
+
+def _run_command_allowed() -> bool:
+    """D63 env knob: refuse RunCommandPolicy saves + /scripts uploads
+    when `MAGI_CP_ALLOW_RUN_COMMAND=0`.
+
+    Default-ON: any unset / blank / non-"0" value enables the surface.
+    The self-host docker compose ships with the flag implicitly on; the
+    hosted image overrides it to "0" so the multi-tenant fleet never
+    spawns an inline subprocess off an authenticated REST request.
+    """
+    raw = os.environ.get("MAGI_CP_ALLOW_RUN_COMMAND")
+    if raw is None:
+        return True
+    return raw.strip() != "0"
 
 
 def _attach_policy_routes(app: FastAPI, store: PolicyStore,
@@ -2707,6 +2775,85 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             return {"rewrote": False}
         return {"rewrote": True, "updated_input": new_input}
 
+    # D63 — resolution endpoint for the `magi-cp-run-command` shim.
+    # The shim hits this route with the policy id; the cloud looks up
+    # the RunCommandPolicy and returns the spec (runtime / inline
+    # command body / attached script path / args / timeout / fail_closed).
+    # The shim then executes it locally and prints whatever the
+    # command emitted as the CC hookSpecificOutput JSON.
+    #
+    # Defense in depth on the multi-tenant lane: `_run_command_allowed`
+    # gates this route too. The hosted image runs with
+    # `MAGI_CP_ALLOW_RUN_COMMAND=0` so even if a leaked managed-settings
+    # carries a run-command hook entry, the cloud refuses to surface
+    # the spec.
+    @app.post("/policies/run_command")
+    async def policies_run_command(
+        req: RunCommandReq,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict:
+        """Look up a RunCommandPolicy and return the resolved spec.
+
+        Soft failure (`{"matched": false}`):
+          - run_command surface disabled on this deployment
+          - policy not found / disabled
+          - policy is not a RunCommandPolicy
+        """
+        import hmac as _hmac
+        expected_key = os.environ.get("MAGI_CP_API_KEY")
+        if expected_key:
+            if not x_api_key or not _hmac.compare_digest(
+                x_api_key, expected_key,
+            ):
+                raise HTTPException(401, "invalid or missing api key")
+        if not _run_command_allowed():
+            return {"matched": False, "reason": "disabled"}
+        target_id = req.policy_id
+        match: AnyPolicy | None = None
+        match_enabled = False
+        for ov in store.load():
+            if ov.policy.id != target_id:
+                continue
+            match = ov.policy
+            match_enabled = ov.enabled
+            break
+        if match is None or not match_enabled:
+            return {"matched": False, "reason": "not_found"}
+        if not isinstance(match, RunCommandPolicy):
+            return {"matched": False, "reason": "wrong_type"}
+        # When the policy uses an attached script, resolve to the body
+        # path on the cloud's local disk (the shim is co-located on the
+        # same host in the self-host docker compose image). The
+        # script_path field on the policy is the script id (sha256);
+        # the shim itself does not need the body — `runtime <path>`
+        # already runs the file.
+        spec = {
+            "runtime": match.runtime,
+            "command": match.command,
+            "script_path": "",
+            "args": list(match.args),
+            "timeout_ms": match.timeout_ms,
+            "fail_closed": match.fail_closed,
+        }
+        if match.script_path:
+            # Look up the body path on disk. The shim runs locally on
+            # the same image so the absolute path is valid.
+            try:
+                from .script_store import ScriptStore as _ScriptStore
+            except ImportError:  # pragma: no cover (defensive only)
+                _ScriptStore = ScriptStore  # type: ignore[assignment]
+            script_dir = os.environ.get(
+                "MAGI_CP_SCRIPT_STORE_DIR",
+                str(Path.home() / ".magi-cp"),
+            )
+            body_path = _ScriptStore(dir=script_dir).body_path(
+                match.script_path,
+            )
+            if body_path is None:
+                return {"matched": False, "reason": "script_missing"}
+            spec["script_path"] = body_path
+        return {"matched": True, "spec": spec}
+
     # Order matters: more specific (/compiled, /enabled) before the catch-all
     # {policy_id:path} so FastAPI matches them first.
     @app.get("/policies/{policy_id:path}/compiled",
@@ -2752,6 +2899,20 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         except (ValueError, KeyError) as e:
             # Matrix violation or any other __post_init__ failure
             raise HTTPException(400, str(e))
+        # D63: env-gated refusal for run_command saves on hosted
+        # deployments. Default-ON (self-host docker compose carries
+        # `MAGI_CP_ALLOW_RUN_COMMAND=1`); the hosted image overrides to
+        # "0" to keep the inline command + attached script surface off
+        # the multi-tenant fleet. The gate runs at the REST boundary
+        # because matrix-coherence already passed by this point and
+        # we want a clear 403, not a 400 about "policy save".
+        if isinstance(policy, RunCommandPolicy) and not _run_command_allowed():
+            raise HTTPException(
+                403,
+                "run_command policies are disabled on this deployment "
+                "(MAGI_CP_ALLOW_RUN_COMMAND=0). Self-host docker compose "
+                "ships with run_command enabled by default.",
+            )
         # P8: fail-closed on unknown / inactive verifier steps. This is
         # the primary authoring-time gate — the runtime gate cannot
         # retroactively reject a policy that was already PUT, so an
@@ -3650,6 +3811,120 @@ class HeartbeatReq(BaseModel):
     signed_attestation: str | None = Field(
         default=None, max_length=256,
     )
+
+
+class _ScriptUploadReq(BaseModel):
+    """D63 — POST /scripts body. The browser-facing wizard ships the
+    script as multipart/form-data through the Next.js proxy route; the
+    proxy decodes the file bytes, base64-encodes them, and re-POSTs to
+    this endpoint as JSON. This keeps the cloud free of a
+    `python-multipart` dependency without losing the upload UX.
+    """
+    model_config = {"extra": "forbid"}
+    name: str = Field(..., min_length=1, max_length=64)
+    runtime: Literal["bash", "python3", "node"]
+    body_b64: str = Field(..., min_length=1, max_length=256_000)
+
+
+def _attach_script_store_routes(
+    app: FastAPI,
+    script_store: ScriptStore,
+    script_store_lock: asyncio.Lock,
+    *,
+    policy_store: PolicyStore,
+) -> None:
+    """D63 — /scripts CRUD for run_command policies.
+
+    Three routes (all admin-keyed):
+
+      POST   /scripts            Upload a script. Idempotent on
+                                 (name, sha256). Returns the persisted
+                                 ScriptEntry.
+      GET    /scripts            List metadata only (no source body).
+      DELETE /scripts/{id}       Remove a script. Refuses (409) if any
+                                 RunCommandPolicy still references the
+                                 id; reports the referencing policy ids.
+
+    Env knob: when `MAGI_CP_ALLOW_RUN_COMMAND=0`, all three routes
+    return 403 — the hosted image opts out of the entire surface.
+    """
+    import base64 as _b64
+
+    def _refuse_if_disabled() -> None:
+        if not _run_command_allowed():
+            raise HTTPException(
+                403,
+                "script upload is disabled on this deployment "
+                "(MAGI_CP_ALLOW_RUN_COMMAND=0). Self-host docker compose "
+                "ships with run_command enabled by default.",
+            )
+
+    @app.post("/scripts", dependencies=[Depends(require_admin_key)])
+    async def upload_script(req: _ScriptUploadReq) -> dict:
+        _refuse_if_disabled()
+        try:
+            raw = _b64.b64decode(req.body_b64, validate=True)
+        except (ValueError, _b64.binascii.Error) as e:  # type: ignore[attr-defined]
+            raise HTTPException(422, f"body_b64: {e}") from e
+        if not raw:
+            raise HTTPException(422, "body_b64: empty body")
+        if len(raw) > MAX_SCRIPT_BYTES:
+            raise HTTPException(
+                422,
+                f"script body too large (>{MAX_SCRIPT_BYTES} bytes)",
+            )
+        async with script_store_lock:
+            try:
+                entry = script_store.add(
+                    name=req.name,
+                    runtime=req.runtime,
+                    body=raw,
+                )
+            except ScriptStoreConflict as e:
+                raise HTTPException(409, str(e)) from e
+            except ScriptStoreError as e:
+                raise HTTPException(422, str(e)) from e
+        return serialize_script_entry(entry)
+
+    @app.get("/scripts", dependencies=[Depends(require_admin_key)])
+    def list_scripts() -> dict:
+        # Metadata only; bodies are returned only via the policy gate's
+        # local file path (see local/gate.py:_run_command_execute). The
+        # dashboard does not need the source to render the table.
+        _refuse_if_disabled()
+        return {"items": [serialize_script_entry(e) for e in script_store.list()]}
+
+    @app.delete(
+        "/scripts/{script_id}",
+        dependencies=[Depends(require_admin_key)],
+    )
+    async def delete_script(script_id: str) -> dict:
+        _refuse_if_disabled()
+        # Resolve active references against the policy store. Both the
+        # `command` field (inline) and `script_path` (attached) are
+        # candidates; only the latter binds to a script id, but we
+        # iterate everything to keep the check trivial.
+        referenced: list[str] = []
+        for ov in policy_store.load():
+            pol = ov.policy
+            if isinstance(pol, RunCommandPolicy) and pol.script_path == script_id:
+                referenced.append(pol.id)
+        async with script_store_lock:
+            try:
+                removed = script_store.delete(
+                    script_id, referenced_by=referenced,
+                )
+            except ScriptStoreInUseError as e:
+                raise HTTPException(
+                    409,
+                    {
+                        "message": str(e),
+                        "policy_ids": e.policy_ids,
+                    },
+                ) from e
+        if removed is None:
+            raise HTTPException(404, f"script {script_id!r} not found")
+        return serialize_script_entry(removed)
 
 
 HEARTBEAT_REPLAY_WINDOW_SECONDS = 300

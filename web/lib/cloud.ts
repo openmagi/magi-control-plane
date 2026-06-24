@@ -818,6 +818,46 @@ export const cloud = {
     if (!r.ok) throw new Error(`cloud ${r.status}`)
     return r.json() as Promise<{ schemas: unknown[] }>
   },
+
+  /** D63: list every script the operator has uploaded for run_command
+   * policies. Returns metadata only (no source body); the dashboard
+   * /scripts page renders the table from this. */
+  listScripts: (): Promise<{ items: ScriptEntry[] }> =>
+    _fetch<{ items: ScriptEntry[] }>("/scripts", {
+      method: "GET", keyType: "admin",
+    }),
+
+  /** D63: upload a script. Body is sent as JSON `{name, runtime,
+   * body_b64}` — the Next.js multipart upload route (web/app/api/
+   * scripts/route.ts) re-encodes the file body before forwarding here
+   * so the cloud stays free of a `python-multipart` dep. */
+  uploadScript: (
+    body: { name: string; runtime: ScriptRuntime; body_b64: string },
+  ): Promise<ScriptEntry> =>
+    _fetch<ScriptEntry>("/scripts", {
+      method: "POST", keyType: "admin",
+      body: JSON.stringify(body),
+    }),
+
+  /** D63: remove a script. Cloud refuses (409) if any RunCommandPolicy
+   * still references the id; the dashboard surfaces the referencing
+   * policy ids so the operator can detach them first. */
+  deleteScript: (id: string): Promise<{ id: string }> =>
+    _fetch<{ id: string }>(`/scripts/${encodeURIComponent(id)}`, {
+      method: "DELETE", keyType: "admin",
+    }),
+}
+
+/** D63: row type returned by GET /scripts. Mirrors the cloud-side
+ * `ScriptEntry` shape exactly. */
+export type ScriptRuntime = "bash" | "python3" | "node"
+export type ScriptEntry = {
+  id: string
+  name: string
+  runtime: ScriptRuntime
+  size_bytes: number
+  hash: string
+  created_at: number
 }
 
 // D56b: `CompileResult` (the one-shot NL→IR response type) was deleted

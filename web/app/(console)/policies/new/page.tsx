@@ -371,7 +371,13 @@ const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
 // CC supports updatedInput on the PreToolUse hook stdout, which lets
 // the gate rewrite a tool's input before the tool runs (e.g. strip
 // "sudo" from a Bash command, force https:// on a URL).
-type Action = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite"
+// D63: run_command is a 7th action archetype — execute an inline
+// shell command or an attached script when the hook fires. The CC
+// hookSpecificOutput JSON contract is uniform across all 30 events,
+// so the wizard surfaces this action on every lifecycle. The matching
+// IR shape is RunCommandPolicy; see web/app/(console)/policies/new/
+// _components/RunCommandForm.tsx for Step 4b.
+type Action = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite" | "run_command"
 
 // D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
 //   before_tool_use → block / ask / audit (the runtime can refuse)
@@ -382,47 +388,49 @@ type Action = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_re
 //   pre_compact     → block / audit (compaction hasn't fired yet)
 //   subagent_stop / session_* → audit only (boundary markers)
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
-  before_tool_use: ["block", "ask", "audit", "inject_context", "input_rewrite"],
-  after_tool_use:  ["audit", "inject_context"],
-  pre_final:       ["audit", "inject_context"],
-  subagent_stop:   ["audit", "inject_context"],
-  user_prompt:     ["block", "ask", "audit", "inject_context"],
-  pre_compact:     ["block", "audit", "inject_context"],
-  session_start:   ["audit", "inject_context"],
-  session_end:     ["audit", "inject_context"],
+  before_tool_use: ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
+  after_tool_use:  ["audit", "inject_context", "run_command"],
+  pre_final:       ["audit", "inject_context", "run_command"],
+  subagent_stop:   ["audit", "inject_context", "run_command"],
+  user_prompt:     ["block", "ask", "audit", "inject_context", "run_command"],
+  pre_compact:     ["block", "audit", "inject_context", "run_command"],
+  session_start:   ["audit", "inject_context", "run_command"],
+  session_end:     ["audit", "inject_context", "run_command"],
   // D58: pre-side gate hooks where CC supports decision overrides
   // (block) plus optional human review (ask). Same channel
   // PreToolUse uses.
-  permission_request:    ["block", "ask", "audit", "inject_context"],
-  elicitation:           ["block", "ask", "audit", "inject_context"],
+  permission_request:    ["block", "ask", "audit", "inject_context", "run_command"],
+  elicitation:           ["block", "ask", "audit", "inject_context", "run_command"],
   // D58: pre-side gates where there is no interactive surface to
   // interrupt to (the prompt is mid-expansion, the compaction is
   // already running). block + audit only.
-  user_prompt_expansion: ["block", "audit", "inject_context"],
+  user_prompt_expansion: ["block", "audit", "inject_context", "run_command"],
   // D58: everything else is audit-only — by the time CC fires the
   // hook the runtime cannot rewind.
   // D57f-1: inject_context is universally legal because CC's
   // hookSpecificOutput JSON schema accepts `additionalContext` on
   // every hook event, so the wizard surfaces it on every lifecycle.
-  post_tool_use_failure: ["audit", "inject_context"],
-  post_tool_batch:       ["audit", "inject_context"],
-  permission_denied:     ["audit", "inject_context"],
-  post_compact:          ["audit", "inject_context"],
-  elicitation_result:    ["audit", "inject_context"],
-  subagent_start:        ["audit", "inject_context"],
-  stop_failure:          ["audit", "inject_context"],
-  setup:                 ["audit", "inject_context"],
-  notification:          ["audit", "inject_context"],
-  teammate_idle:         ["audit", "inject_context"],
-  task_created:          ["audit", "inject_context"],
-  task_completed:        ["audit", "inject_context"],
-  config_change:         ["audit", "inject_context"],
-  worktree_create:       ["audit", "inject_context"],
-  worktree_remove:       ["audit", "inject_context"],
-  instructions_loaded:   ["audit", "inject_context"],
-  cwd_changed:           ["audit", "inject_context"],
-  file_changed:          ["audit", "inject_context"],
-  message_display:       ["audit", "inject_context"],
+  // D63: run_command is also universally legal (CC stdout JSON
+  // contract is the same on every hook).
+  post_tool_use_failure: ["audit", "inject_context", "run_command"],
+  post_tool_batch:       ["audit", "inject_context", "run_command"],
+  permission_denied:     ["audit", "inject_context", "run_command"],
+  post_compact:          ["audit", "inject_context", "run_command"],
+  elicitation_result:    ["audit", "inject_context", "run_command"],
+  subagent_start:        ["audit", "inject_context", "run_command"],
+  stop_failure:          ["audit", "inject_context", "run_command"],
+  setup:                 ["audit", "inject_context", "run_command"],
+  notification:          ["audit", "inject_context", "run_command"],
+  teammate_idle:         ["audit", "inject_context", "run_command"],
+  task_created:          ["audit", "inject_context", "run_command"],
+  task_completed:        ["audit", "inject_context", "run_command"],
+  config_change:         ["audit", "inject_context", "run_command"],
+  worktree_create:       ["audit", "inject_context", "run_command"],
+  worktree_remove:       ["audit", "inject_context", "run_command"],
+  instructions_loaded:   ["audit", "inject_context", "run_command"],
+  cwd_changed:           ["audit", "inject_context", "run_command"],
+  file_changed:          ["audit", "inject_context", "run_command"],
+  message_display:       ["audit", "inject_context", "run_command"],
 }
 
 // D56d (P1 #1 + #2 fidelity follow-up): matrix.py LEGAL_COMBINATIONS
@@ -481,21 +489,21 @@ const ACTIONS_BY_COMBINATION: Record<
   Lifecycle, Record<MatcherClassKey, readonly Action[]>
 > = {
   before_tool_use: {
-    tool:     ["block", "ask", "audit", "inject_context", "input_rewrite"],
-    mcp_tool: ["block", "ask", "audit", "inject_context", "input_rewrite"],
-    wildcard: ["audit", "inject_context"],
+    tool:     ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
+    mcp_tool: ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
+    wildcard: ["audit", "inject_context", "run_command"],
   },
   after_tool_use: {
-    tool:     ["audit", "inject_context"],
-    mcp_tool: ["audit", "inject_context"],
+    tool:     ["audit", "inject_context", "run_command"],
+    mcp_tool: ["audit", "inject_context", "run_command"],
     wildcard: [],
   },
-  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
-  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context"] },
-  session_start: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
+  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context", "run_command"] },
+  session_start: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
   // D58 extensions — every new lifecycle is wildcard-only at the
   // matcher level (the new payloads either carry no tool name or
   // the wizard doesn't yet surface per-tool authoring on them).
@@ -503,28 +511,30 @@ const ACTIONS_BY_COMBINATION: Record<
   // D57f-1: inject_context is universally legal at the wildcard
   // surface; the matrix doesn't constrain it because CC accepts
   // additionalContext on every event JSON.
-  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
-  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
-  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context"] },
-  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  notification:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
-  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  // D63: run_command is also universally legal (uniform CC stdout
+  // JSON contract).
+  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
+  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
+  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context", "run_command"] },
+  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  notification:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
 }
 
 function allowedActionsForCombination(
@@ -744,7 +754,7 @@ function buildGuidedDraftForDryRun(s: WizardState): Record<string, unknown> {
   // D57f-2: input_rewrite has the same fallback rationale.
   const action =
     s.action === "strip" || s.action === "inject_context" ||
-    s.action === "input_rewrite"
+    s.action === "input_rewrite" || s.action === "run_command"
       ? "audit"
       : (s.action ?? "audit")
   return {
@@ -956,9 +966,20 @@ function plainSummary(s: WizardState, locale: "ko" | "en"): string {
       ? `${lifeLabel}, 도구가 실행되기 전에 입력을 수정합니다: ${op}.`
       : `${capitalize(lifeLabel)}: rewrite the tool's input before it runs — ${op}.`
   }
+  // D63: run_command surfaces the inline command (or attached script
+  // id) so Step 6 review reads as a plain "Will run: …" line.
+  if (act === "run_command") {
+    return ko
+      ? `${lifeLabel}, 이 hook 이 발사될 때 쉘 명령 또는 첨부한 스크립트를 실행합니다.`
+      : `${capitalize(lifeLabel)}: run a shell command or an attached script when this hook fires.`
+  }
+  type LegacyAct = "block" | "ask" | "audit" | "strip"
+  const legacyAct: LegacyAct = (
+    act === "block" || act === "ask" || act === "audit" || act === "strip"
+  ) ? act : "audit"
   const actLabel = ko
-    ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[act])
-    : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[act])
+    ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[legacyAct])
+    : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[legacyAct])
   return ko
     ? `${lifeLabel}, ${header} 이 정책은 ${actLabel} 합니다.`
     : `${capitalize(lifeLabel)}: ${header} this policy will ${actLabel}.`
@@ -1006,15 +1027,42 @@ type InputRewriteDraft = {
   }
 }
 
+/** D63: persisted shape for a RunCommandPolicy. The cloud's
+ * validate() pin enforces exactly-one-of command / script_path; the
+ * dashboard ships the field unconditionally to keep the JSON byte
+ * shape predictable, and the cloud handles the rest. */
+type RunCommandDraftPersist = {
+  type: "run_command"
+  id: string
+  description: string
+  version: string
+  trigger: { host: "claude-code"; event: string; matcher: string }
+  runtime: "bash" | "python3" | "node"
+  command: string
+  script_path: string
+  args: string[]
+  timeout_ms: number
+  fail_closed: boolean
+}
+
 async function persistDraft(
-  draft: PolicyDraft | ContextInjectionDraft | InputRewriteDraft, source: string,
+  draft:
+    | PolicyDraft
+    | ContextInjectionDraft
+    | InputRewriteDraft
+    | RunCommandDraftPersist,
+  source: string,
 ): Promise<void> {
   // D57f-1 / D57f-2: validateDraft only knows the evidence shape; skip
   // it for the sibling archetypes (the cloud's per-type validate() is
   // canonical and the dashboard surfaces the cloud's 4xx via the flash
   // redirect path).
   const draftType = (draft as { type?: string }).type
-  if (draftType !== "context_injection" && draftType !== "input_rewrite") {
+  if (
+    draftType !== "context_injection"
+    && draftType !== "input_rewrite"
+    && draftType !== "run_command"
+  ) {
     const errs = validateDraft(draft as PolicyDraft)
     if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
   }
@@ -1493,6 +1541,88 @@ async function saveWizard(formData: FormData): Promise<void> {
     }
     const sourceIr = String(formData.get("source") ?? "org")
     await persistDraft(draftIr, sourceIr)
+    return
+  }
+
+  // D63: run_command branches BEFORE the matcher / requires pipeline
+  // because RunCommandPolicy has its own (runtime, command/script,
+  // args, timeout, fail_closed) shape. The cloud's validate() is the
+  // canonical refusal (exactly-one-of, runtime literal, arg caps).
+  if (action === "run_command") {
+    const eventRc = LIFECYCLE_TO_EVENT[lifecycle]
+    if (!eventRc) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    const rcMode = String(formData.get("runCommandMode") ?? "inline")
+    const runtimeRaw = String(formData.get("runCommandRuntime") ?? "bash")
+    const runtimeRc: "bash" | "python3" | "node" =
+      runtimeRaw === "python3" || runtimeRaw === "node"
+        ? runtimeRaw
+        : "bash"
+    let commandRc = ""
+    let scriptPathRc = ""
+    if (rcMode === "attach") {
+      scriptPathRc = String(formData.get("runCommandScriptId") ?? "").trim()
+      if (!scriptPathRc) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+    } else {
+      commandRc = String(formData.get("runCommandBody") ?? "").trim()
+      if (!commandRc) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      if (commandRc.length > 4_000) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+    }
+    const argsRaw = String(formData.get("runCommandArgs") ?? "")
+    const argsRc = argsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .slice(0, 16)
+    const timeoutRaw = String(formData.get("runCommandTimeoutMs") ?? "5000")
+    let timeoutMsRc = Number.parseInt(timeoutRaw, 10)
+    if (!Number.isFinite(timeoutMsRc)) timeoutMsRc = 5000
+    timeoutMsRc = Math.max(100, Math.min(30_000, timeoutMsRc))
+    const failClosedRc =
+      String(formData.get("runCommandFailClosed") ?? "") === "true"
+    let matcherRc = "*"
+    if (lifecycleHasToolScope(lifecycle)) {
+      const scope = String(formData.get("toolScope") ?? "").trim()
+      if (scope && scope !== "*") {
+        const first = scope.split(",").map((s) => s.trim()).filter(Boolean)[0] ?? scope
+        matcherRc = first || "*"
+      }
+    }
+    const idRc = String(formData.get("id") ?? "").trim()
+    if (!idRc) {
+      redirect("/policies/new?mode=guided&step=5&err=invalid_input"); return
+    }
+    const { locale: actionLocaleRc } = await getT()
+    const fallbackLifecycleLabelRc =
+      actionLocaleRc === "ko"
+        ? LIFECYCLE_LABEL_KO[lifecycle]
+        : LIFECYCLE_LABEL_EN[lifecycle]
+    const descriptionRc = String(formData.get("description") ?? "").trim()
+      || (actionLocaleRc === "ko"
+            ? `${fallbackLifecycleLabelRc}, 명령 실행`
+            : `Run a command ${fallbackLifecycleLabelRc}`)
+    const draftRc: RunCommandDraftPersist = {
+      type: "run_command",
+      id: idRc,
+      description: descriptionRc,
+      version: "0.1",
+      trigger: { host: "claude-code", event: eventRc, matcher: matcherRc },
+      runtime: runtimeRc,
+      command: commandRc,
+      script_path: scriptPathRc,
+      args: argsRc,
+      timeout_ms: timeoutMsRc,
+      fail_closed: failClosedRc,
+    }
+    const sourceRc = String(formData.get("source") ?? "org")
+    await persistDraft(draftRc, sourceRc)
     return
   }
 
@@ -2566,7 +2696,7 @@ function GuidedWizard({
   // D57f-1: inject_context joins block / ask / audit / strip as a
   // legal action archetype. Step 4 surfaces it on every lifecycle;
   // saveWizard branches into the ContextInjectionPolicy compile target.
-  const action = (["block", "ask", "audit", "strip", "inject_context", "input_rewrite"] as const).includes(actionParam as Action)
+  const action = (["block", "ask", "audit", "strip", "inject_context", "input_rewrite", "run_command"] as const).includes(actionParam as Action)
     ? (actionParam as Action) : undefined
   const evidenceRefs = (searchParams.evidence_refs ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 
@@ -2702,6 +2832,11 @@ function GuidedWizard({
   if (effectiveStep === 3 && state.action === "input_rewrite") {
     effectiveStep = 4
   }
+  // D63: same skip for run_command. RunCommandPolicy has no
+  // requires list either — Step 3's condition picker is meaningless.
+  if (effectiveStep === 3 && state.action === "run_command") {
+    effectiveStep = 4
+  }
   // P2 follow-up (wizard-state): scrub condition-side fields when
   // action=inject_context so a previously-authored
   // pattern/llmCriterion/shaclTtl/evidence_refs does not silently
@@ -2722,6 +2857,16 @@ function GuidedWizard({
   // input_rewrite ignores condition state; carrying it through the URL
   // would re-emerge if the operator switches back to block/audit.
   if (state.action === "input_rewrite") {
+    state.conditionKind = "none"
+    state.pattern = undefined
+    state.llmCriterion = undefined
+    state.shaclTtl = undefined
+    state.fetchDomain = undefined
+    state.allowlist = undefined
+    state.evidenceRefs = undefined
+  }
+  // D63: same scrub for run_command.
+  if (state.action === "run_command") {
     state.conditionKind = "none"
     state.pattern = undefined
     state.llmCriterion = undefined
@@ -2782,7 +2927,7 @@ function StepShell({
  * audit=blue, strip=purple) is consistent end-to-end. The accent color
  * still wins when the card is selected so the "this is the picked one"
  * affordance reads first. */
-type ActionTone = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite"
+type ActionTone = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite" | "run_command"
 
 function actionCardClasses(tone?: ActionTone): string {
   // Idle border / hover hue per archetype. Selected state is still
@@ -2806,6 +2951,10 @@ function actionCardClasses(tone?: ActionTone): string {
       // D57f-2: indigo tone reads as "mutating but bounded" — distinct
       // from strip's purple (which means "remove from output").
       return "border-indigo-300 hover:border-indigo-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "run_command":
+      // D63: slate tone reads as "executing a script" — neutral; the
+      // copy + the dismissible warning callout do the heavy lifting.
+      return "border-slate-400 hover:border-slate-500 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
     default:
       return "border-black/[0.08] hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
   }
@@ -4102,6 +4251,10 @@ function Step4Action({
       label: "도구 입력 재작성",
       sub: "도구가 실행되기 전에 입력을 안전한 형태로 자동 수정합니다 (예: Bash의 `sudo` 접두사 제거, URL을 https로 강제).",
     },
+    run_command: {
+      label: t("newPolicy.action.runCommand.title"),
+      sub: t("newPolicy.action.runCommand.description"),
+    },
   } : {
     block: { label: "Block",        sub: "Refuse the call. The agent cannot proceed." },
     ask:   { label: "Ask a human",  sub: "Send to the review queue; a human must approve to proceed." },
@@ -4114,6 +4267,10 @@ function Step4Action({
     input_rewrite: {
       label: "Rewrite tool input",
       sub: "Mutate the tool's input before it runs (e.g. strip `sudo` from Bash commands, force URLs to https://). The agent's request is silently corrected — no human in the loop.",
+    },
+    run_command: {
+      label: t("newPolicy.action.runCommand.title"),
+      sub: t("newPolicy.action.runCommand.description"),
     },
   }
   return (
@@ -4557,6 +4714,137 @@ function Step4Action({
                       ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
                       : "The rewriter DSL is bounded — no code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
                   </p>
+                </div>
+              </label>
+            )
+          }
+          if (a === "run_command") {
+            type TKey = import("@/lib/i18n/dict").TKey
+            const tDfl = (k: TKey) => t(k)
+            return (
+              <label key={a} className="block cursor-pointer">
+                <input
+                  type="radio"
+                  name="action"
+                  value={a}
+                  defaultChecked={defaultPick === a}
+                  required
+                  className="peer sr-only"
+                />
+                <span
+                  data-action-tone="run_command"
+                  className={
+                    "block rounded-xl border bg-white p-4 transition-colors " +
+                    actionCardClasses("run_command")
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                </span>
+                <div
+                  data-testid="step4b-run-command-editor"
+                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                >
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+                    {tDfl("newPolicy.step4.runCommand.warning")}
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.modeInline")}</FieldLabel>
+                      <select
+                        name="runCommandMode"
+                        defaultValue={"inline"}
+                        className={inputCls()}
+                      >
+                        <option value="inline">
+                          {tDfl("newPolicy.step4.runCommand.modeInline")}
+                        </option>
+                        <option value="attach">
+                          {tDfl("newPolicy.step4.runCommand.modeAttach")}
+                        </option>
+                      </select>
+                    </div>
+                    <div>
+                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.runtime")}</FieldLabel>
+                      <select
+                        name="runCommandRuntime"
+                        defaultValue="bash"
+                        className={inputCls()}
+                      >
+                        <option value="bash">bash</option>
+                        <option value="python3">python3</option>
+                        <option value="node">node</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <FieldLabel>{tDfl("newPolicy.step4.runCommand.commandLabel")}</FieldLabel>
+                    <textarea
+                      name="runCommandBody"
+                      rows={3}
+                      maxLength={4000}
+                      placeholder={tDfl("newPolicy.step4.runCommand.commandPlaceholder")}
+                      className={inputCls() + " font-mono"}
+                    />
+                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                      {tDfl("newPolicy.step4.runCommand.attachHint")}
+                    </p>
+                  </div>
+                  <div>
+                    <FieldLabel>{tDfl("newPolicy.step4.runCommand.attachLabel")}</FieldLabel>
+                    <input
+                      type="text"
+                      name="runCommandScriptId"
+                      maxLength={64}
+                      pattern="[A-Fa-f0-9]{16,64}"
+                      placeholder="sha256 script id"
+                      className={inputCls() + " font-mono"}
+                    />
+                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                      {tDfl("newPolicy.step4.runCommand.attachHint")}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.args")}</FieldLabel>
+                      <input
+                        type="text"
+                        name="runCommandArgs"
+                        maxLength={4_000}
+                        placeholder="--short, --json"
+                        className={inputCls() + " font-mono"}
+                      />
+                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                        {tDfl("newPolicy.step4.runCommand.argsHint")}
+                      </p>
+                    </div>
+                    <div>
+                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.timeout")}</FieldLabel>
+                      <input
+                        type="number"
+                        name="runCommandTimeoutMs"
+                        min={100}
+                        max={30_000}
+                        step={100}
+                        defaultValue={5_000}
+                        className={inputCls() + " font-mono"}
+                      />
+                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                        {tDfl("newPolicy.step4.runCommand.timeoutHint")}
+                      </p>
+                    </div>
+                  </div>
+                  <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
+                    <input
+                      type="checkbox"
+                      name="runCommandFailClosed"
+                      value="true"
+                      className="mt-0.5"
+                    />
+                    <span>{tDfl("newPolicy.step4.runCommand.failClosed")}</span>
+                  </label>
                 </div>
               </label>
             )
