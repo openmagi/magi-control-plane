@@ -11,6 +11,7 @@ export type FlashKind = "ok" | "error"
 const OK_CODES: Record<string, string> = {
   toggled: "Policy updated.",
   saved: "Saved.",
+  verifier_created: "Custom verifier created.",
 }
 
 const ERR_CODES: Record<string, string> = {

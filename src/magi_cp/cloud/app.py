@@ -40,6 +40,10 @@ from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
 from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
+from .custom_verifier_store import (
+    CustomVerifierError, CustomVerifierStore, build_from_dict as build_custom_verifier_from_dict,
+    serialize as serialize_custom_verifier,
+)
 from .policy_store import PolicyStore, _evidence_req_to_dict
 from .db import (
     EndpointHeartbeatRepo, HitlRepo, HitlStatus, LedgerRepo,
@@ -411,6 +415,7 @@ def create_app(
     dsn: str | None = None,
     nli_classifier: EntailmentClassifier | None = None,
     policy_store_path: str | None = None,
+    custom_verifier_store_path: str | None = None,
     verifier_registry: "VerifierRegistry | None" = None,
     llm_compiler: "object | None" = None,
     llm_reviewer: "object | None" = None,
@@ -441,6 +446,12 @@ def create_app(
     hitl = HitlRepo(engine)
     policy_store = PolicyStore(path=policy_store_path or os.environ.get(
         "MAGI_CP_POLICY_STORE", str(Path.home() / ".magi-cp" / "policies.json")))
+    custom_verifier_store = CustomVerifierStore(
+        path=custom_verifier_store_path or os.environ.get(
+            "MAGI_CP_CUSTOM_VERIFIER_STORE",
+            str(Path.home() / ".magi-cp" / "custom_verifiers.json"),
+        ),
+    )
 
     # cache pubkey + derive kid (key id)
     pubkey_pem = ks.public_pem()
@@ -1080,6 +1091,12 @@ def create_app(
 
     # ── /payload-schemas — P7 CC hook payload field menu (read-only) ──
     _attach_payload_schema_routes(app)
+
+    # ── /verifier-descriptors: D52b per-verifier expander descriptors ──
+    _attach_verifier_descriptor_routes(app)
+
+    # ── /custom-verifiers: D52b step-only authoring (tenant-scoped) ──
+    _attach_custom_verifier_routes(app, custom_verifier_store)
 
     # ── /endpoints — P10 endpoint attestation ─────────────────────────
     _attach_endpoint_routes(app, engine, policy_store=policy_store)
@@ -1843,6 +1860,98 @@ def _attach_payload_schema_routes(app: FastAPI) -> None:
             )
         fields = available_fields(event, matcher)
         return {"event": event, "matcher": matcher, "fields": fields}
+
+
+def _attach_verifier_descriptor_routes(app: FastAPI) -> None:
+    """D52b: per-verifier expander descriptors.
+
+    Read-only registry describing each built-in verifier's triggers,
+    input payload paths, possible verdicts, and the evidence record it
+    emits to the audit ledger. The dashboard ships a byte-stable mirror
+    at web/lib/verifier-descriptors.ts; this endpoint exists so third
+    party UIs and automated linters can pull the cloud's authoritative
+    copy without scraping the Python source.
+
+    Public on purpose. The descriptors describe verifier semantics, not
+    tenant data; gating them would force the dashboard's anonymous
+    public install flow to wire an API key just to render the Rules tab.
+    Rate limit still applies via the global TokenBucketLimiter.
+    """
+    from ..verifier.descriptors import all_descriptors, get_descriptor
+
+    @app.get("/verifier-descriptors")
+    def list_verifier_descriptors() -> dict:
+        return {"descriptors": all_descriptors()}
+
+    @app.get("/verifier-descriptors/{step}")
+    def get_verifier_descriptor(step: str) -> dict:
+        d = get_descriptor(step)
+        if d is None:
+            raise HTTPException(
+                404,
+                f"no descriptor for verifier step {step!r}",
+            )
+        return d
+
+
+def _attach_custom_verifier_routes(
+    app: FastAPI, store: "CustomVerifierStore",
+) -> None:
+    """D52b: step-only authoring of custom verifiers.
+
+    The /verifiers/new dashboard page POSTs here. Body shape (validated by
+    custom_verifier_store.build_from_dict):
+
+      {
+        "name": "<slug>",
+        "description": "<<=500 chars>",
+        "triggers": [{"event": "...", "matcher_class": "tool|no_tool|final"}, ...],
+        "verdict_set": ["pass", "fail", ...],
+        "body_type": "preview"
+      }
+
+    Tenant-scoped: each row carries the caller's tenant_id, and GETs
+    only resolve rows the caller owns. Real-code bodies (LLM critic / SHACL
+    / regex) stay inline in the policy IR per the design lock, so this
+    endpoint accepts step-shape only.
+    """
+
+    @app.post(
+        "/custom-verifiers",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    async def create_custom_verifier(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(422, "invalid JSON body")
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        try:
+            verifier = build_custom_verifier_from_dict(body, tenant_id=tenant_id)
+        except CustomVerifierError as e:
+            raise HTTPException(422, str(e))
+        stored = store.add(tenant_id, verifier)
+        return serialize_custom_verifier(stored)
+
+    @app.get(
+        "/custom-verifiers",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    def list_custom_verifiers(request: Request) -> dict:
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        items = [serialize_custom_verifier(v) for v in store.list_for_tenant(tenant_id)]
+        return {"items": items}
+
+    @app.get(
+        "/custom-verifiers/{verifier_id}",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    def get_custom_verifier(verifier_id: str, request: Request) -> dict:
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        v = store.get(tenant_id, verifier_id)
+        if v is None:
+            raise HTTPException(404, "custom verifier not found")
+        return serialize_custom_verifier(v)
 
 
 class HeartbeatReq(BaseModel):

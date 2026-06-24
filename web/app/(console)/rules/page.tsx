@@ -18,6 +18,7 @@ import {
   PageHeader,
 } from "@/components/ui"
 import { PolicyToggle } from "./_components/PolicyToggle"
+import { VerifierExpander } from "./_components/VerifierExpander"
 import { togglePolicyAction } from "./actions"
 
 export const dynamic = "force-dynamic"
@@ -64,11 +65,26 @@ export default async function RulesPage({
         title={t("rules.title")}
         description={<RulesDescription t={t} />}
         actions={
-          <Link href="/policies/new">
-            <Button variant="primary" size="md">
-              {t("rules.newButton")}
-            </Button>
-          </Link>
+          tab === "evidence" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Link href="/verifiers/new">
+                <Button variant="secondary" size="md">
+                  {t("rules.newVerifierButton")}
+                </Button>
+              </Link>
+              <Link href="/policies/new">
+                <Button variant="primary" size="md">
+                  {t("rules.newButton")}
+                </Button>
+              </Link>
+            </div>
+          ) : (
+            <Link href="/policies/new">
+              <Button variant="primary" size="md">
+                {t("rules.newButton")}
+              </Button>
+            </Link>
+          )
         }
       />
 
@@ -280,41 +296,44 @@ function EvidenceTab({
             {items.map((row, idx) => (
               <div
                 key={row.step}
-                className={`px-4 py-3.5 flex flex-wrap items-start justify-between gap-3 ${
+                className={`px-4 py-3.5 ${
                   idx > 0 ? "border-t border-black/[0.05]" : ""
                 }`}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <Code className="text-sm">{row.step}</Code>
-                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700">
-                      {row.source === "builtin"
-                        ? t("rules.evidence.source.builtin")
-                        : t("rules.evidence.source.derived")}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
-                    {row.description}
-                  </p>
-                  {row.used_by_policies.length > 0 && (
-                    <div className="mt-1.5 text-[11px] text-[var(--color-text-tertiary)]">
-                      {t("rules.evidence.usedBy")}: {row.used_by_policies.map((pid, i) => (
-                        <span key={pid}>
-                          {i > 0 && ", "}
-                          <Link
-                            href={`/policies/${encodeURI(pid)}`}
-                            className="font-mono text-[var(--color-accent-light)] hover:underline"
-                          >
-                            {pid}
-                          </Link>
-                        </span>
-                      ))}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <Code className="text-sm">{row.step}</Code>
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700">
+                        {row.source === "builtin"
+                          ? t("rules.evidence.source.builtin")
+                          : t("rules.evidence.source.derived")}
+                      </span>
                     </div>
-                  )}
+                    <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                      {row.description}
+                    </p>
+                    {row.used_by_policies.length > 0 && (
+                      <div className="mt-1.5 text-[11px] text-[var(--color-text-tertiary)]">
+                        {t("rules.evidence.usedBy")}: {row.used_by_policies.map((pid, i) => (
+                          <span key={pid}>
+                            {i > 0 && ", "}
+                            <Link
+                              href={`/policies/${encodeURI(pid)}`}
+                              className="font-mono text-[var(--color-accent-light)] hover:underline"
+                            >
+                              {pid}
+                            </Link>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="pt-0.5">
+                    <EnforcementBadge kind={row.enforcement} />
+                  </div>
                 </div>
-                <div className="pt-0.5">
-                  <EnforcementBadge kind={row.enforcement} />
-                </div>
+                <VerifierExpander step={row.step} t={t} />
               </div>
             ))}
           </div>
