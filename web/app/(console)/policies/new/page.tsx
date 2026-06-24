@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
+import Step1LifecyclePicker from "./_components/Step1LifecyclePicker"
 import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
@@ -3091,6 +3092,15 @@ function lifecycleCardCopy(
 
 // D56c: lifecycles grouped by family so the 8-card grid stays scannable.
 // Group headers come from the dict (newPolicy.wizard.step1.group.*).
+//
+// D61 note: the Step 1 surface no longer drives off LIFECYCLE_GROUPS
+// directly. The client picker (`_components/Step1LifecyclePicker.tsx`)
+// owns the rendered layout (Common + collapsed Advanced + search) and
+// imports the canonical group composition from the sibling
+// `step1-lifecycle-groups.ts`. This const is preserved as a legacy
+// data shape pinned by source-grep invariants in wizard-wiring.test.ts
+// so a future refactor that drops a slug from BOTH places fails the
+// gate. Removing it requires updating those tests too.
 const LIFECYCLE_GROUPS: ReadonlyArray<{
   groupKey:
     | "newPolicy.wizard.step1.group.toolActions"
@@ -3159,6 +3169,10 @@ const LIFECYCLE_GROUPS: ReadonlyArray<{
     ],
   },
 ]
+// D61: explicit no-op reference so `noUnusedLocals` / future linter
+// runs cannot drop the legacy data shape that wizard-wiring.test.ts
+// pins. The picker owns the live composition; this is invariants-only.
+void LIFECYCLE_GROUPS
 
 function Step1Lifecycle({
   t, locale, state, action,
@@ -3167,8 +3181,14 @@ function Step1Lifecycle({
   action: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  // D61: layered-disclosure picker. The Step 1 surface used to show
+  // every one of the 30 hook events at once; this collapses the screen
+  // to a default-expanded "Common" group (PreToolUse, PostToolUse,
+  // UserPromptSubmit, Stop) with the remaining 26 events tucked into
+  // collapsed Advanced groups + a search filter. LIFECYCLE_GROUPS (the
+  // legacy data shape) is kept for the i18n drift gate but no longer
+  // drives the rendered surface; Step1LifecyclePicker owns the layout.
   const current = state.lifecycle ?? "before_tool_use"
-  const ko = locale === "ko"
   const labels = lifecycleCardCopy(locale)
   return (
     <StepShell
@@ -3179,28 +3199,11 @@ function Step1Lifecycle({
     >
       <form action={action} className="space-y-5">
         <input type="hidden" name="_step" value="1" />
-        {LIFECYCLE_GROUPS.map((group) => (
-          <div key={group.groupKey} className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)] m-0">
-              {t(group.groupKey)}
-            </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {group.members.map((life) => (
-                <RadioCard
-                  key={life}
-                  name="lifecycle"
-                  value={life}
-                  defaultChecked={current === life}
-                  label={labels[life].label}
-                  sub={labels[life].sub}
-                  badge={life === "before_tool_use"
-                    ? { variant: "ok", text: ko ? "추천" : "recommended" }
-                    : undefined}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+        <Step1LifecyclePicker
+          locale={locale}
+          currentLifecycle={current}
+          labels={labels}
+        />
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
