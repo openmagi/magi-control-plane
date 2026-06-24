@@ -47,8 +47,16 @@ async function _hmacPost<T>(path: string, body: Record<string, unknown>, timeout
     signal: AbortSignal.timeout(timeoutMs ?? FETCH_TIMEOUT_MS),
   })
   if (!r.ok) {
-    console.error(`cloud ${r.status} ${path}: ${await r.text().catch(() => "")}`)
-    throw new Error(`cloud ${r.status}`)
+    const body = await r.text().catch(() => "")
+    console.error(`cloud ${r.status} ${path}: ${body}`)
+    // Append a SAFE classifier marker for known backend states so
+    // codeForError can map them to a friendly error code, without
+    // echoing arbitrary body content to the client.
+    let marker = ""
+    if (r.status === 503 && /provider.*not configured/i.test(body)) {
+      marker = " providers not configured"
+    }
+    throw new Error(`cloud ${r.status}${marker}`)
   }
   return r.json() as Promise<T>
 }

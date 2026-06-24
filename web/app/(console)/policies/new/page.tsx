@@ -781,6 +781,14 @@ export default async function NewPolicyPage({
                 autoComplete="off"
                 monospace
               />
+              {flash?.kind === "error" && (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+                >
+                  {flash.text}
+                </div>
+              )}
               <div className="mt-3 flex items-center gap-2">
                 <SubmitButton
                   label={t("compile.submit")}
