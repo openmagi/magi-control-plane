@@ -457,23 +457,31 @@ const KO_RAW = {
   "rules.evidence.source.derived": "정책 참조",
   "rules.evidence.missing": "미연결",
   "rules.evidence.missingHint": "정책이 이 step 을 요구하지만 연결된 verifier 가 없습니다, runtime 에서 deny 됩니다.",
-  /* ── D54: prebuilt policy templates ─────────────────────────── */
+  /* ── D54 / D60: prebuilt policy templates ────────────────────── */
   "rules.prebuilt.title": "프리빌트 정책",
-  "rules.prebuilt.hint": "각 built-in verifier 에 대응하는 기본 정책 템플릿. \"Use this\" 를 누르면 raw 에디터에 채워진 상태로 열리며, 검토 후 저장해야 적용됩니다 (자동 설치 아님).",
+  /* D60 follow-up: 토글이 1차 동선이므로 \"raw 에디터로 열림\" 카피는 잘못된 기대를 심어준다.
+     실제 모델(토글로 즉시 활성/비활성, 일부는 사전 설정 필요)에 맞춰 다시 작성. */
+  "rules.prebuilt.hint": "토글로 바로 활성/비활성. citation, allowlist 같은 사전 설정형은 활성화 전에 설정 확인을 요구합니다. IR 을 먼저 다듬고 싶으면 카드의 \"수정 후 활성화\" 링크를 사용하세요.",
   "rules.prebuilt.badge": "프리빌트",
   "rules.prebuilt.verifier": "Verifier",
   "rules.prebuilt.action": "Action",
-  "rules.prebuilt.useThis": "Use this",
-  "rules.prebuilt.useThis.aria": "{title} 프리빌트 정책을 raw 에디터에서 열기",
   /* D60: 프리빌트 = 토글 리스트. 위저드 핸드오프(\"수정 후 활성화\")는 보조 동선으로 남기고,
-     기본 동선은 카드 우측 토글로 즉시 enable/disable. */
+     기본 동선은 카드 우측 토글로 즉시 enable/disable.
+     `useThis` / `useThis.aria` 키는 D60 에서 폐기되었습니다 (코드 참조 없음). */
+  "rules.prebuilt.editBeforeAria": "{title} 프리빌트 정책을 위저드에서 편집",
   "rules.prebuilt.enable": "{title} 활성화",
   "rules.prebuilt.disable": "{title} 비활성화",
   "rules.prebuilt.editBefore": "수정 후 활성화 →",
   "rules.prebuilt.active": "활성",
-  "rules.prebuilt.setupRequired": "활성화 전에 추가 설정이 필요합니다",
-  "rules.prebuilt.configure": "설정 열기",
+  /* D60 follow-up: \"설정 열기\" 버튼은 위저드 6단계로 가지만 verifier 사이드 노브
+     (allowlist, corpus override) 는 현재 어디에서도 편집할 수 없음. 잘못된 약속 대신
+     카피를 정직하게 바꿈 (verifier 설정에서 직접 손봐야 한다는 사실 전달). */
+  "rules.prebuilt.setupRequired": "활성화 전에 verifier 설정이 필요합니다",
+  "rules.prebuilt.setupHint.unconfigurableHere": "이 노브는 현재 verifier 설정 파일에서만 손볼 수 있습니다, 대시보드 UI 미지원.",
+  "rules.prebuilt.needsSetup": "사전 설정 필요",
   "rules.prebuilt.enableAnyway": "그래도 활성화",
+  "rules.prebuilt.cancel": "취소",
+  "rules.prebuilt.transportError": "변경 실패. 네트워크 또는 클라우드 오류. 다시 시도해 주세요.",
   "rules.newVerifierButton": "새 verifier",
   "rules.verifier.expander.toggle": "세부 정보",
   "rules.verifier.expander.toggleWithStep": "{step} verifier 세부 정보",
@@ -1104,24 +1112,37 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.evidence.source.derived": "From policy",
   "rules.evidence.missing": "Unbound",
   "rules.evidence.missingHint": "A policy requires this step but no verifier is wired, the runtime will deny at /verify time.",
-  /* D54: prebuilt policy templates. */
+  /* D54 / D60: prebuilt policy templates. */
   "rules.prebuilt.title": "Prebuilt policies",
-  "rules.prebuilt.hint": "Sensible default policy for each built-in verifier. Use this opens the raw editor with the IR prefilled; review and save it like any other policy (nothing is auto-installed).",
+  /* D60 follow-up: the toggle is the primary affordance now, so the
+   * "raw editor" framing is wrong. Describe the actual model:
+   * toggle to enable, setup-required ones ask for config first, the
+   * Edit shortcut stays available for IR tweaks. */
+  "rules.prebuilt.hint": "Toggle to enable. Setup-required prebuilts (citation, allowlist) ask for verifier configuration before enabling has any effect. Use Edit before enabling on the card if you want to tweak the IR first.",
   "rules.prebuilt.badge": "Prebuilt",
   "rules.prebuilt.verifier": "Verifier",
   "rules.prebuilt.action": "Action",
-  "rules.prebuilt.useThis": "Use this",
-  "rules.prebuilt.useThis.aria": "Open the {title} prebuilt policy in the raw editor",
   /* D60: prebuilt = toggle list. The "Use this" wizard handoff is
    * kept as a secondary affordance ("Edit before enabling"); the
-   * primary action is the toggle on each card. */
+   * primary action is the toggle on each card. The legacy
+   * `useThis` / `useThis.aria` keys were retired in this follow-up
+   * (no code reference remained). */
+  "rules.prebuilt.editBeforeAria": "Edit the {title} prebuilt policy in the wizard",
   "rules.prebuilt.enable": "Enable {title}",
   "rules.prebuilt.disable": "Disable {title}",
   "rules.prebuilt.editBefore": "Edit before enabling →",
   "rules.prebuilt.active": "Active",
-  "rules.prebuilt.setupRequired": "Needs setup before it does anything",
-  "rules.prebuilt.configure": "Configure",
+  /* D60 follow-up: the "Configure" button used to route to wizard
+   * step 6, but the wizard cannot edit verifier-side knobs
+   * (allowlist payload, corpus override). Drop the false promise
+   * and tell the operator the truth: the configuration lives in
+   * the verifier-side config, not in this UI. */
+  "rules.prebuilt.setupRequired": "Verifier-side setup required before enabling",
+  "rules.prebuilt.setupHint.unconfigurableHere": "This knob currently lives in the verifier configuration files only; the dashboard has no editor for it yet.",
+  "rules.prebuilt.needsSetup": "Needs setup",
   "rules.prebuilt.enableAnyway": "Enable anyway",
+  "rules.prebuilt.cancel": "Cancel",
+  "rules.prebuilt.transportError": "Toggle failed. Network or cloud error. Please retry.",
   "rules.newVerifierButton": "New verifier",
   "rules.verifier.expander.toggle": "Details",
   "rules.verifier.expander.toggleWithStep": "{step} verifier details",

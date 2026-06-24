@@ -293,6 +293,17 @@ function PoliciesTab({
   nfFormat: (n: number) => string
   t: TFunc
 }) {
+  // D60 follow-up: GET /policies returns every row including the
+  // materialized prebuilt rows (POST /policies/prebuilt/{id}/enable
+  // saves into the same store under `prebuilt/...` ids). Without
+  // this filter an enabled prebuilt would render TWICE — once in
+  // <PrebuiltSection> with the new toggle, and once below in the
+  // user-policies grid with the regular PolicyToggle. The
+  // user-policies grid is for OPERATOR-AUTHORED policies; the
+  // prebuilt section is the canonical surface for `prebuilt/...`
+  // rows. Filter at the render boundary (not at the cloud) so a
+  // future surface that wants the unfiltered list still sees it.
+  const userPolicies = items.filter((p) => !p.id.startsWith("prebuilt/"))
   return (
     <section>
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
@@ -307,7 +318,7 @@ function PoliciesTab({
           body={t("common.seeServerLogs")}
         />
       )}
-      {!err && items.length === 0 && (
+      {!err && userPolicies.length === 0 && (
         <EmptyState
           title={t("rules.empty.policies")}
           action={
@@ -317,13 +328,13 @@ function PoliciesTab({
           }
         />
       )}
-      {!err && items.length > 0 && (
+      {!err && userPolicies.length > 0 && (
         <>
           <Badge variant="info" className="mb-3">
-            {t("rules.summary.policies", { n: nfFormat(items.length) })}
+            {t("rules.summary.policies", { n: nfFormat(userPolicies.length) })}
           </Badge>
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-            {items.map((item) => (
+            {userPolicies.map((item) => (
               <Card key={item.id} className="flex flex-col gap-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
@@ -375,9 +386,10 @@ function PoliciesTab({
  * The card border + "Active" pill mirror the enabled state so the
  * section reads at a glance — green border = on, neutral border =
  * off. Setup-required prebuilts (citation_verify, source_allowlist)
- * surface an inline callout BEFORE flipping the toggle so an
- * operator doesn't end up with an inert policy because the
- * allowlist / corpus override was never configured. */
+ * surface an inline callout BEFORE flipping the toggle, AND render a
+ * persistent "Needs setup" chip on the card (D60 follow-up) so an
+ * operator scanning the section can see the prerequisite from the
+ * grid view rather than having to click the toggle first. */
 function PrebuiltSection({
   items, t,
 }: {
@@ -418,6 +430,21 @@ function PrebuiltSection({
                       {t("rules.prebuilt.active")}
                     </span>
                   )}
+                  {/* D60 follow-up: persistent "Needs setup" chip on
+                   * OFF setup-required prebuilts so the prerequisite
+                   * is visible from the grid view. We also render
+                   * the chip on ENABLED setup-required rows (cloud
+                   * leaves `setup_required` true even when enabled)
+                   * because the operator may have used Enable
+                   * Anyway and the policy is still inert. */}
+                  {p.setup_required && (
+                    <span
+                      className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-800"
+                      title={p.setup_hint}
+                    >
+                      {t("rules.prebuilt.needsSetup")}
+                    </span>
+                  )}
                 </div>
                 <p className="mt-2 text-xs text-[var(--color-text-secondary)] leading-relaxed">
                   {p.summary}
@@ -445,21 +472,24 @@ function PrebuiltSection({
                 enabled={p.enabled}
                 setupRequired={p.setup_required}
                 setupHint={p.setup_hint}
-                configureHref={prebuiltDraftHref(p)}
                 action={togglePrebuiltAction}
                 labelOn={t("rules.prebuilt.disable", { title: p.title })}
                 labelOff={t("rules.prebuilt.enable", { title: p.title })}
                 copy={{
                   setupRequired: t("rules.prebuilt.setupRequired"),
-                  configure: t("rules.prebuilt.configure"),
+                  setupUnconfigurableHere: t(
+                    "rules.prebuilt.setupHint.unconfigurableHere",
+                  ),
                   enableAnyway: t("rules.prebuilt.enableAnyway"),
+                  cancel: t("rules.prebuilt.cancel"),
+                  transportError: t("rules.prebuilt.transportError"),
                 }}
               />
             </div>
             <div className="mt-1">
               <Link
                 href={prebuiltDraftHref(p)}
-                aria-label={t("rules.prebuilt.useThis.aria", { title: p.title })}
+                aria-label={t("rules.prebuilt.editBeforeAria", { title: p.title })}
                 className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline"
               >
                 {t("rules.prebuilt.editBefore")}

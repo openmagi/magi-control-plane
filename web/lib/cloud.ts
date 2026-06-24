@@ -523,10 +523,17 @@ export const cloud = {
 
   /** D60: disable a prebuilt template. The cloud keeps the row in
    * the store with `enabled=false` (rather than deleting it) so a
-   * re-enable preserves any operator edits. Idempotent. */
+   * re-enable preserves any operator edits. Idempotent.
+   *
+   * D60 follow-up: response envelope mirrors `enablePrebuilt` (id,
+   * enabled, source, enforcement, setup_required) so a client can
+   * reconcile local state from the response body without a refetch.
+   * Earlier the disable response only carried {id, enabled}, which
+   * made client-side optimistic-state reconciliation asymmetric. */
   disablePrebuilt: (
     prebuiltId: string,
-  ): Promise<{ id: string; enabled: boolean }> => {
+  ): Promise<{ id: string; enabled: boolean; source: string;
+                enforcement: string; setup_required: boolean }> => {
     const slug = prebuiltId.startsWith("prebuilt/")
       ? prebuiltId.slice("prebuilt/".length)
       : prebuiltId

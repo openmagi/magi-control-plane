@@ -138,6 +138,34 @@ describe("rules page source invariants (D56e)", () => {
     expect(src).toMatch(/p\.enabled/)
   })
 
+  it("D60 follow-up: user-policies grid drops prebuilt rows to avoid double render", () => {
+    // GET /policies returns every row including the materialized
+    // prebuilt rows (POST /policies/prebuilt/{id}/enable saves into
+    // the same store under `prebuilt/...` ids). Without filtering
+    // the user-policies grid renders TWICE per enabled prebuilt
+    // (once with the PrebuiltToggle, once with the PolicyToggle),
+    // and the two toggles diverge on enable state.
+    expect(src).toMatch(/\.filter\(.*p\.id\.startsWith\(['"]prebuilt\/['"]\)/)
+    expect(src).toContain("userPolicies")
+  })
+
+  it("D60 follow-up: PrebuiltSection renders a persistent 'Needs setup' chip", () => {
+    // The chip lets an operator scanning the grid see the
+    // prerequisite without clicking the toggle first. The big
+    // callout still appears on click; the chip is the discovery
+    // affordance.
+    expect(src).toContain("rules.prebuilt.needsSetup")
+    expect(src).toMatch(/p\.setup_required/)
+  })
+
+  it("D60 follow-up: page no longer references the retired useThis.aria key", () => {
+    // The 'Use this' wizard handoff was retired in D60. The
+    // secondary link is now the 'Edit before enabling' Link and
+    // uses its own aria-label key.
+    expect(src).not.toContain("rules.prebuilt.useThis")
+    expect(src).toContain("rules.prebuilt.editBeforeAria")
+  })
+
   it("keeps the + New policy CTA on every tab", () => {
     expect(src).toContain("rules.newButton")
     expect(src).toContain('href="/policies/new"')

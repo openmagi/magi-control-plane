@@ -12,12 +12,18 @@ import type { togglePrebuiltAction } from "../actions"
  *     flips the prebuilt enable/disable.
  *
  *   - setup-required (setupRequired = true, currently OFF) — clicking
- *     the toggle reveals an inline callout that gives the operator a
- *     "Configure" link (jumps to wizard) and an "Enable anyway"
- *     button (proceeds with the toggle). This prevents the
- *     citation_verify / source_allowlist trap where the toggle goes
- *     on but the policy is inert because the operator-supplied knobs
- *     are blank.
+ *     the toggle reveals an inline callout that tells the operator
+ *     the verifier-side configuration is required (allowlist payload
+ *     for source_allowlist, corpus override for citation_verify) and
+ *     offers an "Enable anyway" affordance plus a "Cancel" affordance
+ *     to back out.
+ *
+ *     D60 follow-up: a previous revision rendered a "Configure" link
+ *     that routed to wizard step 6, but the wizard cannot edit the
+ *     verifier-side knobs in question; clicking it landed on a
+ *     screen that COULD NOT configure the thing. The button is gone;
+ *     copy now describes the actual setup surface (verifier config
+ *     file) rather than promising a UI that does not exist.
  *
  * The inline callout intentionally does not block disable: a
  * setup-required prebuilt that is already ON disables with one click,
@@ -33,7 +39,6 @@ export interface PrebuiltToggleProps {
   enabled: boolean
   setupRequired: boolean
   setupHint: string
-  configureHref: string
   action: typeof togglePrebuiltAction
   /** Operator-readable labels for the toggle role=switch. */
   labelOn: string
@@ -41,8 +46,10 @@ export interface PrebuiltToggleProps {
   /** Inline-callout copy. */
   copy: {
     setupRequired: string
-    configure: string
+    setupUnconfigurableHere: string
     enableAnyway: string
+    cancel: string
+    transportError: string
   }
 }
 
@@ -51,7 +58,6 @@ export function PrebuiltToggle({
   enabled,
   setupRequired,
   setupHint,
-  configureHref,
   action,
   labelOn,
   labelOff,
@@ -59,6 +65,12 @@ export function PrebuiltToggle({
 }: PrebuiltToggleProps) {
   const [pending, startTransition] = useTransition()
   const [calloutOpen, setCalloutOpen] = useState(false)
+  // Transport-fault surface. A NEXT_REDIRECT thrown from the server
+  // action is the happy path (Next.js consumes it); any other error
+  // here means the request didn't complete cleanly and the optimistic
+  // flip is about to evaporate. Surfacing the failure prevents the
+  // "phantom revert" trap the original issue describes.
+  const [transportError, setTransportError] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   // Optimistic UI: while the request is in flight, render the target
   // state so the operator sees instant feedback. The server action
@@ -72,9 +84,21 @@ export function PrebuiltToggle({
     const enabledInput = form.elements.namedItem("enabled") as
       HTMLInputElement | null
     if (enabledInput) enabledInput.value = nextEnabled.toString()
+    setTransportError(false)
     startTransition(async () => {
       const fd = new FormData(form)
-      await action(fd)
+      try {
+        await action(fd)
+      } catch (e: unknown) {
+        // Next.js throws an internal `NEXT_REDIRECT` symbol from
+        // server actions that use `redirect()`; that is the SUCCESS
+        // path and must not surface as an error to the operator.
+        // Everything else is a real transport / runtime fault.
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!msg.includes("NEXT_REDIRECT")) {
+          setTransportError(true)
+        }
+      }
     })
   }
 
@@ -95,6 +119,11 @@ export function PrebuiltToggle({
     e.preventDefault()
     setCalloutOpen(false)
     submit(true)
+  }
+
+  const onCancel = (e: MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    setCalloutOpen(false)
   }
 
   return (
@@ -132,13 +161,10 @@ export function PrebuiltToggle({
         >
           <p className="font-semibold mb-1">{copy.setupRequired}</p>
           <p className="mb-2 leading-relaxed">{setupHint}</p>
+          <p className="mb-2 leading-relaxed italic">
+            {copy.setupUnconfigurableHere}
+          </p>
           <div className="flex flex-wrap items-center gap-2">
-            <a
-              href={configureHref}
-              className="rounded-md border border-amber-500/60 bg-white px-2 py-1 font-semibold text-amber-900 hover:bg-amber-100"
-            >
-              {copy.configure}
-            </a>
             <button
               type="button"
               onClick={onEnableAnyway}
@@ -146,8 +172,24 @@ export function PrebuiltToggle({
             >
               {copy.enableAnyway}
             </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-md border border-amber-500/60 bg-white px-2 py-1 font-semibold text-amber-900 hover:bg-amber-100"
+            >
+              {copy.cancel}
+            </button>
           </div>
         </div>
+      )}
+      {transportError && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="max-w-[18rem] text-[11px] text-red-700"
+        >
+          {copy.transportError}
+        </p>
       )}
     </div>
   )

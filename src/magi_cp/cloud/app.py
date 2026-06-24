@@ -2385,6 +2385,86 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     # readable and avoids the FastAPI `:path` greedy-match
     # ambiguity that lets `/policies/prebuilt/...` collide with
     # `/policies/prebuilt/{slug}/enable`.
+    def _revalidate_for_reenable(ov: PolicyOverride) -> str:
+        """D60 follow-up: re-arm gate shared with PATCH /enabled.
+
+        When a stored row is being flipped OFF -> ON we re-resolve the
+        policy against the live verifier registry + descriptor surface,
+        so a row stamped months ago against a now-decommissioned step
+        (or a now-disallowed (trigger.event, step) pairing) raises 409
+        instead of silently shipping a stale enforcement label. This
+        mirrors the PATCH /policies/{id}/enabled handler. The new
+        POST /policies/prebuilt/{slug}/enable surface previously
+        skipped this check on the re-enable branch, opening a
+        two-surface divergence: the same row would 409 via PATCH but
+        succeed via POST.
+
+        Returns the resolved enforcement label for the saved row.
+
+        Raises HTTPException(409) on a registry / lifecycle drift.
+        """
+        from ..policy.step_enforcement import (
+            StepResolutionError, resolve_policy_enforcement,
+        )
+        from ..verifier.descriptors import (
+            validate_policy_against_descriptors,
+        )
+        if not (
+            isinstance(ov.policy, EvidencePolicy)
+            and any(r.kind == "step" for r in ov.policy.requires)
+        ):
+            return ov.enforcement or _resolve_enforcement_for(ov.policy)
+        try:
+            new_enforcement = resolve_policy_enforcement(
+                ov.policy,
+                registry=verifier_registry,
+                vendor_catalog_fn=vendor_catalog,
+            )
+        except StepResolutionError as e:
+            raise HTTPException(
+                409,
+                f"cannot re-enable: backing verifier "
+                f"{e.step!r} no longer registered, "
+                f"re-author with current /verifiers "
+                f"or 'preview:' prefix",
+            ) from e
+        # Lifecycle endorsement drift on the stored body.
+        _trig = getattr(ov.policy, "trigger", None)
+        _event = (
+            getattr(_trig, "event", None)
+            if _trig is not None else None
+        )
+        _step_refs = [
+            r.step for r in ov.policy.requires
+            if r.kind == "step"
+            and isinstance(getattr(r, "step", None), str)
+        ]
+        _drift_issues = (
+            validate_policy_against_descriptors(
+                policy_id=ov.policy.id,
+                trigger_event=_event or "",
+                step_refs=_step_refs,
+            )
+            if isinstance(_event, str) and _event
+            else []
+        )
+        if _drift_issues:
+            _first = _drift_issues[0]
+            raise HTTPException(
+                409,
+                (
+                    f"cannot re-enable: verifier "
+                    f"{_first['step']!r} no longer "
+                    f"fires on "
+                    f"{_first['trigger_event']!r}; "
+                    f"allowed lifecycles: "
+                    f"{_first['allowed_events']!r}, "
+                    f"re-author this policy under one "
+                    f"of those lifecycles"
+                ),
+            )
+        return new_enforcement
+
     @app.post(
         "/policies/prebuilt/{slug}/enable",
         dependencies=[Depends(require_admin_key)],
@@ -2406,47 +2486,71 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                     target = ov
                     break
             if target is not None and target.enabled:
-                # No-op idempotent path.
+                # No-op idempotent path. D60 follow-up: return the
+                # SAVED enforcement label (already on the row), not a
+                # recomputed value, so the response shape matches
+                # what `target.enforcement or _resolve_enforcement_for`
+                # would yield on a fresh read.
+                saved_enforcement = (
+                    target.enforcement
+                    or _resolve_enforcement_for(target.policy)
+                )
                 return {
                     "id": target.policy.id,
                     "enabled": True,
                     "source": target.source,
-                    "enforcement": target.enforcement
-                                  or _resolve_enforcement_for(target.policy),
+                    "enforcement": saved_enforcement,
                     "setup_required": spec.setup_required,
                 }
-            policy = build_prebuilt_evidence_policy(prebuilt_id)
-            assert policy is not None  # spec is not None, so this builds.
-            # Lifecycle endorsement: prebuilts pass the same gate as
-            # any other PUT /policies body so a future descriptor
-            # change can't ship a vacuous gate via the toggle path.
-            _assert_policy_lifecycle_endorsed(policy)
-            enforcement = _resolve_enforcement_for(policy)
             if target is None:
+                # First-time enable: materialize the spec.
+                policy = build_prebuilt_evidence_policy(prebuilt_id)
+                assert policy is not None  # spec is not None, so this builds.
+                # Lifecycle endorsement: prebuilts pass the same gate
+                # as any other PUT /policies body so a future
+                # descriptor change can't ship a vacuous gate via the
+                # toggle path.
+                _assert_policy_lifecycle_endorsed(policy)
+                saved_enforcement = _resolve_enforcement_for(policy)
+                saved_source = "bot"
                 existing.append(PolicyOverride(
                     policy=policy,
-                    source="bot",
+                    source=saved_source,
                     enabled=True,
-                    enforcement=enforcement,
+                    enforcement=saved_enforcement,
                 ))
             else:
                 # Row exists but disabled — re-enable in place so the
                 # operator's IR edits (if any) survive the toggle. The
                 # body itself is preserved by NOT re-materializing
                 # from the spec.
+                # D60 follow-up: re-run the same registry +
+                # lifecycle gates the PATCH /enabled surface uses
+                # for re-arm. Without this, an IR the operator
+                # edited through the wizard (e.g. swapped an
+                # EvidenceReq.kind to a now-deprecated step) could
+                # round-trip ON via the toggle while PATCH rejected
+                # it — splitting truth across two enable surfaces.
+                saved_enforcement = _revalidate_for_reenable(target)
+                _assert_policy_lifecycle_endorsed(target.policy)
+                saved_source = target.source
                 existing = [ov for ov in existing if ov.policy.id != prebuilt_id]
                 existing.append(PolicyOverride(
                     policy=target.policy,
-                    source=target.source,
+                    source=saved_source,
                     enabled=True,
-                    enforcement=target.enforcement or enforcement,
+                    enforcement=saved_enforcement,
                 ))
             store.save(existing)
         return {
             "id": prebuilt_id,
             "enabled": True,
-            "source": "bot",
-            "enforcement": enforcement,
+            # D60 follow-up: bind to the value we actually saved
+            # rather than a freshly-computed local that may not match
+            # `target.enforcement or enforcement` on the re-enable
+            # branch.
+            "source": saved_source,
+            "enforcement": saved_enforcement,
             "setup_required": spec.setup_required,
         }
 
@@ -2462,28 +2566,60 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         dependencies=[Depends(require_admin_key)],
     )
     async def disable_prebuilt_policy(slug: str) -> dict:
-        from ..policy.prebuilt import prebuilt_spec_by_id
+        from ..policy.prebuilt import (
+            build_prebuilt_evidence_policy,
+            prebuilt_spec_by_id,
+        )
         prebuilt_id = f"prebuilt/{slug}"
-        if prebuilt_spec_by_id(prebuilt_id) is None:
+        spec = prebuilt_spec_by_id(prebuilt_id)
+        if spec is None:
             raise HTTPException(404, f"prebuilt {prebuilt_id!r} not found")
         async with policy_lock:
             existing = store.load()
             new_list: list[PolicyOverride] = []
             changed = False
+            target_after: PolicyOverride | None = None
             for ov in existing:
                 if ov.policy.id == prebuilt_id and ov.enabled:
-                    new_list.append(PolicyOverride(
+                    new_ov = PolicyOverride(
                         policy=ov.policy,
                         source=ov.source,
                         enabled=False,
                         enforcement=ov.enforcement,
-                    ))
+                    )
+                    new_list.append(new_ov)
+                    target_after = new_ov
                     changed = True
                 else:
                     new_list.append(ov)
+                    if ov.policy.id == prebuilt_id:
+                        target_after = ov
             if changed:
                 store.save(new_list)
-        return {"id": prebuilt_id, "enabled": False}
+        # D60 follow-up: mirror the enable response envelope so a
+        # non-dashboard client can reconcile local state from the
+        # response body without a refetch. When no row is persisted
+        # (operator never enabled this prebuilt) we fall back to the
+        # spec's defaults so the shape stays the same.
+        if target_after is not None:
+            source = target_after.source
+            enforcement = (
+                target_after.enforcement
+                or _resolve_enforcement_for(target_after.policy)
+            )
+        else:
+            from ..policy.prebuilt import build_prebuilt_evidence_policy
+            fresh_policy = build_prebuilt_evidence_policy(prebuilt_id)
+            assert fresh_policy is not None  # spec is not None.
+            source = "bot"
+            enforcement = _resolve_enforcement_for(fresh_policy)
+        return {
+            "id": prebuilt_id,
+            "enabled": False,
+            "source": source,
+            "enforcement": enforcement,
+            "setup_required": spec.setup_required,
+        }
 
     # D57f-2 — input-rewrite verdict endpoint. Called by the
     # `magi-cp-input-rewrite` shim at PreToolUse time. Routed BEFORE

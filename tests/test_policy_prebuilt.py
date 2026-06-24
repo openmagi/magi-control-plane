@@ -244,6 +244,79 @@ def test_d60_disable_round_trip(client) -> None:
     assert r3.status_code == 200
 
 
+def test_d60_disable_response_shape_matches_enable(client) -> None:
+    """D60 follow-up: DELETE response mirrors POST /enable envelope so
+    non-dashboard callers can reconcile local state from the response
+    body without a refetch. Previously DELETE returned only {id,
+    enabled}; the asymmetry forced a refetch any time a client wanted
+    a fresh `source` / `enforcement` / `setup_required`."""
+    pid = "prebuilt/source-allowlist-webfetch"
+    client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    r = client.delete(f"/policies/{pid}", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert {"id", "enabled", "source", "enforcement", "setup_required"} <= set(
+        body.keys()
+    )
+    assert body["id"] == pid
+    assert body["enabled"] is False
+    # source_allowlist is one of the two setup-required prebuilts.
+    assert body["setup_required"] is True
+
+
+def test_d60_disable_response_shape_when_never_enabled(client) -> None:
+    """D60 follow-up: DELETE on a prebuilt that was never enabled
+    still returns the full envelope (synthesizing source/enforcement
+    from the spec's defaults) rather than carrying only {id, enabled}.
+    The dashboard does not rely on this branch, but a scripted caller
+    that calls DELETE defensively before POST /enable should see the
+    same shape every time."""
+    pid = "prebuilt/structured-output-at-final"
+    r = client.delete(f"/policies/{pid}", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert {"id", "enabled", "source", "enforcement", "setup_required"} <= set(
+        body.keys()
+    )
+    assert body["enabled"] is False
+    assert body["setup_required"] is False  # structured_output is not setup-required
+
+
+def test_d60_enable_idempotent_returns_saved_enforcement(client) -> None:
+    """D60 follow-up: when the row is already enabled the idempotent
+    response carries the SAVED enforcement label rather than a value
+    that's recomputed for a fresh row. Otherwise a non-dashboard
+    caller would see the response diverge from `target.enforcement`
+    on subsequent reads."""
+    pid = "prebuilt/privilege-scan-bash"
+    r1 = client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    saved_enforcement = r1.json()["enforcement"]
+    # Second call returns the same enforcement value.
+    r2 = client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    assert r2.status_code == 200
+    assert r2.json()["enforcement"] == saved_enforcement
+
+
+def test_d60_enable_dashboard_listing_excludes_prebuilt_id(client) -> None:
+    """D60 follow-up: enabling a prebuilt materializes the row into
+    the policy store under a `prebuilt/...` id; the dashboard's
+    user-policies grid filters those out so the row does not render
+    twice (once with the prebuilt toggle, once with the regular
+    policy toggle). This test pins the CLOUD contract that
+    /policies returns the row under that id space so the dashboard
+    filter has a stable predicate; the dashboard-side filter regression
+    lives in the page source-grep test."""
+    pid = "prebuilt/privilege-scan-bash"
+    client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    r = client.get("/policies", headers=ADMIN_HEADERS)
+    listed = [x for x in r.json()["items"] if x["id"] == pid]
+    # The row IS in /policies (the cloud does not partition the id
+    # space). The dashboard is responsible for not rendering it in
+    # the user-policies grid.
+    assert len(listed) == 1
+    assert listed[0]["id"].startswith("prebuilt/")
+
+
 def test_d60_disable_preserves_row_for_reenable(client) -> None:
     """D60: disable is metadata-only — the row stays in the store so
     enabling again does not re-materialize the spec on top of any

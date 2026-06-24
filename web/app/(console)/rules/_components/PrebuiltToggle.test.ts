@@ -15,8 +15,16 @@ import path from "node:path"
  *
  *   2. Clicking the toggle in the setup-required case while the
  *      prebuilt is OFF opens an inline callout instead of submitting.
- *      The callout offers two affordances: "Configure" (Link to the
- *      wizard) and "Enable anyway" (proceeds with the toggle).
+ *      The callout offers two affordances: "Enable anyway" (proceeds
+ *      with the toggle) and "Cancel" (backs out).
+ *
+ *      D60 follow-up: a previous revision rendered a "Configure" link
+ *      that routed to wizard step 6, but the wizard cannot edit the
+ *      verifier-side knobs in question (allowlist payload, citation
+ *      corpus override). Clicking it landed on a screen that could
+ *      not configure the thing. The button was removed; the callout
+ *      now states the verifier-side configuration requirement
+ *      directly.
  *
  *   3. The simple-disable case (setup-required prebuilt that is
  *      already ON) stays one-click — disabling never trips the gate.
@@ -67,18 +75,42 @@ describe("PrebuiltToggle source invariants (D60)", () => {
     expect(src).not.toMatch(/if\s*\(\s*setupRequired\s*\)\s*\{[^}]*setCalloutOpen/)
   })
 
-  it("callout exposes both Configure (Link) and Enable anyway (button)", () => {
-    expect(src).toContain("copy.configure")
+  it("callout exposes Enable anyway + Cancel and NO Configure link", () => {
+    // D60 follow-up: the previous Configure link routed to wizard
+    // step 6 but the wizard cannot edit verifier-side knobs
+    // (allowlist payload, citation corpus override). Shipping a
+    // Configure button that lands on a screen which cannot
+    // configure the thing was worse than no button — it made the
+    // operator think the policy would work after the click. The
+    // callout now offers Enable anyway (proceeds) and Cancel
+    // (backs out), and the verifier-side requirement is stated in
+    // the body copy.
     expect(src).toContain("copy.enableAnyway")
-    // Configure routes to the wizard via the configureHref prop (passed
-    // from page.tsx prebuiltDraftHref); Enable anyway calls submit(true).
-    expect(src).toContain("href={configureHref}")
+    expect(src).toContain("copy.cancel")
     expect(src).toContain("submit(true)")
+    // Configure link / prop must be gone.
+    expect(src).not.toContain("configureHref")
+    expect(src).not.toContain("copy.configure")
   })
 
-  it("renders the setup-required header copy when the callout opens", () => {
+  it("renders the setup-required header + verifier-side-only setup copy", () => {
     expect(src).toContain("copy.setupRequired")
     expect(src).toContain("setupHint")
+    // D60 follow-up: the "this knob lives in the verifier
+    // configuration file" disclosure ships alongside the spec hint
+    // so the operator knows where to actually set it.
+    expect(src).toContain("copy.setupUnconfigurableHere")
+  })
+
+  it("surfaces a transport-fault hint when the server action throws non-redirect", () => {
+    // D60 follow-up: a NEXT_REDIRECT is the SUCCESS path for a
+    // server action that calls `redirect()`; the catch must
+    // distinguish that from a real transport / runtime fault and
+    // only surface the latter to the operator so the optimistic
+    // flip's snap-back has a visible cause.
+    expect(src).toContain("NEXT_REDIRECT")
+    expect(src).toContain("transportError")
+    expect(src).toContain("copy.transportError")
   })
 
   it("uses optimistic UI (checked=!enabled while pending) so the toggle feels instant", () => {

@@ -313,9 +313,50 @@ def _assert_all_validate() -> None:
     Policy.validate() + matrix.validate_combination(). If a future
     matrix tweak makes one of the templates illegal we want to know at
     boot, not at the first dashboard render.
+
+    D60 follow-up: also exercise
+    `validate_policy_against_descriptors`, which is the lifecycle
+    endorsement check the cloud's enable handler runs at request
+    time. The two checks catch different classes of bug:
+
+      - `Policy.validate()` covers structural / matrix correctness.
+      - `validate_policy_against_descriptors` covers
+        (trigger.event, requires[].step) lifecycle endorsement
+        against the descriptor surface — i.e. "does this verifier
+        actually fire on this event?".
+
+    Without the second check, a future spec whose verifier
+    descriptor stops endorsing the spec's lifecycle (descriptor
+    mirror lag, deliberate decommission, etc.) imports cleanly and
+    silently 422s on the operator's first toggle click in
+    production. Boot-time is the right time to surface it.
     """
+    # Local import to keep prebuilt.py importable from contexts that
+    # haven't initialized verifier descriptors yet (the descriptor
+    # module is import-cheap, but ordering matters under reload).
+    from ..verifier.descriptors import (
+        validate_policy_against_descriptors,
+    )
     for spec in _PREBUILT_SPECS:
-        _build_evidence_policy(spec)
+        policy = _build_evidence_policy(spec)
+        issues = validate_policy_against_descriptors(
+            policy_id=policy.id,
+            trigger_event=policy.trigger.event,
+            step_refs=[
+                req.step
+                for req in policy.requires
+                if req.kind == "step"
+                and isinstance(req.step, str)
+            ],
+        )
+        if issues:
+            first = issues[0]
+            raise RuntimeError(
+                f"prebuilt {spec.id!r}: verifier "
+                f"{first['step']!r} does not fire on "
+                f"{first['trigger_event']!r}; allowed: "
+                f"{first['allowed_events']!r}"
+            )
 
 
 _assert_all_validate()
