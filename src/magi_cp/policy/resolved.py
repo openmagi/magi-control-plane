@@ -10,11 +10,17 @@ control-plane:
     consume directly
 """
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
 from typing import Iterable
 
 from .ir import AnyPolicy, EvidencePolicy, Policy
-from .precedence import PolicySource, source_rank
+from .precedence import (
+    LooseningError, PolicySource, source_rank, tighten_against,
+)
+
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -114,3 +120,112 @@ class ResolvedPolicySet:
         for e in self.entries:
             if e.enabled and isinstance(e.policy, EvidencePolicy):
                 yield e.policy
+
+
+# ── P6: tighten-only multi-tier resolver ─────────────────────────────
+#
+# `resolve_by_id` (in precedence.py) keeps only the highest-precedence
+# row per id. That's the v0 model: "session beats user beats org" with
+# no merge. P6 replaces the silent-override semantics with explicit
+# floor + tighten:
+#
+#   1. Start from the highest-precedence row for each id (the "floor").
+#   2. For every lower-precedence row, attempt to tighten the floor.
+#   3. If the lower tier LOOSENS (would widen permissions / drop
+#      requires / weaken action), DROP it with a logged warning. The
+#      floor stands.
+#   4. If the lower tier TIGHTENS, apply the tighten merge and use it
+#      as the new floor for subsequent lower tiers.
+#
+# Input shape: each candidate dict carries at least `id`, `source`, and
+# either `policy` (an AnyPolicy instance) or enough fields to reconstruct
+# one. We deliberately accept the same loose-dict shape as `resolve_by_id`
+# so the cloud REST layer can swap in `resolve_with_tightening` without
+# re-shaping its rows.
+def resolve_with_tightening(candidates: list[dict]) -> dict[str, dict]:
+    """Resolve a multi-source candidate list with tighten-only semantics.
+
+    Returns `{id: candidate_dict}` mirroring `resolve_by_id`. The kept
+    candidate's `policy` field carries the post-tighten merged policy
+    (which may differ from the as-authored input when a lower-tier row
+    contributed a deny / extra requires[] / etc.).
+
+    Loosening attempts are dropped silently from the result and logged
+    at WARNING level so an operator running the resolver in the
+    background can grep for `LooseningError` to see who tried what.
+    Raising would be wrong here — the floor still applies; only the
+    over-reaching override is rejected.
+    """
+    if not candidates:
+        return {}
+
+    # Group by id, sorted highest-precedence first within each group.
+    by_id: dict[str, list[dict]] = {}
+    for c in candidates:
+        by_id.setdefault(c["id"], []).append(c)
+    for cid, group in by_id.items():
+        group.sort(key=lambda c: source_rank(c["source"]))
+
+    out: dict[str, dict] = {}
+    for cid, group in by_id.items():
+        # Issue #1 P6 #9: pick the first tier (highest precedence) that
+        # carries a typed `policy` as the floor. The original behaviour
+        # masked any lower-tier typed policy whenever the top row had
+        # failed to round-trip (e.g. unknown discriminator, deserializer
+        # exception) — no warning, no recursion. Now we walk down,
+        # logging at WARNING when we skip a top tier with no typed
+        # policy so an operator can grep for it. If NO tier has a
+        # typed policy the legacy resolve_by_id behaviour applies (the
+        # top-precedence dict wins as-is).
+        floor_index = None
+        for i, cand in enumerate(group):
+            if cand.get("policy") is not None:
+                floor_index = i
+                break
+        if floor_index is None:
+            # No typed policy anywhere in the group — keep the legacy
+            # "top row wins" behaviour.
+            out[cid] = group[0]
+            continue
+        for skipped in group[:floor_index]:
+            _log.warning(
+                "policy %r: floor candidate from %s-tier missing typed "
+                "policy; falling back to next available tier",
+                cid, skipped["source"],
+            )
+        floor_dict = group[floor_index]
+        merged = floor_dict["policy"]
+        accepted_sources = [floor_dict["source"]]
+        for child_dict in group[floor_index + 1:]:
+            child_policy = child_dict.get("policy")
+            if child_policy is None:
+                continue
+            try:
+                merged = tighten_against(merged, child_policy, strict=True)
+                accepted_sources.append(child_dict["source"])
+            except LooseningError as e:
+                _log.warning(
+                    "policy %r: dropping %s-tier override "
+                    "(loosens %s-tier floor): %s",
+                    cid, child_dict["source"], floor_dict["source"], e,
+                )
+                continue
+            except ValueError as e:
+                # Discriminator mismatch (server / event+matcher /
+                # subagent_type / trigger / archetype). The child
+                # targets a surface the parent floor never covered;
+                # silently drop with a warning so the resolver doesn't
+                # raise mid-loop and lose the rest of the group.
+                _log.warning(
+                    "policy %r: dropping %s-tier override "
+                    "(discriminator mismatch with %s-tier floor): %s",
+                    cid, child_dict["source"], floor_dict["source"], e,
+                )
+                continue
+        # Preserve the floor dict's keys, swap in the merged policy +
+        # an explicit audit trail of which tiers contributed.
+        out_dict = dict(floor_dict)
+        out_dict["policy"] = merged
+        out_dict["tightened_sources"] = tuple(accepted_sources)
+        out[cid] = out_dict
+    return out

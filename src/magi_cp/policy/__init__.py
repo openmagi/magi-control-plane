@@ -10,10 +10,12 @@ from .matrix import (
     matcher_class_of, validate_combination, supported_events,
 )
 from .precedence import (
-    PolicySource, SOURCE_PRECEDENCE, source_rank, more_authoritative,
-    resolve_by_id, tighten_against,
+    LooseningError, PolicySource, SOURCE_PRECEDENCE, is_loosening,
+    more_authoritative, resolve_by_id, source_rank, tighten_against,
 )
-from .resolved import PolicyOverride, ResolvedPolicy, ResolvedPolicySet
+from .resolved import (
+    PolicyOverride, ResolvedPolicy, ResolvedPolicySet, resolve_with_tightening,
+)
 
 __all__ = [
     "Policy", "EvidencePolicy", "Trigger", "EvidenceReq", "load_policy",
@@ -24,6 +26,7 @@ __all__ = [
     "LEGAL_COMBINATIONS", "MatcherClass",
     "matcher_class_of", "validate_combination", "supported_events",
     "PolicySource", "SOURCE_PRECEDENCE", "source_rank", "more_authoritative",
-    "resolve_by_id", "tighten_against",
+    "resolve_by_id", "tighten_against", "is_loosening", "LooseningError",
     "PolicyOverride", "ResolvedPolicy", "ResolvedPolicySet",
+    "resolve_with_tightening",
 ]
