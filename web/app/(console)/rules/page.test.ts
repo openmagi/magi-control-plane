@@ -111,6 +111,33 @@ describe("rules page source invariants (D56e)", () => {
     expect(src).toContain("step=6")
   })
 
+  // ── D60: prebuilt = toggle list ───────────────────────────────
+  it("D60: PrebuiltSection renders the PrebuiltToggle on each card", () => {
+    expect(src).toContain("PrebuiltToggle")
+    expect(src).toContain("togglePrebuiltAction")
+    // The toggle is wired with the enabled / setupRequired / setupHint
+    // fields the cloud now returns. Without these the toggle would
+    // render in the wrong state or skip the inline callout.
+    expect(src).toContain("enabled={p.enabled}")
+    expect(src).toContain("setupRequired={p.setup_required}")
+    expect(src).toContain("setupHint={p.setup_hint}")
+  })
+
+  it("D60: the wizard handoff is kept as a SECONDARY 'Edit before enabling' Link", () => {
+    // The brief explicitly keeps the Edit-before-enabling shortcut as
+    // a secondary affordance so an operator who wants to tweak the IR
+    // still has the wizard path. It must not block the primary toggle.
+    expect(src).toContain("rules.prebuilt.editBefore")
+    expect(src).toContain("prebuiltDraftHref(p)")
+  })
+
+  it("D60: cards visually mark the enabled state with an 'Active' pill", () => {
+    // Operator scans the section and sees at a glance which prebuilts
+    // are on; the pill mirrors the toggle's checked state.
+    expect(src).toContain("rules.prebuilt.active")
+    expect(src).toMatch(/p\.enabled/)
+  })
+
   it("keeps the + New policy CTA on every tab", () => {
     expect(src).toContain("rules.newButton")
     expect(src).toContain('href="/policies/new"')

@@ -53,12 +53,13 @@ from typing import TypedDict
 from .ir import EvidencePolicy, EvidenceReq, Trigger, policy_to_dict
 
 
-class PrebuiltPolicy(TypedDict):
+class PrebuiltPolicy(TypedDict, total=False):
     """One prebuilt policy entry.
 
-    `id`              : short stable slug. Not the saved policy id
-                        (the operator picks that at save time); the
-                        prefill draft inherits it as a starting suggestion.
+    `id`              : short stable slug. With D60 this also doubles as
+                        the saved policy id when the operator flips the
+                        toggle (enable/disable round-trips against the
+                        prebuilt id directly).
     `title`           : operator-facing label, short.
     `summary`         : one-sentence "what this policy does in practice".
                         Plain English; mirrors the i18n strings on the
@@ -66,6 +67,21 @@ class PrebuiltPolicy(TypedDict):
     `verifier_step`   : the step name of the verifier this policy binds.
     `ir`              : the policy IR as a dict (Policy to policy_to_dict).
                         Same shape the PolicyBuilder accepts as a draft.
+    `enabled`         : D60 — true when a saved policy with this prebuilt
+                        id is currently in the store AND its enabled flag
+                        is on. The dashboard renders the toggle from this
+                        bit and POSTs to /policies/prebuilt/{id}/enable to
+                        flip it.
+    `setup_required`  : D60 — true when the prebuilt's IR references
+                        verifier knobs that the operator MUST configure
+                        before the policy does anything useful (e.g.
+                        `source_allowlist` needs an allowlist,
+                        `citation_verify` needs a corpus override). The
+                        dashboard surfaces an inline "needs setup"
+                        callout before letting the operator enable.
+    `setup_hint`      : D60 — short plain-English hint shown next to the
+                        callout, telling the operator WHICH knob to set.
+                        Empty string when `setup_required` is False.
     """
 
     id: str
@@ -73,6 +89,9 @@ class PrebuiltPolicy(TypedDict):
     summary: str
     verifier_step: str
     ir: dict
+    enabled: bool
+    setup_required: bool
+    setup_hint: str
 
 
 @dataclass(frozen=True)
@@ -82,7 +101,12 @@ class _PrebuiltSpec:
     The dataclass holds the parts that vary per row; the
     `_build_evidence_policy` helper assembles the IR with the shared
     defaults (sentinel_re=None, on_signature_invalid="deny",
-    gate_binary=DEFAULT, version="0.1")."""
+    gate_binary=DEFAULT, version="0.1").
+
+    `setup_required` defaults to False; only the two verifiers whose
+    IR carries operator-supplied knobs (source allowlist, citation
+    corpus override) flip it on. `setup_hint` is the short hint copy
+    rendered next to the inline "needs setup" callout."""
 
     id: str
     title: str
@@ -92,6 +116,8 @@ class _PrebuiltSpec:
     matcher: str
     action: str
     verifier_step: str
+    setup_required: bool = False
+    setup_hint: str = ""
 
 
 _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
@@ -115,6 +141,13 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
         matcher="*",
         action="audit",
         verifier_step="citation_verify",
+        setup_required=True,
+        setup_hint=(
+            "Provide a corpus override (the citation corpus this "
+            "tenant should check against). Without it the verifier "
+            "falls back to the empty default and every citation looks "
+            "unknown."
+        ),
     ),
     _PrebuiltSpec(
         id="prebuilt/privilege-scan-bash",
@@ -154,6 +187,12 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
         matcher="WebFetch",
         action="block",
         verifier_step="source_allowlist",
+        setup_required=True,
+        setup_hint=(
+            "Provide the allowlist of domains the agent may fetch "
+            "from. With an empty allowlist this policy blocks every "
+            "WebFetch call, which is rarely what you want."
+        ),
     ),
     _PrebuiltSpec(
         id="prebuilt/structured-output-at-final",
@@ -214,14 +253,24 @@ def _build_evidence_policy(spec: _PrebuiltSpec) -> EvidencePolicy:
     )
 
 
-def all_prebuilt_policies() -> list[PrebuiltPolicy]:
+def all_prebuilt_policies(
+    enabled_ids: set[str] | None = None,
+) -> list[PrebuiltPolicy]:
     """Return the 5 prebuilt policy entries in stable order.
 
     Order matches the brief: citation, privilege, source allowlist,
     structured output, prompt injection. The dashboard renders them in
     the order returned so an operator scanning the section sees the
     same ordering each visit.
+
+    `enabled_ids` is the set of policy ids that are currently saved
+    AND enabled in the tenant policy store. D60 — the toggle on each
+    card reads from this bit. Pass None (default) when only the
+    catalog metadata matters (e.g. catalog tests); the cloud route
+    passes the live store's enabled-id set so the dashboard renders
+    the right toggle state without a second round-trip.
     """
+    ids = enabled_ids or set()
     out: list[PrebuiltPolicy] = []
     for spec in _PREBUILT_SPECS:
         policy = _build_evidence_policy(spec)
@@ -231,8 +280,32 @@ def all_prebuilt_policies() -> list[PrebuiltPolicy]:
             "summary": spec.summary,
             "verifier_step": spec.verifier_step,
             "ir": policy_to_dict(policy),
+            "enabled": spec.id in ids,
+            "setup_required": spec.setup_required,
+            "setup_hint": spec.setup_hint,
         })
     return out
+
+
+def prebuilt_spec_by_id(prebuilt_id: str) -> _PrebuiltSpec | None:
+    """Lookup helper for the enable/disable endpoints. Returns None if
+    the requested id is not in the catalog so the cloud can 404 cleanly
+    rather than synthesizing a policy from an unknown spec."""
+    for spec in _PREBUILT_SPECS:
+        if spec.id == prebuilt_id:
+            return spec
+    return None
+
+
+def build_prebuilt_evidence_policy(prebuilt_id: str) -> EvidencePolicy | None:
+    """Materialize the prebuilt's EvidencePolicy by id. D60 — the cloud
+    POST /policies/prebuilt/{id}/enable route calls this to obtain the
+    policy to persist in the tenant's policy store. None when the id
+    is not in the catalog."""
+    spec = prebuilt_spec_by_id(prebuilt_id)
+    if spec is None:
+        return None
+    return _build_evidence_policy(spec)
 
 
 def _assert_all_validate() -> None:
@@ -248,4 +321,9 @@ def _assert_all_validate() -> None:
 _assert_all_validate()
 
 
-__all__ = ["PrebuiltPolicy", "all_prebuilt_policies"]
+__all__ = [
+    "PrebuiltPolicy",
+    "all_prebuilt_policies",
+    "prebuilt_spec_by_id",
+    "build_prebuilt_evidence_policy",
+]

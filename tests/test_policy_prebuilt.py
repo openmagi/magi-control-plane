@@ -158,6 +158,143 @@ def test_prebuilt_route_not_swallowed_by_path_catchall(client) -> None:
     assert "not found" not in r.text.lower()
 
 
+def test_d60_catalog_carries_enabled_setup_required_setup_hint() -> None:
+    """D60: every prebuilt now ships `enabled`, `setup_required`, and
+    `setup_hint`. Without these the dashboard cannot render the toggle
+    state or the inline "needs setup" callout. The two verifiers whose
+    IR carries operator-supplied knobs (citation corpus override,
+    source allowlist) MUST set `setup_required=True` with a non-empty
+    hint; the other three default to False with empty hint."""
+    items = all_prebuilt_policies()
+    needs_setup = {"prebuilt/citation-verify-at-final",
+                   "prebuilt/source-allowlist-webfetch"}
+    for p in items:
+        assert "enabled" in p
+        assert "setup_required" in p
+        assert "setup_hint" in p
+        # Catalog default (no enabled_ids arg) leaves enabled=False.
+        assert p["enabled"] is False
+        if p["id"] in needs_setup:
+            assert p["setup_required"] is True
+            assert p["setup_hint"].strip() != ""
+        else:
+            assert p["setup_required"] is False
+            assert p["setup_hint"] == ""
+
+
+def test_d60_enable_round_trip(client) -> None:
+    """D60: POST /policies/prebuilt/{id}/enable materializes the
+    template into the tenant policy store. The next GET /policies/
+    prebuilt MUST surface `enabled: true` for that id, and GET /policies
+    MUST list it. Without this round-trip the dashboard toggle would
+    silently lose state on reload."""
+    pid = "prebuilt/privilege-scan-bash"
+    r = client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == pid
+    assert body["enabled"] is True
+    # GET /policies/prebuilt reflects the toggle flip.
+    r2 = client.get("/policies/prebuilt", headers=ADMIN_HEADERS)
+    items = {p["id"]: p for p in r2.json()["items"]}
+    assert items[pid]["enabled"] is True
+    # The other rows stay disabled.
+    for pid2, p in items.items():
+        if pid2 != pid:
+            assert p["enabled"] is False, pid2
+    # The materialized row is visible in /policies too.
+    r3 = client.get("/policies", headers=ADMIN_HEADERS)
+    listed = {x["id"] for x in r3.json()["items"]}
+    assert pid in listed
+
+
+def test_d60_enable_is_idempotent(client) -> None:
+    """D60: enabling an already-enabled prebuilt MUST be a no-op (still
+    200, still enabled=True). Otherwise a double-click on the toggle
+    would 409 / 500 / mutate the row, which is the worst possible UX
+    on a "click to enable" affordance."""
+    pid = "prebuilt/prompt-injection-webfetch"
+    r1 = client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    assert r1.status_code == 200
+    r2 = client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    assert r2.status_code == 200
+    assert r2.json()["enabled"] is True
+    # Single row in the store, not two.
+    r3 = client.get("/policies", headers=ADMIN_HEADERS)
+    listed = [x for x in r3.json()["items"] if x["id"] == pid]
+    assert len(listed) == 1
+
+
+def test_d60_disable_round_trip(client) -> None:
+    """D60: DELETE /policies/prebuilt/{id} flips enabled to False. The
+    row is preserved (not deleted) so a re-enable keeps any IR edits
+    the operator made through the wizard. Idempotent — a second DELETE
+    is a no-op."""
+    pid = "prebuilt/structured-output-at-final"
+    client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    r = client.delete(f"/policies/{pid}", headers=ADMIN_HEADERS)
+    assert r.status_code == 200, r.text
+    assert r.json()["enabled"] is False
+    # Toggle state reflects the disable.
+    r2 = client.get("/policies/prebuilt", headers=ADMIN_HEADERS)
+    items = {p["id"]: p for p in r2.json()["items"]}
+    assert items[pid]["enabled"] is False
+    # Idempotent: second delete also 200.
+    r3 = client.delete(f"/policies/{pid}", headers=ADMIN_HEADERS)
+    assert r3.status_code == 200
+
+
+def test_d60_disable_preserves_row_for_reenable(client) -> None:
+    """D60: disable is metadata-only — the row stays in the store so
+    enabling again does not re-materialize the spec on top of any
+    operator edits. This mirrors PATCH /policies/{id}/enabled."""
+    pid = "prebuilt/privilege-scan-bash"
+    client.post(f"/policies/{pid}/enable", headers=ADMIN_HEADERS)
+    client.delete(f"/policies/{pid}", headers=ADMIN_HEADERS)
+    # Row is still in the listing (just disabled).
+    r = client.get("/policies", headers=ADMIN_HEADERS)
+    listed = {x["id"]: x for x in r.json()["items"]}
+    assert pid in listed
+    assert listed[pid]["enabled"] is False
+
+
+def test_d60_unknown_prebuilt_id_404s(client) -> None:
+    """D60: enable/disable on a slug that is not in the catalog 404s
+    rather than synthesizing a policy from an unknown spec. The
+    dashboard pins the slugs at build time so a 404 indicates a stale
+    bookmark / scripted caller, not a user error."""
+    r1 = client.post("/policies/prebuilt/not-a-real-slug/enable",
+                     headers=ADMIN_HEADERS)
+    assert r1.status_code == 404
+    r2 = client.delete("/policies/prebuilt/not-a-real-slug",
+                       headers=ADMIN_HEADERS)
+    assert r2.status_code == 404
+
+
+def test_d60_prebuilt_enable_requires_admin_key(client) -> None:
+    """D60: the enable/disable endpoints are admin-key gated like the
+    rest of the /policies surface (a tenant-key would let an end user
+    flip arbitrary policies on/off)."""
+    pid = "prebuilt/privilege-scan-bash"
+    r1 = client.post(f"/policies/{pid}/enable")
+    assert r1.status_code == 401
+    r2 = client.delete(f"/policies/{pid}")
+    assert r2.status_code == 401
+
+
+def test_d60_get_prebuilt_endpoint_carries_setup_fields(client) -> None:
+    """D60: GET /policies/prebuilt returns the setup_required and
+    setup_hint fields on every entry (dashboard reads them to render
+    the inline "needs setup" callout)."""
+    r = client.get("/policies/prebuilt", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    for p in items:
+        assert "setup_required" in p
+        assert "setup_hint" in p
+        assert "enabled" in p
+
+
 def test_descriptors_field_checks_paths_resolve_invariant() -> None:
     """D52d invariant survives the D54 description rewrites.
 

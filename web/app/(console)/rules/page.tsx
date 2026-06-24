@@ -20,9 +20,10 @@ import {
   PageHeader,
 } from "@/components/ui"
 import { PolicyToggle } from "./_components/PolicyToggle"
+import { PrebuiltToggle } from "./_components/PrebuiltToggle"
 import { ChecksTab } from "./_components/ChecksTab"
 import { EvidenceTab } from "./_components/EvidenceTab"
-import { togglePolicyAction } from "./actions"
+import { togglePolicyAction, togglePrebuiltAction } from "./actions"
 
 export const dynamic = "force-dynamic"
 
@@ -365,9 +366,18 @@ function PoliciesTab({
   )
 }
 
-/** D54: prebuilt policy templates. Rendered above the operator's own
- * policies so the "this is what the verifier does in practice" mental
- * model lives next to where the operator authors policies. */
+/** D54 / D60: prebuilt policy templates. D60 reframes each row as a
+ * toggle — clicking the toggle calls /policies/prebuilt/{id}/enable
+ * (or DELETE for disable) directly, with no wizard ride. The "Edit
+ * before enabling" Link kept as a secondary path for operators who
+ * want to tweak the IR before saving.
+ *
+ * The card border + "Active" pill mirror the enabled state so the
+ * section reads at a glance — green border = on, neutral border =
+ * off. Setup-required prebuilts (citation_verify, source_allowlist)
+ * surface an inline callout BEFORE flipping the toggle so an
+ * operator doesn't end up with an inert policy because the
+ * allowlist / corpus override was never configured. */
 function PrebuiltSection({
   items, t,
 }: {
@@ -386,43 +396,73 @@ function PrebuiltSection({
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
         {items.map((p) => (
-          <Card key={p.id} className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
-                {t("rules.prebuilt.badge")}
-              </span>
-              <span className="text-sm font-semibold text-[var(--color-text-primary)]">
-                {p.title}
-              </span>
-            </div>
-            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-              {p.summary}
-            </p>
-            <div className="text-[11px] text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
-              <span>
-                {t("rules.prebuilt.verifier")}: <Code>{p.verifier_step}</Code>
-              </span>
-              {p.ir.trigger ? (
-                <span>
-                  {t("policies.trigger")}:{" "}
-                  <Code>{p.ir.trigger.event}</Code>{" · "}
-                  <Code>{p.ir.trigger.matcher}</Code>
-                </span>
-              ) : null}
-              {p.ir.action ? (
-                <span>
-                  {t("rules.prebuilt.action")}: <Code>{p.ir.action}</Code>
-                </span>
-              ) : null}
+          <Card
+            key={p.id}
+            className={`flex flex-col gap-2 ${
+              p.enabled
+                ? "border-emerald-500/60 ring-1 ring-emerald-500/30"
+                : ""
+            }`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
+                    {t("rules.prebuilt.badge")}
+                  </span>
+                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                    {p.title}
+                  </span>
+                  {p.enabled && (
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-800">
+                      {t("rules.prebuilt.active")}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                  {p.summary}
+                </p>
+                <div className="mt-2 text-[11px] text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
+                  <span>
+                    {t("rules.prebuilt.verifier")}: <Code>{p.verifier_step}</Code>
+                  </span>
+                  {p.ir.trigger ? (
+                    <span>
+                      {t("policies.trigger")}:{" "}
+                      <Code>{p.ir.trigger.event}</Code>{" · "}
+                      <Code>{p.ir.trigger.matcher}</Code>
+                    </span>
+                  ) : null}
+                  {p.ir.action ? (
+                    <span>
+                      {t("rules.prebuilt.action")}: <Code>{p.ir.action}</Code>
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <PrebuiltToggle
+                prebuiltId={p.id}
+                enabled={p.enabled}
+                setupRequired={p.setup_required}
+                setupHint={p.setup_hint}
+                configureHref={prebuiltDraftHref(p)}
+                action={togglePrebuiltAction}
+                labelOn={t("rules.prebuilt.disable", { title: p.title })}
+                labelOff={t("rules.prebuilt.enable", { title: p.title })}
+                copy={{
+                  setupRequired: t("rules.prebuilt.setupRequired"),
+                  configure: t("rules.prebuilt.configure"),
+                  enableAnyway: t("rules.prebuilt.enableAnyway"),
+                }}
+              />
             </div>
             <div className="mt-1">
               <Link
                 href={prebuiltDraftHref(p)}
                 aria-label={t("rules.prebuilt.useThis.aria", { title: p.title })}
+                className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline"
               >
-                <Button variant="secondary" size="sm">
-                  {t("rules.prebuilt.useThis")}
-                </Button>
+                {t("rules.prebuilt.editBefore")}
               </Link>
             </div>
           </Card>

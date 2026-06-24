@@ -2348,15 +2348,142 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     # information was crammed onto the Verifiers tab as policy-decision
     # language on each verifier card; D54 moves it here so the
     # verifier=function vs policy=composition distinction stays clean
-    # in the dashboard. Operators review the prebuilt and save it via
-    # the regular /policies POST — nothing here is auto-installed.
+    # in the dashboard. D60 reframes the section as a toggle list:
+    # GET returns `enabled` so the dashboard can render the toggle
+    # state, POST /enable materializes the prebuilt's IR as a saved
+    # policy with the prebuilt id, DELETE disables it. Editing through
+    # the wizard stays available as a secondary path.
     #
     # Routed BEFORE the `/policies/{policy_id:path}` catch-all so the
     # literal `prebuilt` path doesn't get swallowed as a policy id.
     @app.get("/policies/prebuilt", dependencies=[Depends(require_admin_key)])
     def list_prebuilt_policies() -> dict:
         from ..policy.prebuilt import all_prebuilt_policies
-        return {"items": all_prebuilt_policies()}
+        # Only mark `enabled` when the on-disk row is both present AND
+        # carries the `enabled` flag set to true. A row that was
+        # disabled (toggle off via PATCH /enabled) but still present
+        # in the store should render as off, not on, so the toggle is
+        # the operator's source of truth.
+        enabled_ids = {
+            ov.policy.id for ov in store.load() if ov.enabled
+        }
+        return {"items": all_prebuilt_policies(enabled_ids=enabled_ids)}
+
+    # D60: enable a prebuilt template as a saved policy. Idempotent —
+    # enabling an already-enabled prebuilt is a no-op (returns the
+    # current saved row). When a row with the prebuilt's id exists
+    # but is disabled, this re-enables it without rewriting the
+    # policy body so any operator-side edits to the IR (description
+    # tweak, allowlist value) survive the toggle.
+    #
+    # URL design: the prebuilt slug carries a `prebuilt/` prefix in
+    # the catalog (e.g. `prebuilt/citation-verify-at-final`). The
+    # route path already contains the static `prebuilt/` segment, so
+    # the `{slug}` URL parameter only carries the suffix
+    # (`citation-verify-at-final`). The handler re-attaches the
+    # prefix when looking up the spec. This keeps the URL short and
+    # readable and avoids the FastAPI `:path` greedy-match
+    # ambiguity that lets `/policies/prebuilt/...` collide with
+    # `/policies/prebuilt/{slug}/enable`.
+    @app.post(
+        "/policies/prebuilt/{slug}/enable",
+        dependencies=[Depends(require_admin_key)],
+    )
+    async def enable_prebuilt_policy(slug: str) -> dict:
+        from ..policy.prebuilt import (
+            build_prebuilt_evidence_policy,
+            prebuilt_spec_by_id,
+        )
+        prebuilt_id = f"prebuilt/{slug}"
+        spec = prebuilt_spec_by_id(prebuilt_id)
+        if spec is None:
+            raise HTTPException(404, f"prebuilt {prebuilt_id!r} not found")
+        async with policy_lock:
+            existing = store.load()
+            target: PolicyOverride | None = None
+            for ov in existing:
+                if ov.policy.id == prebuilt_id:
+                    target = ov
+                    break
+            if target is not None and target.enabled:
+                # No-op idempotent path.
+                return {
+                    "id": target.policy.id,
+                    "enabled": True,
+                    "source": target.source,
+                    "enforcement": target.enforcement
+                                  or _resolve_enforcement_for(target.policy),
+                    "setup_required": spec.setup_required,
+                }
+            policy = build_prebuilt_evidence_policy(prebuilt_id)
+            assert policy is not None  # spec is not None, so this builds.
+            # Lifecycle endorsement: prebuilts pass the same gate as
+            # any other PUT /policies body so a future descriptor
+            # change can't ship a vacuous gate via the toggle path.
+            _assert_policy_lifecycle_endorsed(policy)
+            enforcement = _resolve_enforcement_for(policy)
+            if target is None:
+                existing.append(PolicyOverride(
+                    policy=policy,
+                    source="bot",
+                    enabled=True,
+                    enforcement=enforcement,
+                ))
+            else:
+                # Row exists but disabled — re-enable in place so the
+                # operator's IR edits (if any) survive the toggle. The
+                # body itself is preserved by NOT re-materializing
+                # from the spec.
+                existing = [ov for ov in existing if ov.policy.id != prebuilt_id]
+                existing.append(PolicyOverride(
+                    policy=target.policy,
+                    source=target.source,
+                    enabled=True,
+                    enforcement=target.enforcement or enforcement,
+                ))
+            store.save(existing)
+        return {
+            "id": prebuilt_id,
+            "enabled": True,
+            "source": "bot",
+            "enforcement": enforcement,
+            "setup_required": spec.setup_required,
+        }
+
+    # D60: disable a prebuilt template. Idempotent — disabling an
+    # already-disabled (or absent) prebuilt is a no-op. We KEEP the
+    # row in the store on disable rather than deleting it so the
+    # operator's IR edits survive a disable + re-enable round-trip.
+    # This matches the PATCH /enabled pattern (toggle is
+    # metadata-only). Slug shape matches the enable route — see the
+    # comment above for the URL design rationale.
+    @app.delete(
+        "/policies/prebuilt/{slug}",
+        dependencies=[Depends(require_admin_key)],
+    )
+    async def disable_prebuilt_policy(slug: str) -> dict:
+        from ..policy.prebuilt import prebuilt_spec_by_id
+        prebuilt_id = f"prebuilt/{slug}"
+        if prebuilt_spec_by_id(prebuilt_id) is None:
+            raise HTTPException(404, f"prebuilt {prebuilt_id!r} not found")
+        async with policy_lock:
+            existing = store.load()
+            new_list: list[PolicyOverride] = []
+            changed = False
+            for ov in existing:
+                if ov.policy.id == prebuilt_id and ov.enabled:
+                    new_list.append(PolicyOverride(
+                        policy=ov.policy,
+                        source=ov.source,
+                        enabled=False,
+                        enforcement=ov.enforcement,
+                    ))
+                    changed = True
+                else:
+                    new_list.append(ov)
+            if changed:
+                store.save(new_list)
+        return {"id": prebuilt_id, "enabled": False}
 
     # D57f-2 — input-rewrite verdict endpoint. Called by the
     # `magi-cp-input-rewrite` shim at PreToolUse time. Routed BEFORE

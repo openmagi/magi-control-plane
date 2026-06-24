@@ -335,6 +335,19 @@ export type PrebuiltPolicyEntry = {
   summary: string
   verifier_step: string
   ir: PolicyBody
+  /** D60 — true when a saved policy with this prebuilt's id is
+   * currently in the policy store AND its enabled flag is on. The
+   * dashboard renders the toggle from this bit. */
+  enabled: boolean
+  /** D60 — true when the prebuilt's IR references verifier knobs the
+   * operator MUST configure before the policy is useful (allowlist
+   * domains, citation corpus). The dashboard surfaces an inline
+   * "needs setup" callout before letting the operator enable. */
+  setup_required: boolean
+  /** D60 — short plain-English hint copy shown next to the inline
+   * "needs setup" callout. Empty string when `setup_required` is
+   * false. */
+  setup_hint: string
 }
 
 type HitlListResp = { items: HitlItem[] }
@@ -484,6 +497,43 @@ export const cloud = {
     _fetch<{ items: PrebuiltPolicyEntry[] }>(
       "/policies/prebuilt", { method: "GET", keyType: "admin" },
     ).then(d => d.items),
+
+  /** D60: enable a prebuilt template as a saved policy.
+   *
+   * The toggle on each prebuilt card POSTs here. Idempotent on the
+   * cloud (a second click while a request is in flight or after one
+   * has resolved returns the same 200 + enabled=true). The cloud
+   * uses the prebuilt's own id as the saved policy id so re-enabling
+   * after a disable preserves any operator edits to the IR.
+   *
+   * `prebuiltId` is the full id ("prebuilt/<slug>"). We strip the
+   * `prebuilt/` prefix at the URL boundary so the cloud route can
+   * use a plain segment match instead of FastAPI `:path`. */
+  enablePrebuilt: (
+    prebuiltId: string,
+  ): Promise<{ id: string; enabled: boolean; source: string;
+                enforcement: string; setup_required: boolean }> => {
+    const slug = prebuiltId.startsWith("prebuilt/")
+      ? prebuiltId.slice("prebuilt/".length)
+      : prebuiltId
+    return _fetch(`/policies/prebuilt/${encodeURIComponent(slug)}/enable`, {
+      method: "POST", keyType: "admin",
+    })
+  },
+
+  /** D60: disable a prebuilt template. The cloud keeps the row in
+   * the store with `enabled=false` (rather than deleting it) so a
+   * re-enable preserves any operator edits. Idempotent. */
+  disablePrebuilt: (
+    prebuiltId: string,
+  ): Promise<{ id: string; enabled: boolean }> => {
+    const slug = prebuiltId.startsWith("prebuilt/")
+      ? prebuiltId.slice("prebuilt/".length)
+      : prebuiltId
+    return _fetch(`/policies/prebuilt/${encodeURIComponent(slug)}`, {
+      method: "DELETE", keyType: "admin",
+    })
+  },
 
   getPolicy: (id: string): Promise<PolicyDetail> =>
     _fetch<PolicyDetail>(`/policies/${_encId(id)}`, { method: "GET", keyType: "admin" }),

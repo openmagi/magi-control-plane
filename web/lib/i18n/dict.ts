@@ -465,6 +465,15 @@ const KO_RAW = {
   "rules.prebuilt.action": "Action",
   "rules.prebuilt.useThis": "Use this",
   "rules.prebuilt.useThis.aria": "{title} 프리빌트 정책을 raw 에디터에서 열기",
+  /* D60: 프리빌트 = 토글 리스트. 위저드 핸드오프(\"수정 후 활성화\")는 보조 동선으로 남기고,
+     기본 동선은 카드 우측 토글로 즉시 enable/disable. */
+  "rules.prebuilt.enable": "{title} 활성화",
+  "rules.prebuilt.disable": "{title} 비활성화",
+  "rules.prebuilt.editBefore": "수정 후 활성화 →",
+  "rules.prebuilt.active": "활성",
+  "rules.prebuilt.setupRequired": "활성화 전에 추가 설정이 필요합니다",
+  "rules.prebuilt.configure": "설정 열기",
+  "rules.prebuilt.enableAnyway": "그래도 활성화",
   "rules.newVerifierButton": "새 verifier",
   "rules.verifier.expander.toggle": "세부 정보",
   "rules.verifier.expander.toggleWithStep": "{step} verifier 세부 정보",
@@ -1103,6 +1112,16 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.action": "Action",
   "rules.prebuilt.useThis": "Use this",
   "rules.prebuilt.useThis.aria": "Open the {title} prebuilt policy in the raw editor",
+  /* D60: prebuilt = toggle list. The "Use this" wizard handoff is
+   * kept as a secondary affordance ("Edit before enabling"); the
+   * primary action is the toggle on each card. */
+  "rules.prebuilt.enable": "Enable {title}",
+  "rules.prebuilt.disable": "Disable {title}",
+  "rules.prebuilt.editBefore": "Edit before enabling →",
+  "rules.prebuilt.active": "Active",
+  "rules.prebuilt.setupRequired": "Needs setup before it does anything",
+  "rules.prebuilt.configure": "Configure",
+  "rules.prebuilt.enableAnyway": "Enable anyway",
   "rules.newVerifierButton": "New verifier",
   "rules.verifier.expander.toggle": "Details",
   "rules.verifier.expander.toggleWithStep": "{step} verifier details",
