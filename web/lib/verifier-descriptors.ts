@@ -67,6 +67,22 @@ export type FieldCheck = {
   check_description: string
 }
 
+/** D57c: input-assembly contract.
+ *
+ *   `cc_stdin` (default) — the runtime forwards the CC stdin envelope
+ *     to the verifier as its input dict. The field_checks tree
+ *     describes CC stdin payload paths the verifier reads.
+ *
+ *   `caller_assembled` — the verifier's run() reads from its OWN
+ *     input dict (e.g. `{citations: [...]}` for citation_verify). A
+ *     wrapper outside the verifier (recipe, prompt step, regex
+ *     post-processor) builds that dict and POSTs it; the cloud does
+ *     NOT forward CC stdin paths into the verifier. The field_checks
+ *     tree then describes the verifier's own input dict shape, not
+ *     CC stdin paths.
+ */
+export type InputAssembly = "cc_stdin" | "caller_assembled"
+
 export type VerifierDescriptor = {
   step: string
   triggers: TriggerSpec[]
@@ -82,6 +98,12 @@ export type VerifierDescriptor = {
    * an older mirror copy) is a structural signal the dashboard renders
    * as "this verifier is in preview mode" instead of an empty tree. */
   field_checks?: FieldCheck[]
+  /** D57c: input-assembly contract. Optional so older mirror copies
+   * degrade gracefully to the default cc_stdin. */
+  input_assembly?: InputAssembly
+  /** D57c: caller-side assembly explainer for caller_assembled
+   * verifiers. Empty or missing on cc_stdin rows. */
+  caller_assembly_hint?: string
 }
 
 const COMMON_OUTPUT_FIELDS: EvidenceField[] = [
@@ -120,6 +142,13 @@ const COMMON_OUTPUT_FIELDS: EvidenceField[] = [
 const REGISTRY: Record<string, VerifierDescriptor> = {
   citation_verify: {
     step: "citation_verify",
+    input_assembly: "caller_assembled",
+    caller_assembly_hint:
+      "The caller parses the agent's answer into " +
+      "{citations: [{quote, ref}, ...]} and POSTs it to the " +
+      "verifier. The cloud does not forward CC stdin paths into " +
+      "this verifier — wire the assembly in a recipe / prompt " +
+      "step before the verifier runs.",
     triggers: [
       {
         event: "Stop",
@@ -186,6 +215,7 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   privilege_scan: {
     step: "privilege_scan",
+    input_assembly: "cc_stdin",
     triggers: [
       {
         event: "PreToolUse",
@@ -234,6 +264,7 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   source_allowlist: {
     step: "source_allowlist",
+    input_assembly: "cc_stdin",
     triggers: [
       {
         event: "PreToolUse",
@@ -278,6 +309,13 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
   },
   structured_output: {
     step: "structured_output",
+    input_assembly: "caller_assembled",
+    caller_assembly_hint:
+      "The caller extracts the JSON payload to validate (e.g. a " +
+      "fenced JSON block in the agent's answer, or a tool " +
+      "response body pre-parsed by a wrapper) and POSTs " +
+      "{json | data, schema} to the verifier. The cloud does " +
+      "not auto-forward CC stdin into this verifier.",
     triggers: [
       {
         event: "Stop",
@@ -311,21 +349,32 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     verdict_set: ["pass", "deny"],
     output_evidence: COMMON_OUTPUT_FIELDS,
+    // D57c: structured_output is caller-assembled. Field checks
+    // describe the verifier's OWN input dict shape (`json` / `data` /
+    // `schema`) rather than CC stdin paths the cloud would forward —
+    // because the cloud does not forward CC stdin into this verifier.
+    // A recipe / wrapper extracts the payload to validate and POSTs it.
     field_checks: [
       {
-        path: "tool_response.output",
+        path: "json",
         check_description:
-          "tool response body parses as JSON and matches the JSON schema (PostToolUse=tool)",
+          "JSON-encoded payload the caller extracted (e.g. a fenced ```json block in the agent's answer); parses + matches schema",
       },
       {
-        path: "final_message",
+        path: "data",
         check_description:
-          "agent's final answer parses as JSON and matches the JSON schema (Stop=final)",
+          "pre-parsed payload alternative to `json`; the caller (tool-response wrapper) hands the dict in",
+      },
+      {
+        path: "schema",
+        check_description:
+          "JSON-Schema subset (type/required/enum/properties/items); bound to the policy at compile time",
       },
     ],
   },
   prompt_injection_screen: {
     step: "prompt_injection_screen",
+    input_assembly: "cc_stdin",
     triggers: [
       {
         event: "UserPromptSubmit",

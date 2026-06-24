@@ -69,6 +69,10 @@ export type TriggerRow = { event: string; matcher_class: "tool" | "no_tool" | "f
  * `CustomVerifierFieldCheck` server-side. */
 export type FieldCheckRow = { path: string; check_description: string }
 
+/** D57c: input-assembly contract. See lib/verifier-descriptors.ts +
+ * custom_verifier_store.InputAssembly for the prose. */
+export type InputAssemblyValue = "cc_stdin" | "caller_assembled"
+
 /** Internal row carries a stable id so React identity + DOM ids are
  * tied to the row content, not its position in the array. Stripped
  * before serializing into the payload (`event` + `matcher_class` only). */
@@ -79,6 +83,9 @@ type InternalFieldCheckRow = FieldCheckRow & { _id: string }
 
 const MAX_FIELD_CHECK_PATH_LEN = 128
 const MAX_FIELD_CHECK_DESC_LEN = 200
+/** D57c: caller_assembly_hint character cap. Matches
+ * `_MAX_CALLER_ASSEMBLY_HINT_LEN` server-side. */
+const MAX_CALLER_ASSEMBLY_HINT_LEN = 500
 
 interface Props {
   labels: {
@@ -111,6 +118,19 @@ interface Props {
     fieldCheckAdd: string
     fieldCheckRemove: string
     errFieldChecks: string
+    // D57c: input_assembly select + caller_assembly_hint textarea
+    // labels.
+    inputAssembly: string
+    inputAssemblyHelper: string
+    inputAssemblyCcStdin: string
+    inputAssemblyCcStdinHelper: string
+    inputAssemblyCallerAssembled: string
+    inputAssemblyCallerAssembledHelper: string
+    callerAssemblyHint: string
+    callerAssemblyHintHelper: string
+    callerAssemblyHintPlaceholder: string
+    errCallerAssemblyHint: string
+    errCallerAssemblyHintOnCcStdin: string
   }
   initial?: {
     name?: string
@@ -118,6 +138,8 @@ interface Props {
     triggers?: TriggerRow[]
     verdict_set?: ReadonlyArray<string>
     field_checks?: FieldCheckRow[]
+    input_assembly?: InputAssemblyValue
+    caller_assembly_hint?: string
   }
 }
 
@@ -147,6 +169,17 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         : [{ path: "", check_description: "" }]
     return seed.map((r) => ({ ...r, _id: _genRowId() }))
   })
+  // D57c: input_assembly + caller_assembly_hint state. Defaults to
+  // cc_stdin so authors of a standalone verifier do not need to
+  // touch this section at all; switching to caller_assembled
+  // surfaces the hint textarea inline (a recipe-driven verifier
+  // needs the explainer to be useful).
+  const [inputAssembly, setInputAssembly] = useState<InputAssemblyValue>(
+    initial?.input_assembly ?? "cc_stdin",
+  )
+  const [callerAssemblyHint, setCallerAssemblyHint] = useState<string>(
+    initial?.caller_assembly_hint ?? "",
+  )
 
   // D52d follow-up (a11y, WCAG 2.4.3 + 2.4.7): after the operator
   // clicks "Add check" or "Add trigger", focus has to move INTO the
@@ -250,8 +283,28 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     return null
   }, [fieldChecks, labels])
 
+  // D57c: caller_assembled rows MUST carry a 1-500 char explainer;
+  // cc_stdin rows MUST leave it blank (server re-validates the same
+  // pair). The error visibility gate behaves like the other inputs:
+  // surface on blur / first edit / submit attempt.
+  const [touchedHint, setTouchedHint] = useState(false)
+  const callerAssemblyHintError = useMemo(() => {
+    const trimmed = callerAssemblyHint.trim()
+    if (inputAssembly === "caller_assembled") {
+      if (!trimmed) return labels.errCallerAssemblyHint
+      if (callerAssemblyHint.length > MAX_CALLER_ASSEMBLY_HINT_LEN) {
+        return labels.errCallerAssemblyHint
+      }
+    } else {
+      if (trimmed) return labels.errCallerAssemblyHintOnCcStdin
+    }
+    return null
+  }, [inputAssembly, callerAssemblyHint, labels])
+  const showCallerAssemblyHintError =
+    (touchedHint || submitAttempted) && !!callerAssemblyHintError
+
   const canSubmit = !nameError && !descriptionError && !triggersError
-    && !verdictError && !fieldChecksError
+    && !verdictError && !fieldChecksError && !callerAssemblyHintError
 
   const payload = JSON.stringify({
     name,
@@ -268,6 +321,11 @@ export default function VerifierFormClient({ labels, initial }: Props) {
       path: path.trim(),
       check_description: check_description.trim(),
     })),
+    // D57c: forward the (input_assembly, caller_assembly_hint) pair.
+    // The hint is trimmed to match the server invariant (cc_stdin
+    // rows MUST leave it blank, not "blank with whitespace").
+    input_assembly: inputAssembly,
+    caller_assembly_hint: callerAssemblyHint.trim(),
   })
 
   return (
@@ -754,6 +812,107 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         )}
       </div>
 
+      {/* D57c: input_assembly select + caller_assembly_hint textarea.
+          Two radio-card options (cc_stdin / caller_assembled) so the
+          contract is visually distinguished from a generic enum
+          dropdown — the brief explicitly calls this out as a "How
+          does this verifier get its input?" question, not a
+          plumbing-tax field. caller_assembled reveals the explainer
+          textarea immediately so the operator does not have to find
+          a separate spot for the prose. */}
+      <div
+        className="space-y-1.5"
+        data-testid="input-assembly-section"
+        role="group"
+        aria-labelledby="input-assembly-label"
+        aria-describedby="input-assembly-helper"
+      >
+        <span
+          id="input-assembly-label"
+          className="block text-xs font-semibold text-[var(--color-text-secondary)]"
+        >
+          {labels.inputAssembly}
+          <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
+        </span>
+        <p id="input-assembly-helper" className="text-[11px] text-[var(--color-text-tertiary)]">
+          {labels.inputAssemblyHelper}
+        </p>
+        <div className="space-y-2" role="radiogroup" aria-labelledby="input-assembly-label">
+          <InputAssemblyOption
+            value="cc_stdin"
+            selected={inputAssembly === "cc_stdin"}
+            label={labels.inputAssemblyCcStdin}
+            helper={labels.inputAssemblyCcStdinHelper}
+            onSelect={() => {
+              setInputAssembly("cc_stdin")
+              // Clear the hint when switching back to cc_stdin so
+              // the server-side "cc_stdin rows must leave the hint
+              // blank" invariant holds without the operator having
+              // to wipe the textarea manually.
+              setCallerAssemblyHint("")
+              if (!touchedHint) setTouchedHint(true)
+            }}
+          />
+          <InputAssemblyOption
+            value="caller_assembled"
+            selected={inputAssembly === "caller_assembled"}
+            label={labels.inputAssemblyCallerAssembled}
+            helper={labels.inputAssemblyCallerAssembledHelper}
+            onSelect={() => {
+              setInputAssembly("caller_assembled")
+              if (!touchedHint) setTouchedHint(true)
+            }}
+          />
+        </div>
+        {inputAssembly === "caller_assembled" && (
+          <div
+            data-testid="caller-assembly-hint-row"
+            className="mt-2 space-y-1.5 rounded-md border border-[var(--color-review-fg,#b45309)]/30 bg-[var(--color-review-bg,#fffbeb)]/60 p-3"
+          >
+            <label
+              htmlFor="caller-assembly-hint"
+              className="block text-xs font-semibold text-[var(--color-text-secondary)]"
+            >
+              {labels.callerAssemblyHint}
+              <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
+            </label>
+            <textarea
+              id="caller-assembly-hint"
+              value={callerAssemblyHint}
+              maxLength={MAX_CALLER_ASSEMBLY_HINT_LEN}
+              rows={3}
+              onChange={(e) => {
+                setCallerAssemblyHint(e.target.value)
+                if (!touchedHint) setTouchedHint(true)
+              }}
+              onBlur={() => setTouchedHint(true)}
+              aria-invalid={showCallerAssemblyHintError ? "true" : undefined}
+              aria-describedby={[
+                showCallerAssemblyHintError ? "caller-assembly-hint-error" : null,
+                "caller-assembly-hint-helper",
+              ].filter(Boolean).join(" ")}
+              placeholder={labels.callerAssemblyHintPlaceholder}
+              className="block w-full rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-input)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+            />
+            <p
+              id="caller-assembly-hint-helper"
+              className="text-[11px] text-[var(--color-text-tertiary)]"
+            >
+              {labels.callerAssemblyHintHelper} ({callerAssemblyHint.length}/{MAX_CALLER_ASSEMBLY_HINT_LEN})
+            </p>
+            {showCallerAssemblyHintError && callerAssemblyHintError && (
+              <p
+                id="caller-assembly-hint-error"
+                role="alert"
+                className="text-[11px] text-[var(--color-deny-fg)]"
+              >
+                {callerAssemblyHintError}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* body type (locked to preview in v1) */}
       <div className="space-y-1.5">
         <span className="block text-xs font-semibold text-[var(--color-text-secondary)]">
@@ -784,5 +943,58 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         </button>
       </div>
     </div>
+  )
+}
+
+/** D57c: one of the two `input_assembly` radio cards. Renders as a
+ * label-wrapped radio so a click anywhere on the card selects the
+ * option; the visually-hidden native radio is the keyboard-focusable
+ * element so a screen reader announces "radiogroup, X selected" /
+ * "Y not selected" as expected. */
+function InputAssemblyOption({
+  value, selected, label, helper, onSelect,
+}: {
+  value: InputAssemblyValue
+  selected: boolean
+  label: string
+  helper: string
+  onSelect: () => void
+}) {
+  return (
+    <label
+      data-testid={`input-assembly-option-${value}`}
+      className={`block cursor-pointer rounded-md border p-2.5 focus-within:ring-2 focus-within:ring-[var(--color-border-focus)] focus-within:ring-offset-1 ${
+        selected
+          ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.06]"
+          : "border-[var(--color-border-strong)] bg-white hover:bg-black/[0.02]"
+      }`}
+    >
+      <span className="flex items-baseline gap-2">
+        <input
+          type="radio"
+          name="input-assembly"
+          value={value}
+          checked={selected}
+          onChange={onSelect}
+          className="sr-only"
+        />
+        <span
+          aria-hidden
+          className={`inline-block h-3 w-3 flex-shrink-0 translate-y-[1px] rounded-full border-2 ${
+            selected
+              ? "border-[var(--color-accent)] bg-[var(--color-accent)]"
+              : "border-[var(--color-border-strong)] bg-white"
+          }`}
+        />
+        <span className="block">
+          <span className="block text-xs font-semibold text-[var(--color-text-primary)]">
+            {label}
+          </span>
+          <span className="mt-0.5 block text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
+            {helper}
+          </span>
+        </span>
+      </span>
+    </label>
   )
 }

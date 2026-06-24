@@ -175,4 +175,53 @@ describe("VerifierExpander source invariants", () => {
     // never visually contradicts a stale count.
     expect(src).toMatch(/initialCount=\{count\}/)
   })
+
+  /* ─── D57c: input_assembly panel + caller-assembled notice ──── */
+  it("D57c: renders the input-assembly panel for every descriptor", () => {
+    // The panel sits above the field_checks tree and reads off the
+    // descriptor's input_assembly. Both branches (cc_stdin /
+    // caller_assembled) render so the operator sees a positive
+    // statement either way.
+    expect(src).toContain("verifier-expander-input-assembly")
+    expect(src).toContain("rules.verifier.expander.inputAssembly")
+  })
+
+  it("D57c: caller-assembled branch renders an amber notice with the hint", () => {
+    // The caller_assembled branch uses an aria-marked notice block so
+    // a screen-reader user does not miss the contract. The hint prose
+    // renders inline; the fallback string surfaces when the descriptor
+    // does not carry a hint (defensive — built-ins all carry one).
+    expect(src).toContain("verifier-expander-input-assembly-caller-notice")
+    expect(src).toMatch(/role=["']note["']/)
+    expect(src).toContain("rules.verifier.expander.inputAssembly.callerAssembledBadge")
+    expect(src).toContain("rules.verifier.expander.inputAssembly.callerAssembledLabel")
+  })
+
+  it("D57c: cc_stdin branch renders a one-line muted affirmation", () => {
+    expect(src).toContain("verifier-expander-input-assembly-cc-stdin-note")
+    expect(src).toContain("rules.verifier.expander.inputAssembly.ccStdinNote")
+  })
+
+  it("D57c: field_checks heading swaps for caller-assembled rows", () => {
+    // The catalog distinguishes "CC stdin paths" (cc_stdin) from
+    // "Verifier's input dict shape" (caller_assembled). Both i18n
+    // keys must be referenced so the parity gate keeps them in sync.
+    expect(src).toContain("rules.verifier.expander.fieldChecks")
+    expect(src).toContain("rules.verifier.expander.fieldChecks.callerAssembled")
+  })
+
+  it("D57c: accepts overrides so custom rows surface authored assembly metadata", () => {
+    // ChecksTab forwards the row-level (input_assembly,
+    // caller_assembly_hint) pair onto custom catalog rows so the
+    // expander renders the same notice it would for a built-in. Lock
+    // the prop names so a future refactor does not silently drop them.
+    expect(src).toContain("inputAssemblyOverride")
+    expect(src).toContain("callerAssemblyHintOverride")
+  })
+
+  it("D57c: resolved input_assembly defaults to cc_stdin when neither side supplies a value", () => {
+    // Falls back to cc_stdin when nothing is supplied — the pre-D57c
+    // implicit assumption — instead of throwing or rendering "??".
+    expect(src).toMatch(/inputAssembly:\s*InputAssembly\s*=[\s\S]*?"cc_stdin"/)
+  })
 })

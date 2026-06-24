@@ -149,6 +149,11 @@ export function ChecksTab({
                     source={row.kind === "builtin" ? "builtin" : "custom"}
                     enforcement={row.kind === "builtin" ? "enforcing" : "preview"}
                     fieldChecksOverride={row.kind === "custom" ? row.field_checks : undefined}
+                    // D57c: forward the row-level input-assembly pair
+                    // for custom rows. Built-in rows let the
+                    // descriptor mirror resolve the same fields.
+                    inputAssemblyOverride={row.kind === "custom" ? row.input_assembly : undefined}
+                    callerAssemblyHintOverride={row.kind === "custom" ? row.caller_assembly_hint : undefined}
                   />
                 ) : (
                   <InlineBodyPanel body={row.body} t={t} />

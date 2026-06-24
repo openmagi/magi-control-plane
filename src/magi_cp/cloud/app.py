@@ -2837,6 +2837,16 @@ class CreateCustomVerifierReq(BaseModel):
     field_checks: list[CustomVerifierFieldCheckIn] = Field(
         ..., min_length=1, max_length=32,
     )
+    # D57c: input-assembly contract. Optional on the wire so a
+    # pre-D57c client keeps working (defaults to cc_stdin). Authors who
+    # want to document a caller_assembled verifier opt in by sending
+    # `caller_assembled` + a non-empty caller_assembly_hint. Store
+    # re-validates the (assembly, hint) pair for the invariants
+    # (caller_assembled needs hint, cc_stdin must leave hint blank).
+    input_assembly: str = Field(
+        default="cc_stdin", pattern=r"^(cc_stdin|caller_assembled)$",
+    )
+    caller_assembly_hint: str = Field(default="", max_length=500)
 
 
 def _attach_custom_verifier_routes(

@@ -76,4 +76,30 @@ describe("verifiers/new page source invariants", () => {
     expect(src).toContain("verifiers.new.fieldChecks")
     expect(src).toContain("verifiers.new.err.fieldChecks")
   })
+
+  // ── D57c: input_assembly + caller_assembly_hint ──────────────
+  it("D57c: parses input_assembly + caller_assembly_hint off the incoming JSON payload", () => {
+    expect(src).toContain("input_assembly")
+    expect(src).toContain("caller_assembly_hint")
+    expect(src).toContain("MAX_CALLER_ASSEMBLY_HINT_LEN = 500")
+  })
+
+  it("D57c: locks the input_assembly enum to (cc_stdin | caller_assembled)", () => {
+    expect(src).toContain('"cc_stdin"')
+    expect(src).toContain('"caller_assembled"')
+    expect(src).toMatch(/ALLOWED_INPUT_ASSEMBLY/)
+  })
+
+  it("D57c: validateLocally enforces the (assembly, hint) pair invariants", () => {
+    // caller_assembled => non-empty hint; cc_stdin => blank hint.
+    // Mirrors the server-side validate_input_assembly() invariants.
+    expect(src).toContain('p.input_assembly === "caller_assembled"')
+    expect(src).toMatch(/MAX_CALLER_ASSEMBLY_HINT_LEN/)
+  })
+
+  it("D57c: forwards input_assembly labels to the client island", () => {
+    expect(src).toContain("verifiers.new.inputAssembly")
+    expect(src).toContain("verifiers.new.callerAssemblyHint")
+    expect(src).toContain("verifiers.new.err.callerAssemblyHint")
+  })
 })

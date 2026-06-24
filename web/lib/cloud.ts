@@ -856,6 +856,15 @@ export type CheckEntry = {
   field_checks: Array<{ path: string; check_description: string }>
   used_by_policies: string[]
   body: string | null
+  /** D57c: input-assembly contract for custom-source rows. Built-ins
+   * resolve via the descriptor mirror; custom rows carry their
+   * author-supplied pair so the catalog expander surfaces the notice
+   * without a second round-trip. Optional because legacy catalog
+   * payloads written pre-D57c default to cc_stdin. */
+  input_assembly?: "cc_stdin" | "caller_assembled"
+  /** D57c: prose explainer that pairs with `input_assembly:
+   * "caller_assembled"`. Blank or omitted otherwise. */
+  caller_assembly_hint?: string
 }
 
 /** D56e: one row on the new Rules → Evidence tab. One per kind of

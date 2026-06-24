@@ -96,7 +96,7 @@ class FieldCheck(TypedDict):
     check_description: str
 
 
-class VerifierDescriptor(TypedDict):
+class VerifierDescriptor(TypedDict, total=False):
     """The four-facet expander record for one verifier.
 
     `input_payload_paths` is a flat list of dotted paths the verifier
@@ -110,6 +110,19 @@ class VerifierDescriptor(TypedDict):
     description sourced from the verifier's `input_schema`. The expander
     renders type chips off this field so authors stop guessing — a path
     listed here is a real key the verifier reads.
+
+    `input_assembly` (D57c) distinguishes verifiers whose `run()` reads
+    CC stdin directly (`cc_stdin`) from verifiers whose input is a dict
+    the caller (recipe / wrapper / parser) assembles externally
+    (`caller_assembled`). `citation_verify` is the canonical
+    caller-assembled case: a wrapper parses the agent answer for quoted
+    spans + references, then POSTs `{citations: [...]}` to the verifier.
+    The dashboard surfaces this inline so authors do not assume the
+    cloud magically forwards CC stdin paths into the verifier.
+
+    `caller_assembly_hint` (D57c, caller_assembled only) carries the
+    one-paragraph prose the dashboard renders next to the notice. Names
+    the assembler (recipe / regex / prompt step) and the keys it posts.
     """
 
     step: str
@@ -123,6 +136,18 @@ class VerifierDescriptor(TypedDict):
     # custom preview verifier with no implementation). The dashboard
     # falls back to its "preview mode" note in that case.
     field_checks: list[FieldCheck]
+    # D57c: input-assembly contract. `cc_stdin` (default) means the
+    # runtime forwards the CC stdin envelope to the verifier as its
+    # input dict. `caller_assembled` means a wrapper outside the
+    # verifier (recipe, prompt step, regex post-processor) builds the
+    # input dict and POSTs it. The dashboard renders a distinct notice
+    # for caller_assembled so operators stop reading `tool_input.url`
+    # rows on caller-assembled verifiers as "the cloud will pull this
+    # off CC stdin for me".
+    input_assembly: Literal["cc_stdin", "caller_assembled"]
+    # D57c: short prose explaining the caller's role for
+    # caller_assembled verifiers. Empty / missing on cc_stdin rows.
+    caller_assembly_hint: str
 
 
 # ── shared evidence-record envelope ─────────────────────────────────
@@ -162,6 +187,21 @@ _COMMON_OUTPUT_FIELDS: list[EvidenceField] = [
 _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     "citation_verify": {
         "step": "citation_verify",
+        # D57c: caller-assembled. The verifier's run() reads
+        # `citations` + `corpus_override` from its OWN input dict; the
+        # cloud does NOT pull `tool_response.output` / `transcript_path`
+        # off CC stdin. A recipe or prompt-engineering step parses the
+        # agent's answer (typically with a quote-extraction regex or a
+        # follow-up "list every (quote, source-id) pair" prompt), then
+        # POSTs the assembled dict.
+        "input_assembly": "caller_assembled",
+        "caller_assembly_hint": (
+            "The caller parses the agent's answer into "
+            "{citations: [{quote, ref}, ...]} and POSTs it to the "
+            "verifier. The cloud does not forward CC stdin paths into "
+            "this verifier — wire the assembly in a recipe / prompt "
+            "step before the verifier runs."
+        ),
         "triggers": [
             {
                 "event": "Stop",
@@ -238,6 +278,14 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "privilege_scan": {
         "step": "privilege_scan",
+        # D57c: cc_stdin. The wrapper hands the verifier a `text` field
+        # but the runtime sources that text directly from CC stdin
+        # (Bash command body, Edit replacement body, Write file body,
+        # final message). No external assembly is required beyond
+        # picking which CC stdin path to read on the configured
+        # trigger.
+        "input_assembly": "cc_stdin",
+        "caller_assembly_hint": "",
         "triggers": [
             {
                 "event": "PreToolUse",
@@ -290,6 +338,12 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "source_allowlist": {
         "step": "source_allowlist",
+        # D57c: cc_stdin. The runtime reads the URL (PreToolUse) or
+        # the URLs parsed off the tool response (PostToolUse) directly
+        # from CC stdin. `allowlist` is bound to the policy at compile
+        # time, not assembled per-fire by the caller.
+        "input_assembly": "cc_stdin",
+        "caller_assembly_hint": "",
         "triggers": [
             {
                 "event": "PreToolUse",
@@ -339,6 +393,22 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
     },
     "structured_output": {
         "step": "structured_output",
+        # D57c: caller-assembled. The verifier's run() reads `json` /
+        # `data` + `schema` from its OWN input dict. The schema is
+        # bound at compile time, but the payload-to-validate is built
+        # by the caller (a recipe step extracts a JSON block from the
+        # agent's final answer, or a tool wrapper hands the tool
+        # response body in pre-parsed). The cloud does not pull
+        # `tool_response.output` straight off CC stdin into the
+        # verifier; the caller chooses what to validate.
+        "input_assembly": "caller_assembled",
+        "caller_assembly_hint": (
+            "The caller extracts the JSON payload to validate (e.g. a "
+            "fenced JSON block in the agent's answer, or a tool "
+            "response body pre-parsed by a wrapper) and POSTs "
+            "{json | data, schema} to the verifier. The cloud does "
+            "not auto-forward CC stdin into this verifier."
+        ),
         "triggers": [
             {
                 "event": "Stop",
@@ -377,22 +447,38 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
         # D52d (D52d follow-up): structured_output validates a JSON
-        # payload against a JSON-Schema subset. The payload comes from
-        # the tool response (PostToolUse) or the agent's final answer
-        # (Stop) depending on the trigger the policy bound.
+        # payload against a JSON-Schema subset.
+        #
+        # D57c: caller-assembled. The field_checks rows describe the
+        # verifier's OWN input dict shape (`json` / `data` / `schema`)
+        # rather than CC stdin paths the cloud would forward — because
+        # the cloud does not forward CC stdin into this verifier. A
+        # recipe / wrapper extracts the payload to validate and POSTs
+        # it. _assert_field_checks_paths_resolve() accepts these rows
+        # because they match the verifier's input_payload_paths.
         "field_checks": [
             {
-                "path": "tool_response.output",
-                "check_description": "tool response body parses as JSON and matches the JSON schema (PostToolUse=tool)",
+                "path": "json",
+                "check_description": "JSON-encoded payload the caller extracted (e.g. a fenced ```json block in the agent's answer); parses + matches schema",
             },
             {
-                "path": "final_message",
-                "check_description": "agent's final answer parses as JSON and matches the JSON schema (Stop=final)",
+                "path": "data",
+                "check_description": "pre-parsed payload alternative to `json`; the caller (tool-response wrapper) hands the dict in",
+            },
+            {
+                "path": "schema",
+                "check_description": "JSON-Schema subset (type/required/enum/properties/items); bound to the policy at compile time",
             },
         ],
     },
     "prompt_injection_screen": {
         "step": "prompt_injection_screen",
+        # D57c: cc_stdin. The runtime scans the incoming user prompt
+        # (UserPromptSubmit) or retrieved source text (PostToolUse) for
+        # jailbreak / override markers. Both paths are read directly
+        # off CC stdin.
+        "input_assembly": "cc_stdin",
+        "caller_assembly_hint": "",
         "triggers": [
             {
                 "event": "UserPromptSubmit",
@@ -606,9 +692,46 @@ def _assert_field_checks_paths_resolve() -> None:
             )
 
 
+def _assert_input_assembly_shape() -> None:
+    """D57c: every built-in descriptor MUST declare an `input_assembly`
+    value (`cc_stdin` or `caller_assembled`). caller_assembled rows
+    MUST carry a non-empty `caller_assembly_hint`; cc_stdin rows MUST
+    leave the hint blank so the dashboard does not render an empty
+    notice block.
+
+    Catches the silent-drift mode where a future descriptor is added
+    without picking a side — the dashboard would then default to
+    cc_stdin for a verifier that actually wants caller assembly, which
+    is the exact wrong-default the brief was written to prevent.
+    """
+    for step, d in _DESCRIPTORS.items():
+        ia = d.get("input_assembly")
+        if ia not in ("cc_stdin", "caller_assembled"):
+            raise AssertionError(
+                f"descriptor {step!r}: input_assembly must be one of "
+                f"('cc_stdin', 'caller_assembled'), got {ia!r}",
+            )
+        hint = d.get("caller_assembly_hint", "")
+        if not isinstance(hint, str):
+            raise AssertionError(
+                f"descriptor {step!r}: caller_assembly_hint must be a string",
+            )
+        if ia == "caller_assembled" and not hint.strip():
+            raise AssertionError(
+                f"descriptor {step!r}: caller_assembled rows must carry "
+                f"a non-empty caller_assembly_hint",
+            )
+        if ia == "cc_stdin" and hint.strip():
+            raise AssertionError(
+                f"descriptor {step!r}: cc_stdin rows must leave "
+                f"caller_assembly_hint blank (got non-empty hint)",
+            )
+
+
 _assert_input_fields_cover_paths()
 _assert_field_checks_shape()
 _assert_field_checks_paths_resolve()
+_assert_input_assembly_shape()
 
 
 __all__ = [

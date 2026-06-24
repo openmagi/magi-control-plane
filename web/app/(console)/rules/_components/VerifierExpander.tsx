@@ -4,6 +4,7 @@ import { availableFields, type FieldDescriptor as PayloadFieldDescriptor } from 
 import {
   getVerifierDescriptor,
   type EvidenceField,
+  type InputAssembly,
   type InputField,
   type TriggerSpec,
 } from "@/lib/verifier-descriptors"
@@ -34,7 +35,8 @@ import { VerifierSamplesList } from "./VerifierSamplesList"
 type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
 export function VerifierExpander({
-  step, t, locale, recentEmissions24h, nfFormat, source, enforcement, fieldChecksOverride,
+  step, t, locale, recentEmissions24h, nfFormat, source, enforcement,
+  fieldChecksOverride, inputAssemblyOverride, callerAssemblyHintOverride,
 }: {
   step: string
   t: T
@@ -60,8 +62,30 @@ export function VerifierExpander({
    * through to VerifierFieldChecks so the catalog renders the
    * operator's authored tree instead of the preview placeholder. */
   fieldChecksOverride?: Array<{ path: string; check_description: string }>
+  /** D57c: author-supplied input_assembly + caller_assembly_hint for
+   * `source: "custom"` rows. The catalog parent (ChecksTab /
+   * EvidenceTab) reads them off the cloud catalog row and threads
+   * them in so a custom-verifier expander surfaces the same notice
+   * the built-in descriptors do. Both fields are omitted on built-in
+   * rows; the descriptor mirror is the source there. */
+  inputAssemblyOverride?: InputAssembly
+  callerAssemblyHintOverride?: string
 }) {
   const descriptor = getVerifierDescriptor(step)
+  // D57c: resolve the (input_assembly, caller_assembly_hint) pair.
+  // Built-in path reads off the descriptor; custom path reads off the
+  // explicit overrides the parent threads in. Default to cc_stdin when
+  // nothing is supplied so an older mirror copy / a derived-step row
+  // with no descriptor degrades to "the runtime reads CC stdin" — the
+  // pre-D57c implicit behaviour the catalog already assumed.
+  const inputAssembly: InputAssembly =
+    inputAssemblyOverride
+    ?? (descriptor?.input_assembly as InputAssembly | undefined)
+    ?? "cc_stdin"
+  const callerAssemblyHint: string =
+    callerAssemblyHintOverride
+    ?? descriptor?.caller_assembly_hint
+    ?? ""
   // Distinct accessible name per row so a SR user scanning the list
   // hears "details, citation_verify" instead of five "details"s in a row.
   const summaryLabel = t("rules.verifier.expander.toggleWithStep", { step })
@@ -94,13 +118,25 @@ export function VerifierExpander({
                 Render the tree from that list so the catalog row stops
                 misleading the operator that their authoring "didn't
                 stick". Fall back to the neutral "no descriptor" notice
-                only when there are no authored rows either. */}
+                only when there are no authored rows either.
+                D57c: the same custom row carries its own
+                (input_assembly, caller_assembly_hint) pair; surface
+                the notice above the tree so the operator sees the
+                contract that matches the row they authored. */}
             {fieldChecksOverride && fieldChecksOverride.length > 0 ? (
-              <FieldChecksPanel
-                step={step}
-                t={t}
-                fieldChecksOverride={fieldChecksOverride}
-              />
+              <>
+                <InputAssemblyPanel
+                  inputAssembly={inputAssembly}
+                  callerAssemblyHint={callerAssemblyHint}
+                  t={t}
+                />
+                <FieldChecksPanel
+                  step={step}
+                  t={t}
+                  inputAssembly={inputAssembly}
+                  fieldChecksOverride={fieldChecksOverride}
+                />
+              </>
             ) : (
               <p className="text-xs text-[var(--color-text-tertiary)] italic">
                 {t("rules.verifier.expander.noDescriptor")}
@@ -110,7 +146,21 @@ export function VerifierExpander({
         ) : (
           <>
             <TriggersPanel triggers={descriptor.triggers} t={t} />
-            <FieldChecksPanel step={step} t={t} />
+            {/* D57c: input-assembly notice above the field_checks
+                tree. caller_assembled rows render the prose hint;
+                cc_stdin rows render a one-line affirmation so the
+                operator knows the cloud forwards CC stdin paths into
+                the verifier (no wrapper needed). */}
+            <InputAssemblyPanel
+              inputAssembly={inputAssembly}
+              callerAssemblyHint={callerAssemblyHint}
+              t={t}
+            />
+            <FieldChecksPanel
+              step={step}
+              t={t}
+              inputAssembly={inputAssembly}
+            />
             <InputPathsPanel
               step={step}
               paths={descriptor.input_payload_paths}
@@ -248,24 +298,101 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
  *
  * D52d follow-up: optional `fieldChecksOverride` so custom-source
  * catalog rows (no registered descriptor) can still render the
- * operator's authored tree. */
+ * operator's authored tree.
+ *
+ * D57c: the panel heading swaps based on `inputAssembly`. For
+ * cc_stdin verifiers the rows describe CC stdin payload paths the
+ * cloud forwards (heading: "Per-field checks (CC stdin paths)"). For
+ * caller_assembled verifiers the rows describe the verifier's OWN
+ * input dict shape (heading: "Verifier's input dict shape"). The
+ * tree render itself is unchanged — only the heading prose changes so
+ * the operator does not read caller_assembled rows as if the cloud
+ * pulled those paths off CC stdin.
+ */
 function FieldChecksPanel({
-  step, t, fieldChecksOverride,
+  step, t, inputAssembly, fieldChecksOverride,
 }: {
   step: string
   t: T
+  inputAssembly: InputAssembly
   fieldChecksOverride?: Array<{ path: string; check_description: string }>
 }) {
+  const headingKey = inputAssembly === "caller_assembled"
+    ? "rules.verifier.expander.fieldChecks.callerAssembled"
+    : "rules.verifier.expander.fieldChecks"
   return (
     <div data-testid="verifier-expander-field-checks">
       <PanelHeader>
-        {t("rules.verifier.expander.fieldChecks")}
+        {t(headingKey)}
       </PanelHeader>
       <VerifierFieldChecks
         step={step}
         t={t}
         fieldChecksOverride={fieldChecksOverride}
       />
+    </div>
+  )
+}
+
+/** D57c: input-assembly notice. Renders prominently above the
+ * field_checks tree so an operator scanning the expander reads
+ * "where does the input come from" before reading "what does the
+ * verifier check".
+ *
+ *   caller_assembled — the verifier's run() reads a dict the caller
+ *     assembled (e.g. citation_verify reads `{citations: [...]}`).
+ *     The notice renders an amber bordered block with the prose
+ *     `callerAssemblyHint` so the contract is impossible to miss.
+ *
+ *   cc_stdin — the runtime forwards CC stdin paths into the
+ *     verifier. The notice renders a one-line muted affirmation
+ *     ("Input forwarded from CC stdin"). Rendering it on both branches
+ *     means an operator sees a positive statement either way, instead
+ *     of an absence-of-notice the brain reads as "default cc_stdin"
+ *     for one row and "default caller_assembled" for the next.
+ */
+function InputAssemblyPanel({
+  inputAssembly, callerAssemblyHint, t,
+}: {
+  inputAssembly: InputAssembly
+  callerAssemblyHint: string
+  t: T
+}) {
+  const isCallerAssembled = inputAssembly === "caller_assembled"
+  return (
+    <div
+      data-testid="verifier-expander-input-assembly"
+      data-input-assembly={inputAssembly}
+    >
+      <PanelHeader>
+        {t("rules.verifier.expander.inputAssembly")}
+      </PanelHeader>
+      {isCallerAssembled ? (
+        <div
+          role="note"
+          data-testid="verifier-expander-input-assembly-caller-notice"
+          className="rounded-md border border-[var(--color-review-fg,#b45309)]/30 bg-[var(--color-review-bg,#fffbeb)] p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
+        >
+          <div className="mb-1 flex items-baseline gap-1.5">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-review-fg,#b45309)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-review-fg,#b45309)]">
+              {t("rules.verifier.expander.inputAssembly.callerAssembledBadge")}
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
+              {t("rules.verifier.expander.inputAssembly.callerAssembledLabel")}
+            </span>
+          </div>
+          <p className="text-[11.5px] text-[var(--color-text-secondary)]">
+            {callerAssemblyHint || t("rules.verifier.expander.inputAssembly.callerAssembledFallback")}
+          </p>
+        </div>
+      ) : (
+        <p
+          data-testid="verifier-expander-input-assembly-cc-stdin-note"
+          className="text-[11.5px] text-[var(--color-text-tertiary)] leading-relaxed"
+        >
+          {t("rules.verifier.expander.inputAssembly.ccStdinNote")}
+        </p>
+      )}
     </div>
   )
 }

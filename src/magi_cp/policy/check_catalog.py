@@ -113,6 +113,19 @@ def build_check_catalog(
                         "path": fc.get("path", ""),
                         "check_description": fc.get("check_description", ""),
                     })
+            # D57c: surface the descriptor's (input_assembly,
+            # caller_assembly_hint) pair on the catalog row so the
+            # dashboard expander can render the notice without a
+            # second descriptor lookup. Defaults to cc_stdin + blank
+            # hint when the descriptor is missing (custom-built-ins
+            # the cloud has not yet documented).
+            input_assembly = "cc_stdin"
+            caller_assembly_hint = ""
+            if descriptor is not None:
+                input_assembly = descriptor.get("input_assembly", "cc_stdin")
+                caller_assembly_hint = descriptor.get(
+                    "caller_assembly_hint", "",
+                )
             rows.append({
                 "id": v.step,
                 "name": v.step,
@@ -122,6 +135,8 @@ def build_check_catalog(
                 "field_checks": field_checks,
                 "used_by_policies": [],
                 "body": None,
+                "input_assembly": input_assembly,
+                "caller_assembly_hint": caller_assembly_hint,
             })
             builtin_steps.add(v.step)
 
@@ -144,6 +159,11 @@ def build_check_catalog(
                 ],
                 "used_by_policies": [],
                 "body": None,
+                # D57c: forward the author-supplied (input_assembly,
+                # caller_assembly_hint) pair so the dashboard catalog
+                # row renders the same notice it does for built-ins.
+                "input_assembly": cv.input_assembly,
+                "caller_assembly_hint": cv.caller_assembly_hint,
             })
             custom_names.add(cv.name)
 
@@ -199,6 +219,13 @@ def build_check_catalog(
                 "field_checks": [],
                 "used_by_policies": [policy.id],
                 "body": _truncate(body),
+                # D57c: inline rows have no input-assembly contract
+                # (the check IS the body, no verifier seam). Stamp
+                # default cc_stdin + blank hint so the row schema
+                # stays consistent across kinds for the catalog
+                # consumers (TS type + dashboard renderer).
+                "input_assembly": "cc_stdin",
+                "caller_assembly_hint": "",
             })
 
     # Stamp used_by on built-in / custom rows. Sorted for deterministic

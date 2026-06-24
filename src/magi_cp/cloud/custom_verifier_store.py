@@ -42,6 +42,7 @@ from typing import Literal
 
 VerdictStatus = Literal["pass", "fail", "needs_review", "not_applicable"]
 BodyType = Literal["preview"]
+InputAssembly = Literal["cc_stdin", "caller_assembled"]
 
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -49,6 +50,13 @@ _MAX_NAME_LEN = 64
 _MAX_DESCRIPTION_LEN = 500
 _ALLOWED_VERDICTS: set[VerdictStatus] = {"pass", "fail", "needs_review", "not_applicable"}
 _ALLOWED_BODY_TYPES: set[BodyType] = {"preview"}
+# D57c: input-assembly contract for custom verifiers. Same vocabulary
+# as the built-in descriptors (see verifier/descriptors.py). The
+# `caller_assembly_hint` prose is bounded by the same cell budget as
+# the field_check description so the dashboard notice render stays
+# predictable.
+_ALLOWED_INPUT_ASSEMBLY: set[InputAssembly] = {"cc_stdin", "caller_assembled"}
+_MAX_CALLER_ASSEMBLY_HINT_LEN = 500
 # Upper bound on triggers per verifier. Mirrors the spirit of
 # MAX_CITATIONS_PER_REQUEST in app.py: keep the persisted row bounded so
 # list / serialize stay cheap and a misuse (e.g. 10k duplicated triggers
@@ -139,6 +147,15 @@ class CustomVerifier:
     # round-trips through deserialize() without crashing; the REST POST
     # path requires >=1 row.
     field_checks: tuple[CustomVerifierFieldCheck, ...] = field(default_factory=tuple)
+    # D57c: input-assembly contract. Default `cc_stdin` so older
+    # on-disk JSON (written before D57c) deserializes to the same
+    # behaviour the dashboard already assumed. New rows POSTed via
+    # /custom-verifiers can opt into `caller_assembled` so authors
+    # documenting a recipe-driven wrapper get the matching notice.
+    input_assembly: InputAssembly = "cc_stdin"
+    # D57c: optional prose explaining the caller's role for
+    # caller_assembled rows. Blank on cc_stdin rows.
+    caller_assembly_hint: str = ""
 
 
 def validate_name(name: str) -> None:
@@ -277,6 +294,54 @@ def validate_field_checks(
     return tuple(out)
 
 
+def validate_input_assembly(
+    input_assembly: str, caller_assembly_hint: str,
+) -> tuple[InputAssembly, str]:
+    """D57c: validate (input_assembly, caller_assembly_hint) pair.
+
+    Mirrors the same invariant the built-in descriptors enforce at
+    import time:
+      - input_assembly must be one of {cc_stdin, caller_assembled}
+      - caller_assembled rows must carry a non-empty hint (otherwise
+        the dashboard renders an empty notice block, which is worse
+        than no notice at all)
+      - cc_stdin rows must leave the hint blank (otherwise the
+        dashboard would show a notice on a verifier whose runtime
+        actually reads CC stdin directly, misleading the operator)
+
+    The hint is bounded by `_MAX_CALLER_ASSEMBLY_HINT_LEN` so a
+    runaway paragraph cannot inflate the persisted row beyond a
+    predictable disk + render budget.
+    """
+    if input_assembly not in _ALLOWED_INPUT_ASSEMBLY:
+        raise CustomVerifierError(
+            f"input_assembly must be one of "
+            f"{sorted(_ALLOWED_INPUT_ASSEMBLY)}",
+        )
+    if not isinstance(caller_assembly_hint, str):
+        raise CustomVerifierError(
+            "caller_assembly_hint must be a string",
+        )
+    hint_clean = caller_assembly_hint.strip()
+    if len(caller_assembly_hint) > _MAX_CALLER_ASSEMBLY_HINT_LEN:
+        raise CustomVerifierError(
+            f"caller_assembly_hint must be <= "
+            f"{_MAX_CALLER_ASSEMBLY_HINT_LEN} chars",
+        )
+    if input_assembly == "caller_assembled" and not hint_clean:
+        raise CustomVerifierError(
+            "caller_assembled rows must carry a non-empty "
+            "caller_assembly_hint that names the assembler "
+            "(recipe / regex / prompt step) and the keys it posts",
+        )
+    if input_assembly == "cc_stdin" and hint_clean:
+        raise CustomVerifierError(
+            "cc_stdin rows must leave caller_assembly_hint blank; "
+            "drop the hint or switch to caller_assembled",
+        )
+    return input_assembly, hint_clean  # type: ignore[return-value]
+
+
 def validate_body_type(body_type: str) -> BodyType:
     if body_type not in _ALLOWED_BODY_TYPES:
         raise CustomVerifierError(
@@ -307,12 +372,21 @@ def build_from_dict(raw: dict, *, tenant_id: str = "") -> CustomVerifier:
     verdict_set = raw.get("verdict_set") or []
     body_type = raw.get("body_type") or "preview"
     field_checks = raw.get("field_checks") or []
+    # D57c: input_assembly is optional on the wire (defaults to
+    # cc_stdin) so a pre-D57c client posting an otherwise valid body
+    # is not broken. The Pydantic body model still accepts the field
+    # so authors who want caller_assembled can opt in.
+    input_assembly_raw = raw.get("input_assembly") or "cc_stdin"
+    caller_assembly_hint_raw = raw.get("caller_assembly_hint") or ""
     validate_name(name)
     validate_description(description)
     triggers_t = validate_triggers(triggers)
     verdicts_t = validate_verdict_set(verdict_set)
     body_type_t = validate_body_type(body_type)
     field_checks_t = validate_field_checks(field_checks)
+    input_assembly_t, caller_assembly_hint_t = validate_input_assembly(
+        input_assembly_raw, caller_assembly_hint_raw,
+    )
     return CustomVerifier(
         id=_gen_id(),
         name=name,
@@ -323,6 +397,8 @@ def build_from_dict(raw: dict, *, tenant_id: str = "") -> CustomVerifier:
         created_at=int(time.time()),
         tenant_id=tenant_id,
         field_checks=field_checks_t,
+        input_assembly=input_assembly_t,
+        caller_assembly_hint=caller_assembly_hint_t,
     )
 
 
@@ -343,6 +419,10 @@ def serialize(v: CustomVerifier) -> dict:
             {"path": fc.path, "check_description": fc.check_description}
             for fc in v.field_checks
         ],
+        # D57c: round-trip the input-assembly pair so the dashboard
+        # can render the matching notice on the catalog row.
+        "input_assembly": v.input_assembly,
+        "caller_assembly_hint": v.caller_assembly_hint,
     }
 
 
@@ -388,6 +468,18 @@ def deserialize(raw: dict) -> CustomVerifier:
         raise CustomVerifierError(
             f"verifier row has malformed field_check: {e}",
         ) from e
+    # D57c: tolerate legacy rows that lack input_assembly /
+    # caller_assembly_hint. Older rows default to `cc_stdin` + blank
+    # hint (the pre-D57c behaviour the dashboard already assumed).
+    raw_assembly = raw.get("input_assembly", "cc_stdin")
+    if raw_assembly not in _ALLOWED_INPUT_ASSEMBLY:
+        # Hand-rolled JSON with an unknown value falls back to
+        # cc_stdin rather than refusing to load the row; the catalog
+        # surface stays useful while the operator inspects the file.
+        raw_assembly = "cc_stdin"
+    raw_hint = raw.get("caller_assembly_hint", "")
+    if not isinstance(raw_hint, str):
+        raw_hint = ""
     return CustomVerifier(
         id=rid,
         name=rname,
@@ -398,6 +490,8 @@ def deserialize(raw: dict) -> CustomVerifier:
         created_at=int(raw.get("created_at", 0)),
         tenant_id=raw.get("tenant_id", ""),
         field_checks=field_checks,
+        input_assembly=raw_assembly,  # type: ignore[arg-type]
+        caller_assembly_hint=raw_hint,
     )
 
 
@@ -466,6 +560,13 @@ class CustomVerifierStore:
             created_at=verifier.created_at,
             tenant_id=tenant_id,
             field_checks=verifier.field_checks,
+            # D57c: carry the input-assembly pair across the stamp so
+            # the persisted row + the response body keep the
+            # author-supplied values. Dropping these here was the
+            # silent-drift bug that made `caller_assembled` POSTs
+            # round-trip as `cc_stdin`.
+            input_assembly=verifier.input_assembly,
+            caller_assembly_hint=verifier.caller_assembly_hint,
         )
         bucket["verifiers"].append(serialize(stamped))
         self._save_raw(raw)
@@ -501,12 +602,14 @@ __all__ = [
     "CustomVerifierFieldCheck",
     "CustomVerifierStore",
     "CustomVerifierTrigger",
+    "InputAssembly",
     "build_from_dict",
     "deserialize",
     "serialize",
     "validate_body_type",
     "validate_description",
     "validate_field_checks",
+    "validate_input_assembly",
     "validate_name",
     "validate_triggers",
     "validate_verdict_set",

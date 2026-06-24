@@ -8,6 +8,7 @@ import { Card, ErrorState, PageHeader } from "@/components/ui"
 import VerifierFormClient, {
   type TriggerRow,
   type FieldCheckRow,
+  type InputAssemblyValue,
 } from "./_components/VerifierFormClient"
 
 export const dynamic = "force-dynamic"
@@ -51,10 +52,22 @@ type CreateVerifierPayload = {
   // D52d: per-field check rows (>=1). Each row is a (path, description)
   // pair documenting what this verifier inspects on each fire.
   field_checks: FieldCheckRow[]
+  // D57c: input-assembly contract. cc_stdin (default) means the
+  // runtime forwards CC stdin into the verifier; caller_assembled
+  // means a recipe / prompt step / regex post-processor builds the
+  // verifier's input dict and POSTs it. caller_assembled rows MUST
+  // carry a non-empty caller_assembly_hint.
+  input_assembly: InputAssemblyValue
+  caller_assembly_hint: string
 }
 
 const MAX_FIELD_CHECK_PATH_LEN = 128
 const MAX_FIELD_CHECK_DESC_LEN = 200
+const MAX_CALLER_ASSEMBLY_HINT_LEN = 500
+const ALLOWED_INPUT_ASSEMBLY: ReadonlyArray<InputAssemblyValue> = [
+  "cc_stdin",
+  "caller_assembled",
+]
 
 function parseDraftPayload(raw: unknown): CreateVerifierPayload | null {
   if (typeof raw !== "string" || !raw) return null
@@ -100,9 +113,29 @@ function parseDraftPayload(raw: unknown): CreateVerifierPayload | null {
       if (!desc || desc.length > MAX_FIELD_CHECK_DESC_LEN) return null
       field_checks.push({ path, check_description: desc })
     }
+    // D57c: parse input_assembly + caller_assembly_hint. Both are
+    // optional on the wire (default cc_stdin + blank hint) so a
+    // pre-D57c client that omits them still validates.
+    const inputAssemblyRaw = (parsed as Record<string, unknown>).input_assembly
+    let input_assembly: InputAssemblyValue = "cc_stdin"
+    if (inputAssemblyRaw !== undefined) {
+      const v = String(inputAssemblyRaw)
+      if (!ALLOWED_INPUT_ASSEMBLY.includes(v as InputAssemblyValue)) {
+        return null
+      }
+      input_assembly = v as InputAssemblyValue
+    }
+    const hintRaw = (parsed as Record<string, unknown>).caller_assembly_hint
+    const caller_assembly_hint = hintRaw === undefined
+      ? ""
+      : String(hintRaw)
+    if (caller_assembly_hint.length > MAX_CALLER_ASSEMBLY_HINT_LEN) {
+      return null
+    }
     return {
       name, description, triggers, verdict_set,
       body_type: "preview", field_checks,
+      input_assembly, caller_assembly_hint,
     }
   } catch {
     return null
@@ -122,6 +155,15 @@ function validateLocally(p: CreateVerifierPayload): string | null {
     if (!fc.path || fc.path.length > MAX_FIELD_CHECK_PATH_LEN) return "invalid_input"
     if (!fc.check_description) return "invalid_input"
     if (fc.check_description.length > MAX_FIELD_CHECK_DESC_LEN) return "invalid_input"
+  }
+  // D57c: caller_assembled rows need a 1-500 char hint; cc_stdin rows
+  // must leave the hint blank (mirrors the store validators so a
+  // doomed POST is rejected before the cloud hop).
+  const hint = p.caller_assembly_hint.trim()
+  if (p.input_assembly === "caller_assembled") {
+    if (!hint || hint.length > MAX_CALLER_ASSEMBLY_HINT_LEN) return "invalid_input"
+  } else {
+    if (hint) return "invalid_input"
   }
   return null
 }
@@ -212,6 +254,18 @@ export default async function NewCustomVerifierPage({
     fieldCheckAdd: t("verifiers.new.fieldChecks.add"),
     fieldCheckRemove: t("verifiers.new.fieldChecks.remove"),
     errFieldChecks: t("verifiers.new.err.fieldChecks"),
+    // D57c: input-assembly select + caller_assembly_hint textarea.
+    inputAssembly: t("verifiers.new.inputAssembly"),
+    inputAssemblyHelper: t("verifiers.new.inputAssembly.helper"),
+    inputAssemblyCcStdin: t("verifiers.new.inputAssembly.ccStdin"),
+    inputAssemblyCcStdinHelper: t("verifiers.new.inputAssembly.ccStdin.helper"),
+    inputAssemblyCallerAssembled: t("verifiers.new.inputAssembly.callerAssembled"),
+    inputAssemblyCallerAssembledHelper: t("verifiers.new.inputAssembly.callerAssembled.helper"),
+    callerAssemblyHint: t("verifiers.new.callerAssemblyHint"),
+    callerAssemblyHintHelper: t("verifiers.new.callerAssemblyHint.helper"),
+    callerAssemblyHintPlaceholder: t("verifiers.new.callerAssemblyHint.placeholder"),
+    errCallerAssemblyHint: t("verifiers.new.err.callerAssemblyHint"),
+    errCallerAssemblyHintOnCcStdin: t("verifiers.new.err.callerAssemblyHintOnCcStdin"),
   }
 
   return (

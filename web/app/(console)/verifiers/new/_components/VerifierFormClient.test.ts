@@ -168,4 +168,50 @@ describe("VerifierFormClient source invariants", () => {
     expect(src).toContain("labels.fieldCheckRemove")
     expect(src).toContain("data-testid=\"field-check-row\"")
   })
+
+  // ── D57c: input_assembly select + caller_assembly_hint ──────────
+  it("D57c: ships the input_assembly select as two distinguished radio cards", () => {
+    // Two options: cc_stdin (default) + caller_assembled. Rendered as
+    // radio-cards so the contract is visually distinguished from a
+    // generic dropdown — picking the wrong side is a load-bearing
+    // decision the wizard surfaces inline.
+    expect(src).toMatch(/input-assembly-option-\$\{value\}/)
+    expect(src).toMatch(/value="cc_stdin"/)
+    expect(src).toMatch(/value="caller_assembled"/)
+    expect(src).toMatch(/role="radiogroup"/)
+  })
+
+  it("D57c: serializes input_assembly + caller_assembly_hint into the payload", () => {
+    expect(src).toContain("input_assembly: inputAssembly")
+    expect(src).toContain("caller_assembly_hint: callerAssemblyHint.trim()")
+  })
+
+  it("D57c: caller_assembled reveals the hint textarea inline", () => {
+    expect(src).toMatch(/inputAssembly === "caller_assembled" &&/)
+    expect(src).toContain("caller-assembly-hint-row")
+    expect(src).toContain("caller-assembly-hint")
+  })
+
+  it("D57c: switching to cc_stdin clears the hint state (server invariant)", () => {
+    // cc_stdin rows must leave the hint blank; clearing on switch
+    // matches the server validate_input_assembly() invariant and
+    // keeps the operator from having to wipe the textarea by hand
+    // before submitting.
+    expect(src).toMatch(/setInputAssembly\("cc_stdin"\)\s*\n\s*\/\/[\s\S]*?setCallerAssemblyHint\(""\)/)
+  })
+
+  it("D57c: blocks submit when (assembly, hint) pair is invalid", () => {
+    expect(src).toMatch(/callerAssemblyHintError/)
+    expect(src).toMatch(/canSubmit[\s\S]*!callerAssemblyHintError/)
+  })
+
+  it("D57c: caps the caller_assembly_hint at 500 chars", () => {
+    expect(src).toMatch(/MAX_CALLER_ASSEMBLY_HINT_LEN\s*=\s*500/)
+    expect(src).toMatch(/maxLength=\{MAX_CALLER_ASSEMBLY_HINT_LEN\}/)
+  })
+
+  it("D57c: error messages route through labels (no hardcoded English)", () => {
+    expect(src).toMatch(/labels\.errCallerAssemblyHint\b/)
+    expect(src).toMatch(/labels\.errCallerAssemblyHintOnCcStdin\b/)
+  })
 })

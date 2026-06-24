@@ -347,6 +347,94 @@ class TestPostCustomVerifier:
         )
         assert r.status_code == 422
 
+    # ── D57c input_assembly + caller_assembly_hint ─────────────────
+    def test_default_input_assembly_is_cc_stdin(self, client):
+        """D57c: omitting input_assembly defaults to cc_stdin so
+        pre-D57c clients keep working without touching the body."""
+        body = _valid_body()
+        body.pop("input_assembly", None)
+        body.pop("caller_assembly_hint", None)
+        r = client.post(
+            "/custom-verifiers", json=body,
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["input_assembly"] == "cc_stdin"
+        assert out["caller_assembly_hint"] == ""
+
+    def test_caller_assembled_round_trip(self, client):
+        """D57c: caller_assembled rows persist the hint verbatim."""
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(
+                name="my_caller_check",
+                input_assembly="caller_assembled",
+                caller_assembly_hint=(
+                    "recipe extracts every (quote, ref) pair from "
+                    "the agent answer with a regex and POSTs "
+                    "{citations: [...]}"
+                ),
+            ),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["input_assembly"] == "caller_assembled"
+        assert "recipe" in out["caller_assembly_hint"]
+
+    def test_rejects_caller_assembled_without_hint(self, client):
+        """D57c: caller_assembled rows MUST carry a non-empty hint."""
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(
+                input_assembly="caller_assembled",
+                caller_assembly_hint="",
+            ),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_cc_stdin_with_hint(self, client):
+        """D57c: cc_stdin rows MUST leave the hint blank — surfacing
+        the contract at the wire boundary so a hand-rolled client does
+        not silently set a hint that the dashboard would never render."""
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(
+                input_assembly="cc_stdin",
+                caller_assembly_hint="oops, this should not be here",
+            ),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_unknown_input_assembly(self, client):
+        """D57c: input_assembly enum is a closed set; a typo or a
+        future-look value is a 422 rather than silently coerced."""
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(
+                input_assembly="kaboom",
+                caller_assembly_hint="x",
+            ),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_overlong_caller_assembly_hint(self, client):
+        """D57c: the hint is capped at 500 chars to match the dashboard
+        notice cell budget."""
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(
+                input_assembly="caller_assembled",
+                caller_assembly_hint="x" * 501,
+            ),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
 
 class TestGetCustomVerifier:
     def test_round_trip(self, client):
@@ -442,6 +530,53 @@ class TestVerifierDescriptors:
                 assert fc.get("check_description"), (d["step"], i)
                 assert len(fc["check_description"]) <= 200, (d["step"], i)
 
+    # ── D57c: input_assembly on descriptor list endpoint ──────────
+    def test_every_descriptor_has_input_assembly(self, client):
+        """D57c: every built-in descriptor MUST surface an
+        `input_assembly` value through the public endpoint so the
+        dashboard catalog renderer can pick the right notice without
+        a second lookup."""
+        r = client.get("/verifier-descriptors")
+        assert r.status_code == 200
+        for d in r.json()["descriptors"]:
+            assert d.get("input_assembly") in (
+                "cc_stdin", "caller_assembled",
+            ), d["step"]
+            # caller_assembled rows expose a non-empty hint
+            if d["input_assembly"] == "caller_assembled":
+                assert d.get("caller_assembly_hint"), d["step"]
+
+    def test_citation_verify_descriptor_is_caller_assembled(self, client):
+        """D57c: citation_verify is the canonical caller_assembled
+        verifier; the dashboard surface keys off this to render the
+        notice. Lock the contract at the public endpoint."""
+        r = client.get("/verifier-descriptors/citation_verify")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["input_assembly"] == "caller_assembled"
+        # Hint mentions the caller / assembly seam in some form
+        assert d["caller_assembly_hint"]
+        assert "caller" in d["caller_assembly_hint"].lower() or \
+            "post" in d["caller_assembly_hint"].lower()
+
+    def test_structured_output_descriptor_is_caller_assembled(self, client):
+        """D57c: structured_output is also caller_assembled (the cloud
+        does not forward CC stdin into the JSON-schema verifier; a
+        recipe / wrapper extracts the payload)."""
+        r = client.get("/verifier-descriptors/structured_output")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["input_assembly"] == "caller_assembled"
+        assert d["caller_assembly_hint"]
+
+    def test_privilege_scan_descriptor_is_cc_stdin(self, client):
+        """D57c: privilege_scan reads CC stdin directly; hint is blank."""
+        r = client.get("/verifier-descriptors/privilege_scan")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["input_assembly"] == "cc_stdin"
+        assert d.get("caller_assembly_hint", "") == ""
+
     def test_citation_verify_field_checks_shape(self, client):
         """D52d follow-up: citation_verify is a caller-assembled
         verifier; its run() reads `citations` and `corpus_override`
@@ -489,6 +624,33 @@ class TestDescriptorFieldChecksModule:
                 assert isinstance(fc["path"], str) and fc["path"]
                 assert isinstance(fc["check_description"], str)
                 assert fc["check_description"]
+
+    def test_descriptor_input_assembly_export(self):
+        """D57c module-level guarantee: every descriptor declares an
+        input_assembly value, and caller_assembled rows carry a
+        non-empty hint. The matching assertion in descriptors.py runs
+        at import time; this surfaces the same guarantee in the test
+        suite for future contributors."""
+        from magi_cp.verifier.descriptors import all_descriptors
+        seen_caller = 0
+        seen_cc = 0
+        for d in all_descriptors():
+            assert d.get("input_assembly") in (
+                "cc_stdin", "caller_assembled",
+            ), d["step"]
+            hint = d.get("caller_assembly_hint", "")
+            if d["input_assembly"] == "caller_assembled":
+                assert hint and hint.strip(), d["step"]
+                seen_caller += 1
+            else:
+                assert not hint.strip(), d["step"]
+                seen_cc += 1
+        # Sanity: at least one of each kind today (citation_verify +
+        # structured_output are caller-assembled; the other 3 are
+        # cc_stdin). Catches a future blanket-flip that would
+        # collapse the distinction.
+        assert seen_caller >= 2
+        assert seen_cc >= 3
 
 
 # ── fix-cycle: catalog / verifiers merge tenant-scoped customs ─────

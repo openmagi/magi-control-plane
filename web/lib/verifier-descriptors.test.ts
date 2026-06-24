@@ -83,6 +83,51 @@ describe("verifier descriptors mirror", () => {
       }
     }
   })
+
+  // D57c
+  it("every descriptor declares an input_assembly value", () => {
+    for (const d of allVerifierDescriptors()) {
+      expect(d.input_assembly, `input_assembly missing on ${d.step}`)
+        .toMatch(/^(cc_stdin|caller_assembled)$/)
+    }
+  })
+
+  it("caller_assembled rows carry a non-empty caller_assembly_hint", () => {
+    for (const d of allVerifierDescriptors()) {
+      if (d.input_assembly === "caller_assembled") {
+        expect(
+          d.caller_assembly_hint,
+          `caller_assembly_hint empty on ${d.step}`,
+        ).toBeTruthy()
+      }
+    }
+  })
+
+  it("cc_stdin rows leave caller_assembly_hint blank", () => {
+    for (const d of allVerifierDescriptors()) {
+      if (d.input_assembly === "cc_stdin") {
+        const hint = d.caller_assembly_hint ?? ""
+        expect(
+          hint.trim(),
+          `cc_stdin row ${d.step} carries an unexpected hint`,
+        ).toBe("")
+      }
+    }
+  })
+
+  it("citation_verify + structured_output are caller_assembled (the brief baseline)", () => {
+    const c = getVerifierDescriptor("citation_verify")
+    expect(c?.input_assembly).toBe("caller_assembled")
+    const s = getVerifierDescriptor("structured_output")
+    expect(s?.input_assembly).toBe("caller_assembled")
+  })
+
+  it("the three remaining built-ins are cc_stdin", () => {
+    for (const step of ["privilege_scan", "source_allowlist", "prompt_injection_screen"]) {
+      const d = getVerifierDescriptor(step)
+      expect(d?.input_assembly, step).toBe("cc_stdin")
+    }
+  })
 })
 
 
