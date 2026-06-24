@@ -1234,7 +1234,8 @@ def create_app(
 
     @app.get("/ledger/samples", dependencies=[Depends(require_tenant_auth)])
     def ledger_samples(request: Request,
-                        verifier: str = Query(..., min_length=1, max_length=64),
+                        verifier: str = Query(..., min_length=1, max_length=64,
+                                              pattern=_KEY_PATTERN),
                         limit: int = Query(default=5, ge=1, le=25),
                         since_secs: int = Query(default=86400, ge=0)) -> dict:
         """D53a: most-recent N redacted samples for a single verifier.
@@ -1268,10 +1269,32 @@ def create_app(
             limit=limit,
             since_ts=cutoff,
         )
+        # Closed-set verdict allowlist. Mirrors the frontend's
+        # `verdictLabel` map; any string outside this set is collapsed
+        # to None at the cloud boundary so a misbehaving producer
+        # cannot leak a novel string through this surface.
+        _ALLOWED_VERDICTS = {
+            "pass", "fail", "deny",
+            "review", "needs_review", "not_applicable",
+        }
         samples: list[dict] = []
         for r in rows:
+            # Intentionally drop r.subject / r.matter / r.digest /
+            # r.payload_hash from the response — only id, ts, the
+            # redacted body summary, and the closed-set verdict reach
+            # the client. The body is the ONLY field that can carry
+            # producer-supplied content; everything that flows from
+            # body must pass through the redactor (`policy_id` is
+            # dropped entirely today — fail-closed projection — until
+            # a producer + redaction contract is defined for it).
             body = r.body if isinstance(r.body, dict) else {}
-            verdict = body.get("verdict")
+            verdict_raw = body.get("verdict")
+            verdict = (
+                verdict_raw
+                if isinstance(verdict_raw, str)
+                and verdict_raw in _ALLOWED_VERDICTS
+                else None
+            )
             # Defense in depth: every body MUST pass through the
             # redactor before it reaches the response. The preview
             # function is fail-closed (allowlist projection + linear
@@ -1283,12 +1306,15 @@ def create_app(
             samples.append({
                 "id": r.id,
                 "ts": _iso_ts(r.ts),
-                "verdict": verdict if isinstance(verdict, str) else None,
+                "verdict": verdict,
                 "redacted_payload_preview": preview,
-                # `policy_id` is not stored on ledger bodies today; the
-                # field is reserved in the contract so a future
-                # producer that does record it surfaces automatically.
-                "policy_id": body.get("policy_id"),
+                # `policy_id` is intentionally NOT projected. There is
+                # no producer that records it today, and no redaction
+                # contract for the field is defined; fail-closed
+                # projection means the frontend type stays nullable
+                # but the wire surface drops it entirely. Re-introduce
+                # only after the producer schema + a redact_text pass
+                # are wired.
             })
         return {"samples": samples}
 

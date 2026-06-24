@@ -89,6 +89,65 @@ describe("VerifierSamplesList source invariants", () => {
     expect(src).toContain("aria-controls={listId}")
   })
 
+  it("controlled <ul> is rendered unconditionally so aria-controls always resolves", () => {
+    // Earlier shape used `{open && <ul ...>}` which left aria-controls
+    // pointing at a non-existent ID when collapsed (axe-core flags
+    // 'aria-controls references an element that does not exist'). The
+    // <ul> now uses the `hidden` attribute to flip visibility while
+    // staying mounted.
+    expect(src).not.toMatch(/\{open && <ul/)
+    expect(src).toMatch(/hidden=\{!open\}/)
+  })
+
+  it("loading state is announced via aria-busy + aria-live + sr-only text", () => {
+    // Skeleton placeholders are aria-hidden, so the perceivable
+    // loading signal comes from aria-busy + aria-live polite + an
+    // sr-only 'Loading samples...' line (WCAG 4.1.3 status messages).
+    expect(src).toContain("aria-busy={open && loading}")
+    expect(src).toContain('aria-live="polite"')
+    expect(src).toContain("rules.verifier.samples.loading")
+  })
+
+  it("preview row drops the mouse-only title= attribute (a11y parity with VerifierExpander)", () => {
+    // VerifierExpander.test.ts pinned a no-title contract for the
+    // sibling inline-example surface; the sample row mirrors it so a
+    // keyboard / SR user is not the only person who cannot read the
+    // full preview.
+    expect(src).not.toMatch(/title=\{sample\.redacted_payload_preview\}/)
+  })
+
+  it("renders a localized placeholder when the redacted preview is empty", () => {
+    // Empty preview previously rendered the literal string "." which
+    // SR announced as 'period' and sighted users saw as a stray dot.
+    expect(src).toContain("rules.verifier.samples.previewUnavailable")
+    expect(src).not.toMatch(/\|\|\s*"\."/m)
+  })
+
+  it("deep link surfaces the destination via title=href + visible label (no surprise navigation)", () => {
+    // The brief calls for 'deep-link previews href on hover (no
+    // surprise navigation)'. A bare arrow with only an aria-label
+    // does not satisfy this for sighted / keyboard users.
+    expect(src).toContain("title={href}")
+    expect(src).toContain("deepLinkLabel")
+  })
+
+  it("relative-time tick is a single shared interval at the list level, not per-row", () => {
+    // Per-row setInterval was the previous shape and grew the timer
+    // count linearly with the sample count. The list hoists a single
+    // 'now' state and passes it down as a prop.
+    expect(src).toMatch(/setInterval\(\(\) => setNow\(/)
+    // RelativeTime no longer owns its own interval.
+    expect(src).not.toMatch(/function RelativeTime[\s\S]*setInterval/)
+  })
+
+  it("skeleton renders 5 rows so loaded state never expands the panel", () => {
+    // Real responses return up to 5 (the client default + server cap
+    // for this endpoint). Three placeholder rows caused the panel to
+    // grow when more samples arrived.
+    expect(src).toMatch(/\[0,\s*1,\s*2,\s*3,\s*4\]\.map/)
+    expect(src).not.toMatch(/\[0,\s*1,\s*2\]\.map/)
+  })
+
   it("caches the first fetch result; collapsing then re-expanding does not re-fetch", () => {
     // The `fetched` ref is set to true on the first toggle and the
     // fetch call is guarded by `if (next && !fetched.current)`.

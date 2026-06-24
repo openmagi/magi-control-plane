@@ -65,6 +65,34 @@ class TestRedactText:
         assert "alice@example.com" not in out
         assert "[REDACTED:email]" in out
 
+    def test_redact_slack_token(self):
+        for prefix in ("xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxo-"):
+            secret = prefix + "1234567890-abcdef0123-XYZ"
+            out = redact_text(f"slack {secret} done")
+            assert secret not in out
+            assert "[REDACTED:slack_token]" in out
+
+    def test_redact_google_api_key(self):
+        # AIza + 35 base64url chars is the Google API key shape. The
+        # fixture uses only letters / digits / `_` so the \b boundary
+        # on either side cleanly anchors the whole match (a literal
+        # `-` inside the body would split the run at the dash, since
+        # `-` is a non-word char that satisfies \b).
+        suffix = "Aa0_Aa0_Aa0_Aa0_Aa0_Aa0_Aa0Aa0Aa0Aa"  # 35 chars
+        assert len(suffix) == 35
+        secret = "AIza" + suffix
+        assert len(secret) == 39
+        out = redact_text(f"key={secret} done")
+        assert secret not in out
+        assert "[REDACTED:google_key]" in out
+
+    def test_redact_huggingface_token(self):
+        # hf_ + 30-40 base62 chars.
+        secret = "hf_" + "A" * 35
+        out = redact_text(f"export HF_TOKEN={secret}")
+        assert secret not in out
+        assert "[REDACTED:hf_token]" in out
+
     def test_idempotent(self):
         s = "alice@example.com is the user"
         once = redact_text(s)
@@ -139,3 +167,38 @@ class TestRedactPayloadPreview:
         out = redact_payload_preview({"text": {"nested": "value"}})
         assert "nested" not in out
         assert "value" not in out
+
+    def test_truncation_does_not_split_redaction_marker(self):
+        # A long `text` ending with a secret-shaped substring forces
+        # the truncator to cut INSIDE the `[REDACTED:<kind>]` marker.
+        # The fix trims back to before the unterminated `[REDACTED:`
+        # so a downstream audit script never sees a half-marker that
+        # looks like the start of leaked content.
+        jwt = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxIiwibmFtZSI6IkphbmUifQ."
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        )
+        # Pad with a prefix tuned so the truncation boundary falls
+        # part-way through `[REDACTED:jwt]`. The exact pad length is
+        # picked so the cut lands inside the marker but after its
+        # open bracket.
+        pad = "x" * (DEFAULT_PREVIEW_MAX_CHARS - 8)
+        body = {"text": f"{pad} {jwt}"}
+        out = redact_payload_preview(body)
+        # End is the ellipsis marker, not a dangling open bracket.
+        assert out.endswith("...")
+        assert "[REDACTED:" not in out or "]" in out[out.rfind("[REDACTED:"):]
+        # The original JWT bytes never appear.
+        assert jwt not in out
+
+    def test_truncation_short_max_chars_does_not_break(self):
+        # A pathologically small budget shouldn't crash or produce a
+        # half-marker tail. (`cut < 0` is clamped to 0.)
+        out = redact_payload_preview(
+            {"text": "alice@example.com is here"},
+            max_chars=4,
+        )
+        # Whatever survives, the marker tail invariant holds.
+        assert out.endswith("...")
+        assert "[REDACTED:" not in out or "]" in out[out.rfind("[REDACTED:"):]

@@ -575,13 +575,16 @@ class TestLedgerSamples:
         assert "samples" in r
         assert len(r["samples"]) == 3
         first = r["samples"][0]
-        # Contract shape: id, ts, verdict, redacted_payload_preview,
-        # policy_id (nullable until producers record it).
+        # Contract shape: id, ts, verdict, redacted_payload_preview.
+        # `policy_id` is INTENTIONALLY not projected today (fail-closed
+        # projection: no producer wires it, no redaction contract
+        # defines its shape). The frontend type stays nullable so a
+        # future producer can populate it without a wire bump.
         assert isinstance(first["id"], int)
         assert isinstance(first["ts"], str) and first["ts"].endswith("Z")
         assert first["verdict"] in ("pass", "review", "deny", None)
         assert isinstance(first["redacted_payload_preview"], str)
-        assert "policy_id" in first
+        assert "policy_id" not in first
 
     def test_samples_respects_limit(self, client):
         self._seed_inline_regex(client, n=8)
@@ -621,6 +624,67 @@ class TestLedgerSamples:
         ids = [row["id"] for row in r["samples"]]
         assert ids == sorted(ids, reverse=True)
 
+    def test_samples_rejects_malformed_verifier_name(self, client):
+        # The verifier= query parameter shares the same charset as
+        # every other identifier on this module (_KEY_PATTERN); a name
+        # with whitespace or punctuation must 422 at the API surface,
+        # NOT silently empty-match the way `body['step']` ends up
+        # doing today when the column comparison sees garbage.
+        for bad in ("inline regex", "inline.regex", "inline;drop",
+                    "inline:regex", "inline/regex"):
+            r = client.get(
+                f"/ledger/samples?verifier={bad}",
+                headers=HEADERS,
+            )
+            assert r.status_code == 422, (
+                f"expected 422 for {bad!r}, got {r.status_code}"
+            )
+
+    def test_samples_drops_policy_id_from_response(self, client):
+        # Fail-closed projection: `policy_id` is not wired to a
+        # producer + has no redaction contract, so it must NOT appear
+        # on the wire at all (even as None). Re-introducing the field
+        # requires a producer schema + a redact_text pass.
+        self._seed_inline_regex(client, n=2)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=HEADERS,
+        ).json()
+        for row in r["samples"]:
+            assert "policy_id" not in row, (
+                "policy_id was projected — see run_redaction.py contract"
+            )
+
+    def test_samples_verdict_collapses_unknown_to_none(self, app, client):
+        # A misbehaving producer that writes a novel verdict string
+        # into body['verdict'] must NOT have that string echoed back
+        # to the dashboard. The cloud collapses anything outside the
+        # closed allowlist to None; the frontend's verdictLabel maps
+        # None to "unknown".
+        engine = app.state.engine
+        from magi_cp.cloud.db import LedgerRepo
+        ledger_repo = LedgerRepo(engine)
+        ledger_repo.append(
+            subject="s_bogus",
+            body={
+                "step": "inline_regex",
+                "verdict": "totally-novel-verdict",
+                "subject": "s_bogus",
+                "payload_hash": "h",
+                "reasons": ["x"],
+            },
+            token="",
+            tenant_id="default",
+        )
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex",
+            headers=HEADERS,
+        ).json()
+        # The seeded row appears, but its verdict is normalized.
+        assert any(row["verdict"] is None for row in r["samples"])
+        for row in r["samples"]:
+            assert row["verdict"] != "totally-novel-verdict"
+
     def test_samples_redacts_secret_shaped_payload(self, client):
         # Inline-regex deny rows store the pattern verbatim in
         # `body['reasons']` (e.g. "pattern did not match: <pattern>").
@@ -656,6 +720,55 @@ class TestLedgerSamples:
         # least one of the patterns fired (kind=jwt is what we expect
         # for this input).
         assert "[REDACTED:jwt]" in joined
+
+    @pytest.mark.parametrize("secret,marker", [
+        ("sk-abcdef0123456789abcdef0123", "[REDACTED:api_key]"),
+        ("AKIAIOSFODNN7EXAMPLE", "[REDACTED:aws_key]"),
+        ("ghp_abcdef0123456789ABCDEF0123456789", "[REDACTED:github_token]"),
+        (
+            # 64-char hex (sha256-shape); short hex would not match.
+            "deadbeefcafebabe0123456789abcdef"
+            "0123456789abcdef0123456789abcdef",
+            "[REDACTED:hex]",
+        ),
+        ("alice@example.com", "[REDACTED:email]"),
+    ])
+    def test_samples_redacts_each_pattern_kind_end_to_end(
+        self, client, secret, marker,
+    ):
+        # End-to-end coverage for every pattern the redactor exposes.
+        # The unit tests in test_run_redaction.py cover redact_text()
+        # in isolation; this integration test makes sure no route-
+        # layer bypass surface is introduced between the ledger body
+        # and the wire (e.g. a future field projected without going
+        # through the redactor first).
+        #
+        # The /verify_inline regex deny path writes
+        # `f"pattern did not match: {req.pattern[:80]}"` into reasons,
+        # so the supplied secret flows into the ledger body via the
+        # pattern field. Every chosen fixture is <=80 chars so the
+        # 80-char truncation does not cut the shape.
+        assert len(secret) <= 80, "fixture must fit the 80-char cap"
+        client.post("/verify_inline", json={
+            "kind": "regex",
+            "pattern": secret,
+            "payload": {"text": "no secret here", "session_id": "s_e2e"},
+        }, headers=HEADERS)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=HEADERS,
+        ).json()
+        previews = [row["redacted_payload_preview"] for row in r["samples"]]
+        assert previews, "expected at least one sample"
+        joined = " ".join(previews)
+        # Raw secret never appears.
+        assert secret not in joined, (
+            f"redactor bypassed for {secret!r}: full token reached preview"
+        )
+        # The expected marker fired.
+        assert marker in joined, (
+            f"expected {marker} in preview, got {joined!r}"
+        )
 
     def test_samples_preview_truncated(self, client):
         # A long `reasons` string forces the redactor to truncate.

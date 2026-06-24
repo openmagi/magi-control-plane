@@ -68,10 +68,16 @@ _REDACTION_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     # Vendor-prefixed API keys (Stripe, OpenAI, Anthropic, GitHub,
     # generic "sk-" / "pk-"). Bounded length to avoid backtracking.
     ("api_key", re.compile(r"\b(?:sk|pk|rk|api|key)[-_][A-Za-z0-9_\-]{16,80}\b", re.IGNORECASE)),
-    # AWS-style 20-char uppercase-and-digits keys (AKIA…). Bounded.
+    # AWS-style 20-char uppercase-and-digits keys (AKIA...). Bounded.
     ("aws_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    # GitHub PAT (`ghp_…` `ghs_…` `gho_…` `ghu_…` `ghr_…`).
+    # GitHub PAT (`ghp_` / `ghs_` / `gho_` / `ghu_` / `ghr_`).
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,80}\b")),
+    # Slack tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxo-) — bounded.
+    ("slack_token", re.compile(r"\bxox[abprostu]-[A-Za-z0-9\-]{10,80}\b")),
+    # Google API keys (AIza... + 35 base64url chars).
+    ("google_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    # Hugging Face access tokens (`hf_...` + 30-40 chars).
+    ("hf_token", re.compile(r"\bhf_[A-Za-z0-9]{30,40}\b")),
     # Long hex digests (sha256 etc) - 40+ chars catches the common
     # secret-shaped opaque blobs without flagging short ids.
     ("hex", re.compile(r"\b[0-9a-f]{40,128}\b", re.IGNORECASE)),
@@ -189,4 +195,13 @@ def redact_payload_preview(
     cut = max_chars - 3
     if cut < 0:
         cut = 0
-    return redacted[:cut] + "..."
+    truncated = redacted[:cut]
+    # Guard against splitting a `[REDACTED:<kind>]` marker mid-token.
+    # A trailing open bracket without a matching close would produce
+    # `...some text [REDACTED:` at the boundary, which looks like the
+    # start of leaked content to a downstream audit script. Trim back
+    # to before the unterminated marker so the preview ends cleanly.
+    open_idx = truncated.rfind("[REDACTED:")
+    if open_idx != -1 and "]" not in truncated[open_idx:]:
+        truncated = truncated[:open_idx].rstrip()
+    return truncated + "..."

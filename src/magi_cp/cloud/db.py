@@ -505,26 +505,30 @@ class LedgerRepo:
         if not verifier:
             return []
         limit = max(1, min(int(limit), 25))
+        dialect = self.engine.dialect.name
+        if dialect not in ("postgresql", "sqlite"):
+            # The step filter is pushed into SQL only on the two
+            # supported dialects. A silent Python-side post-filter on
+            # the head 25 rows would produce a worse failure mode
+            # (operator sees "no samples" for a verifier that has
+            # plenty, just outside the head window). Surface the
+            # misconfiguration loudly so it's caught at deploy time
+            # rather than misread as a redaction or auth bug.
+            raise NotImplementedError(
+                f"list_recent_by_verifier requires postgresql or sqlite; "
+                f"got dialect={dialect!r}",
+            )
         with Session(self.engine) as s:
             stmt = select(LedgerEntry).where(
                 LedgerEntry.tenant_id == tenant_id,
             )
             if since_ts is not None:
                 stmt = stmt.where(LedgerEntry.ts >= since_ts)
-            dialect = self.engine.dialect.name
             stmt = self._apply_step_filter(stmt, [verifier], dialect)
             stmt = stmt.order_by(LedgerEntry.id.desc()).limit(limit)
             rows = list(s.scalars(stmt))
             for r in rows:
                 s.expunge(r)
-            if dialect not in ("postgresql", "sqlite"):
-                # Fallback dialect: the step filter is a no-op on
-                # `_apply_step_filter`, so we have to filter in Python.
-                rows = [
-                    r for r in rows
-                    if isinstance(r.body, dict)
-                    and r.body.get("step") == verifier
-                ]
             return rows
 
     def counts_by_step(
