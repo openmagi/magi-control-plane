@@ -3,11 +3,12 @@ import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
-import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import NlAuthoringGuide from "../../_components/NlAuthoringGuide"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
+import ConversationalCompose from "./_components/ConversationalCompose"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -29,7 +30,7 @@ import {
 
 export const dynamic = "force-dynamic"
 
-type Mode = "nl" | "guided" | "advanced"
+type Mode = "nl" | "guided" | "advanced" | "conversational"
 const WIZARD_TOTAL = 6
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -668,7 +669,9 @@ export default async function NewPolicyPage({
         ? "nl"
         : rawMode === "guided"
           ? "guided"
-          : null
+          : rawMode === "conversational"
+            ? "conversational"
+            : null
 
   const fromQuery = decodeResult(searchParams.r)
   const compileResult =
@@ -874,6 +877,28 @@ export default async function NewPolicyPage({
           </Card>
         </AuthoringShell>
       )}
+
+      {mode === "conversational" && (
+        <AuthoringShell
+          t={t}
+          modeTitle={t("newPolicy.mode.conversational")}
+          info={{
+            tone: "info",
+            title: t("newPolicy.conv.info.title"),
+            body: t("newPolicy.conv.info.body"),
+          }}
+        >
+          {/* D55b: chat + live IR draft pane + dry-run on the same page.
+              The save CTA at the bottom of the IrDraftPane posts to
+              saveCompiled, the same server action the NL mode uses
+              (writes via persistDraft + PUT /policies). */}
+          <ConversationalCompose
+            t={t}
+            locale={locale === "ko" ? "ko" : "en"}
+            saveAction={saveCompiled}
+          />
+        </AuthoringShell>
+      )}
     </>
   )
 }
@@ -1010,15 +1035,31 @@ function PickerLanding({
         </div>
       </div>
 
-      {/* 3-mode picker */}
+      {/* 4-mode picker (D55b adds Conversational) */}
       <div className="rounded-2xl border border-black/[0.08] bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0 mb-1">
           {ko ? "직접 만들기" : "Build it yourself"}
         </h2>
-        <p className="text-xs text-[var(--color-text-secondary)] mb-4">
+        <p className="text-xs text-[var(--color-text-secondary)] mb-2">
           {t("newPolicy.picker.subtitle")}
         </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {/* D55b: landing-copy nudge toward Conversational for first-time
+            users. The brief explicitly asks for this. */}
+        <p
+          data-testid="picker-conversational-nudge"
+          className="text-xs text-[var(--color-accent)] mb-4 font-medium"
+        >
+          {t("newPolicy.picker.conversationalNudge")}
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <ChoiceCard
+            href="/policies/new?mode=conversational"
+            icon={<ChatBubbleLeftRightIcon className="h-5 w-5" />}
+            label={t("newPolicy.picker.conversational.label")}
+            description={t("newPolicy.picker.conversational.description")}
+            backing={t("newPolicy.picker.conversational.backing")}
+            testId="picker-card-conversational"
+          />
           <ChoiceCard
             href="/policies/new?mode=nl"
             icon={<SparklesIcon className="h-5 w-5" />}
@@ -1047,17 +1088,19 @@ function PickerLanding({
 }
 
 function ChoiceCard({
-  href, icon, label, description, backing,
+  href, icon, label, description, backing, testId,
 }: {
   href: string
   icon: React.ReactNode
   label: string
   description: string
   backing: string
+  testId?: string
 }) {
   return (
     <Link
       href={href}
+      data-testid={testId}
       className="flex flex-col items-start gap-2 rounded-xl border border-black/[0.08] bg-white p-4 text-left transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.05] hover:no-underline"
     >
       <span className="rounded-lg bg-[var(--color-accent)]/10 p-2 text-[var(--color-accent)]">
