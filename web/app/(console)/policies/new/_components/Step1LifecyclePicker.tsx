@@ -53,9 +53,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { translate, type TKey } from "@/lib/i18n/dict"
 import {
+  ADVANCED_GROUP_PREVIEWS,
   ADVANCED_GROUPS,
   ADVANCED_OPEN_STORAGE_KEY,
   COMMON_GROUP,
+  findOwningAdvancedGroup,
   matchesQuery,
   normalizeQuery,
   type LifecycleLabels,
@@ -66,9 +68,11 @@ import {
 // consumers, even though the pure data + helpers live in a sibling
 // module so the test loader does not need to import React + i18n.
 export {
-  COMMON_GROUP,
+  ADVANCED_GROUP_PREVIEWS,
   ADVANCED_GROUPS,
   ADVANCED_OPEN_STORAGE_KEY,
+  COMMON_GROUP,
+  findOwningAdvancedGroup,
   matchesQuery,
 } from "./step1-lifecycle-groups"
 export type {
@@ -76,6 +80,18 @@ export type {
   LifecycleLabels,
   LifecycleGroup,
 } from "./step1-lifecycle-groups"
+
+/**
+ * Tailwind class fragments for the selected-state border + background.
+ * Pinned as module-level constants so a single source-grep test in the
+ * sibling Step1LifecyclePicker.test.ts can detect a theme rename here
+ * vs. the server-side <RadioCard> (the rest of the wizard) drifting
+ * apart. A future refactor that swaps the accent-color token in one
+ * place but not the other fails the gate loudly.
+ */
+const SELECTED_BORDER_CLASS = "peer-checked:border-[var(--color-accent)]"
+const SELECTED_BG_CLASS = "peer-checked:bg-[var(--color-accent)]/[0.05]"
+const HOVER_BORDER_CLASS = "hover:border-[var(--color-accent)]/40"
 
 /** Read the persisted set of open Advanced group keys. Returns an
  * empty set on first visit or any parse failure (defensive: a
@@ -212,8 +228,8 @@ function LifecycleRow({
       <span
         className={
           "block rounded-xl border bg-white p-4 transition-colors " +
-          "border-black/[0.08] hover:border-[var(--color-accent)]/40 " +
-          "peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+          "border-black/[0.08] " + HOVER_BORDER_CLASS + " " +
+          SELECTED_BORDER_CLASS + " " + SELECTED_BG_CLASS
         }
       >
         <span className="flex items-center justify-between gap-2 mb-1">
@@ -247,10 +263,23 @@ export default function Step1LifecyclePicker({
   // Persisted Advanced-group open set. Read from localStorage on
   // mount; SSR / first paint use the empty set so the initial server
   // markup matches.
+  //
+  // On mount, additionally union in the group that owns
+  // `currentLifecycle` if it's an Advanced group. Otherwise a user
+  // returning to Step 1 with e.g. `subagent_start` (a Subagents-group
+  // member) selected would see no highlight: the Subagents group is
+  // collapsed by default, the selected row hides via the parent
+  // container, and the wizard appears to have forgotten their choice.
+  // This is visual-only — we do NOT write the auto-expanded key back
+  // to localStorage, so a user's explicit collapse of that group on a
+  // future visit stays sticky across sessions.
   const [openSet, setOpenSet] = useState<Set<string>>(new Set())
   useEffect(() => {
-    setOpenSet(readPersistedOpen())
-  }, [])
+    const persisted = readPersistedOpen()
+    const owning = findOwningAdvancedGroup(currentLifecycle)
+    if (owning) persisted.add(owning.key)
+    setOpenSet(persisted)
+  }, [currentLifecycle])
 
   const toggleGroup = useCallback((groupKey: string) => {
     setOpenSet((prev) => {
@@ -289,6 +318,23 @@ export default function Step1LifecyclePicker({
     for (const v of visibilityByGroup.values()) n += v.visibleRows.size
     return n
   }, [visibilityByGroup])
+
+  // The currently-selected radio stays `:checked` in the DOM even when
+  // its row container is hidden by the search filter. A naive Next
+  // click would advance the wizard with that filtered-out selection,
+  // surprising the operator who reads the visible list as "the active
+  // candidates." When this happens we render an inline hint above the
+  // NextButton telling the operator to clear the search or pick a
+  // visible row. We do NOT auto-clear the selection (which would
+  // silently lose the user's prior pick).
+  const selectionHidden = useMemo(() => {
+    if (!queryActive) return false
+    for (const [, vis] of visibilityByGroup) {
+      if (vis.visibleRows.has(currentLifecycle)) return false
+    }
+    return true
+  }, [queryActive, visibilityByGroup, currentLifecycle])
+  const currentLabel = labels[currentLifecycle]?.label ?? currentLifecycle
 
   return (
     <div className="space-y-5" data-testid="step1-lifecycle-picker">
@@ -353,6 +399,26 @@ export default function Step1LifecyclePicker({
         )
       })()}
 
+      {/* Single "Advanced" tier header announces the disclosure tier
+          once, so the per-group labels do not need to repeat
+          "(advanced)" on every row. Hidden under an active query that
+          has zero advanced matches so the wall does not float. */}
+      {(() => {
+        const anyAdvancedVisible = ADVANCED_GROUPS.some((g) => {
+          const v = visibilityByGroup.get(g.key)
+          return !queryActive || (v?.anyMatch ?? false)
+        })
+        if (!anyAdvancedVisible) return null
+        return (
+          <p
+            data-testid="step1-advanced-section-header"
+            className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)] m-0 pt-2"
+          >
+            {t("newPolicy.wizard.step1.advancedSection")}
+          </p>
+        )
+      })()}
+
       {/* Advanced groups: collapsible, persisted, auto-expand on
           query match. */}
       {ADVANCED_GROUPS.map((group) => {
@@ -375,17 +441,39 @@ export default function Step1LifecyclePicker({
             <button
               type="button"
               onClick={() => toggleGroup(group.key)}
+              disabled={queryActive}
               aria-expanded={effectivelyOpen}
               aria-controls={`step1-group-rows-${group.key}`}
               aria-label={effectivelyOpen
                 ? t("newPolicy.wizard.step1.collapseGroup")
                 : t("newPolicy.wizard.step1.expandGroup")}
               data-testid={`step1-group-toggle-${group.key}`}
-              className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-black/[0.02]"
+              data-toggle-disabled={queryActive ? "true" : "false"}
+              title={queryActive
+                ? t("newPolicy.wizard.step1.toggleDisabledWhileSearching")
+                : undefined}
+              className={
+                "flex w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors " +
+                (queryActive
+                  ? "cursor-not-allowed opacity-70"
+                  : "hover:bg-black/[0.02]")
+              }
             >
               <Caret open={effectivelyOpen} />
               <span className="flex-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
                 {t(group.key as TKey)}
+                {(() => {
+                  const preview = ADVANCED_GROUP_PREVIEWS[group.key]
+                  if (!preview || effectivelyOpen) return null
+                  return (
+                    <span
+                      data-testid={`step1-group-preview-${group.key}`}
+                      className="ml-2 font-normal normal-case tracking-normal text-[10px] text-[var(--color-text-tertiary)]/80"
+                    >
+                      {preview.join(", ")}
+                    </span>
+                  )
+                })()}
               </span>
               <span className="text-[11px] font-mono text-[var(--color-text-tertiary)]">
                 {t("newPolicy.wizard.step1.advancedCount", {
@@ -429,6 +517,28 @@ export default function Step1LifecyclePicker({
         >
           {t("newPolicy.wizard.step1.search.empty")}
         </p>
+      )}
+
+      {selectionHidden && (
+        <div
+          data-testid="step1-selection-hidden-hint"
+          role="alert"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+        >
+          <span className="flex-1">
+            {t("newPolicy.wizard.step1.selectionHidden", {
+              label: currentLabel,
+            })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            data-testid="step1-selection-hidden-clear"
+            className="rounded-md border border-amber-400 bg-white px-2 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100"
+          >
+            {t("newPolicy.wizard.step1.selectionHiddenClearSearch")}
+          </button>
+        </div>
       )}
     </div>
   )

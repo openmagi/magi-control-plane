@@ -47,6 +47,26 @@ export interface LifecycleGroup {
   members: readonly LifecycleSlug[]
 }
 
+/** Short preview of the 2-3 most recognisable event names inside an
+ * Advanced group, shown inline next to the collapsed header. Operators
+ * scanning groups for "the one with PostToolUseFailure" do not need to
+ * expand every group one by one. Display only — not part of the search
+ * surface (which already matches by slug or label). */
+export const ADVANCED_GROUP_PREVIEWS: Record<string, readonly string[]> = {
+  "newPolicy.wizard.step1.group.toolActions":
+    ["PostToolUseFailure", "PostToolBatch"],
+  "newPolicy.wizard.step1.group.contentFlow":
+    ["PreCompact", "PostCompact", "Elicitation"],
+  "newPolicy.wizard.step1.group.permissions":
+    ["PermissionRequest", "PermissionDenied"],
+  "newPolicy.wizard.step1.group.subagents":
+    ["SubagentStart", "SubagentStop"],
+  "newPolicy.wizard.step1.group.boundaries":
+    ["StopFailure", "SessionStart", "SessionEnd"],
+  "newPolicy.wizard.step1.group.workspace":
+    ["WorktreeCreate", "TaskCreated", "FileChanged"],
+}
+
 /** Default-expanded "Common" group with the 4 most-used events
  * (PreToolUse / PostToolUse / UserPromptSubmit / Stop). PreToolUse
  * carries a "recommended" badge to match prior behaviour. */
@@ -130,4 +150,21 @@ export function matchesQuery(
   if (slug.toLowerCase().includes(q)) return true
   if (label.toLowerCase().includes(q)) return true
   return false
+}
+
+/** Return the Advanced group whose `members` contains `slug`, or
+ * `null` if the slug lives in the Common group (or is unrecognised).
+ * Used by the picker to auto-expand the owning Advanced group on mount
+ * when the wizard returns to Step 1 with `currentLifecycle` already
+ * pointing inside an Advanced group (regression fix vs. the prior
+ * screen-full layout where the selected card was always visible). */
+export function findOwningAdvancedGroup(
+  slug: LifecycleSlug,
+): LifecycleGroup | null {
+  for (const group of ADVANCED_GROUPS) {
+    if ((group.members as readonly LifecycleSlug[]).includes(slug)) {
+      return group
+    }
+  }
+  return null
 }

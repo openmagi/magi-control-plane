@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 import {
   matchesQuery,
+  ADVANCED_GROUP_PREVIEWS,
   COMMON_GROUP,
   ADVANCED_GROUPS,
   ADVANCED_OPEN_STORAGE_KEY,
+  findOwningAdvancedGroup,
   type LifecycleSlug,
 } from "./step1-lifecycle-groups"
 
@@ -192,6 +194,116 @@ describe("Step1LifecyclePicker | source invariants", () => {
     // not by skipping render. This way a collapsed Advanced group with
     // a previously-picked event still posts the correct value.
     expect(src).toMatch(/hidden \? "hidden" : ""/)
+  })
+
+  it("auto-expands the Advanced group that owns currentLifecycle on mount (P1 discoverability)", () => {
+    // When the wizard returns to Step 1 with `currentLifecycle`
+    // pointing inside a collapsed-by-default Advanced group (e.g.
+    // back-nav from Step 2, error redirect, or D56a Step 6 jump
+    // back), the selected card must be visible on first paint.
+    // Otherwise the row is hidden by the parent group container
+    // and the wizard appears to have forgotten the choice. The
+    // mount-effect unions the owning group's key into `openSet`
+    // without writing to localStorage (visual-only).
+    expect(src).toMatch(/findOwningAdvancedGroup\s*\(\s*currentLifecycle\s*\)/)
+    // The effect must depend on currentLifecycle (otherwise a
+    // late-arriving prop would not re-open the owning group).
+    expect(src).toMatch(/\[\s*currentLifecycle\s*\]/)
+    // We must NOT persist the auto-expand: writePersistedOpen() may
+    // not be called inside the effect body itself.
+    const effAnchor = src.indexOf("findOwningAdvancedGroup")
+    const effBlockStart = src.lastIndexOf("useEffect(", effAnchor)
+    const effBlockEnd = src.indexOf("}, [", effAnchor)
+    const effBody = src.slice(effBlockStart, effBlockEnd)
+    expect(effBody).not.toMatch(/writePersistedOpen\s*\(/)
+  })
+
+  it("group-toggle button is disabled while the search query is active (P2 ux/feedback)", () => {
+    // `effectivelyOpen = queryActive ? true : persistedOpen` already
+    // forces matching groups open during search. Letting the user
+    // click the toggle anyway silently flips `openSet` (and
+    // localStorage) with no visible change, so when they later
+    // clear the query the group may be in the opposite state. Block
+    // the toggle while searching to keep persisted state honest.
+    expect(src).toMatch(/disabled=\{queryActive\}/)
+  })
+
+  it("renders a hint when the selected lifecycle row is hidden by the search filter (P1 hidden-row submit)", () => {
+    // A `:checked` radio inside a `.hidden` row container is still
+    // submitted by the surrounding <form>. The brief flags this
+    // exact "empty submit advances anyway" trap. We surface a
+    // visible amber hint plus a "Clear search" button so the
+    // operator can either widen the filter or pick a visible row
+    // before clicking Next.
+    expect(src).toContain("step1-selection-hidden-hint")
+    expect(src).toContain("newPolicy.wizard.step1.selectionHidden")
+    expect(src).toContain("step1-selection-hidden-clear")
+  })
+
+  it("renders an inline preview of example event names on each collapsed Advanced group header (P2 discoverability)", () => {
+    // Collapsed headers used to carry only the family name + count.
+    // An operator who knows they want "PostToolUseFailure" should
+    // not have to expand every group to find the right one. The
+    // preview slot uses `ADVANCED_GROUP_PREVIEWS[group.key]` and
+    // renders inline next to the family label.
+    expect(src).toContain("ADVANCED_GROUP_PREVIEWS")
+    expect(src).toMatch(/step1-group-preview-/)
+  })
+
+  it("uses module-level Tailwind class constants for the selected-state border + bg (P2 consistency)", () => {
+    // Pin the accent-color token names against a single source of
+    // truth so a theme rename in the server-side <RadioCard> + a
+    // missed update here fails CI loudly. The component declares
+    // SELECTED_BORDER_CLASS / SELECTED_BG_CLASS / HOVER_BORDER_CLASS
+    // and feeds them into the row span's className.
+    expect(src).toContain("SELECTED_BORDER_CLASS")
+    expect(src).toContain("SELECTED_BG_CLASS")
+    expect(src).toContain("HOVER_BORDER_CLASS")
+    // The selected-state tokens must reference `--color-accent`,
+    // matching the rest of the wizard's <RadioCard>. A future
+    // theme rename here without the matching <RadioCard> change
+    // fails the gate.
+    expect(src).toMatch(
+      /SELECTED_BORDER_CLASS\s*=\s*"peer-checked:border-\[var\(--color-accent\)\]"/,
+    )
+    expect(src).toMatch(
+      /SELECTED_BG_CLASS\s*=\s*"peer-checked:bg-\[var\(--color-accent\)\]\/\[0\.05\]"/,
+    )
+  })
+
+  it("renders a single 'Advanced' section header above the Advanced groups (P2 ux/polish)", () => {
+    // The disclosure tier is announced once. Per-group labels do
+    // not need to repeat "(advanced)" on every row.
+    expect(src).toContain("step1-advanced-section-header")
+    expect(src).toContain("newPolicy.wizard.step1.advancedSection")
+  })
+})
+
+describe("Step1LifecyclePicker | helpers", () => {
+  it("findOwningAdvancedGroup returns the group for an Advanced slug", () => {
+    // permission_request lives in the Permissions advanced group.
+    const g = findOwningAdvancedGroup("permission_request")
+    expect(g).not.toBeNull()
+    expect(g!.key).toBe("newPolicy.wizard.step1.group.permissions")
+    expect(g!.kind).toBe("advanced")
+  })
+
+  it("findOwningAdvancedGroup returns null for a Common slug", () => {
+    // before_tool_use is in the always-expanded Common group, no
+    // need to auto-expand any Advanced group.
+    expect(findOwningAdvancedGroup("before_tool_use")).toBeNull()
+    expect(findOwningAdvancedGroup("after_tool_use")).toBeNull()
+    expect(findOwningAdvancedGroup("user_prompt")).toBeNull()
+    expect(findOwningAdvancedGroup("pre_final")).toBeNull()
+  })
+
+  it("ADVANCED_GROUP_PREVIEWS covers every Advanced group with at least one example", () => {
+    for (const group of ADVANCED_GROUPS) {
+      const preview = ADVANCED_GROUP_PREVIEWS[group.key]
+      expect(preview).toBeDefined()
+      expect(preview.length).toBeGreaterThanOrEqual(1)
+      expect(preview.length).toBeLessThanOrEqual(3)
+    }
   })
 })
 

@@ -285,19 +285,27 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
 
     it("Step 1 renders the 8 lifecycle cards", () => {
-      // Step1Lifecycle iterates LIFECYCLE_GROUPS (3 groups, 8 total
-      // members). Pin the group declaration so a future refactor that
-      // drops one of the lifecycles from the UI is obvious in the diff.
-      const m = src.match(/const LIFECYCLE_GROUPS[\s\S]*?=\s*\[([\s\S]+?)\n\]/)
-      expect(m).not.toBeNull()
-      const block = m![1]
+      // D61: Step 1 surface is owned by `_components/Step1LifecyclePicker.tsx`
+      // + the canonical group composition in
+      // `_components/step1-lifecycle-groups.ts`. The pre-D58 8-slug
+      // shape lives across `COMMON_GROUP.members` (4 slugs) +
+      // selected `ADVANCED_GROUPS` members (the other 4). Pin the
+      // 8-slug invariant against the file that the picker actually
+      // imports so a future refactor that drops one of the legacy 8
+      // from the rendered surface fails the gate. The full 30-slug
+      // composition + no-overlap is asserted in the picker's own
+      // test; this gate guards the legacy 8-slug minimum.
+      const groupsSrc = readFileSync(
+        path.join(__dirname, "_components", "step1-lifecycle-groups.ts"),
+        "utf-8",
+      )
       const members = [
         "before_tool_use", "after_tool_use",
         "user_prompt", "pre_compact", "pre_final",
         "subagent_stop", "session_start", "session_end",
       ]
       for (const slug of members) {
-        expect(block).toContain(`"${slug}"`)
+        expect(groupsSrc).toContain(`"${slug}"`)
       }
     })
 

@@ -3090,89 +3090,35 @@ function lifecycleCardCopy(
   }
 }
 
+// D61 perf: pre-build the per-locale labels once at module load. The
+// `Step1Lifecycle` server function would otherwise call
+// `lifecycleCardCopy(locale)` on every render, returning a fresh object
+// reference each time and busting the client picker's
+// `visibilityByGroup` memo on `[labels, query]`. The two
+// constants are stable across the module lifetime.
+const LIFECYCLE_LABELS_BY_LOCALE: Record<
+  "ko" | "en",
+  Record<Lifecycle, { label: string; sub: string }>
+> = {
+  ko: lifecycleCardCopy("ko"),
+  en: lifecycleCardCopy("en"),
+}
+
 // D56c: lifecycles grouped by family so the 8-card grid stays scannable.
 // Group headers come from the dict (newPolicy.wizard.step1.group.*).
 //
-// D61 note: the Step 1 surface no longer drives off LIFECYCLE_GROUPS
-// directly. The client picker (`_components/Step1LifecyclePicker.tsx`)
-// owns the rendered layout (Common + collapsed Advanced + search) and
-// imports the canonical group composition from the sibling
-// `step1-lifecycle-groups.ts`. This const is preserved as a legacy
-// data shape pinned by source-grep invariants in wizard-wiring.test.ts
-// so a future refactor that drops a slug from BOTH places fails the
-// gate. Removing it requires updating those tests too.
-const LIFECYCLE_GROUPS: ReadonlyArray<{
-  groupKey:
-    | "newPolicy.wizard.step1.group.toolActions"
-    | "newPolicy.wizard.step1.group.contentFlow"
-    | "newPolicy.wizard.step1.group.boundaries"
-    | "newPolicy.wizard.step1.group.permissions"
-    | "newPolicy.wizard.step1.group.subagents"
-    | "newPolicy.wizard.step1.group.workspace"
-  members: readonly Lifecycle[]
-}> = [
-  {
-    groupKey: "newPolicy.wizard.step1.group.toolActions",
-    members: [
-      "before_tool_use", "after_tool_use",
-      // D58: tool-context observability variants
-      "post_tool_use_failure", "post_tool_batch",
-    ],
-  },
-  {
-    groupKey: "newPolicy.wizard.step1.group.contentFlow",
-    members: [
-      "user_prompt", "pre_compact",
-      // D58: content-flow extensions
-      "user_prompt_expansion", "post_compact",
-      "elicitation", "elicitation_result",
-    ],
-  },
-  // D58: dedicated permission group so the gate-style PermissionRequest
-  // hook is discoverable next to its post-decision audit sibling.
-  {
-    groupKey: "newPolicy.wizard.step1.group.permissions",
-    members: ["permission_request", "permission_denied"],
-  },
-  // D58: subagent group covers spawn + lifecycle of subagent runs.
-  {
-    groupKey: "newPolicy.wizard.step1.group.subagents",
-    members: ["subagent_start", "subagent_stop"],
-  },
-  // D56d (P2 #10): pre_final (Stop) moved into the audit-only group so
-  // the group header honestly signals the action constraint. Operators
-  // scanning groups for a hard-block hook will land on Tool actions
-  // (PreToolUse / PostToolUse) or Content flow (UserPromptSubmit /
-  // PreCompact) instead of being misled into a Stop+block save bounce.
-  {
-    groupKey: "newPolicy.wizard.step1.group.boundaries",
-    members: [
-      "pre_final", "stop_failure",
-      "session_start", "session_end",
-      // D58: lifecycle / observability events without a more
-      // specific home.
-      "setup", "notification",
-      "instructions_loaded",
-      "task_created", "task_completed",
-      "teammate_idle", "message_display",
-      "config_change",
-    ],
-  },
-  // D58: workspace-level events (worktree + cwd + file watcher) live
-  // in their own group so an operator wiring up workspace-mutation
-  // audits finds them together.
-  {
-    groupKey: "newPolicy.wizard.step1.group.workspace",
-    members: [
-      "worktree_create", "worktree_remove",
-      "cwd_changed", "file_changed",
-    ],
-  },
-]
-// D61: explicit no-op reference so `noUnusedLocals` / future linter
-// runs cannot drop the legacy data shape that wizard-wiring.test.ts
-// pins. The picker owns the live composition; this is invariants-only.
-void LIFECYCLE_GROUPS
+// D61 cleanup: the legacy `LIFECYCLE_GROUPS` (8 slugs in 3 groups,
+// pre-D58 shape; later 30 slugs in 6 groups but DIFFERENT composition
+// from the picker's canonical groups) used to live here as a
+// `void`-referenced data shape kept alive by a source-grep gate in
+// wizard-wiring.test.ts. Two divergent group declarations for the same
+// 30 slugs invited silent drift — the legacy const counted as "pinned"
+// even when the rendered surface (driven by `ADVANCED_GROUPS` +
+// `COMMON_GROUP` in `step1-lifecycle-groups.ts`) regressed. The gate
+// has been re-pointed at `step1-lifecycle-groups.ts` so the 8-slug
+// invariant fails on the actual data the picker renders. Coverage is
+// not lost: `Step1LifecyclePicker.test.ts` still asserts the full
+// 30-slug composition and no-overlap.
 
 function Step1Lifecycle({
   t, locale, state, action,
@@ -3189,7 +3135,13 @@ function Step1Lifecycle({
   // legacy data shape) is kept for the i18n drift gate but no longer
   // drives the rendered surface; Step1LifecyclePicker owns the layout.
   const current = state.lifecycle ?? "before_tool_use"
-  const labels = lifecycleCardCopy(locale)
+  // Stable per-locale reference: `lifecycleCardCopy` returns a fresh
+  // object every call. The picker memoizes `visibilityByGroup` on
+  // `[labels, query]`; passing a fresh ref every Step1Lifecycle render
+  // moots the memo. `LIFECYCLE_LABELS_BY_LOCALE` is pre-built once at
+  // module load (no per-render allocation, no React `useMemo` needed
+  // — this function runs in a server component).
+  const labels = LIFECYCLE_LABELS_BY_LOCALE[locale]
   return (
     <StepShell
       t={t}
