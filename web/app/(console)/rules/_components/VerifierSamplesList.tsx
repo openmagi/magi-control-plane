@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ledgerHref } from "@/lib/ledger-url"
-import { Skeleton } from "@/components/ui"
+import { Skeleton } from "@/components/ui/Skeleton"
 
 /**
  * D53a: inline list of the most-recent N redacted samples for one

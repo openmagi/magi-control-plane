@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useId, useState } from "react"
-import { Button } from "@/components/ui"
+import { Button } from "@/components/ui/Button"
 
 /**
  * D53b: "Dry-run on last 24h" client panel.
