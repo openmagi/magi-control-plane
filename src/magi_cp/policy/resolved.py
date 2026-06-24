@@ -19,10 +19,19 @@ from .precedence import PolicySource, source_rank
 
 @dataclass(frozen=True)
 class PolicyOverride:
-    """A single (policy, source, enabled) triple as stored in the policy store."""
+    """A single (policy, source, enabled) triple as stored in the policy store.
+
+    P8: `enforcement` is the resolved authoring-time label
+    (`"enforcing"` / `"preview"` / None). Computed at PUT time from the
+    `requires[].step` resolution against the live VerifierRegistry +
+    vendor catalog (see `policy.step_enforcement`). `None` means
+    "unresolved" — legacy on-disk rows from before P8 omit the field
+    and the REST layer falls back to the lazy `_enforcement_label`
+    computed off the (action, event) triple."""
     policy: Policy
     source: PolicySource
     enabled: bool = True
+    enforcement: str | None = None
 
 
 @dataclass(frozen=True)

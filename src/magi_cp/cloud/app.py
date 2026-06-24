@@ -413,6 +413,22 @@ def create_app(
     llm_compiler: "object | None" = None,
     llm_reviewer: "object | None" = None,
 ) -> FastAPI:
+    # P8 fix-cycle #2: in deployments where MAGI_CP_REQUIRE_REGISTRY=1
+    # the factory refuses a None registry. Production sets this via the
+    # Helm chart / fly.toml; test/library callers leave it unset and
+    # keep the lenient "registry=None → enforcing" path for fixture
+    # back-compat. The runtime invariant in _build_production_app is
+    # the deploy-shape guarantee; this env hook is the override for
+    # operators who construct their own factory wiring.
+    if (verifier_registry is None
+            and os.environ.get("MAGI_CP_REQUIRE_REGISTRY") == "1"):
+        raise RuntimeError(
+            "magi-cp create_app: MAGI_CP_REQUIRE_REGISTRY=1 but no "
+            "verifier_registry was supplied. Wire a "
+            "VerifierRegistry (register_builtins, then pass to "
+            "create_app) or unset the env var for a hermetic test "
+            "factory."
+        )
     ks = keystore or KeyStore(dir=os.environ.get("MAGI_CP_KEY_DIR",
                                                   str(Path.home() / ".magi-cp" / "cloud")))
     ks.ensure_keypair()
@@ -1051,7 +1067,8 @@ def create_app(
                 ]}
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
-    _attach_policy_routes(app, policy_store, policy_lock)
+    _attach_policy_routes(app, policy_store, policy_lock,
+                          verifier_registry=verifier_registry)
 
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     _attach_admin_tenant_routes(app, engine)
@@ -1204,12 +1221,86 @@ _RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
 
 
 def _attach_policy_routes(app: FastAPI, store: PolicyStore,
-                           policy_lock: asyncio.Lock) -> None:
+                           policy_lock: asyncio.Lock,
+                           *,
+                           verifier_registry: "VerifierRegistry | None" = None,
+                           ) -> None:
+
+    def _resolve_enforcement_for(policy: Policy) -> str:
+        """P8: resolve policy enforcement label deterministically.
+
+        Falls back to the legacy (action, event)-derived label when
+        either the registry isn't wired OR every requires entry is
+        non-step (regex / llm_critic / shacl). The legacy label is the
+        only sensible "preview vs enforcing" answer in those cases.
+        """
+        from ..policy.step_enforcement import resolve_policy_enforcement
+        has_step_req = any(r.kind == "step" for r in policy.requires)
+        if not has_step_req:
+            return _enforcement_label(policy)
+        return resolve_policy_enforcement(
+            policy,
+            registry=verifier_registry,
+            vendor_catalog_fn=vendor_catalog,
+        )
+
+    def _resolve_legacy_unstamped(ov: "PolicyOverride") -> tuple[str, bool]:
+        """P8 follow-up (fix-cycle #1): re-validate a pre-P8 on-disk row
+        on read.
+
+        Pre-P8 rows have `enforcement=None`. Originally the REST layer
+        fell back to the legacy (action, event)-derived
+        `_enforcement_label` for these, which silently re-rendered a
+        broken policy (step now decommissioned) as
+        `"deterministic-gate"`. That re-creates the silent-fail-open
+        mode P8 closes.
+
+        New behaviour on `enforcement=None`:
+          - no step reqs → legacy label (regex / llm_critic / shacl
+            don't bind to a verifier).
+          - all step reqs resolve cleanly → return resolved label
+            (`"enforcing"` / `"preview"`).
+          - any step req fails to resolve → return
+            `"unresolved-legacy"` AND treat the row as effectively
+            disabled at the compile path. The dashboard surfaces the
+            gap; the runtime never ships a managed-settings hook for a
+            verifier that has been decommissioned.
+
+        The returned bool is `effective_enabled`: `False` ONLY when the
+        row resolves to `"unresolved-legacy"`. PATCH /enabled stays the
+        operator-visible toggle; this gate is a runtime-safety overlay
+        that the operator cannot accidentally turn back on by toggling
+        — only a successful re-PUT (with a valid step or `preview:`
+        prefix) re-stamps a coherent label.
+        """
+        from ..policy.step_enforcement import (
+            StepResolutionError, resolve_policy_enforcement,
+        )
+        if ov.enforcement is not None:
+            return ov.enforcement, ov.enabled
+        has_step_req = any(r.kind == "step" for r in ov.policy.requires)
+        if not has_step_req:
+            return _enforcement_label(ov.policy), ov.enabled
+        try:
+            label = resolve_policy_enforcement(
+                ov.policy,
+                registry=verifier_registry,
+                vendor_catalog_fn=vendor_catalog,
+            )
+        except StepResolutionError:
+            return "unresolved-legacy", False
+        return label, ov.enabled
 
     @app.get("/policies", dependencies=[Depends(require_admin_key)])
     def list_policies() -> dict:
         items = []
         for ov in store.load():
+            # P8 follow-up: legacy unstamped rows are re-validated
+            # against the live registry. If a referenced step has been
+            # decommissioned the row renders as `"unresolved-legacy"`
+            # so the operator sees the gap — instead of the pre-P8
+            # silent fall-back to `"deterministic-gate"`.
+            enf, _eff_enabled = _resolve_legacy_unstamped(ov)
             items.append({
                 "id": ov.policy.id,
                 "description": ov.policy.description,
@@ -1217,7 +1308,7 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 "enabled": ov.enabled,
                 "trigger": {"event": ov.policy.trigger.event,
                             "matcher": ov.policy.trigger.matcher},
-                "enforcement": _enforcement_label(ov.policy),
+                "enforcement": enf,
             })
         return {"items": items}
 
@@ -1237,12 +1328,16 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         for ov in store.load():
             if ov.policy.id == policy_id:
                 _, sha = _compile_with_sha(ov.policy)
+                # P8 follow-up: re-validate legacy unstamped rows on
+                # read instead of silently falling back to the legacy
+                # (action, event) label.
+                enf, _eff_enabled = _resolve_legacy_unstamped(ov)
                 return {
                     "id": ov.policy.id,
                     "source": ov.source,
                     "enabled": ov.enabled,
                     "policy": _serialize_policy_for_api(ov.policy),
-                    "enforcement": _enforcement_label(ov.policy),
+                    "enforcement": enf,
                     "compiled_sha256": sha,
                 }
         raise HTTPException(404, f"policy {policy_id!r} not found")
@@ -1258,17 +1353,49 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         except ValueError as e:
             # Matrix violation or any other __post_init__ failure
             raise HTTPException(400, str(e))
+        # P8: fail-closed on unknown / inactive verifier steps. This is the
+        # primary authoring-time gate — the runtime gate cannot retroactively
+        # reject a policy that was already PUT, so an invalid step has to
+        # be caught here or it ships as "missing" and silently fails at
+        # gate time.
+        from ..policy.step_enforcement import (
+            StepResolutionError, resolve_policy_enforcement,
+        )
+        try:
+            resolved_enforcement = resolve_policy_enforcement(
+                policy,
+                registry=verifier_registry,
+                vendor_catalog_fn=vendor_catalog,
+            )
+        except StepResolutionError as e:
+            # Distinct 422 detail per reason — clients can branch on the
+            # "is not active" vs "not in catalog" wording (or just show
+            # the message; both are operator-readable).
+            raise HTTPException(422, str(e)) from e
+        # When every req is non-step (regex / llm_critic / shacl), the
+        # resolver short-circuits to "enforcing"; collapse to the legacy
+        # label for parity with list/get so the dashboard renders the
+        # same string everywhere.
+        if not any(r.kind == "step" for r in policy.requires):
+            resolved_enforcement = _enforcement_label(policy)
         async with policy_lock:
             existing = store.load()
             existing = [ov for ov in existing if ov.policy.id != policy_id]
-            existing.append(PolicyOverride(policy=policy, source=body.source,  # type: ignore[arg-type]
-                                            enabled=body.enabled))
+            existing.append(PolicyOverride(
+                policy=policy, source=body.source,  # type: ignore[arg-type]
+                enabled=body.enabled,
+                enforcement=resolved_enforcement,
+            ))
             store.save(existing)
-        return {"id": policy.id, "source": body.source, "enabled": body.enabled}
+        return {"id": policy.id, "source": body.source, "enabled": body.enabled,
+                "enforcement": resolved_enforcement}
 
     @app.patch("/policies/{policy_id:path}/enabled",
                dependencies=[Depends(require_admin_key)])
     async def patch_enabled(policy_id: str, body: PatchEnabledReq) -> dict:
+        from ..policy.step_enforcement import (
+            StepResolutionError, resolve_policy_enforcement,
+        )
         async with policy_lock:
             existing = store.load()
             found = False
@@ -1276,8 +1403,44 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             for ov in existing:
                 if ov.policy.id == policy_id:
                     found = True
+                    new_enforcement = ov.enforcement
+                    # P8 follow-up (fix-cycle #4): re-validate against
+                    # the live registry whenever the operator is
+                    # re-arming the row. A row stamped months ago
+                    # against a verifier that was since decommissioned
+                    # must not silently round-trip a stale
+                    # "enforcing" label on every toggle.
+                    if body.enabled and any(
+                        r.kind == "step" for r in ov.policy.requires
+                    ):
+                        try:
+                            new_enforcement = resolve_policy_enforcement(
+                                ov.policy,
+                                registry=verifier_registry,
+                                vendor_catalog_fn=vendor_catalog,
+                            )
+                        except StepResolutionError as e:
+                            # 409 conflict, not 422: the request body
+                            # is well-formed; the world the policy
+                            # references has drifted out from under
+                            # it. Operator action = re-author with
+                            # current /verifiers or 'preview:' prefix.
+                            raise HTTPException(
+                                409,
+                                f"cannot re-enable: backing verifier "
+                                f"{e.step!r} no longer registered — "
+                                f"re-author with current /verifiers "
+                                f"or 'preview:' prefix",
+                            ) from e
                     new_list.append(PolicyOverride(
                         policy=ov.policy, source=ov.source, enabled=body.enabled,
+                        # P8: enable/disable is metadata-only; preserve
+                        # the stamped enforcement on disable. On enable
+                        # we re-resolve (see above) so a re-armed row
+                        # carries a label that matches today's
+                        # registry, not whatever was wired at PUT
+                        # time.
+                        enforcement=new_enforcement,
                     ))
                 else:
                     new_list.append(ov)
@@ -1592,6 +1755,11 @@ def _build_production_app() -> FastAPI:
     v2.0-W8b: configures structlog (JSON to stderr) and exposes /metrics
     on the same listener. Both are no-ops when the [observability] extra
     isn't installed.
+
+    P8 fix-cycle #2: startup-time invariant. After `register_builtins`
+    runs, the registry must be non-empty. If a deploy regression ever
+    leaves it empty, refuse to boot rather than silently letting every
+    PUT pass with `"enforcing"` stamped on a step that does not exist.
     """
     from ..verifier.builtins import register_builtins
     from ..verifier.protocol import VerifierRegistry
@@ -1599,6 +1767,16 @@ def _build_production_app() -> FastAPI:
     configure_structlog()
     reg = VerifierRegistry()
     register_builtins(reg)
+    if not reg.all():
+        raise RuntimeError(
+            "magi-cp production app: verifier registry is empty after "
+            "register_builtins() — refusing to boot. This is almost "
+            "certainly a regression in src/magi_cp/verifier/builtins.py "
+            "(import error, missing dependency, or accidental no-op "
+            "registration loop). Fix the registry before deploying; "
+            "otherwise PUT /policies would silently pass with an "
+            "unverifiable 'enforcing' label."
+        )
     app = create_app(
         verifier_registry=reg,
         llm_compiler=_resolve_llm_provider_from_env("MAGI_CP_LLM_COMPILER"),

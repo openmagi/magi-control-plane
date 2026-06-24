@@ -136,7 +136,26 @@ export type DraftError = { field: string; message: string }
 
 const POLICY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$/
 
-export function validateDraft(d: PolicyDraft): DraftError[] {
+/** P8: explicit opt-in prefix for step names that reference an unwired /
+ * in-development verifier. The wizard accepts the prefix at submit time
+ * and the backend stamps `enforcement="preview"` on the resulting policy.
+ * Authors who omit the prefix on an unwired step get a 422 — this is the
+ * silent-fail seam closed in REST. Kept in sync with
+ * src/magi_cp/policy/step_enforcement.PREVIEW_PREFIX. */
+export const PREVIEW_PREFIX = "preview:"
+
+/** Optional registries supplied by the page server-component. Both come
+ * from /verifiers; `availableSteps` is the wired set (active verifiers),
+ * `vendorStepSet` is the known-but-inactive set (vendor catalog entries
+ * with no live registration). When neither is provided we skip the
+ * registry check so the validator stays usable in unit tests and in the
+ * raw-IR JSON mode that intentionally pre-dates the backend wiring. */
+export type StepRegistry = {
+  availableSteps?: Iterable<string>
+  vendorStepSet?: Iterable<string>
+}
+
+export function validateDraft(d: PolicyDraft, registry?: StepRegistry): DraftError[] {
   const errs: DraftError[] = []
   if (!POLICY_ID_RE.test(d.id)) errs.push({ field: "id", message: "Invalid id (alphanumeric + . _ - /; max 128)" })
   if (d.id.includes("..")) errs.push({ field: "id", message: "id must not contain '..'" })
@@ -151,6 +170,14 @@ export function validateDraft(d: PolicyDraft): DraftError[] {
   // longer hard-fail on length 0; we DO surface a soft warning when
   // a non-audit action is paired with an empty list (almost always
   // an authoring mistake).
+  // P8: build the registry sets ONCE per validate pass so the inner
+  // loop stays O(reqs) instead of O(reqs × steps). Both are optional —
+  // when omitted, we fall through to the legacy behaviour (no catalog
+  // lookup), matching the backend's "no registry wired → skip strict"
+  // tolerance in policy/step_enforcement.resolve_step_enforcement.
+  const _available = new Set<string>(registry?.availableSteps ?? [])
+  const _vendor = new Set<string>(registry?.vendorStepSet ?? [])
+  const _checkRegistry = _available.size > 0 || _vendor.size > 0
   for (const [i, r] of d.requires.entries()) {
     const kind = ("kind" in r ? r.kind : "step")
     if (kind === "step") {
@@ -158,6 +185,24 @@ export function validateDraft(d: PolicyDraft): DraftError[] {
       const verdict = ("verdict" in r ? r.verdict : "")
       if (!step) errs.push({ field: `requires[${i}].step`, message: "step required" })
       if (!verdict) errs.push({ field: `requires[${i}].verdict`, message: "verdict required" })
+      // P8: catch unwired / inactive verifier references at authoring
+      // time so the user fixes them BEFORE the cloud rejects the PUT.
+      // The backend is authoritative; this just front-runs the 422.
+      if (step && _checkRegistry && !step.startsWith(PREVIEW_PREFIX)) {
+        if (!_available.has(step)) {
+          if (_vendor.has(step)) {
+            errs.push({
+              field: `requires[${i}].step`,
+              message: `verifier "${step}" is in the catalog but not active. Enable it under /presets, or use the "${PREVIEW_PREFIX}${step}" prefix to author against an in-development verifier.`,
+            })
+          } else {
+            errs.push({
+              field: `requires[${i}].step`,
+              message: `verifier "${step}" is not in the catalog. Pick a step from the autocomplete list, or use the "${PREVIEW_PREFIX}${step}" prefix to author against an in-development verifier.`,
+            })
+          }
+        }
+      }
     } else if (kind === "regex") {
       const pattern = ("pattern" in r ? r.pattern : "")
       if (!pattern) errs.push({ field: `requires[${i}].pattern`, message: "regex pattern required" })

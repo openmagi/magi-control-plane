@@ -1,5 +1,6 @@
 export { Button, type ButtonProps, type ButtonVariant, type ButtonSize } from "./Button"
 export { Badge, type BadgeProps, type BadgeVariant } from "./Badge"
+export { EnforcementBadge } from "./EnforcementBadge"
 export { Card, CardHeader, type CardProps } from "./Card"
 export { Input, Textarea, type InputProps, type TextareaProps } from "./Input"
 export { Select, type SelectProps, type SelectOption } from "./Select"

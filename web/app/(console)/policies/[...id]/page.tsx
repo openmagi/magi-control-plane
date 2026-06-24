@@ -4,7 +4,8 @@ import { codeForError } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import { getT } from "@/lib/i18n/server"
 import {
-  Badge, Card, Code, CodeBlock, CopyButton, ErrorState, PageHeader,
+  Badge, Card, Code, CodeBlock, CopyButton, EnforcementBadge,
+  ErrorState, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -93,12 +94,7 @@ export default async function PolicyDetailPage({
           </span>
           <span className="text-sm flex items-center gap-2">
             enforcement:
-            <Badge variant={
-              detail.enforcement === "deterministic-gate" ? "ok"
-              : detail.enforcement === "observe-only" ? "review" : "default"
-            }>
-              {detail.enforcement}
-            </Badge>
+            <EnforcementBadge kind={detail.enforcement} />
           </span>
           <details className="text-sm">
             <summary className="cursor-pointer text-[var(--color-text-tertiary)]">

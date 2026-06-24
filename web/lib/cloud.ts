@@ -149,13 +149,46 @@ export type PolicyBody = {
   gate_binary: string
 }
 
+/** P8 fix-cycle #5: the enforcement vocabulary depends on a hidden
+ * branch in the cloud (any kind=step req → P8 resolver; all non-step
+ * → legacy (action, event) label). The union below is the closed set
+ * of values the dashboard renders for; widening it is a deliberate
+ * type-changed change so a future cloud refactor that drifts the
+ * vocabulary is caught at `tsc --noEmit` time, not silently rendered
+ * as the default Badge variant.
+ *
+ *   "enforcing"          — P8: at least one step req resolves to a
+ *                          wired+active verifier (or registry was
+ *                          absent at PUT time).
+ *   "preview"            — P8: at least one step req carried the
+ *                          `preview:` prefix at PUT time.
+ *   "unresolved-legacy"  — P8 fix-cycle #1: pre-P8 row whose step
+ *                          ref no longer resolves against the live
+ *                          registry. Row is effectively disabled at
+ *                          compile; operator must re-PUT.
+ *   "deterministic-gate" — Legacy (action ∈ {block, ask}) label.
+ *   "observe-only"       — Legacy (PostToolUse + audit) label.
+ *   "log-only"           — Legacy fallthrough (PreToolUse + audit etc).
+ *   "missing"            — /catalog/evidence-types only; surfaced for
+ *                          a policy-referenced step that has no live
+ *                          verifier behind it.
+ */
+export type EnforcementLabel =
+  | "enforcing"
+  | "preview"
+  | "unresolved-legacy"
+  | "deterministic-gate"
+  | "observe-only"
+  | "log-only"
+  | "missing"
+
 export type PolicyListItem = {
   id: string
   description: string
   source: string
   enabled: boolean
   trigger: { event: string; matcher: string }
-  enforcement: string   // "deterministic-gate" | "observe-only" | "log-only"
+  enforcement: EnforcementLabel
 }
 
 export type PolicyDetail = {
@@ -163,7 +196,7 @@ export type PolicyDetail = {
   source: string
   enabled: boolean
   policy: PolicyBody
-  enforcement: string
+  enforcement: EnforcementLabel
   compiled_sha256: string
 }
 

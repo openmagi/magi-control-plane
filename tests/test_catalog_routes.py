@@ -87,20 +87,40 @@ def test_evidence_types_annotates_used_by_when_policy_references_step(client):
 
 
 def test_evidence_types_surfaces_policy_derived_step_as_missing(client):
-    # Build the policy with a non-existent step name. Backend allows
-    # this — the runtime denies at /verify time. The catalog should
-    # still surface it as a "missing" entry so the operator sees the
-    # broken reference.
+    # P8: the bare unwired-step path is now closed at PUT time (422).
+    # Authoring an in-development verifier requires the explicit
+    # `preview:` opt-in, which lets the policy land in the store with a
+    # known-broken step reference. The catalog should still surface
+    # that as a "policy-derived" entry so the operator sees what the
+    # policy is binding to.
     body = _valid_policy(
         id="custom-step/v1",
-        requires=[{"step": "no_such_verifier", "verdict": "pass"}],
+        requires=[{"step": "preview:no_such_verifier", "verdict": "pass"}],
     )
-    _save_policy(client, body)
+    r = _save_policy(client, body)
+    assert r.status_code == 200, r.text
     items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
-    derived = next(i for i in items if i["step"] == "no_such_verifier")
+    derived = next(i for i in items if i["step"] == "preview:no_such_verifier")
     assert derived["source"] == "policy-derived"
     assert derived["enforcement"] == "missing"
     assert derived["used_by_policies"] == ["custom-step/v1"]
+
+
+def test_put_with_bare_unwired_step_returns_422_no_catalog_pollution(client):
+    """P8: a bare (no `preview:` prefix) reference to an unwired step is
+    rejected at PUT time so the catalog never has to surface a "missing"
+    entry derived from a typo. The closed-loop check: assert the catalog
+    stays clean after the failed PUT."""
+    body = _valid_policy(
+        id="typo/v1",
+        requires=[{"step": "no_such_verifier", "verdict": "pass"}],
+    )
+    r = _save_policy(client, body)
+    assert r.status_code == 422, r.text
+    items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
+    # The bad step name did NOT pollute the policy-derived catalog —
+    # PUT rejected before the row could land.
+    assert all(i["step"] != "no_such_verifier" for i in items)
 
 
 # ── /catalog/conditions ──────────────────────────────────────────

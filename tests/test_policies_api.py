@@ -28,6 +28,22 @@ def client(tmp_path):
     return TestClient(app)
 
 
+@pytest.fixture
+def client_with_registry(tmp_path):
+    """P8: the production wiring — verifier_registry is supplied so
+    PUT /policies/{id} resolves requires[].step against the live
+    catalog (fail-closed on unknown / inactive)."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=str(tmp_path / "policies.json"),
+                     verifier_registry=reg)
+    return TestClient(app)
+
+
 def _valid_policy(**override):
     base = {
         "id": "legal-filing/v1",
@@ -205,3 +221,403 @@ def test_put_overwrites_existing_same_id(client):
     # only 1 entry total — overwrite, not append
     items = client.get("/policies", headers=ADMIN).json()["items"]
     assert len(items) == 1
+
+
+# ── P8: step IR fail-closed at REST layer ──────────────────────────────
+def test_put_with_active_wired_step_returns_enforcing(client_with_registry):
+    """citation_verify ships in register_builtins() — wired + active.
+    PUT must accept it and stamp enforcement="enforcing"."""
+    r = _put(client_with_registry, "legal-filing/v1", _valid_policy())
+    assert r.status_code == 200, r.text
+    assert r.json()["enforcement"] == "enforcing"
+    # And the stamped label persists across reads.
+    got = client_with_registry.get("/policies/legal-filing/v1",
+                                    headers=ADMIN).json()
+    assert got["enforcement"] == "enforcing"
+    listed = client_with_registry.get("/policies", headers=ADMIN).json()["items"]
+    assert listed[0]["enforcement"] == "enforcing"
+
+
+def test_put_with_unwired_step_name_returns_422(client_with_registry):
+    """A step that is NOT in the verifier registry AND NOT in the
+    vendor catalog must reject with 422 "not in catalog" — this is the
+    "missing" silent-fail path P8 closes."""
+    body = _valid_policy(
+        requires=[{"step": "definitely_not_a_real_verifier", "verdict": "pass"}],
+    )
+    r = _put(client_with_registry, "legal-filing/v1", body)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"].lower()
+    assert "not in catalog" in detail
+    assert "definitely_not_a_real_verifier" in detail
+    # And nothing was persisted.
+    listed = client_with_registry.get("/policies", headers=ADMIN).json()["items"]
+    assert listed == []
+
+
+def test_put_with_preview_prefix_returns_200_preview(client_with_registry):
+    """`preview:` prefix is the explicit opt-in for in-development
+    verifiers — the policy is accepted and enforcement stamped
+    deterministically as "preview" so the dashboard can flag the row."""
+    body = _valid_policy(
+        requires=[{"step": "preview:my_new_verifier", "verdict": "pass"}],
+    )
+    r = _put(client_with_registry, "legal-filing/v1", body)
+    assert r.status_code == 200, r.text
+    assert r.json()["enforcement"] == "preview"
+    # Stamped, not lazily re-derived per read.
+    got = client_with_registry.get("/policies/legal-filing/v1",
+                                    headers=ADMIN).json()
+    assert got["enforcement"] == "preview"
+    # The IR retains the prefix so a reader can tell it was authored
+    # against an unwired verifier (not just downgraded after the fact).
+    assert got["policy"]["requires"][0]["step"] == "preview:my_new_verifier"
+
+
+def test_put_with_catalogued_but_inactive_step_returns_422(client_with_registry):
+    """answer-quality / answer_quality is in the vendor catalog but has
+    no live Verifier registered — must 422 "not active" with the
+    activate-or-preview hint."""
+    body = _valid_policy(
+        requires=[{"step": "answer_quality", "verdict": "pass"}],
+    )
+    r = _put(client_with_registry, "legal-filing/v1", body)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"].lower()
+    assert "not active" in detail
+    assert "preview:" in detail or "/presets" in detail
+
+
+def test_put_mixed_preview_and_enforcing_resolves_to_preview(client_with_registry):
+    """If ANY req is preview, the policy-level label is preview — a
+    single unwired condition blocks the gate from claiming the policy
+    as a whole is enforcing."""
+    body = _valid_policy(
+        requires=[
+            {"step": "citation_verify", "verdict": "pass"},
+            {"step": "preview:future_check", "verdict": "pass"},
+        ],
+    )
+    r = _put(client_with_registry, "legal-filing/v1", body)
+    assert r.status_code == 200, r.text
+    assert r.json()["enforcement"] == "preview"
+
+
+def test_put_persists_enforcement_label_to_disk(tmp_path):
+    """The label is stamped at PUT time and round-trips through the
+    on-disk JSON store — a re-incarnated app does NOT re-resolve the
+    label against whatever registry is wired at read time."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    psp = str(tmp_path / "policies.json")
+
+    # PUT with registry wired → "enforcing" stamped on disk.
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app1 = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                       policy_store_path=psp, verifier_registry=reg)
+    c1 = TestClient(app1)
+    _put(c1, "legal-filing/v1", _valid_policy())
+
+    # Re-open WITHOUT a registry — the stamped label still wins.
+    app2 = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                       policy_store_path=psp, verifier_registry=None)
+    c2 = TestClient(app2)
+    got = c2.get("/policies/legal-filing/v1", headers=ADMIN).json()
+    assert got["enforcement"] == "enforcing"
+
+
+def test_put_without_registry_skips_strict_validation(client):
+    """Hermetic-test path (no registry) keeps the legacy lenient
+    behaviour — `citation_verify` is accepted even though there is no
+    catalog to confirm it against. This is the back-compat seam that
+    keeps every pre-P8 fixture working."""
+    r = _put(client, "legal-filing/v1", _valid_policy())
+    assert r.status_code == 200
+    # Enforcement still surfaces — derived from the (action, event)
+    # triple when no step resolution happened.
+    assert r.json()["enforcement"] in ("enforcing", "deterministic-gate")
+
+
+# ── P8 fix-cycle: tests for the follow-up findings ─────────────────────
+def _write_legacy_policy_store(path, *, policy_id: str, step: str,
+                                enabled: bool = True) -> None:
+    """Hand-craft a pre-P8 on-disk policy row.
+
+    Pre-P8 rows omit the `enforcement` field — the REST layer used to
+    fall back to the legacy (action, event) label. The fix-cycle adds
+    re-validation on read so a row whose step ref has been
+    decommissioned renders `"unresolved-legacy"` and is treated as
+    disabled at compile.
+    """
+    import json
+    import os
+    row = {
+        "source": "org",
+        "enabled": enabled,
+        "policy": {
+            "id": policy_id,
+            "description": "legacy",
+            "version": "0.1",
+            "trigger": {"host": "claude-code", "event": "PreToolUse",
+                        "matcher": "Bash"},
+            "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
+            "requires": [{"step": step, "verdict": "pass"}],
+            "action": "block",
+            "on_signature_invalid": "deny",
+            "gate_binary": "/usr/local/bin/magi-gate.sh",
+        },
+        # NOTE: no "enforcement" key — that is the pre-P8 shape.
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([row], f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def test_legacy_row_with_unresolved_step_renders_unresolved_label(tmp_path):
+    """Fix-cycle #1 P0 + #7: a pre-P8 row referencing a step that does
+    not exist in the live registry MUST render `"unresolved-legacy"`
+    on /policies and /policies/{id}. The pre-fix behaviour silently
+    fell back to `"deterministic-gate"` — a false safety signal."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    psp = str(tmp_path / "policies.json")
+    _write_legacy_policy_store(psp, policy_id="ghost-policy/v1",
+                                step="ghost_step_does_not_exist")
+
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=psp, verifier_registry=reg)
+    c = TestClient(app)
+
+    # /policies list re-validates the legacy row.
+    listed = c.get("/policies", headers=ADMIN).json()["items"]
+    assert len(listed) == 1
+    assert listed[0]["enforcement"] == "unresolved-legacy"
+
+    # /policies/{id} agrees with the list.
+    got = c.get("/policies/ghost-policy/v1", headers=ADMIN).json()
+    assert got["enforcement"] == "unresolved-legacy"
+
+    # The compile path still works (no crash); it is the dashboard's
+    # job to surface that the row is gated. The runtime safety net is
+    # the gate binary 404'ing on the unwired verifier.
+    comp = c.get("/policies/ghost-policy/v1/compiled", headers=ADMIN)
+    assert comp.status_code == 200
+
+
+def test_legacy_row_with_active_step_renders_enforcing(tmp_path):
+    """Fix-cycle #1 + #7: when the step still resolves cleanly, the
+    on-read re-validation stamps `"enforcing"` (instead of the legacy
+    `"deterministic-gate"` lazy label). This is the success case for
+    a pre-P8 row that survived a registry change unscathed."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    psp = str(tmp_path / "policies.json")
+    _write_legacy_policy_store(psp, policy_id="ok-policy/v1",
+                                step="citation_verify")
+
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=psp, verifier_registry=reg)
+    c = TestClient(app)
+
+    got = c.get("/policies/ok-policy/v1", headers=ADMIN).json()
+    assert got["enforcement"] == "enforcing"
+
+
+def test_overwrite_legacy_row_with_unwired_step_returns_422(tmp_path):
+    """Fix-cycle #7: PUT re-arms the strict gate. A row that was
+    grandfathered on disk does NOT acquire a permanent waiver — an
+    operator re-authoring the row must either pick a wired step or
+    use the `preview:` prefix. This is the "cloud got stricter"
+    semantics; without it, a stale row could pin a bad step name in
+    the policy store forever."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    psp = str(tmp_path / "policies.json")
+    _write_legacy_policy_store(psp, policy_id="ghost-policy/v1",
+                                step="ghost_step_does_not_exist")
+
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=psp, verifier_registry=reg)
+    c = TestClient(app)
+
+    # PUT-overwrite the legacy row keeping the same bad step — the
+    # strict P8 gate kicks in and rejects with 422 "not in catalog".
+    bad_body = _valid_policy(
+        id="ghost-policy/v1",
+        requires=[{"step": "ghost_step_does_not_exist", "verdict": "pass"}],
+    )
+    r = c.put("/policies/ghost-policy/v1",
+              json={"policy": bad_body, "source": "org", "enabled": True},
+              headers=ADMIN)
+    assert r.status_code == 422, r.text
+    assert "not in catalog" in r.json()["detail"].lower()
+
+
+def test_patch_enabled_true_with_decommissioned_step_returns_409(tmp_path):
+    """Fix-cycle #4 P1 + #8: an operator toggling a stale row back on
+    must hit a 409 conflict, not a silent re-arm. The row's step was
+    valid at PUT time but the verifier has since been
+    decommissioned — re-enabling without a re-author would silently
+    ship a hook for an unwired verifier."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    psp = str(tmp_path / "policies.json")
+    _write_legacy_policy_store(psp, policy_id="stale-policy/v1",
+                                step="ghost_step_does_not_exist",
+                                enabled=False)
+
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=psp, verifier_registry=reg)
+    c = TestClient(app)
+
+    # Disabling (enabled=False) is metadata-only — no re-resolve.
+    r_off = c.patch("/policies/stale-policy/v1/enabled",
+                     json={"enabled": False}, headers=ADMIN)
+    assert r_off.status_code == 200
+
+    # Re-enabling re-resolves and 409s on the unwired step.
+    r_on = c.patch("/policies/stale-policy/v1/enabled",
+                    json={"enabled": True}, headers=ADMIN)
+    assert r_on.status_code == 409, r_on.text
+    body = r_on.json()["detail"].lower()
+    assert "ghost_step_does_not_exist" in body
+    assert "preview:" in body or "no longer registered" in body
+
+
+def test_patch_enabled_true_with_active_step_succeeds(client_with_registry):
+    """Fix-cycle #4: the 409 only fires for unresolved steps. A row
+    whose step is still wired toggles enabled cleanly with no surprise
+    400/409."""
+    _put(client_with_registry, "fine-policy/v1", _valid_policy(id="fine-policy/v1"))
+    # Toggle off.
+    r_off = client_with_registry.patch("/policies/fine-policy/v1/enabled",
+                                        json={"enabled": False}, headers=ADMIN)
+    assert r_off.status_code == 200
+    # Toggle back on — citation_verify still wired.
+    r_on = client_with_registry.patch("/policies/fine-policy/v1/enabled",
+                                       json={"enabled": True}, headers=ADMIN)
+    assert r_on.status_code == 200
+    assert r_on.json()["enabled"] is True
+
+
+def test_stamped_enforcement_survives_registry_drop(tmp_path):
+    """Fix-cycle #8: pin the stamped-at-PUT-time semantics.
+
+    The module docstring explicitly promises "stable record of what
+    was authored, not what is now wired". A future refactor that
+    re-resolves on every read would fail this test, surfacing the
+    semantic change before it lands."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    psp = str(tmp_path / "policies.json")
+
+    # PUT with the full registry — stamp `"enforcing"`.
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app1 = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                       policy_store_path=psp, verifier_registry=reg)
+    c1 = TestClient(app1)
+    _put(c1, "stable-policy/v1", _valid_policy(id="stable-policy/v1"))
+
+    # Simulate a registry drop: re-open with an EMPTY registry.
+    empty_reg = VerifierRegistry()
+    app2 = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                       policy_store_path=psp,
+                       verifier_registry=empty_reg)
+    c2 = TestClient(app2)
+
+    # Stamped label survives. We are NOT re-resolving on read for
+    # stamped rows — that is the deliberate semantic.
+    listed = c2.get("/policies", headers=ADMIN).json()["items"]
+    assert listed[0]["enforcement"] == "enforcing"
+    got = c2.get("/policies/stable-policy/v1", headers=ADMIN).json()
+    assert got["enforcement"] == "enforcing"
+
+
+def test_inactive_step_becomes_enforcing_after_activation(tmp_path):
+    """Fix-cycle #8: a step that 422s today as `inactive` becomes
+    `enforcing` after the operator activates the verifier (registers
+    it under the live registry). Pins the "path of least resistance"
+    in the dashboard so a future regression that breaks the
+    activation→PUT loop is caught here."""
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    psp = str(tmp_path / "policies.json")
+
+    # Start with builtins only — answer_quality is in the vendor
+    # catalog but NOT in the registry → first PUT 422s "not active".
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=psp, verifier_registry=reg)
+    c = TestClient(app)
+    body = _valid_policy(
+        id="activated/v1",
+        requires=[{"step": "answer_quality", "verdict": "pass"}],
+    )
+    r1 = c.put("/policies/activated/v1",
+                json={"policy": body, "source": "org", "enabled": True},
+                headers=ADMIN)
+    assert r1.status_code == 422, r1.text
+    assert "not active" in r1.json()["detail"].lower()
+
+    # Activate answer_quality: rebuild the app with a registry that
+    # also has a stub answer_quality verifier registered.
+    from magi_cp.verifier.protocol import Enforcement, Verdict
+
+    class _StubAnswerQuality:
+        name = "answer_quality"
+        step = "answer_quality"
+        category = "ANSWER"
+        description = "stub for test"
+        enforcement = Enforcement.enforcing
+        input_schema: dict = {}
+
+        def run(self, payload):  # pragma: no cover
+            return Verdict(status="pass")
+
+    reg2 = VerifierRegistry()
+    register_builtins(reg2)
+    reg2.register(_StubAnswerQuality())
+    app2 = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                       policy_store_path=psp, verifier_registry=reg2)
+    c2 = TestClient(app2)
+    r2 = c2.put("/policies/activated/v1",
+                 json={"policy": body, "source": "org", "enabled": True},
+                 headers=ADMIN)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["enforcement"] == "enforcing"
+
+
+def test_create_app_requires_registry_when_env_set(tmp_path, monkeypatch):
+    """Fix-cycle #2 P0: when `MAGI_CP_REQUIRE_REGISTRY=1` the factory
+    refuses to construct without a registry. This is the deploy-shape
+    invariant the prod Helm chart sets so a regression that
+    drops the registry wire fails at boot, not at the first PUT."""
+    monkeypatch.setenv("MAGI_CP_REQUIRE_REGISTRY", "1")
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    with pytest.raises(RuntimeError) as ei:
+        create_app(keystore=ks, dsn="sqlite:///:memory:",
+                   policy_store_path=str(tmp_path / "policies.json"),
+                   verifier_registry=None)
+    # Operator-visible message names the env var so an operator can
+    # disable the gate if they really mean to construct a registry-less
+    # factory.
+    assert "MAGI_CP_REQUIRE_REGISTRY" in str(ei.value)

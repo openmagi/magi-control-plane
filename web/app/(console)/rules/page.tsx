@@ -13,6 +13,7 @@ import {
   Card,
   Code,
   EmptyState,
+  EnforcementBadge,
   ErrorState,
   PageHeader,
 } from "@/components/ui"
@@ -27,13 +28,6 @@ const TABS: readonly Tab[] = ["policies", "evidence", "conditions"] as const
 function parseTab(raw: string | undefined): Tab {
   if (raw === "evidence" || raw === "conditions") return raw
   return "policies"
-}
-
-function EnforcementBadge({ kind }: { kind: string }) {
-  if (kind === "deterministic-gate") return <Badge variant="ok">{kind}</Badge>
-  if (kind === "observe-only")        return <Badge variant="review">{kind}</Badge>
-  if (kind === "missing")             return <Badge variant="deny">{kind}</Badge>
-  return <Badge>{kind}</Badge>
 }
 
 export default async function RulesPage({

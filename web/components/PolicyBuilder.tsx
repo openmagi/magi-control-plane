@@ -13,8 +13,15 @@ import { Select } from "@/components/ui/Select"
 type Props = {
   submitAction: (formData: FormData) => Promise<void> | void
   initial?: PolicyDraft | null
-  /** Known wired verifier steps (datalist). drives compiler-step guessing UX. */
+  /** Known wired verifier steps (datalist). drives compiler-step guessing UX
+   * AND P8 authoring-time fail-closed check — a step not in this list (and
+   * not in `vendorSteps` either) gets a red inline error before submit. */
   wiredSteps?: string[]
+  /** P8: vendor catalog step names (preview-only, no live verifier). When
+   * an author types one of these without the `preview:` prefix the inline
+   * error tells them to enable it under /presets or use the prefix —
+   * matches the backend 422 the cloud would return. */
+  vendorSteps?: string[]
   labels: {
     irFields: string
     compiledPreview: string
@@ -41,13 +48,18 @@ type Props = {
 }
 
 export default function PolicyBuilder({
-  submitAction, initial, wiredSteps = [], labels,
+  submitAction, initial, wiredSteps = [], vendorSteps = [], labels,
 }: Props) {
   const [draft, setDraft] = useState<PolicyDraft>(initial ?? DEFAULT_DRAFT)
   const [submitted, setSubmitted] = useState(false)
   const [pending, startTransition] = useTransition()
 
-  const errors = useMemo(() => validateDraft(draft), [draft])
+  const errors = useMemo(
+    () => validateDraft(draft, {
+      availableSteps: wiredSteps, vendorStepSet: vendorSteps,
+    }),
+    [draft, wiredSteps, vendorSteps],
+  )
   const errorByField = useMemo(() => {
     const m = new Map<string, string>()
     for (const e of errors) m.set(e.field, e.message)
@@ -202,8 +214,10 @@ export default function PolicyBuilder({
                   </div>
                 )
               }
+              const stepErr = errorByField.get(`requires[${i}].step`)
               return (
-              <div key={i} className="flex flex-wrap items-center gap-2">
+              <div key={i} className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
                 <input
                   list="pb-wired-steps"
                   className="h-9 px-3 text-sm rounded-md min-w-[160px] flex-1 bg-[var(--color-surface-input)] border border-[var(--color-border-strong)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
@@ -212,6 +226,7 @@ export default function PolicyBuilder({
                   placeholder="step"
                   spellCheck={false}
                   autoComplete="off"
+                  aria-invalid={stepErr ? true : undefined}
                   onChange={e => {
                     const next = [...draft.requires]
                     next[i] = { kind: "step", step: e.target.value, verdict }
@@ -244,6 +259,12 @@ export default function PolicyBuilder({
                   >
                     ×
                   </Button>
+                )}
+                </div>
+                {stepErr && (
+                  <p role="alert" className="text-xs text-[var(--color-deny-fg)]">
+                    {stepErr}
+                  </p>
                 )}
               </div>
               )

@@ -67,15 +67,25 @@ def _deserialize_policy(d: dict) -> Policy:
 
 def _normalize(overrides: Iterable[PolicyOverride]) -> list[dict]:
     """Sort by (source-precedence, id) and serialize canonically. Same input ⇒
-    byte-identical output (sha256-stable)."""
+    byte-identical output (sha256-stable).
+
+    P8: `enforcement` is the authoring-time resolved label stamped at PUT
+    time. We OMIT the key entirely when it's None so on-disk policy stores
+    from before P8 stay byte-stable through a round-trip (no spurious
+    "enforcement": null sprinkled across the file). New PUTs always pass
+    a non-None label so they DO write the field — the JSON shape is
+    additive."""
     from ..policy.precedence import source_rank
     items = list(overrides)
     items.sort(key=lambda o: (source_rank(o.source), o.policy.id))
-    return [
-        {"source": o.source, "enabled": o.enabled,
-         "policy": _serialize_policy(o.policy)}
-        for o in items
-    ]
+    out: list[dict] = []
+    for o in items:
+        row: dict = {"source": o.source, "enabled": o.enabled,
+                      "policy": _serialize_policy(o.policy)}
+        if o.enforcement is not None:
+            row["enforcement"] = o.enforcement
+        out.append(row)
+    return out
 
 
 class PolicyStore:
@@ -100,6 +110,9 @@ class PolicyStore:
             out.append(PolicyOverride(
                 policy=policy, source=item["source"],
                 enabled=bool(item.get("enabled", True)),
+                # P8: legacy rows omit "enforcement" — preserve None so
+                # the REST layer falls back to the (action,event) label.
+                enforcement=item.get("enforcement"),
             ))
         return out
 

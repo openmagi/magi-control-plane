@@ -219,6 +219,72 @@ Cut-over checklist:
 4. Take a DB backup (see Rollback paths above), then run the
    migration with `--yes`.
 
+## 5b. Authoring against in-development verifiers (`preview:` prefix)
+
+`PUT /policies/{id}` is fail-closed on unknown / inactive verifier step
+references — an authoring-time gate that closes the silent-fail-open mode
+where a typo or decommissioned verifier shipped to the runtime as
+`enforcement="missing"`. There are two operator-visible flavours of 422:
+
+| Reason   | Message contains    | Operator action |
+|----------|---------------------|-----------------|
+| inactive | `not active`        | Activate the verifier under `/presets`, or prefix with `preview:`. |
+| unknown  | `not in catalog`    | Pick from `/verifiers`, or prefix with `preview:`. |
+
+### When to use the `preview:` prefix
+
+`requires[].step = "preview:my_new_check"` is the explicit opt-in for
+authoring a policy against a verifier that does NOT exist in the live
+registry — typically a verifier you're shipping in the next gate release
+and want the policy ready for. The cloud accepts the PUT and stamps
+`enforcement="preview"` on the row (visible in the dashboard's enforcement
+badge).
+
+### What `preview:` does NOT mean
+
+It does NOT mean "observe-only" or "non-blocking at runtime". The
+compiled `managed-settings.json` still ships a real gate-binary hook that
+posts to `/verify/preview:my_new_check`. At runtime that route 404s
+(no verifier is registered for that step name) and the gate deny-fails
+the action. This is fail-closed by construction — the intent is "wire
+this in development; do not enable at scale until the verifier ships" —
+but operators should know the runtime behaviour is "deny" until the
+prefix is removed.
+
+### Graduating a preview policy to enforcing
+
+1. Land the new verifier in `src/magi_cp/verifier/builtins.py` (or a
+   plug-in `register_*` call wired into `_build_production_app`).
+2. Re-deploy the cloud.
+3. Edit the policy: drop the `preview:` prefix and re-PUT.
+4. The cloud re-resolves against the live registry and stamps
+   `enforcement="enforcing"`. Confirm with `GET /policies/{id}` or the
+   dashboard badge.
+
+### Pre-P8 policies on disk (`enforcement` field absent)
+
+Policies written before the P8 fail-closed gate landed have no stamped
+`enforcement` field on disk. The dashboard re-resolves them on read:
+
+- All step refs resolve cleanly → renders `"enforcing"` / `"preview"` from
+  the live registry, as if the policy had been PUT today.
+- Any step ref no longer resolves (verifier decommissioned, renamed) →
+  renders `"unresolved-legacy"` and the runtime DOES NOT ship a gate
+  binary for that policy. The row is effectively disabled until the
+  operator re-PUTs with a valid step name (or `preview:` prefix).
+
+There is a one-time migration script that stamps the enforcement field
+on disk for the legacy rows, so the round-trip is byte-stable and the
+dashboard label survives a registry change:
+
+```bash
+python3 scripts/migrate_p8_stamp_enforcement.py --dry-run
+python3 scripts/migrate_p8_stamp_enforcement.py --yes
+```
+
+The script is idempotent and only modifies rows that have
+`enforcement=None`; rows stamped at PUT time are left alone.
+
 ## 6. Off-boarding (future GA migration)
 
 When GA launches and free-tier closes:

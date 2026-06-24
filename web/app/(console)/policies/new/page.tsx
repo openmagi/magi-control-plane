@@ -642,16 +642,38 @@ export default async function NewPolicyPage({
     null
 
   let wiredSteps: WiredStep[] = []
+  // P8: vendor catalog step names (preset id, both hyphen + snake_case
+  // form). Passed to PolicyBuilder so an author who types one of these
+  // without the `preview:` prefix gets the "not active — enable under
+  // /presets" inline error mirroring the backend 422.
+  let vendorSteps: string[] = []
   if (mode === "advanced" || mode === "guided") {
     try {
       const presets = await cloud.listPresets()
       const seen = new Set<string>()
+      const vendorSeen = new Set<string>()
       for (const p of presets) {
-        if (p.enforcement !== "enforcing" || !p.step || seen.has(p.step)) continue
-        seen.add(p.step)
-        wiredSteps.push({ step: p.step, description: p.description, category: p.category })
+        if (p.enforcement === "enforcing" && p.step && !seen.has(p.step)) {
+          seen.add(p.step)
+          wiredSteps.push({ step: p.step, description: p.description, category: p.category })
+        } else if (p.enforcement === "preview") {
+          // Vendor preview entries carry `id` (hyphen form) — record
+          // both forms so authors hit the inactive branch regardless
+          // of which slug they typed.
+          const id = (p as { id?: string }).id
+          if (id && !vendorSeen.has(id)) {
+            vendorSeen.add(id)
+            vendorSteps.push(id)
+            const snake = id.replace(/-/g, "_")
+            if (snake !== id && !vendorSeen.has(snake)) {
+              vendorSeen.add(snake)
+              vendorSteps.push(snake)
+            }
+          }
+        }
       }
       wiredSteps.sort((a, b) => a.step.localeCompare(b.step))
+      vendorSteps.sort()
     } catch { /* best-effort */ }
   }
 
@@ -759,6 +781,7 @@ export default async function NewPolicyPage({
               submitAction={saveAdvanced}
               initial={initialDraft}
               wiredSteps={wiredSteps.map((w) => w.step)}
+              vendorSteps={vendorSteps}
               labels={{
                 irFields: "IR fields",
                 compiledPreview: "Compiled preview",

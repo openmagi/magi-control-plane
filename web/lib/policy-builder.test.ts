@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   classifyMatcher, isLegal, validateDraft, previewManagedSettings, DEFAULT_DRAFT,
+  PREVIEW_PREFIX,
 } from "./policy-builder"
 
 describe("classifyMatcher", () => {
@@ -123,6 +124,65 @@ describe("validateDraft", () => {
     }
     const errs = validateDraft(d)
     expect(errs.find(e => e.field === "matrix")).toBeDefined()
+  })
+})
+
+// ── P8: step IR fail-closed mirror in the wizard ─────────────────────
+describe("validateDraft P8 step registry check", () => {
+  it("with no registry supplied, accepts any step (back-compat)", () => {
+    const d = {
+      ...DEFAULT_DRAFT, id: "x",
+      requires: [{ kind: "step" as const, step: "totally_made_up", verdict: "pass" }],
+    }
+    expect(validateDraft(d)).toEqual([])
+  })
+
+  it("with registry supplied, accepts a wired step", () => {
+    const d = {
+      ...DEFAULT_DRAFT, id: "x",
+      requires: [{ kind: "step" as const, step: "citation_verify", verdict: "pass" }],
+    }
+    const errs = validateDraft(d, { availableSteps: ["citation_verify"] })
+    expect(errs.filter(e => e.field.startsWith("requires["))).toEqual([])
+  })
+
+  it("with registry supplied, flags an unknown step", () => {
+    const d = {
+      ...DEFAULT_DRAFT, id: "x",
+      requires: [{ kind: "step" as const, step: "ghost_check", verdict: "pass" }],
+    }
+    const errs = validateDraft(d, { availableSteps: ["citation_verify"] })
+    const stepErr = errs.find(e => e.field === "requires[0].step")
+    expect(stepErr).toBeDefined()
+    expect(stepErr!.message).toMatch(/not in the catalog/i)
+    expect(stepErr!.message).toContain(PREVIEW_PREFIX)
+  })
+
+  it("flags a vendor-catalog-but-inactive step with the activate-or-preview hint", () => {
+    const d = {
+      ...DEFAULT_DRAFT, id: "x",
+      requires: [{ kind: "step" as const, step: "answer_quality", verdict: "pass" }],
+    }
+    const errs = validateDraft(d, {
+      availableSteps: ["citation_verify"],
+      vendorStepSet: ["answer_quality", "claim_citation"],
+    })
+    const stepErr = errs.find(e => e.field === "requires[0].step")
+    expect(stepErr).toBeDefined()
+    expect(stepErr!.message).toMatch(/not active/i)
+    expect(stepErr!.message).toMatch(/preset|preview:/i)
+  })
+
+  it("accepts a preview:-prefixed step even when unwired", () => {
+    const d = {
+      ...DEFAULT_DRAFT, id: "x",
+      requires: [{ kind: "step" as const, step: "preview:my_future_check", verdict: "pass" }],
+    }
+    const errs = validateDraft(d, {
+      availableSteps: ["citation_verify"],
+      vendorStepSet: ["answer_quality"],
+    })
+    expect(errs.filter(e => e.field.startsWith("requires["))).toEqual([])
   })
 })
 
