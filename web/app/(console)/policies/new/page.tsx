@@ -164,18 +164,25 @@ const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
 // allowedActionsForCombination(lifecycle, toolScope) and Step 2 reads
 // allowedMatcherClassesForLifecycle(lifecycle) so the matrix surface
 // shows up at authoring time instead of as a generic 4xx flash on save.
-type MatcherClassKey = "tool" | "mcp_tool" | "wildcard" | "tool_alt"
+//
+// D56d (single-tool wizard): tool_alt (alternation matcher A|B|C) is
+// retired from the wizard. One tool per policy. Multi-tool coverage is
+// authored as separate policies, which keeps Step 3's payload-field
+// suggestions per-tool and removes the matrix corner that PostToolUse
+// alternation never legalized. The matcher class set is now exactly
+// {tool, mcp_tool, wildcard}.
+type MatcherClassKey = "tool" | "mcp_tool" | "wildcard"
 
 function matcherClassForToolScope(scope: string | undefined): MatcherClassKey {
   const raw = (scope ?? "").trim()
   if (!raw || raw === "*") return "wildcard"
-  const tools = parseCsv(raw).filter(Boolean)
-  if (tools.length <= 1) {
-    const single = (tools[0] ?? raw).trim()
-    if (single.startsWith("mcp__")) return "mcp_tool"
-    return "tool"
-  }
-  return "tool_alt"
+  // D56d single-tool: scope is a single tool name now. Any embedded
+  // comma is a legacy URL or paste artifact and we take the first
+  // entry only. saveWizard's matcher-class guard refuses anything
+  // that survives parsing as multi.
+  const first = parseCsv(raw)[0]?.trim() || raw
+  if (first.startsWith("mcp__")) return "mcp_tool"
+  return "tool"
 }
 
 // Per (lifecycle, matcher_class) action allowlist. Mirror of
@@ -187,21 +194,19 @@ const ACTIONS_BY_COMBINATION: Record<
   before_tool_use: {
     tool:     ["block", "ask", "audit"],
     mcp_tool: ["block", "ask", "audit"],
-    tool_alt: ["block", "ask", "audit"],
     wildcard: ["audit"],
   },
   after_tool_use: {
     tool:     ["audit"],
     mcp_tool: ["audit"],
-    tool_alt: [],
     wildcard: [],
   },
-  pre_final:     { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
-  subagent_stop: { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
-  user_prompt:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["block", "ask", "audit"] },
-  pre_compact:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["block", "audit"] },
-  session_start: { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
-  session_end:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
+  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
+  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit"] },
+  session_start: { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit"] },
 }
 
 function allowedActionsForCombination(
@@ -217,13 +222,14 @@ function allowedActionsForCombination(
 }
 
 // D56d: which matcher classes are matrix-legal for a given lifecycle.
-// after_tool_use cannot use wildcard or tool_alt — Step 2 must refuse
-// the "any tool" radio and the multi-checkbox UI for that lifecycle.
+// after_tool_use cannot use wildcard. Step 2 must refuse the "any
+// tool" radio for that lifecycle. With single-tool authoring the
+// alternation matcher is no longer reachable from the wizard.
 function allowedMatcherClassesForLifecycle(
   lifecycle: Lifecycle,
 ): ReadonlySet<MatcherClassKey> {
   const out = new Set<MatcherClassKey>()
-  for (const klass of ["tool", "mcp_tool", "tool_alt", "wildcard"] as MatcherClassKey[]) {
+  for (const klass of ["tool", "mcp_tool", "wildcard"] as MatcherClassKey[]) {
     if ((ACTIONS_BY_COMBINATION[lifecycle][klass] ?? []).length > 0) {
       out.add(klass)
     }
@@ -295,20 +301,28 @@ function deriveMatcher(s: WizardState): string {
   // a tool matcher. Every no-tool-context event (Stop, SubagentStop,
   // UserPromptSubmit, PreCompact, SessionStart, SessionEnd) is forced
   // to wildcard per the cloud's LEGAL_COMBINATIONS matrix.
+  //
+  // D56d (single-tool wizard): the wizard authors one tool per policy
+  // now. Step 2's UI is a single-select radio; alternation is no
+  // longer reachable from the wizard. Multi-tool coverage is authored
+  // as separate policies, which keeps Step 3's payload-field
+  // suggestions specific to the picked tool.
   if (!lifecycleHasToolScope(s.lifecycle)) return "*"
   const scope = (s.toolScope ?? "").trim()
   if (!scope || scope === "*") return "*"
-  // Single tool → use as-is. Multi → alternation.
-  const tools = parseCsv(scope).filter(Boolean)
-  if (tools.length === 0) return "*"
-  if (tools.length === 1) return tools[0]
-  return tools.join("|")
+  // Treat the first parsed entry as the single tool name. A legacy
+  // CSV URL (from before this change) collapses to its first tool;
+  // saveWizard's matcher-class guard catches the case where a stale
+  // alternation matcher tries to land via the URL.
+  const first = parseCsv(scope)[0]?.trim() || scope
+  return first || "*"
 }
 
 function toolScopeIncludesWebFetch(s: WizardState): boolean {
   const scope = (s.toolScope ?? "").trim()
   if (!scope || scope === "*") return true
-  return parseCsv(scope).some((t) => t === "WebFetch")
+  const first = parseCsv(scope)[0]?.trim() || scope
+  return first === "WebFetch"
 }
 
 function deriveRequires(s: WizardState): PolicyDraft["requires"] {
@@ -636,26 +650,22 @@ async function advanceWizard(formData: FormData): Promise<void> {
   for (const v of evSource) if (!evMerged.includes(v)) evMerged.push(v)
   if (evMerged.length > 0) params.set("evidence_refs", evMerged.join(","))
 
-  // Tool scope (Step 2). Mode radio (`any` / `specific`) decides the
-  // shape; chip + custom CSV merge when `specific`.
+  // Tool scope (Step 2). D56d single-tool: the chip row is a radio
+  // group now (one builtin tool) plus an MCP free-text input (one
+  // MCP tool). Mode radio (`any` / `specific`) picks which surface
+  // applies; specific takes the radio pick if any, otherwise the
+  // single MCP tool name. Multi-tool URLs collapse to the first
+  // entry on parse (matches matcherClassForToolScope).
   const scopeMode = String(formData.get("toolScope_mode") ?? "")
-  const scopeChipsRaw = formData
-    .getAll("toolScope_chip")
-    .filter((v): v is string => typeof v === "string")
-    .map((v) => v.trim())
-    .filter(Boolean)
-  const scopeCustomRaw = String(formData.get("toolScope_custom") ?? "")
-    .split(",").map((s) => s.trim()).filter(Boolean)
+  const scopeChip = String(formData.get("toolScope_chip") ?? "").trim()
+  const scopeCustom = String(formData.get("toolScope_custom") ?? "").trim()
   const scopeSubmitted = stepIn === 2 && scopeMode !== ""
   if (scopeSubmitted) {
     if (scopeMode === "any") {
       params.set("toolScope", "*")
     } else if (scopeMode === "specific") {
-      const merged: string[] = []
-      for (const v of [...scopeChipsRaw, ...scopeCustomRaw]) {
-        if (!merged.includes(v)) merged.push(v)
-      }
-      if (merged.length > 0) params.set("toolScope", merged.join(","))
+      const single = scopeChip || scopeCustom
+      if (single) params.set("toolScope", single)
     }
   }
 
@@ -859,15 +869,21 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   }
 
   // matcher -> toolScope. `*` (wildcard) is "any tool" which we
-  // model as undefined; `A|B|C` (alternation, the runtime convention
-  // for multi-tool) maps to a CSV the wizard's Step 2 understands;
-  // a bare tool name stays as-is. No-tool-context lifecycles
-  // (pre_final + the 5 D56c additions) have no toolScope.
+  // model as undefined; a bare tool name stays as-is. No-tool-context
+  // lifecycles (pre_final + the 5 D56c additions) have no toolScope.
+  //
+  // D56d (single-tool wizard): the wizard authors one tool per
+  // policy, so an inbound alternation matcher (legacy `A|B|C` shape
+  // from a hand-authored IR) collapses to its first tool. The
+  // operator can finish authoring on that tool and create additional
+  // policies for the rest. We could also surface a "we dropped the
+  // alternation" banner like _droppedConditionKind, but the trim is
+  // honest and the operator sees the remaining tool name on Step 6.
   let toolScope: string | undefined
   const matcher = ir.trigger?.matcher ?? "*"
   if (lifecycleHasToolScope(lifecycle) && matcher && matcher !== "*") {
     toolScope = matcher.includes("|")
-      ? matcher.split("|").map((s) => s.trim()).filter(Boolean).join(",")
+      ? (matcher.split("|").map((s) => s.trim()).filter(Boolean)[0] ?? undefined)
       : matcher
   }
 
@@ -1913,42 +1929,51 @@ function Step2ToolScope({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const ko = locale === "ko"
-  const picked = parseCsv(state.toolScope ?? "")
-  const isAny = !state.toolScope || state.toolScope === "*"
-  const builtinChecks = new Set(picked.filter((p) => (TOOL_PRESETS as readonly string[]).includes(p)))
-  const customStr = picked.filter((p) => !(TOOL_PRESETS as readonly string[]).includes(p)).join(", ")
+  // D56d (single-tool wizard): scope is a single tool name. A legacy
+  // CSV URL collapses to its first entry. Builtin pick = preset chip
+  // string; MCP pick = the free-text input. The two are mutually
+  // exclusive. The form picks the first non-empty value in
+  // advanceWizard so an operator typing into the MCP box without
+  // clearing a chip still sees the MCP value win (intent is "I'm
+  // typing").
+  const rawScope = (state.toolScope ?? "").trim()
+  const firstPick = parseCsv(rawScope)[0]?.trim() || rawScope
+  const isAny = !rawScope || rawScope === "*"
+  const builtinPick = (TOOL_PRESETS as readonly string[]).includes(firstPick)
+    ? firstPick : ""
+  const customStr = !isAny && !builtinPick ? firstPick : ""
   // D56d (P1 #2): after_tool_use only legalizes (PostToolUse, tool,
-  // audit) and (PostToolUse, mcp_tool, audit) — no wildcard, no
-  // tool_alt. Step 2 must refuse "Any tool" and the multi-checkbox UI
-  // for this lifecycle. The radio/checkbox UI flips into a single-tool
-  // radio group; an inline note explains the matrix constraint.
+  // audit) and (PostToolUse, mcp_tool, audit). No wildcard. Step 2
+  // refuses "Any tool" for that lifecycle. With single-tool authoring
+  // the alternation matcher is no longer reachable from the wizard.
   const lifecycle = state.lifecycle ?? "before_tool_use"
   const matrixMatchers = allowedMatcherClassesForLifecycle(lifecycle)
   const wildcardLegal = matrixMatchers.has("wildcard")
-  const toolAltLegal = matrixMatchers.has("tool_alt")
+  // The picked-tool helper hint (Step 3 will suggest checks specific
+  // to the chosen tool). Always emit a string so the helper element
+  // is the same DOM shape under either pick.
+  const helperTool = firstPick && firstPick !== "*" ? firstPick : ""
   return (
     <StepShell
       t={t}
       prevHref={buildWizardHref(state, 1)}
-      heading={ko ? "어떤 도구에 적용할까요?" : "Which tool(s) does this policy apply to?"}
+      heading={ko ? "어떤 도구에 적용할까요?" : "Which tool does this policy apply to?"}
       helper={ko
-        ? "모든 도구를 검사하거나, 특정 도구만 골라 좁힐 수 있습니다."
-        : "Apply to every tool call, or narrow to a specific set."}
+        ? "정책 한 건은 도구 하나만 다룹니다. 모든 도구에 적용하려면 'Any tool' 을 고르세요."
+        : "Each policy targets exactly one tool. Pick Any tool to match every call."}
     >
       <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ lifecycle: state.lifecycle }} />
 
-        {!toolAltLegal && (
-          <p
-            data-testid="step2-single-tool-note"
-            className="rounded-xl border border-blue-300 bg-blue-50/60 px-3 py-2 text-xs text-blue-900"
-          >
-            {ko
-              ? "감사용 hook 은 정책 한 건당 도구 하나만 지정할 수 있습니다 (matrix 정책)."
-              : "Audit hooks need a single specific tool per matrix policy."}
-          </p>
-        )}
+        <p
+          data-testid="step2-single-tool-note"
+          className="rounded-xl border border-blue-300 bg-blue-50/60 px-3 py-2 text-xs text-blue-900"
+        >
+          {ko
+            ? "정책 한 건당 도구 하나입니다. 여러 도구에 같은 검사가 필요하면 정책을 도구별로 만드세요."
+            : "One tool per policy. For multi-tool coverage, create separate policies."}
+        </p>
 
         <label className={`block ${wildcardLegal ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
           <input
@@ -1965,11 +1990,10 @@ function Step2ToolScope({
             </span>
             <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
               {wildcardLegal
-                ? (ko ? "도구 종류 상관없이 모든 호출을 검사합니다." : "Match every tool call regardless of name.")
+                ? (ko ? "도구 종류 상관없이 모든 호출을 검사합니다 (wildcard matcher)." : "Match every tool call regardless of name (wildcard matcher).")
                 : (ko ? "이 라이프사이클에서는 사용할 수 없습니다." : "Not available for this lifecycle.")}
             </span>
           </span>
-          <input type="hidden" name="toolScope_any" value="1" disabled className="peer-checked:[&]:hidden hidden" />
         </label>
 
         <label className="block cursor-pointer">
@@ -1977,28 +2001,30 @@ function Step2ToolScope({
             type="radio"
             name="toolScope_mode"
             value="specific"
-            defaultChecked={(!wildcardLegal) || (!isAny && (picked.length > 0))}
+            defaultChecked={(!wildcardLegal) || (!isAny && !!firstPick)}
             className="peer sr-only"
           />
           <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
             <span className="block text-sm font-semibold text-[var(--color-text-primary)]">
-              {ko ? "특정 도구만" : "Specific tools"}
+              {ko ? "특정 도구 하나" : "One specific tool"}
             </span>
             <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-              {toolAltLegal
-                ? (ko ? "고른 도구 중 하나라도 호출되면 정책이 발동합니다." : "Match if any picked tool is invoked.")
-                : (ko ? "정확히 한 도구를 골라주세요." : "Pick exactly one tool.")}
+              {ko ? "아래에서 빌트인 도구 하나, 또는 MCP 도구 하나를 입력하세요." : "Pick one builtin tool below, or type one MCP tool name."}
             </span>
           </span>
           <span className="mt-3 hidden peer-checked:block space-y-3">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div
+              role="radiogroup"
+              aria-label={ko ? "빌트인 도구" : "Builtin tool"}
+              className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+            >
               {TOOL_PRESETS.map((tool) => (
                 <label key={tool} className="block cursor-pointer">
                   <input
-                    type={toolAltLegal ? "checkbox" : "radio"}
+                    type="radio"
                     name="toolScope_chip"
                     value={tool}
-                    defaultChecked={builtinChecks.has(tool)}
+                    defaultChecked={builtinPick === tool}
                     className="peer sr-only"
                   />
                   <span className="block rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-center text-sm font-mono text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.06] peer-checked:text-[var(--color-text-primary)]">
@@ -2009,31 +2035,40 @@ function Step2ToolScope({
             </div>
             <div>
               <FieldLabel>
-                {toolAltLegal
-                  ? (ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)")
-                  : (ko ? "MCP 도구 (mcp__server__name)" : "MCP tool (mcp__server__name)")}
+                {ko ? "또는 MCP 도구 하나 (mcp__server__name)" : "Or one MCP tool (mcp__server__name)"}
               </FieldLabel>
               <input
                 name="toolScope_custom"
-                maxLength={2000}
+                maxLength={256}
                 defaultValue={customStr}
-                placeholder={toolAltLegal
-                  ? "mcp__court__file, mcp__db__query"
-                  : "mcp__court__file"}
+                placeholder="mcp__court__file"
                 spellCheck={false}
                 autoComplete="off"
+                pattern="(mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+|[A-Za-z][A-Za-z0-9_]*)"
+                title={ko
+                  ? "MCP 도구는 mcp__server__name 형식. 빈 값이면 위에서 선택한 빌트인 도구가 사용됩니다."
+                  : "MCP tool follows mcp__server__name. Leave empty to use the builtin pick above."}
                 className={inputCls() + " font-mono text-sm"}
               />
+              <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
+                {ko
+                  ? "빌트인 도구를 골랐다면 비워두세요. 두 칸 다 채워지면 MCP 도구 이름이 이깁니다."
+                  : "Leave empty when you picked a builtin chip. If both are set, the MCP name wins."}
+              </p>
             </div>
+            {helperTool && (
+              <p
+                data-testid="step2-tool-helper"
+                className="rounded-lg border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.04] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
+              >
+                {ko
+                  ? `Step 3 는 ${helperTool} 페이로드에 맞춘 검사 옵션을 보여줍니다. 여러 도구를 한 번에 검사하려면 정책을 따로 만드세요.`
+                  : `Step 3 will suggest checks specific to ${helperTool}. For multi-tool coverage, create separate policies.`}
+              </p>
+            )}
           </span>
         </label>
 
-        {/* Carry a marker so advance/save know Step 2 is the submitter
-            and should merge chip + custom into toolScope. The "any"
-            mode is communicated via the toolScope_any field (separate
-            radio above keeps the keyboard semantics natural). */}
-        {/* If user picks "any" mode, the toolScope_any flag is filled
-            by a hidden input declared inside that label. */}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>

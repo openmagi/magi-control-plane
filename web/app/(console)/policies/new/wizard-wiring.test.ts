@@ -355,4 +355,101 @@ describe("policies/new wizard — P9 steering wiring", () => {
       }
     })
   })
+
+  // ── D56d (single-tool wizard) ───────────────────────────────────
+  // Step 2 authors one tool per policy. The matcher-class set shrinks
+  // to {tool, mcp_tool, wildcard}; the chip row is a radio group, the
+  // MCP free-text input takes one name, and Step 3's payload-field
+  // suggestions are guaranteed to map to a specific tool's schema.
+  // Multi-tool coverage = separate policies.
+  describe("D56d: single-tool matcher in Step 2", () => {
+    it("WizardState.toolScope is a single string (not an array)", () => {
+      // Pin the type declaration so a future refactor flipping toolScope
+      // to string[] would have to update this assertion intentionally.
+      const m = src.match(/interface WizardState\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      expect(body).toMatch(/toolScope\?:\s*string\b/)
+      // Negative: must not be string[] / Array<string> / ReadonlyArray.
+      expect(body).not.toMatch(/toolScope\?:\s*(?:string\[\]|Array<string>|ReadonlyArray<string>)/)
+    })
+
+    it("deriveMatcher returns single tool or wildcard (no alternation)", () => {
+      // The previous wizard joined multi-pick with `|`. Pin the
+      // single-tool collapse so a future regression to alternation is
+      // intentional in the diff.
+      const start = src.indexOf("function deriveMatcher")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 1200)
+      expect(body).not.toMatch(/tools\.join\("\|"\)/)
+      // Picks parseCsv[0] as the single matcher name.
+      expect(body).toMatch(/parseCsv\([\s\S]*?\)\[0\]/)
+    })
+
+    it("MatcherClassKey drops tool_alt", () => {
+      // tool_alt (alternation matcher A|B|C) is retired with the
+      // single-tool wizard. The matcher-class union must be exactly
+      // {tool, mcp_tool, wildcard}.
+      const m = src.match(/type MatcherClassKey\s*=\s*([^\n]+)/)
+      expect(m).not.toBeNull()
+      const union = m![1]
+      expect(union).toContain('"tool"')
+      expect(union).toContain('"mcp_tool"')
+      expect(union).toContain('"wildcard"')
+      expect(union).not.toContain('"tool_alt"')
+    })
+
+    it("ACTIONS_BY_COMBINATION has no tool_alt rows", () => {
+      // Strict source pin so the matrix table cannot silently grow
+      // a tool_alt row again (would re-introduce multi-tool save
+      // surface that the wizard no longer authors).
+      const m = src.match(/const ACTIONS_BY_COMBINATION[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      expect(body).not.toContain("tool_alt")
+    })
+
+    it("Step 2 chip row is radio-single-select (not checkbox-multi)", () => {
+      // The toolScope_chip control must be `type="radio"` so the
+      // browser enforces single-select per radio-group name.
+      const start = src.indexOf("function Step2ToolScope")
+      const end = src.indexOf("\n}\n", start)
+      expect(start).toBeGreaterThan(-1)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // Exactly one toolScope_chip input on Step 2, and it's a radio.
+      expect(body).toMatch(/name="toolScope_chip"[\s\S]*?type="radio"|type="radio"[\s\S]*?name="toolScope_chip"/)
+      // No checkbox flavour anywhere on Step 2.
+      expect(body).not.toMatch(/name="toolScope_chip"[\s\S]*?type="checkbox"/)
+      // The MCP free-text input is a single name field (maxLength tight).
+      expect(body).toMatch(/name="toolScope_custom"[\s\S]*?maxLength=\{256\}/)
+    })
+
+    it("Step 2 surfaces the picked-tool helper hint", () => {
+      // The brief mandates a helper line when a specific tool is
+      // picked, so the operator understands that Step 3 will tailor
+      // its check suggestions per-tool.
+      const start = src.indexOf("function Step2ToolScope")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toContain("step2-tool-helper")
+      // Mentions both the picked-tool variable and the multi-policy
+      // hint copy.
+      expect(body).toContain("Step 3 will suggest checks specific to")
+      expect(body).toContain("separate policies")
+    })
+
+    it("advanceWizard collapses Step 2 submission to a single tool", () => {
+      // Step 2's form submits `toolScope_chip` (radio pick) and
+      // `toolScope_custom` (single MCP name). advanceWizard picks one,
+      // not the merge of many.
+      const start = src.indexOf("async function advanceWizard")
+      const body = src.slice(start, start + 3000)
+      expect(body).not.toMatch(/scopeChipsRaw/)
+      // No CSV merge: single pick wins.
+      expect(body).not.toMatch(/merged\.join\(","\)/)
+      // The chip + custom values collapse to a single string.
+      expect(body).toMatch(/scopeChip\s*\|\|\s*scopeCustom/)
+    })
+  })
 })
