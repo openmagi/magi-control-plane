@@ -14,7 +14,7 @@
  *   - render the next assistant turn (assistant_message + up to 2
  *     question objects),
  *   - merge the new draft into our local mirror,
- *   - flip `ready_to_save` when the server says so → Save CTA appears
+ *   - flip `ready_to_save` when the server says so. Save CTA appears
  *     in the IrDraftPane.
  *
  * Brief: NEVER expose internal terms (regex / shacl / llm_critic /
@@ -115,8 +115,24 @@ export function ConversationalCompose({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const mountedRef = useRef(true)
+  /** Monotonic request id. The cleanup branch in sendTurn drops any
+   *  response whose id is no longer current. This is the only line
+   *  of defense if two events (e.g. accessibility-tool-driven double
+   *  pill click) both observe pending=false in the same micro-task
+   *  before React 18 flushes the `setPending(true)` update. */
+  const reqIdRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
+  /** IME composition state. The Korean (Hangul) IME signals Enter to
+   *  finalize a composition; we MUST NOT send the in-flight message
+   *  on that keystroke. Tracked via compositionstart/end + the
+   *  KeyboardEvent.isComposing flag. */
+  const composingRef = useRef(false)
+
   useEffect(() => {
-    return () => { mountedRef.current = false }
+    return () => {
+      mountedRef.current = false
+      if (abortRef.current) abortRef.current.abort()
+    }
   }, [])
 
   // Autoscroll on new turns.
@@ -140,72 +156,134 @@ export function ConversationalCompose({
   const sendTurn = useCallback(async (params: {
     userText: string | null
     answers: Record<string, string> | null
+    /** Optional pre-rendered user bubble (e.g. the pill's human label).
+     *  Pushed onto history alongside the wire turn so the transcript
+     *  records "user picked X" for clicks too. */
+    userBubble?: string | null
   }) => {
+    // Abort any in-flight request: only the most-recent fetch wins.
+    // Without this the LAST-resolved fetch overwrites `draft` /
+    // `readyToSave`, even if it carries a stale server view.
+    if (abortRef.current) abortRef.current.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    const myId = ++reqIdRef.current
+
     setPending(true)
     setErrored(false)
-    // Optimistically render the user's bubble if they typed text.
-    const optimisticHistory: HistoryTurn[] = [...history]
-    if (params.userText) {
-      optimisticHistory.push({ role: "user", content: params.userText })
-      setHistory(optimisticHistory)
+    // Optimistically render the user's bubble. Functional updater so
+    // any interleaved write (future refactor, concurrent events) does
+    // not clobber state - we always extend the latest snapshot.
+    const bubble = params.userBubble ?? params.userText
+    if (bubble) {
+      setHistory((prev) => [...prev, { role: "user", content: bubble }])
     }
+    let answersSent = false
     try {
-      // Build wire history: every turn except the optimistic user
-      // bubble we already pushed. Drop the local-only `questions`
-      // metadata before sending.
-      const wireHistory: { role: "user" | "assistant"; content: string }[] =
-        optimisticHistory.map((h) => ({ role: h.role, content: h.content }))
+      answersSent = !!params.answers
+      // Build wire history. The server reconstructs questions
+      // deterministically from `draft_so_far`, so we drop our local
+      // `questions` metadata. We capture the latest snapshot via a
+      // functional setter that also serves as a read; this avoids the
+      // closure-capture race entirely.
+      let wireHistory: { role: "user" | "assistant"; content: string }[] = []
+      setHistory((prev) => {
+        wireHistory = prev.map((h) => ({ role: h.role, content: h.content }))
+        return prev
+      })
       const res = await fetch("/api/policies/compile-interactive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
+        signal: ctrl.signal,
         body: JSON.stringify({
           history: wireHistory,
           draft_so_far: draft,
           answers: params.answers,
         }),
       })
+      // Drop the response on the floor if a newer request started OR
+      // the component unmounted.
       if (!mountedRef.current) return
+      if (myId !== reqIdRef.current) return
       if (!res.ok) {
         let code = "upstream"
         try {
           const j = (await res.json()) as { error?: string }
           if (j && typeof j.error === "string") code = j.error
         } catch { /* keep default */ }
+        if (myId !== reqIdRef.current) return
         const assistantMsg = errorBubbleText(code, t, locale)
-        setHistory([
-          ...optimisticHistory,
-          { role: "assistant", content: assistantMsg, questions: [] },
-        ])
+        // Carry the previous assistant turn's questions forward onto
+        // the error bubble so the user can re-click and retry. The
+        // brief's provider_unconfigured-as-bubble rule still holds:
+        // we surface the error inline, with the same pill set so the
+        // user does not lose their place in the conversation.
+        setHistory((prev) => {
+          const lastQuestions = (() => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "assistant") {
+                return prev[i].questions ?? []
+              }
+            }
+            return []
+          })()
+          return [
+            ...prev,
+            { role: "assistant", content: assistantMsg, questions: lastQuestions },
+          ]
+        })
         setErrored(true)
         return
       }
       const data = (await res.json()) as InteractiveTurnResponse
       if (!mountedRef.current) return
+      if (myId !== reqIdRef.current) return
       const assistantMsg = typeof data.assistant_message === "string"
         ? data.assistant_message
         : ""
       const questions = Array.isArray(data.questions) ? data.questions : []
-      setHistory([
-        ...optimisticHistory,
+      setHistory((prev) => [
+        ...prev,
         { role: "assistant", content: assistantMsg, questions },
       ])
       setDraft(data.draft ?? null)
       setReadyToSave(!!data.ready_to_save)
-      // Picks for the previous turn are spent; reset to a fresh map.
-      setPicks({})
-    } catch {
+    } catch (e) {
+      // AbortError is the normal cancellation path when a newer turn
+      // started; swallow without surfacing an error bubble.
+      if ((e as { name?: string } | null)?.name === "AbortError") return
       if (!mountedRef.current) return
+      if (myId !== reqIdRef.current) return
       const assistantMsg = errorBubbleText("network", t, locale)
-      setHistory([
-        ...optimisticHistory,
-        { role: "assistant", content: assistantMsg, questions: [] },
-      ])
+      setHistory((prev) => {
+        const lastQuestions = (() => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === "assistant") {
+              return prev[i].questions ?? []
+            }
+          }
+          return []
+        })()
+        return [
+          ...prev,
+          { role: "assistant", content: assistantMsg, questions: lastQuestions },
+        ]
+      })
       setErrored(true)
     } finally {
-      if (mountedRef.current) setPending(false)
+      // Only the most-recent turn flips pending=false. An older turn
+      // that lost the race must not re-enable the input under the
+      // newer turn's feet.
+      if (mountedRef.current && myId === reqIdRef.current) {
+        setPending(false)
+        // Picks for the previous turn are spent regardless of
+        // outcome, so a transient 5xx does not leak the old selection
+        // into a later turn that happens to reuse the same qid.
+        if (answersSent) setPicks({})
+      }
     }
-  }, [history, draft, t, locale])
+  }, [draft, t, locale])
 
   const onSendInput = useCallback(() => {
     const text = input.trim()
@@ -214,13 +292,26 @@ export function ConversationalCompose({
     void sendTurn({ userText: text, answers: null })
   }, [input, pending, sendTurn])
 
+  /** Look up the human label for a picked option so the optimistic
+   *  user bubble shows what the user chose ("Block the action") and
+   *  not the raw option value ("block"). */
+  const labelForOption = useCallback((qid: string, value: string): string => {
+    if (lastAssistantIdx < 0) return value
+    const q = history[lastAssistantIdx]?.questions?.find((x) => x.id === qid)
+    if (!q || !q.options) return value
+    const opt = q.options.find((o) => o.value === value)
+    return opt?.label ?? value
+  }, [history, lastAssistantIdx])
+
   const onPickSingle = useCallback((qid: string, value: string) => {
     // Single-select pills submit immediately. The answers payload only
     // ever carries the freshly picked option (the server validates
-    // against the previous turn's question set).
+    // against the previous turn's question set). We also push a user
+    // bubble using the human label so the transcript records the pick.
     if (pending) return
-    void sendTurn({ userText: null, answers: { [qid]: value } })
-  }, [pending, sendTurn])
+    const bubble = labelForOption(qid, value)
+    void sendTurn({ userText: null, answers: { [qid]: value }, userBubble: bubble })
+  }, [pending, sendTurn, labelForOption])
 
   const onPickMulti = useCallback((qid: string, value: string) => {
     setPicks((prev) => {
@@ -235,8 +326,13 @@ export function ConversationalCompose({
   const onSubmitMultiPicks = useCallback((qid: string) => {
     const cur = picks[qid] ?? []
     if (cur.length === 0 || pending) return
-    void sendTurn({ userText: null, answers: { [qid]: cur.join(",") } })
-  }, [picks, pending, sendTurn])
+    const bubble = cur.map((v) => labelForOption(qid, v)).join(", ")
+    void sendTurn({
+      userText: null,
+      answers: { [qid]: cur.join(",") },
+      userBubble: bubble,
+    })
+  }, [picks, pending, sendTurn, labelForOption])
 
   const onStarterPillClick = useCallback((fillText: string) => {
     if (pending) return
@@ -284,7 +380,12 @@ export function ConversationalCompose({
 
           {history.map((h, idx) => {
             const isLastAssistant = idx === lastAssistantIdx
-            const questionsForTurn = isLastAssistant && !errored
+            // We keep the question pills on the live assistant turn
+            // even when it surfaced an error: the bubble inherits the
+            // previous turn's question set in the error branch above
+            // so the user can re-click and retry without losing their
+            // place. A non-last assistant turn never shows live pills.
+            const questionsForTurn = isLastAssistant
               ? h.questions ?? null
               : null
             return (
@@ -353,8 +454,20 @@ export function ConversationalCompose({
               data-testid="conv-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onCompositionStart={() => { composingRef.current = true }}
+              onCompositionEnd={() => { composingRef.current = false }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Korean-primary i18n: the Hangul IME uses Enter to
+                // finalize a composition. We MUST guard both
+                // KeyboardEvent.isComposing and the composition
+                // event-driven ref (Safari has historically lied
+                // about isComposing on certain Hangul finalizations).
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing &&
+                  !composingRef.current
+                ) {
                   e.preventDefault()
                   onSendInput()
                 }
@@ -397,7 +510,8 @@ export function ConversationalCompose({
 /** Translate a backend error code (or the proxy's surfaced code) into
  *  a plain-language assistant bubble. Maps to D52e's actionable
  *  banner messages: provider_unconfigured tells the operator EXACTLY
- *  what env var to set. */
+ *  what env var to set, forbidden names MAGI_CP_ADMIN_API_KEY so an
+ *  operator can tell admin-key trouble from cloud trouble. */
 function errorBubbleText(
   code: string,
   t: T,
@@ -409,7 +523,10 @@ function errorBubbleText(
   if (code === "invalid_input" || code === "invalid policy") {
     return t("newPolicy.conv.error.invalidInput")
   }
-  if (code === "config" || code === "server config") {
+  if (code === "forbidden") {
+    return t("newPolicy.conv.error.forbidden")
+  }
+  if (code === "server config") {
     return t("newPolicy.conv.error.configError")
   }
   if (code === "network") {

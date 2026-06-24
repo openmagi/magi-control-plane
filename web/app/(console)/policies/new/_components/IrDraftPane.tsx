@@ -8,9 +8,8 @@
  *     | Action: ..."). Placeholders for any field the draft hasn't
  *     filled yet. Renders inside aria-live="polite" so SR users hear
  *     each merge.
- *   - A collapsible JSON view of the draft (for power users).
  *   - A "Dry-run on last 24h" button (gated on draft validity).
- *     Delegates to the shared DryRunPanel (D53b) — we render IT here
+ *     Delegates to the shared DryRunPanel (D53b). We render IT here
  *     so the brief's "Reuse the existing DryRunPanel.tsx without
  *     modification" constraint holds.
  *   - A "Save this rule" CTA gated on `ready_to_save=true`. Posts to
@@ -18,16 +17,17 @@
  *     page; we render a real <form action={saveAction}> with the
  *     current draft serialized into the hidden `ir_json` field.
  *
- * Brief: this file MUST use sub-path imports ("@/components/ui/<X>")
- * — the "@/components/ui" barrel pulls a server-only chain into the
+ * Brief: this file MUST use sub-path imports ("@/components/ui/<X>").
+ * The "@/components/ui" barrel pulls a server-only chain into the
  * client bundle and breaks `next build`.
  *
  * NEVER expose internal terms (regex / shacl / llm_critic / matcher /
  * lifecycle / kind / on_missing) to end users. The plain-language
- * summary uses friendly translations only.
+ * summary uses friendly translations only. No raw IR / JSON view
+ * lives on the chat surface (D55b code review P0); power users have
+ * the Raw/Advanced mode for that.
  */
 
-import { useState } from "react"
 import { Button } from "@/components/ui/Button"
 import { DryRunPanel } from "../../_components/DryRunPanel"
 
@@ -107,7 +107,8 @@ function conditionLabel(
     ? item.kind
     : "step" in item ? "step" : null
   // Plain-language translation. NEVER expose `regex` / `shacl` /
-  // `llm_critic` to the user.
+  // `llm_critic` / `step` (a verifier label is internal vocab too) to
+  // the user.
   switch (kind) {
     case "regex": {
       const pat = typeof item.pattern === "string" ? item.pattern : ""
@@ -126,12 +127,45 @@ function conditionLabel(
     }
     case "step": {
       const step = typeof item.step === "string" ? item.step : ""
-      if (!step) return ko ? "검증기 이름 입력 대기 중" : "Waiting for a verifier name"
-      return ko ? `검증기: ${step}` : `Verifier: ${step}`
+      if (!step) return ko ? "필요한 확인 항목을 기다리는 중" : "Waiting for a required check"
+      return ko ? `필수 확인: ${step}` : `Required check: ${step}`
     }
     default:
       return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
   }
+}
+
+/** Pretty-print a raw matcher value for the user. Hides regex /
+ *  MCP-slug shape so the When summary stays plain language even when
+ *  the underlying matcher is a regex alternation or an mcp__ slug. */
+function prettyMatcher(raw: string, ko: boolean): string {
+  // Trim wrapping parentheses or whitespace.
+  let m = raw.trim()
+  if (m.startsWith("(") && m.endsWith(")")) {
+    m = m.slice(1, -1).trim()
+  }
+  // Alternation: `Bash|Edit|Write` -> "Bash or Edit or Write".
+  if (m.includes("|")) {
+    const parts = m.split("|").map((p) => prettyOneTool(p.trim(), ko)).filter(Boolean)
+    if (parts.length === 0) return ko ? "특정 도구들" : "specific tools"
+    const sep = ko ? " 또는 " : " or "
+    return parts.join(sep)
+  }
+  return prettyOneTool(m, ko)
+}
+
+/** Friendly form of a single matcher token. */
+function prettyOneTool(m: string, ko: boolean): string {
+  if (!m) return ko ? "특정 도구" : "a specific tool"
+  // MCP-shaped slug: `mcp__server__tool` -> `server.tool`.
+  if (m.startsWith("mcp__")) {
+    const tail = m.slice("mcp__".length)
+    const parts = tail.split("__").filter(Boolean)
+    if (parts.length >= 2) return parts.join(".")
+    if (parts.length === 1) return parts[0]
+    return ko ? "특정 도구" : "a specific tool"
+  }
+  return m
 }
 
 function whenLabel(d: Record<string, unknown> | null, ko: boolean): string {
@@ -150,9 +184,10 @@ function whenLabel(d: Record<string, unknown> | null, ko: boolean): string {
         pre_final: "Just before the final answer",
       } as const)[life]
   if (m && m !== "*") {
+    const friendly = prettyMatcher(m, ko)
     return ko
-      ? `${lifeLabel} (${m})`
-      : `${lifeLabel} (${m})`
+      ? `${lifeLabel} (${friendly})`
+      : `${lifeLabel} (${friendly})`
   }
   return lifeLabel
 }
@@ -170,7 +205,6 @@ function actionLabel(d: Record<string, unknown> | null, ko: boolean): string {
 export function IrDraftPane({
   t, locale, draft, readyToSave, saveAction, testId,
 }: IrDraftPaneProps) {
-  const [jsonOpen, setJsonOpen] = useState(false)
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
   const irJson = draft ? JSON.stringify(draft, null, 2) : ""
@@ -230,21 +264,11 @@ export function IrDraftPane({
         )}
       </section>
 
-      {hasDraft && (
-        <details
-          data-testid="ir-draft-json"
-          open={jsonOpen}
-          onToggle={(e) => setJsonOpen((e.target as HTMLDetailsElement).open)}
-          className="rounded-xl bg-gray-50/60 p-2"
-        >
-          <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
-            {ko ? "JSON 미리보기" : "JSON preview"}
-          </summary>
-          <pre className="mt-2 max-h-64 overflow-auto rounded bg-white p-2 text-[11px] font-mono leading-snug text-[var(--color-text-secondary)]">
-            {irJson}
-          </pre>
-        </details>
-      )}
+      {/* Brief: NO raw JSON / IR view on the conversational chat
+       *  surface. Banned tokens (lifecycle / matcher / requires.kind /
+       *  on_missing / sentinel_re / gate_binary) leak through any
+       *  verbatim render. Power users see the IR shape in the Raw /
+       *  Advanced mode (PolicyBuilder), not here. */}
 
       <DryRunPanel
         t={t}

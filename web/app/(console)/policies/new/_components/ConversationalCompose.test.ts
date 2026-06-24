@@ -4,7 +4,7 @@ import path from "node:path"
 
 /**
  * D55b: source-level invariants for ConversationalCompose + sibling
- * client islands. Same pattern as the D52e / D53b panels — grep the
+ * client islands. Same pattern as the D52e / D53b panels, grep the
  * rendered TSX for the contract instead of mounting React Testing
  * Library. The browser behavior (chat scroll, pill click, send) is
  * exercised manually in dev; these invariants catch the regressions
@@ -117,6 +117,106 @@ describe("ConversationalCompose source invariants", () => {
       ).toBeNull()
     }
   })
+
+  it("guards Enter against IME composition (Korean Hangul finalization)", () => {
+    // D55b code review P1: the Korean (Hangul) IME signals Enter on
+    // composition finalization. Sending on that keystroke truncates
+    // the user's message. We MUST check isComposing AND a
+    // composition event-driven ref.
+    expect(src).toMatch(/onCompositionStart/)
+    expect(src).toMatch(/onCompositionEnd/)
+    expect(src).toMatch(/isComposing/)
+    expect(src).toMatch(/composingRef/)
+  })
+
+  it("aborts in-flight fetches when a newer turn starts (race-safe lens)", () => {
+    // D55b code review P1: out-of-order resolution would let an older
+    // server response overwrite the newer draft. We hold an
+    // AbortController + monotonic request id and drop responses whose
+    // id is stale.
+    expect(src).toContain("AbortController")
+    expect(src).toMatch(/reqIdRef/)
+    expect(src).toMatch(/abortRef/)
+    // Cleanup on unmount aborts any pending request.
+    expect(src).toMatch(/abortRef\.current\.abort\(\)/)
+  })
+
+  it("uses functional setHistory updaters everywhere (no closure snapshot writes)", () => {
+    // D55b code review P1: every history write must be functional so
+    // interleaved updates cannot clobber each other.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "")
+    // Find every setHistory call by its head only; assert each is
+    // followed by a functional arrow (`(prev) =>` or `prev =>`),
+    // never by a direct array / object literal.
+    const heads = [...stripped.matchAll(/setHistory\(/g)]
+    expect(heads.length, "no setHistory calls found").toBeGreaterThan(0)
+    for (const h of heads) {
+      const tail = stripped.slice(h.index!, h.index! + 80)
+      expect(
+        /setHistory\(\s*(?:\(\s*\w+\s*\)|\w+)\s*=>/.test(tail),
+        `setHistory call is not functional: ${tail.split("\n")[0]}`,
+      ).toBe(true)
+    }
+  })
+
+  it("pill picks push an optimistic user bubble using the human label", () => {
+    // D55b code review P2: single-select / multi-select pill clicks
+    // are user actions and MUST appear in the transcript as user
+    // turns, otherwise the chat loses the audit trail of who picked
+    // what. The bubble uses the option's human label, not the raw
+    // value (the lens forbids surfacing the raw option key).
+    expect(src).toMatch(/labelForOption/)
+    expect(src).toMatch(/userBubble/)
+  })
+
+  it("forbidden code maps to its own bubble (admin-key misconfig vs upstream)", () => {
+    // D55b code review P2: an auth misconfig (401/403) carries
+    // distinct copy that names MAGI_CP_ADMIN_API_KEY so the operator
+    // can tell admin-key trouble from cloud trouble.
+    expect(src).toContain('code === "forbidden"')
+    expect(src).toContain("newPolicy.conv.error.forbidden")
+  })
+
+  it("dead 'config' alias is gone (route only returns 'server config')", () => {
+    // D55b code review P2 cleanup: the route's only env-equivalent
+    // code is "server config"; the legacy 'config' alias was dead.
+    expect(src).not.toMatch(/code === "config"\b/)
+  })
+
+  it("error bubble inherits the prior turn's question pills (transient errors do not burn the user's place)", () => {
+    // D55b code review P2: when sendTurn errors the error bubble must
+    // carry the previous assistant turn's questions forward so the
+    // user can re-click and retry. The render path used to strip
+    // pills on `errored=true` for the live turn; the lens now keeps
+    // the live questions in the bubble itself.
+    expect(src).toMatch(/lastQuestions/)
+    // The render now keeps the live questions even when errored is
+    // true (the error branch inherits questions onto the new bubble).
+    expect(src).not.toMatch(/isLastAssistant && !errored/)
+  })
+
+  it("setPicks({}) runs in finally whenever answers were sent (no cross-turn leak)", () => {
+    // D55b code review P2: the picks map must reset whenever a
+    // multi-select payload went out, not only on success. Otherwise a
+    // failed turn leaves stale picks in state for the next time the
+    // same qid appears.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "")
+    // Both finally branches reset picks; we look for the guarded
+    // reset gated on answersSent.
+    expect(stripped).toMatch(/answersSent/)
+    expect(stripped).toMatch(/setPicks\(\{\}\)/)
+    // The reset MUST be inside the finally block (i.e. after the
+    // matching try{).
+    const finallyIdx = stripped.indexOf("} finally {")
+    const pickResetIdx = stripped.indexOf("setPicks({})")
+    expect(finallyIdx, "no finally block").toBeGreaterThan(-1)
+    expect(pickResetIdx, "no setPicks({}) call").toBeGreaterThan(-1)
+    expect(pickResetIdx).toBeGreaterThan(finallyIdx)
+  })
 })
 
 /** Strip block + line comments before scanning so explanatory prose
@@ -131,7 +231,7 @@ function stripComments(src: string): string {
 
 describe("D55b client files use sub-path imports (P0 barrel guard)", () => {
   // The brief: ANY `from "@/components/ui"` in a "use client" file is
-  // P0 — the barrel pulls a server-only chain (NavBarShell ->
+  // P0: the barrel pulls a server-only chain (NavBarShell ->
   // lib/i18n/server.ts) into the client bundle and breaks next build.
   // Scan every D55b client file and assert the absence.
   const D55B_CLIENT_FILES = [
@@ -216,10 +316,40 @@ describe("IrDraftPane source invariants", () => {
     expect(src).toMatch(/Action|동작/)
   })
 
-  it("renders a collapsible JSON view for power users", () => {
-    expect(src).toContain("ir-draft-json")
-    expect(src).toContain("<details")
-    expect(src).toContain("<summary")
+  it("does NOT render a raw JSON / IR view on the conversational surface", () => {
+    // D55b code review P0: a verbatim JSON dump leaks every banned
+    // token (lifecycle / matcher / requires.kind / on_missing /
+    // sentinel_re / gate_binary) onto the plain-language surface.
+    // Power users get the IR shape in the Raw / Advanced mode
+    // (PolicyBuilder), not here.
+    expect(src).not.toContain("ir-draft-json")
+    expect(src).not.toMatch(/<details/)
+    expect(src).not.toMatch(/<summary/)
+    // The state hook that drove the open/closed toggle should be gone
+    // along with the block.
+    expect(src).not.toMatch(/jsonOpen/)
+  })
+
+  it("Condition row for verifier-step requires uses plain language (no 'Verifier' / '검증기' token)", () => {
+    // D55b code review P1: the kind === 'step' branch must translate
+    // to plain language. 'Verifier' and '검증기' are internal vocab.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "")
+    expect(stripped).not.toMatch(/Verifier:/)
+    expect(stripped).not.toMatch(/검증기:/)
+    expect(stripped).not.toMatch(/검증기 이름/)
+    expect(stripped).toMatch(/Required check|필수 확인/)
+  })
+
+  it("When row matcher is pretty-printed (no raw regex alternation, no mcp__ slug)", () => {
+    // D55b code review P2: `Bash|Edit` and `mcp__server__tool` leak
+    // implementation shape. prettyMatcher() translates them to a
+    // friendly form before the When row renders.
+    expect(src).toContain("prettyMatcher")
+    // Alternation joiner and mcp slug stripper live in the helper.
+    expect(src).toMatch(/mcp__/)
+    expect(src).toMatch(/' 또는 '|" 또는 "|' or '|" or "/)
   })
 })
 

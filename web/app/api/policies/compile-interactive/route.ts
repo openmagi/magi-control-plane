@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
         return j({ error: `history[${i}].content must be a string` }, 400)
       }
       if (tt.content.length > MAX_USER_MESSAGE_CHARS * 5) {
-        // Soft outer cap — the per-role cap is enforced on the cloud
+        // Soft outer cap, the per-role cap is enforced on the cloud
         // side. We just refuse multi-megabyte payloads here.
         return j({ error: `history[${i}].content too long` }, 400)
       }

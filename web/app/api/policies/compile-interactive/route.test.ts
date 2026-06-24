@@ -84,7 +84,7 @@ describe("/api/policies/compile-interactive proxy", () => {
   it("does NOT echo upstream response body to the client (security)", () => {
     // The upstream body lives only in `upstreamBody` then ends up in
     // a stderr console.error. The Response body is one of our stable
-    // error codes — never the raw text.
+    // error codes, never the raw text.
     expect(src).not.toMatch(/return\s+.*upstreamBody/)
   })
 })
