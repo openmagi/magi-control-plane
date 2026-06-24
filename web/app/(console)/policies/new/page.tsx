@@ -5,6 +5,7 @@ import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
+import NlAuthoringGuide from "../../_components/NlAuthoringGuide"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -731,6 +732,12 @@ export default async function NewPolicyPage({
           }}
         >
           <Card>
+            {/* D52e: collapsible authoring guide. Closed by default,
+                expanded/collapsed state persisted per-user in
+                localStorage. Lives only on the NL compose mode: the
+                Guided wizard and Raw IR PolicyBuilder are structured
+                already and don't need this scaffolding. */}
+            <NlAuthoringGuide t={t} targetTextareaId="nl" />
             <form action={compileNL}>
               <Textarea
                 id="nl"
