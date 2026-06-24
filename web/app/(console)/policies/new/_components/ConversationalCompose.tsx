@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/Button"
 import { Skeleton } from "@/components/ui/Skeleton"
 import { translate } from "@/lib/i18n/dict"
 import ChatTurn, { type QuestionVM } from "./ChatTurn"
+import ConvAuthoringGuide from "./ConvAuthoringGuide"
 import IrDraftPane from "./IrDraftPane"
 
 type T = (
@@ -394,6 +395,22 @@ export function ConversationalCompose({
         className="flex flex-col rounded-2xl border border-black/[0.08] bg-white shadow-sm overflow-hidden"
         data-testid="conv-chat-column"
       >
+        {/* D57b: "What can I write?" guide. Sits above the chat scroll
+         *  region so first-time visitors discover the affordance before
+         *  the assistant turn renders. Collapsed by default; the open
+         *  state is persisted per-user via the guide's own localStorage
+         *  key (parent does not need to wire it). The pill row writes
+         *  prompts into the chat input via setInput, mirroring the
+         *  existing in-scroll starter pills (which only render on
+         *  empty-history). */}
+        <div className="px-4 pt-4">
+          <ConvAuthoringGuide
+            locale={locale}
+            onFillPrompt={(text) => setInput(text)}
+            pending={pending}
+          />
+        </div>
+
         <div
           ref={scrollRef}
           role="log"
