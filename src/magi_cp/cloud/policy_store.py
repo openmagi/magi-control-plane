@@ -36,33 +36,32 @@ from ..policy.precedence import PolicySource
 from ..policy.resolved import PolicyOverride
 
 
-def _serialize_policy(p: Policy) -> dict:
-    return {
-        "id": p.id,
-        "description": p.description,
-        "version": p.version,
-        "trigger": {"host": p.trigger.host, "event": p.trigger.event,
-                    "matcher": p.trigger.matcher},
-        "sentinel_re": p.sentinel_re,
-        "requires": [_evidence_req_to_dict(r) for r in p.requires],
-        "action": p.action,
-        "on_signature_invalid": p.on_signature_invalid,
-        "gate_binary": p.gate_binary,
-    }
+def _serialize_policy(p) -> dict:
+    """Per-archetype serializer. EvidencePolicy keeps the original byte
+    layout (no `type` key) for full backward compat. P2/P3 siblings
+    always carry `type`."""
+    from ..policy.ir import EvidencePolicy, policy_to_dict
+    if isinstance(p, EvidencePolicy):
+        # Keep the original byte layout so on-disk stores from before
+        # P2/P3 round-trip byte-identical.
+        return {
+            "id": p.id,
+            "description": p.description,
+            "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "sentinel_re": p.sentinel_re,
+            "requires": [_evidence_req_to_dict(r) for r in p.requires],
+            "action": p.action,
+            "on_signature_invalid": p.on_signature_invalid,
+            "gate_binary": p.gate_binary,
+        }
+    return policy_to_dict(p)
 
 
-def _deserialize_policy(d: dict) -> Policy:
-    from ..policy.ir import _coerce_action
-    return Policy(
-        id=d["id"], description=d.get("description", ""),
-        version=d.get("version", "0.1"),
-        trigger=Trigger(**d["trigger"]),
-        sentinel_re=d.get("sentinel_re"),
-        requires=[_coerce_evidence_req(r) for r in d["requires"]],
-        action=_coerce_action(d),
-        on_signature_invalid=d.get("on_signature_invalid", "deny"),
-        gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
-    )
+def _deserialize_policy(d: dict):
+    from ..policy.ir import policy_from_dict
+    return policy_from_dict(d)
 
 
 def _normalize(overrides: Iterable[PolicyOverride]) -> list[dict]:

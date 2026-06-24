@@ -7,20 +7,22 @@ import {
   CheckBadgeIcon, InboxIcon,
   Squares2X2Icon, DocumentTextIcon,
   ArrowDownTrayIcon, RectangleStackIcon,
+  ServerIcon,
 } from "@heroicons/react/24/outline"
 import { cn } from "@/lib/cn"
 import { longestActiveHref, useNavHrefs } from "./NavItemContext"
 
 const ICONS = {
-  policies: ShieldCheckIcon,
-  compile:  SparklesIcon,
-  presets:  BookOpenIcon,
-  rules:    RectangleStackIcon,
-  verify:   CheckBadgeIcon,
-  hitl:     InboxIcon,
-  overview: Squares2X2Icon,
-  ledger:   DocumentTextIcon,
-  setup:    ArrowDownTrayIcon,
+  policies:  ShieldCheckIcon,
+  compile:   SparklesIcon,
+  presets:   BookOpenIcon,
+  rules:     RectangleStackIcon,
+  verify:    CheckBadgeIcon,
+  hitl:      InboxIcon,
+  overview:  Squares2X2Icon,
+  ledger:    DocumentTextIcon,
+  setup:     ArrowDownTrayIcon,
+  endpoints: ServerIcon,
 } as const
 
 export type NavIconName = keyof typeof ICONS

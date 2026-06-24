@@ -31,7 +31,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
 from ..policy import (
-    EvidenceReq, Policy, PolicyOverride, ResolvedPolicySet, Trigger,
+    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, EvidenceReq,
+    McpGatingPolicy, PermissionPolicy, Policy, PolicyOverride,
+    ResolvedPolicySet, SubagentPolicy, Trigger,
     compile_to_managed_settings,
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
@@ -40,8 +42,8 @@ from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
 from .policy_store import PolicyStore, _evidence_req_to_dict
 from .db import (
-    HitlRepo, HitlStatus, LedgerRepo,
-    init_schema, make_engine,
+    EndpointHeartbeatRepo, HitlRepo, HitlStatus, LedgerRepo,
+    init_schema, is_stale, make_engine,
 )
 from .keys import KeyStore
 from .presets_catalog import vendor_catalog
@@ -1079,6 +1081,9 @@ def create_app(
     # ── /payload-schemas — P7 CC hook payload field menu (read-only) ──
     _attach_payload_schema_routes(app)
 
+    # ── /endpoints — P10 endpoint attestation ─────────────────────────
+    _attach_endpoint_routes(app, engine, policy_store=policy_store)
+
     return app
 
 
@@ -1130,53 +1135,113 @@ def _issue_token(subject: str, payload_hash: str, verdict: str, *,
             "kid": kid, "ledger_h": entry.h}
 
 
-def _enforcement_label(policy: Policy) -> str:
+def _enforcement_label(policy: AnyPolicy) -> str:
     """Short human label for the enforcement character of a policy.
 
-    D31: maps the new action vocabulary to the dashboard's familiar
-    enforcement labels. block / ask are deterministic gates; audit is
-    observe-only regardless of event.
+    Issue #1 P0 (#14): type-dispatch per archetype. The declarative
+    archetypes are always `enforcing` (no verifier hop; CC consumes
+    them out of managed-settings directly). EvidencePolicy keeps the
+    D31 (action, event)-based mapping.
     """
-    if policy.action in ("block", "ask"):
-        return "deterministic-gate"
-    if policy.trigger.event == "PostToolUse":
-        return "observe-only"
-    return "log-only"
+    if isinstance(policy, EvidencePolicy):
+        if policy.action in ("block", "ask"):
+            return "deterministic-gate"
+        if policy.trigger.event == "PostToolUse":
+            return "observe-only"
+        return "log-only"
+    # Declarative archetypes: CC enforces directly via managed-settings.
+    return "enforcing"
 
 
-def _serialize_policy_for_api(p: Policy) -> dict:
-    return {
-        "id": p.id,
-        "description": p.description,
-        "version": p.version,
-        "trigger": {"host": p.trigger.host, "event": p.trigger.event,
-                    "matcher": p.trigger.matcher},
-        "sentinel_re": p.sentinel_re,
-        "requires": [_evidence_req_to_dict(r) for r in p.requires],
-        "action": p.action,
-        "on_signature_invalid": p.on_signature_invalid,
-        "gate_binary": p.gate_binary,
-    }
+def _serialize_policy_for_api(p: AnyPolicy) -> dict:
+    """Per-archetype response serializer.
+
+    Issue #1 P0 (#14): EvidencePolicy keeps its existing JSON shape
+    (sentinel_re / requires / action / ...) for back-compat. The
+    P2/P3 sibling types carry their own discriminator + fields so the
+    dashboard can render the right form.
+    """
+    if isinstance(p, EvidencePolicy):
+        return {
+            "type": "evidence",
+            "id": p.id,
+            "description": p.description,
+            "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "sentinel_re": p.sentinel_re,
+            "requires": [_evidence_req_to_dict(r) for r in p.requires],
+            "action": p.action,
+            "on_signature_invalid": p.on_signature_invalid,
+            "gate_binary": p.gate_binary,
+        }
+    if isinstance(p, PermissionPolicy):
+        return {
+            "type": "permission",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "permission": p.permission,
+            "pattern": p.pattern,
+            "exclusive": p.exclusive,
+        }
+    if isinstance(p, SubagentPolicy):
+        return {
+            "type": "subagent",
+            "id": p.id, "description": p.description, "version": p.version,
+            "subagent_type": p.subagent_type,
+            "tool_allowlist": list(p.tool_allowlist),
+        }
+    if isinstance(p, McpGatingPolicy):
+        return {
+            "type": "mcp_gating",
+            "id": p.id, "description": p.description, "version": p.version,
+            "server": p.server, "action": p.action,
+            "exclusive": p.exclusive,
+        }
+    if isinstance(p, ContextInjectionPolicy):
+        return {
+            "type": "context_injection",
+            "id": p.id, "description": p.description, "version": p.version,
+            "event": p.event, "matcher": p.matcher, "template": p.template,
+        }
+    raise HTTPException(500, f"unserializable policy type: {type(p).__name__}")
 
 
-def _deserialize_policy_from_api(d: dict) -> Policy:
-    from ..policy.ir import _coerce_action, _coerce_evidence_req
-    return Policy(
-        id=d["id"], description=d.get("description", ""),
-        version=d.get("version", "0.1"),
-        trigger=Trigger(**d["trigger"]),
-        sentinel_re=d.get("sentinel_re"),
-        requires=[_coerce_evidence_req(r) for r in d["requires"]],
-        action=_coerce_action(d),
-        on_signature_invalid=d.get("on_signature_invalid", "deny"),
-        gate_binary=d.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
-    )
+def _deserialize_policy_from_api(d: dict) -> AnyPolicy:
+    """Discriminated deserializer.
+
+    Issue #1 P0 (#12): route through `policy_from_dict` so PUT
+    /policies/{id} can persist any archetype, not just evidence. The
+    legacy EvidencePolicy shape is preserved (`type` defaults to
+    `evidence`).
+    """
+    from ..policy.ir import policy_from_dict
+    return policy_from_dict(d)
 
 
-def _compile_with_sha(policy: Policy) -> tuple[dict, str]:
+def _compile_with_sha(policy: AnyPolicy) -> tuple[dict, str]:
+    """Compile a single policy and return (managed_settings, sha256).
+
+    Non-blocking #a fix: the sha is computed over the same byte string
+    `compile_files` writes to disk (json.dumps + trailing newline) so
+    the dashboard's `compiled_sha256` matches the gate's
+    `active_policy_digest` (which hashes the file bytes verbatim).
+    """
     import json as _json
     ms = compile_to_managed_settings([policy])
-    blob = _json.dumps(ms, ensure_ascii=False, indent=2, sort_keys=True)
+    blob = _json.dumps(ms, ensure_ascii=False,
+                        indent=2, sort_keys=True) + "\n"
+    return ms, hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _compile_set_with_sha(policies: list[AnyPolicy]) -> tuple[dict, str]:
+    """Same as `_compile_with_sha` but for a whole resolved set — used
+    by the dashboard's fleet attestation lookup (Issue #1 P0 #2)."""
+    import json as _json
+    ms = compile_to_managed_settings(policies)
+    blob = _json.dumps(ms, ensure_ascii=False,
+                        indent=2, sort_keys=True) + "\n"
     return ms, hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -1185,30 +1250,40 @@ from ..policy.precedence import SOURCE_PRECEDENCE as _SP
 _SOURCE_REGEX = "^(" + "|".join(_SP) + ")$"
 
 
+_POLICY_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$"
+
+
 class PolicyIn(BaseModel):
-    """Request body for PUT /policies/{id}. Loose at the boundary; validation
-    runs in Policy.__post_init__ via the matrix."""
-    # Mirror Policy._validate_id at the boundary so pydantic rejects with a
-    # 422 (not a 400 from the matrix layer) on obviously bad inputs.
+    """Request body for PUT /policies/{id}.
+
+    Issue #1 P0 (#12): the boundary is intentionally loose — `type`
+    discriminates and we route through `policy_from_dict` /
+    `policy.validate()` for archetype-specific shape checks (each
+    archetype's dataclass has fields the others don't). The pydantic
+    layer only asserts the universal id shape + the discriminator;
+    everything else is checked by Policy.__post_init__ via the
+    matrix.
+
+    Pre-P2 clients omit `type` and ship the EvidencePolicy shape —
+    `policy_from_dict` defaults `type="evidence"` so the existing
+    contract still passes.
+    """
+    model_config = {"extra": "allow"}
+
     id: str = Field(..., min_length=1, max_length=128,
-                     pattern=r"^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$")
-    description: str = Field(default="", max_length=2000)
-    version: str = Field(default="0.1", max_length=32)
-    trigger: dict
-    # D43: sentinel_re is optional. See policy/ir.py for rationale.
-    sentinel_re: str | None = Field(default=None, max_length=2000)
-    requires: list[dict] = Field(default_factory=list)
-    # D31: `action` is canonical. `on_missing` accepted as legacy alias
-    # via _coerce_action() during deserialization. Either-or here, both
-    # optional so old clients keep working until they migrate.
-    action: str | None = Field(default=None)
-    on_missing: str | None = Field(default=None)
-    on_signature_invalid: str = Field(default="deny")
-    gate_binary: str = Field(default="/usr/local/bin/magi-gate.sh", max_length=1000)
+                     pattern=_POLICY_ID_PATTERN)
+    type: str | None = Field(
+        default=None,
+        pattern=r"^(evidence|permission|subagent|mcp_gating|context_injection)$",
+    )
 
 
 class PutPolicyReq(BaseModel):
-    policy: PolicyIn
+    """PUT body. `policy` is loosely-typed at the boundary (see
+    PolicyIn) and re-validated archetype-specifically via
+    `_deserialize_policy_from_api`."""
+    model_config = {"extra": "forbid"}
+    policy: dict
     source: str = Field(..., pattern=_SOURCE_REGEX)
     enabled: bool = True
 
@@ -1226,14 +1301,22 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                            verifier_registry: "VerifierRegistry | None" = None,
                            ) -> None:
 
-    def _resolve_enforcement_for(policy: Policy) -> str:
+    def _resolve_enforcement_for(policy: AnyPolicy) -> str:
         """P8: resolve policy enforcement label deterministically.
+
+        Issue #1 P0 (#14): non-Evidence archetypes are always
+        enforcing (they compile to managed-settings primitives, no
+        verifier hop). Only EvidencePolicy may resolve to
+        `enforcing` vs `preview` based on its `requires[].step`
+        bindings against the live registry.
 
         Falls back to the legacy (action, event)-derived label when
         either the registry isn't wired OR every requires entry is
         non-step (regex / llm_critic / shacl). The legacy label is the
         only sensible "preview vs enforcing" answer in those cases.
         """
+        if not isinstance(policy, EvidencePolicy):
+            return _enforcement_label(policy)
         from ..policy.step_enforcement import resolve_policy_enforcement
         has_step_req = any(r.kind == "step" for r in policy.requires)
         if not has_step_req:
@@ -1278,6 +1361,10 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         )
         if ov.enforcement is not None:
             return ov.enforcement, ov.enabled
+        # Issue #1 P0 (#14): non-Evidence archetypes don't have a
+        # `requires` field. They render as `enforcing`.
+        if not isinstance(ov.policy, EvidencePolicy):
+            return _enforcement_label(ov.policy), ov.enabled
         has_step_req = any(r.kind == "step" for r in ov.policy.requires)
         if not has_step_req:
             return _enforcement_label(ov.policy), ov.enabled
@@ -1295,21 +1382,29 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     def list_policies() -> dict:
         items = []
         for ov in store.load():
+            # Issue #1 P0 (#13, #14): non-Evidence archetypes have no
+            # `trigger`. We render `trigger` only when present so the
+            # list response doesn't fabricate a fake event for declarative
+            # rows.
             # P8 follow-up: legacy unstamped rows are re-validated
             # against the live registry. If a referenced step has been
             # decommissioned the row renders as `"unresolved-legacy"`
             # so the operator sees the gap — instead of the pre-P8
             # silent fall-back to `"deterministic-gate"`.
             enf, _eff_enabled = _resolve_legacy_unstamped(ov)
-            items.append({
+            trig = getattr(ov.policy, "trigger", None)
+            entry = {
                 "id": ov.policy.id,
                 "description": ov.policy.description,
                 "source": ov.source,
                 "enabled": ov.enabled,
-                "trigger": {"event": ov.policy.trigger.event,
-                            "matcher": ov.policy.trigger.matcher},
                 "enforcement": enf,
-            })
+                "type": getattr(ov.policy, "type", "evidence"),
+            }
+            if trig is not None:
+                entry["trigger"] = {"event": trig.event,
+                                     "matcher": trig.matcher}
+            items.append(entry)
         return {"items": items}
 
     # Order matters: more specific (/compiled, /enabled) before the catch-all
@@ -1344,39 +1439,47 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
 
     @app.put("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     async def put_policy(policy_id: str, body: PutPolicyReq) -> dict:
-        if body.policy.id != policy_id:
+        # Issue #1 P0 (#12): the discriminated-union path. Body is
+        # loosely typed at the boundary; archetype-specific shape
+        # checks happen in Policy.__post_init__ via policy_from_dict.
+        raw = body.policy
+        if raw.get("id") != policy_id:
             raise HTTPException(400, "id mismatch between url and body")
         if any(policy_id.endswith(s) for s in _RESERVED_ID_SUFFIXES):
             raise HTTPException(400, f"policy id must not end in {_RESERVED_ID_SUFFIXES}")
         try:
-            policy = _deserialize_policy_from_api(body.policy.model_dump())
-        except ValueError as e:
+            policy = _deserialize_policy_from_api(raw)
+        except (ValueError, KeyError) as e:
             # Matrix violation or any other __post_init__ failure
             raise HTTPException(400, str(e))
-        # P8: fail-closed on unknown / inactive verifier steps. This is the
-        # primary authoring-time gate — the runtime gate cannot retroactively
-        # reject a policy that was already PUT, so an invalid step has to
-        # be caught here or it ships as "missing" and silently fails at
-        # gate time.
+        # P8: fail-closed on unknown / inactive verifier steps. This is
+        # the primary authoring-time gate — the runtime gate cannot
+        # retroactively reject a policy that was already PUT, so an
+        # invalid step has to be caught here or it ships as "missing"
+        # and silently fails at gate time.
+        #
+        # Issue #1 P0 (#14): only EvidencePolicy has a `requires` list
+        # to resolve. Declarative archetypes always render as
+        # "enforcing" via _enforcement_label.
         from ..policy.step_enforcement import (
             StepResolutionError, resolve_policy_enforcement,
         )
-        try:
-            resolved_enforcement = resolve_policy_enforcement(
-                policy,
-                registry=verifier_registry,
-                vendor_catalog_fn=vendor_catalog,
-            )
-        except StepResolutionError as e:
-            # Distinct 422 detail per reason — clients can branch on the
-            # "is not active" vs "not in catalog" wording (or just show
-            # the message; both are operator-readable).
-            raise HTTPException(422, str(e)) from e
-        # When every req is non-step (regex / llm_critic / shacl), the
-        # resolver short-circuits to "enforcing"; collapse to the legacy
-        # label for parity with list/get so the dashboard renders the
-        # same string everywhere.
-        if not any(r.kind == "step" for r in policy.requires):
+        if isinstance(policy, EvidencePolicy):
+            try:
+                resolved_enforcement = resolve_policy_enforcement(
+                    policy,
+                    registry=verifier_registry,
+                    vendor_catalog_fn=vendor_catalog,
+                )
+            except StepResolutionError as e:
+                raise HTTPException(422, str(e)) from e
+            # When every req is non-step (regex / llm_critic / shacl),
+            # the resolver short-circuits to "enforcing"; collapse to
+            # the legacy label for parity with list/get so the dashboard
+            # renders the same string everywhere.
+            if not any(r.kind == "step" for r in policy.requires):
+                resolved_enforcement = _enforcement_label(policy)
+        else:
             resolved_enforcement = _enforcement_label(policy)
         async with policy_lock:
             existing = store.load()
@@ -1388,7 +1491,8 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             ))
             store.save(existing)
         return {"id": policy.id, "source": body.source, "enabled": body.enabled,
-                "enforcement": resolved_enforcement}
+                "enforcement": resolved_enforcement,
+                "type": getattr(policy, "type", "evidence")}
 
     @app.patch("/policies/{policy_id:path}/enabled",
                dependencies=[Depends(require_admin_key)])
@@ -1410,8 +1514,10 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                     # against a verifier that was since decommissioned
                     # must not silently round-trip a stale
                     # "enforcing" label on every toggle.
-                    if body.enabled and any(
-                        r.kind == "step" for r in ov.policy.requires
+                    if (
+                        body.enabled
+                        and isinstance(ov.policy, EvidencePolicy)
+                        and any(r.kind == "step" for r in ov.policy.requires)
                     ):
                         try:
                             new_enforcement = resolve_policy_enforcement(
@@ -1737,6 +1843,206 @@ def _attach_payload_schema_routes(app: FastAPI) -> None:
             )
         fields = available_fields(event, matcher)
         return {"event": event, "matcher": matcher, "fields": fields}
+
+
+class HeartbeatReq(BaseModel):
+    """Gate → cloud heartbeat body.
+
+    `active_policy_digest` is sha256(managed-settings.json)[:64]. The gate
+    computes this off whatever JSON file it just read; missing → None
+    (gate hasn't loaded settings yet, e.g. first boot before initial
+    `compile`). `agent_version` is informational only — the dashboard
+    surfaces it so operators can spot stale gates.
+
+    Issue #1 P0 (#1): the heartbeat trust model is TOFU-over-tenant-key
+    until a per-endpoint enrollment keypair is wired. We accept
+    `signed_attestation` + `nonce` + `ts` as optional fields so a
+    later cloud version that enforces enrollment can run without a
+    wire format change. Today the cloud stores the attestation
+    opaquely. Replay-resistance: `ts` is checked against a ±5min wall
+    window; older heartbeats are rejected so a captured payload can't
+    be replayed by a man-in-the-middle.
+    """
+    model_config = {"extra": "forbid"}
+
+    endpoint_id: str = Field(..., min_length=1, max_length=64,
+                              pattern=r"^[A-Za-z0-9_\-]+$")
+    active_policy_digest: str | None = Field(
+        default=None, min_length=64, max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    agent_version: str | None = Field(default=None, max_length=64)
+    label: str | None = Field(default=None, max_length=128)
+    # Issue #1 P0 (#1): replay window + signed attestation. Both
+    # optional today; `signed_attestation` becomes required once
+    # enrollment ships. `ts` enables ±5min window check now.
+    ts: int | None = Field(default=None, ge=0)
+    nonce: str | None = Field(
+        default=None, min_length=8, max_length=64,
+        pattern=r"^[A-Za-z0-9_\-]+$",
+    )
+    signed_attestation: str | None = Field(
+        default=None, max_length=256,
+    )
+
+
+HEARTBEAT_REPLAY_WINDOW_SECONDS = 300
+
+
+def _attach_endpoint_routes(app: FastAPI, engine, *,
+                              policy_store: "PolicyStore | None" = None) -> None:
+    """P10 — endpoint attestation routes.
+
+    Two routes:
+      POST /endpoints/{endpoint_id}/heartbeat   — gate POSTs every N min
+      GET  /endpoints                           — dashboard reads
+
+    Auth on both: tenant-scoped via require_tenant_auth.
+
+    Issue #1 P0 / P1 (#1, #2, #5, #18):
+      - Heartbeats include optional `ts` + `nonce` so the cloud can
+        reject replays of older payloads (5min window).
+      - The GET response computes a per-tenant `cloud_active_digest`
+        from the currently-enabled policy set and classifies each
+        endpoint as `confirmed` / `stale-policy` / `unknown` / `not-loaded`
+        so operators no longer guess by comparing 12 hex chars.
+      - The list response surfaces `stale_threshold_s` so the dashboard
+        copy stays in sync with the server-side threshold.
+    """
+    from .db import (
+        CompiledPolicySnapshotRepo, stale_endpoint_threshold_seconds,
+    )
+
+    repo = EndpointHeartbeatRepo(engine)
+    snap_repo = CompiledPolicySnapshotRepo(engine)
+
+    def _cloud_active_for_tenant(tenant_id: str) -> tuple[str | None, list[str]]:
+        """Compile the currently-enabled policy set for `tenant_id` and
+        return (sha256, [policy_ids]).
+
+        Today the policy store is single-tenant (multi-tenant store is
+        SECURITY.md §multi-tenant follow-up). When a store is wired we
+        compile its enabled set; otherwise the active digest is None
+        and every endpoint renders as `unknown`.
+        """
+        if policy_store is None:
+            return None, []
+        try:
+            overrides = policy_store.load()
+        except (ValueError, OSError):
+            return None, []
+        enabled = [ov.policy for ov in overrides if ov.enabled]
+        if not enabled:
+            # No policies in force — the gate's empty managed-settings
+            # is the cloud-active surface; we hash an empty compile so
+            # confirmation still works.
+            _, sha = _compile_set_with_sha([])
+            snap_repo.record(digest=sha, tenant_id=tenant_id,
+                              policy_ids=[])
+            return sha, []
+        _, sha = _compile_set_with_sha(enabled)
+        ids = [p.id for p in enabled]
+        # Persist the snapshot so future-rolled gates that report this
+        # digest still classify as confirmed-historical instead of
+        # unknown.
+        snap_repo.record(digest=sha, tenant_id=tenant_id,
+                          policy_ids=ids)
+        return sha, ids
+
+    def _classify_endpoint(
+        digest: str | None,
+        cloud_active: str | None,
+        known_digests: set[str],
+    ) -> str:
+        """Issue #1 P0 (#2): map gate-reported digest to a status."""
+        if digest is None:
+            return "not-loaded"
+        if cloud_active is not None and digest == cloud_active:
+            return "confirmed"
+        if digest in known_digests:
+            return "stale-policy"
+        return "unknown"
+
+    @app.post("/endpoints/{endpoint_id}/heartbeat",
+              dependencies=[Depends(require_tenant_auth)])
+    async def post_heartbeat(endpoint_id: str, body: HeartbeatReq,
+                              request: Request) -> dict:
+        # URL `endpoint_id` is authoritative; body's field must match or
+        # we reject. This avoids one tenant's key being misused to write
+        # under another endpoint_id (the key already binds the tenant
+        # via require_tenant_auth, this binds the row).
+        if body.endpoint_id != endpoint_id:
+            raise HTTPException(400, "endpoint_id mismatch url vs body")
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        # Issue #1 P0 (#1): ts + nonce replay window. When the gate
+        # opts into the signed-attestation flow it MUST include both;
+        # without `ts` we still accept (legacy gates) but record
+        # nothing replay-resistant. The window is generous (±5min)
+        # because gates run on consumer laptops with skewed clocks.
+        if body.ts is not None:
+            now = int(time.time())
+            if abs(now - body.ts) > HEARTBEAT_REPLAY_WINDOW_SECONDS:
+                raise HTTPException(
+                    400,
+                    f"heartbeat ts out of window "
+                    f"(|now-ts|>{HEARTBEAT_REPLAY_WINDOW_SECONDS}s)",
+                )
+        # nonce reuse check: the previous heartbeat's nonce is stored;
+        # an identical resubmit looks like a replay. Different nonces
+        # are accepted unconditionally — the per-endpoint key (not
+        # wired yet) is the real anti-replay anchor.
+        if body.nonce:
+            prev = repo.get(endpoint_id)
+            if prev is not None and prev.last_nonce == body.nonce:
+                raise HTTPException(409, "nonce reused")
+        hb = repo.beat(
+            endpoint_id=endpoint_id,
+            tenant_id=tenant_id,
+            active_policy_digest=body.active_policy_digest,
+            agent_version=body.agent_version,
+            label=body.label,
+            signed_attestation=body.signed_attestation,
+            nonce=body.nonce,
+        )
+        return {
+            "endpoint_id": hb.endpoint_id,
+            "tenant_id": hb.tenant_id,
+            "last_seen": hb.last_seen,
+            "active_policy_digest": hb.active_policy_digest,
+            "agent_version": hb.agent_version,
+            "label": hb.label,
+            "attested": hb.signed_attestation is not None,
+        }
+
+    @app.get("/endpoints", dependencies=[Depends(require_tenant_auth)])
+    def list_endpoints(request: Request) -> dict:
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        rows = repo.list_by_tenant(tenant_id)
+        cloud_active, _ids = _cloud_active_for_tenant(tenant_id)
+        known = snap_repo.known_digests_for_tenant(tenant_id)
+        threshold = stale_endpoint_threshold_seconds()
+        items = []
+        for r in rows:
+            status = _classify_endpoint(
+                r.active_policy_digest, cloud_active, known,
+            )
+            items.append({
+                "endpoint_id": r.endpoint_id,
+                "tenant_id": r.tenant_id,
+                "last_seen": r.last_seen,
+                "active_policy_digest": r.active_policy_digest,
+                "agent_version": r.agent_version,
+                "label": r.label,
+                "stale": is_stale(r, threshold_s=threshold),
+                "policy_status": status,
+                "attested": r.signed_attestation is not None,
+            })
+        return {
+            "items": items,
+            "cloud_active_digest": cloud_active,
+            "stale_threshold_s": threshold,
+            "recommended_heartbeat_interval_s": max(60, threshold // 4),
+        }
 
 
 def _build_production_app() -> FastAPI:

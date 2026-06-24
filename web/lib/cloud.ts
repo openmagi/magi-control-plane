@@ -137,16 +137,37 @@ export type PolicyTrigger = {
 
 export type PolicyEvidenceReq = { step: string; verdict: string }
 
+/** Issue #1 P0 (#12): policies can be any of the 5 archetypes. The
+ * evidence shape (legacy) carries trigger / sentinel / requires; the
+ * declarative siblings carry their own fields. We keep the type loose
+ * here because the detail page renders the raw JSON; downstream forms
+ * narrow by `type`. */
 export type PolicyBody = {
   id: string
   description: string
   version: string
-  trigger: PolicyTrigger
-  sentinel_re: string
-  requires: PolicyEvidenceReq[]
-  on_missing: string
-  on_signature_invalid: string
-  gate_binary: string
+  type?: "evidence" | "permission" | "subagent" | "mcp_gating" | "context_injection"
+  // evidence fields (legacy default)
+  trigger?: PolicyTrigger
+  sentinel_re?: string | null
+  requires?: PolicyEvidenceReq[]
+  action?: string
+  on_missing?: string
+  on_signature_invalid?: string
+  gate_binary?: string
+  // permission archetype
+  permission?: "allow" | "deny" | "ask"
+  pattern?: string
+  exclusive?: boolean
+  // subagent archetype
+  subagent_type?: string
+  tool_allowlist?: string[]
+  // mcp_gating archetype
+  server?: string
+  // context_injection archetype
+  event?: string
+  matcher?: string
+  template?: string
 }
 
 /** P8 fix-cycle #5: the enforcement vocabulary depends on a hidden
@@ -377,6 +398,24 @@ export const cloud = {
     return d.items
   },
 
+  /** P10: list endpoint heartbeats for the calling tenant. Read-only. */
+  listEndpoints: async (): Promise<EndpointEntry[]> => {
+    const d = await _fetch<EndpointListing>(
+      "/endpoints", { method: "GET", keyType: "api" },
+    )
+    return d.items
+  },
+
+  /** Issue #1 P0 (#2): full /endpoints response including the
+   * cloud-active digest + threshold meta. Used by the
+   * dashboard's `confirmed/stale-policy/unknown/not-loaded`
+   * classification UI. */
+  listEndpointsListing: async (): Promise<EndpointListing> => {
+    return await _fetch<EndpointListing>(
+      "/endpoints", { method: "GET", keyType: "api" },
+    )
+  },
+
   /** P7: CC hook payload schema menu. Reference data — no auth needed.
    *
    * The dashboard ships a static mirror in lib/payload-schemas.ts for
@@ -435,6 +474,49 @@ export type ConditionEntry = {
   policy_id: string
   trigger_event: string
   tool_matcher: string
+}
+
+/** P10: a single endpoint heartbeat as surfaced by /endpoints.
+ *
+ * Issue #1 P0 (#2): `policy_status` is the operator-visible label
+ * classifying the gate-reported digest against the cloud's current
+ * compile + the snapshot history. Replaces the prior "Healthy / Stale"
+ * binary which never compared digests.
+ *
+ *   confirmed     — gate digest == current cloud-active compile
+ *   stale-policy  — gate digest matches a historical compile the
+ *                   cloud authored but has since superseded
+ *   unknown       — gate digest matches nothing the cloud authored
+ *                   (drifted gate or someone editing managed-settings
+ *                   by hand)
+ *   not-loaded    — gate posted a null digest (first boot before
+ *                   `compile` ran)
+ *
+ * `attested` is True iff the gate supplied a signed_attestation in
+ * its last heartbeat. Today the cloud doesn't verify the signature
+ * (TOFU-over-tenant-key); the field reserves room for the future
+ * per-endpoint enrollment keypair (Issue #1 P0 #1).
+ */
+export type EndpointPolicyStatus =
+  | "confirmed" | "stale-policy" | "unknown" | "not-loaded"
+
+export type EndpointEntry = {
+  endpoint_id: string
+  tenant_id: string
+  last_seen: number
+  active_policy_digest: string | null
+  agent_version: string | null
+  label: string | null
+  stale: boolean
+  policy_status?: EndpointPolicyStatus
+  attested?: boolean
+}
+
+export type EndpointListing = {
+  items: EndpointEntry[]
+  cloud_active_digest: string | null
+  stale_threshold_s: number
+  recommended_heartbeat_interval_s: number
 }
 
 function _encId(id: string): string {

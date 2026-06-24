@@ -621,3 +621,151 @@ def test_create_app_requires_registry_when_env_set(tmp_path, monkeypatch):
     # disable the gate if they really mean to construct a registry-less
     # factory.
     assert "MAGI_CP_REQUIRE_REGISTRY" in str(ei.value)
+
+
+# ── Issue #1 P0 (#12, #13, #14): native-surface archetypes via REST ──
+
+
+def test_put_permission_policy_round_trips(client_with_registry):
+    """Issue #1 P0 (#12): PUT /policies accepts a discriminated-union
+    body, persists the archetype, and returns the matching shape on
+    GET. Pre-P2 evidence shape still works because `type` defaults
+    to evidence."""
+    pid = "block-rm-rf/v1"
+    body = {
+        "type": "permission",
+        "id": pid,
+        "description": "block destructive Bash",
+        "version": "0.1",
+        "trigger": {"host": "claude-code",
+                     "event": "PreToolUse", "matcher": "Bash"},
+        "permission": "deny",
+        "pattern": "Bash(rm -rf /*)",
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+    assert r.json()["type"] == "permission"
+    assert r.json()["enforcement"] == "enforcing"
+
+    detail = client_with_registry.get(f"/policies/{pid}",
+                                       headers=ADMIN).json()
+    assert detail["policy"]["type"] == "permission"
+    assert detail["policy"]["pattern"] == "Bash(rm -rf /*)"
+    assert detail["enforcement"] == "enforcing"
+
+
+def test_put_subagent_policy_round_trips(client_with_registry):
+    """Issue #1 P0 (#9, #12): SubagentPolicy persists as a binary
+    disable; the request's empty tool_allowlist must round-trip."""
+    pid = "disable-research/v1"
+    body = {
+        "type": "subagent",
+        "id": pid,
+        "description": "research subagent disabled",
+        "subagent_type": "research",
+        "tool_allowlist": [],
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    detail = client_with_registry.get(f"/policies/{pid}",
+                                       headers=ADMIN).json()
+    assert detail["policy"]["type"] == "subagent"
+    # Compiled-managed-settings exposes the Agent(name) deny rule.
+    compiled = client_with_registry.get(f"/policies/{pid}/compiled",
+                                         headers=ADMIN).json()
+    assert "Agent(research)" in compiled["managed_settings"]["permissions"]["deny"]
+
+
+def test_put_mcp_gating_policy_round_trips(client_with_registry):
+    pid = "deny-mcp-github/v1"
+    body = {
+        "type": "mcp_gating",
+        "id": pid,
+        "description": "GitHub MCP off",
+        "server": "github",
+        "action": "deny",
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    compiled = client_with_registry.get(f"/policies/{pid}/compiled",
+                                         headers=ADMIN).json()
+    assert compiled["managed_settings"]["deniedMcpServers"] == [
+        {"serverName": "github"}
+    ]
+
+
+def test_put_context_injection_policy_round_trips(client_with_registry):
+    pid = "team-context/v1"
+    body = {
+        "type": "context_injection",
+        "id": pid,
+        "description": "team standards",
+        "event": "UserPromptSubmit",
+        "matcher": "*",
+        "template": "Follow team standards: TDD.",
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    compiled = client_with_registry.get(f"/policies/{pid}/compiled",
+                                         headers=ADMIN).json()
+    hook = compiled["managed_settings"]["hooks"]["UserPromptSubmit"][0]
+    # Issue #1 P0 (#3, #8): real CC hook type is `command`, not `write`.
+    assert hook["hooks"][0]["type"] == "command"
+
+
+def test_list_policies_handles_mixed_archetypes(client_with_registry):
+    """Issue #1 P0 (#13, #14): GET /policies must not crash when the
+    store contains non-Evidence rows."""
+    bodies = [
+        {
+            "type": "permission",
+            "id": "block-rm-rf/v1", "description": "",
+            "trigger": {"host": "claude-code",
+                         "event": "PreToolUse", "matcher": "Bash"},
+            "permission": "deny", "pattern": "Bash(rm -rf /*)",
+        },
+        {
+            "type": "subagent",
+            "id": "disable-research/v1", "description": "",
+            "subagent_type": "research", "tool_allowlist": [],
+        },
+        {
+            "type": "mcp_gating",
+            "id": "deny-mcp-github/v1", "description": "",
+            "server": "github", "action": "deny",
+        },
+        _valid_policy(),  # evidence
+    ]
+    for b in bodies:
+        r = _put(client_with_registry, b["id"], b)
+        assert r.status_code == 200, r.text
+
+    items = client_with_registry.get("/policies", headers=ADMIN).json()["items"]
+    types = {i["id"]: i.get("type") for i in items}
+    assert types["block-rm-rf/v1"] == "permission"
+    assert types["disable-research/v1"] == "subagent"
+    assert types["deny-mcp-github/v1"] == "mcp_gating"
+    # Non-event-scoped rows render WITHOUT a `trigger` key (Issue #14).
+    sub = next(i for i in items if i["id"] == "disable-research/v1")
+    assert "trigger" not in sub
+
+
+def test_put_permission_policy_rejects_malformed_pattern(client_with_registry):
+    """Issue #1 P1 (#7): the cloud rejects a pattern that doesn't match
+    the CC permission grammar — catches authoring mistakes at PUT
+    time instead of silently shipping a dead rule."""
+    pid = "bad/v1"
+    body = {
+        "type": "permission",
+        "id": pid, "description": "",
+        "trigger": {"host": "claude-code",
+                     "event": "PreToolUse", "matcher": "Bash"},
+        "permission": "deny",
+        "pattern": "garbage(( no verb",
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 400
+    assert "permission grammar" in r.json()["detail"]

@@ -77,30 +77,77 @@ def _fenced(text: str, nonce: str) -> str:
 _SYSTEM_COMPILER_TMPL = """You are a Policy IR compiler for magi-control-plane.
 
 Convert the user's natural-language policy intent into a single Policy IR JSON
-object. The schema:
-  {{
-    "id": "<kebab/v1>",
-    "version": "0.1",
-    "description": "<one-sentence summary>",
-    "trigger": {{"host": "claude-code",
-                "event": "PreToolUse|PostToolUse|Stop|SubagentStop|UserPromptSubmit|PreCompact|SessionStart|SessionEnd",
-                "matcher": "<tool name (Bash, Edit, Write, …) | mcp__server__tool | * for no-tool events>"}},
-    "requires": [{{"step": "<verifier_step_name>", "verdict": "pass"}}],
-    "action": "block|ask|audit",
-    "on_signature_invalid": "deny"
-  }}
+object. PICK THE RIGHT ARCHETYPE — declarative rules compile to native CC
+managed-settings primitives (no LLM hop at runtime) and SHOULD be preferred
+when the intent is expressible declaratively.
 
-Action archetypes:
-  - block: refuse the host action when requires don't all-pass. Strongest
-    pre-event gate. Legal on PreToolUse, UserPromptSubmit, PreCompact.
-  - ask:   interrupt for human approval when requires don't all-pass.
-           Legal on PreToolUse and UserPromptSubmit.
-  - audit: record verdict to the evidence ledger; never blocks. Legal on
-           every event. Combined with requires=[] this is the "emit
-           signal" pattern (unconditional ledger marker per trigger).
+Archetypes (set `type` accordingly):
 
-requires CAN be empty — that expresses the unconditional emit-signal
-archetype and must be paired with action="audit".
+  type=permission  — declarative Bash/Read/Write/Edit/WebFetch/MCP rule.
+    Schema:
+      {{"type": "permission", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "trigger": {{"host": "claude-code", "event": "PreToolUse",
+                    "matcher": "<Bash|Read|...>"}},
+        "permission": "allow|deny|ask",
+        "pattern": "<Tool(<args>)>  e.g. Bash(rm -rf /*) | WebFetch(https://*)"}}
+    Examples: "block rm -rf" / "deny WebFetch to evil.com" / "ask before sudo".
+
+  type=subagent    — disable a CC subagent fleet-wide.
+    Schema:
+      {{"type": "subagent", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "subagent_type": "<name e.g. research>",
+        "tool_allowlist": []}}
+    Examples: "disable the research subagent" / "remove the migrations agent".
+    NOTE: per-subagent tool scoping is NOT compilable in v1; the field is
+    forced empty. Use the per-tool `permission` archetype for tool gating.
+
+  type=mcp_gating  — allow/deny a whole MCP server.
+    Schema:
+      {{"type": "mcp_gating", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "server": "<name e.g. github>",
+        "action": "allow|deny"}}
+    Examples: "disable the github MCP server fleet-wide".
+
+  type=context_injection — inject static text on UserPromptSubmit/SessionStart.
+    Schema:
+      {{"type": "context_injection", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "event": "UserPromptSubmit|SessionStart",
+        "matcher": "*",
+        "template": "<text injected as additionalContext>"}}
+    Examples: "inject team coding standards into every prompt" / "add a
+    safety reminder at session start".
+
+  type=evidence    — gate that runs a verifier (or inline regex / SHACL /
+                     LLM critic) at hook time. Use this when the rule
+                     needs runtime data (cite count, payload shape,
+                     content judgement) — anything a static permission
+                     pattern can't express.
+    Schema:
+      {{"type": "evidence", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "trigger": {{"host": "claude-code",
+                    "event": "PreToolUse|PostToolUse|Stop|SubagentStop|UserPromptSubmit|PreCompact|SessionStart|SessionEnd",
+                    "matcher": "<tool name | mcp__server__tool | * for no-tool events>"}},
+        "requires": [{{"step": "<verifier_step_name>", "verdict": "pass"}}],
+        "action": "block|ask|audit",
+        "on_signature_invalid": "deny"}}
+    Action archetypes (evidence only):
+      - block: refuse the host action when requires don't all-pass. Strongest
+        pre-event gate. Legal on PreToolUse, UserPromptSubmit, PreCompact.
+      - ask:   interrupt for human approval when requires don't all-pass.
+               Legal on PreToolUse and UserPromptSubmit.
+      - audit: record verdict to the evidence ledger; never blocks. Legal on
+               every event. Combined with requires=[] this is the "emit
+               signal" pattern (unconditional ledger marker per trigger).
+    requires CAN be empty — that expresses the unconditional emit-signal
+    archetype and must be paired with action="audit".
+
+If `type` is omitted, the IR defaults to `type=evidence`. Always set it
+explicitly for the four sibling archetypes.
 
 {step_block}
 Output ONLY the JSON object — no prose, no markdown.
@@ -287,6 +334,10 @@ def _registry_issues(
     """
     if registry is None:
         return []
+    # Issue #1 P1 (#15): only evidence policies have `requires[].step`
+    # bindings; the declarative archetypes have nothing to resolve here.
+    if ir.get("type", "evidence") != "evidence":
+        return []
     import difflib
     try:
         known_steps = sorted({v.step for v in registry.all()})   # type: ignore[attr-defined]
@@ -335,32 +386,29 @@ def _server_side_validate(
     deterministic; reviewer is semantic.
     """
     # Late import to avoid a circular dep with the policy package at module load.
-    from ..policy import EvidenceReq, Policy, Trigger
-    from ..policy.ir import _coerce_action
+    from ..policy.ir import policy_from_dict
     issues: list[str] = []
     try:
-        Policy(
-            id=ir.get("id", ""),
-            description=ir.get("description", "") or "",
-            trigger=Trigger(**(ir.get("trigger") or {})),
-            sentinel_re=ir.get("sentinel_re") or None,  # D43 optional
-            requires=[EvidenceReq(**r) for r in (ir.get("requires") or [])],
-            action=_coerce_action(ir),
-            on_signature_invalid=ir.get("on_signature_invalid", "deny"),
-            gate_binary=ir.get("gate_binary", "/usr/local/bin/magi-gate.sh"),
-            version=ir.get("version", "0.1"),
-        )
+        # Issue #1 P1 (#15): route through the discriminated
+        # deserializer so the four sibling archetypes are reachable
+        # via NL → IR. Pre-P2 IR (no `type`) keeps falling back to
+        # EvidencePolicy via policy_from_dict's default.
+        policy_from_dict(ir)
     except Exception as e:
         issues.append(f"schema: {e}")
-    # Operator-warning soft checks (still pass schema but worth flagging):
-    if not (ir.get("requires") or []) and ir.get("action") not in ("audit", None):
-        # An empty requires list is only meaningful for the emit-signal
-        # archetype (audit). Block/ask with no condition is almost
-        # certainly an authoring mistake — surface it but don't block.
-        issues.append(
-            "warning: empty requires combined with action="
-            f"{ir.get('action')!r} — gate would fire on every trigger"
-        )
+    # Operator-warning soft checks (still pass schema but worth
+    # flagging). Only meaningful for evidence policies; the
+    # declarative archetypes don't have a `requires` list.
+    if ir.get("type", "evidence") == "evidence":
+        if not (ir.get("requires") or []) and ir.get("action") not in ("audit", None):
+            # An empty requires list is only meaningful for the
+            # emit-signal archetype (audit). Block/ask with no
+            # condition is almost certainly an authoring mistake —
+            # surface it but don't block.
+            issues.append(
+                "warning: empty requires combined with action="
+                f"{ir.get('action')!r} — gate would fire on every trigger"
+            )
     issues.extend(_registry_issues(ir, registry))
     return issues
 

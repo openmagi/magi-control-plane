@@ -205,7 +205,7 @@ echo FILE_COURT_M1_D1`
           </Card>
 
           {/* Step 4. try */}
-          <Card>
+          <Card className="mb-3">
             <div className="text-sm font-medium mb-1">{t("setup.step4.title")}</div>
             <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
               {t("setup.step4.body")}
@@ -219,6 +219,73 @@ echo FILE_COURT_M1_D1`
               </Link>
               <Link href="/overview">
                 <Button variant="ghost" size="sm">{t("setup.tryDashboard")}</Button>
+              </Link>
+            </div>
+          </Card>
+
+          {/* Step 5. endpoint attestation (Issue #1 P1 #17) */}
+          <Card className="mb-3">
+            <div className="text-sm font-medium mb-1">{t("setup.step5.title")}</div>
+            <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+              {t("setup.step5.body")}
+            </p>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-2 font-medium">
+              {t("setup.step5.envHeader")}
+            </p>
+            <CodeBlock maxHeight="auto">{
+`# Set an endpoint ID once — anything stable (hostname is a good default)
+mkdir -p "$HOME/.config/magi-cp"
+cat > "$HOME/.config/magi-cp/env" <<'EOF'
+MAGI_CP_ENDPOINT_ID=$(hostname -s)-$(whoami)
+MAGI_CP_ENDPOINT_LABEL=$(hostname -s)
+EOF`
+            }</CodeBlock>
+            <p className="text-xs text-[var(--color-text-secondary)] mt-3 mb-2 font-medium">
+              {t("setup.step5.scheduleHeader")}
+            </p>
+            <CodeBlock maxHeight="auto">{
+`# macOS (launchd) — drop a LaunchAgent plist
+cat > "$HOME/Library/LaunchAgents/ai.openmagi.cp.heartbeat.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.openmagi.cp.heartbeat</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/local/bin/magi-cp-heartbeat</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+launchctl load "$HOME/Library/LaunchAgents/ai.openmagi.cp.heartbeat.plist"
+
+# Linux (systemd --user) — drop two unit files
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/magi-cp-heartbeat.service" <<'EOF'
+[Unit]
+Description=magi-control-plane heartbeat
+[Service]
+ExecStart=/usr/local/bin/magi-cp-heartbeat
+EOF
+cat > "$HOME/.config/systemd/user/magi-cp-heartbeat.timer" <<'EOF'
+[Unit]
+Description=magi-cp heartbeat every 5 minutes
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target
+EOF
+systemctl --user enable --now magi-cp-heartbeat.timer
+
+# Plain crontab fallback (any OS) — */5 minutes
+(crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/magi-cp-heartbeat") | crontab -`
+            }</CodeBlock>
+            <p className="text-xs text-[var(--color-text-tertiary)] mt-3">
+              {t("setup.step5.detail")}
+            </p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              <Link href="/endpoints">
+                <Button variant="ghost" size="sm">{t("setup.step5.viewEndpoints")}</Button>
               </Link>
             </div>
           </Card>

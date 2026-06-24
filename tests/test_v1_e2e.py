@@ -99,9 +99,13 @@ def test_e2e_lifecycle_v1(client, tmp_path):
         str(_dump_policy(body, tmp_path / "ir.json")))
     expected = compile_to_managed_settings([policy])
     assert compiled["managed_settings"] == expected
+    # Issue #1 non-blocking #a: the sha hashes the same bytes
+    # `compile_files` writes to disk (json + trailing newline) so the
+    # dashboard's compiled_sha256 aligns with the gate's
+    # active_policy_digest.
     expected_sha = hashlib.sha256(
-        json.dumps(expected, ensure_ascii=False, indent=2,
-                    sort_keys=True).encode("utf-8")).hexdigest()
+        (json.dumps(expected, ensure_ascii=False, indent=2,
+                     sort_keys=True) + "\n").encode("utf-8")).hexdigest()
     assert compiled["sha256"] == expected_sha
 
     # Disable

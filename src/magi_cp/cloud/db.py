@@ -82,6 +82,74 @@ class LedgerEntry(Base):
     __table_args__ = (UniqueConstraint("prev", name="uq_ledger_prev"),)
 
 
+class EndpointHeartbeat(Base):
+    """P10 — endpoint attestation.
+
+    The gate POSTs a heartbeat every N minutes with a sha256 digest of
+    the managed-settings JSON it has loaded. The dashboard renders
+    "cloud-active vs endpoint-confirmed" off this table so an authored
+    policy that never reached an endpoint is visible.
+
+    `endpoint_id` is opaque; the gate reads it from
+    `~/.config/magi-cp/env` (operator-set). PRIMARY KEY enforces one
+    row per endpoint — the gate UPSERTs on each heartbeat.
+
+    `tenant_id` scopes the row to the owning tenant so the dashboard
+    doesn't surface cross-tenant endpoints.
+
+    Issue #1 P0 (#1): trust model is honest TOFU-over-tenant-key. The
+    cloud cannot prove the gate is actually enforcing the digest it
+    claims — it can only confirm the gate (or anyone holding the
+    tenant API key) submitted that digest at this timestamp. The
+    `signed_attestation` column reserves space for a future Ed25519
+    attestation bound to a per-endpoint enrollment keypair; until
+    that is wired the column stays NULL and the dashboard labels
+    heartbeats as "claimed", not "confirmed".
+    """
+    __tablename__ = "endpoint_heartbeat"
+    endpoint_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), index=True, nullable=False, default="default",
+    )
+    last_seen: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    active_policy_digest: Mapped[str | None] = mapped_column(String(64),
+                                                              nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Issue #1 P0 (#1): optional Ed25519(endpoint_id|ts|nonce|digest)
+    # signature. Persisted opaquely; verification logic is gated on the
+    # endpoint having an enrolled pubkey (future PR). Schema additive
+    # so today's gates stay compatible.
+    signed_attestation: Mapped[str | None] = mapped_column(
+        String(256), nullable=True,
+    )
+    last_nonce: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CompiledPolicySnapshot(Base):
+    """Issue #1 P0 (#2) + non-blocking #b — compiled-policy history.
+
+    Stores (digest, ts, tenant_id, policy_set) for every distinct
+    compile the cloud has emitted. The dashboard joins
+    `endpoint_heartbeat.active_policy_digest` against this table to
+    label gates as `confirmed` / `stale-policy` / `unknown` — without
+    it, a digest matching an older but recently-rolled-back compile
+    looks identical to a digest the cloud never authored (malicious or
+    drifted gate).
+
+    Append-only at the API surface; an operator cleaning up stale
+    rows runs the dedicated `magi-cp-cloud snapshot prune` CLI."""
+    __tablename__ = "compiled_policy_snapshot"
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), index=True, nullable=False, default="default",
+    )
+    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Compact JSON of the policy id set (not the bytes — reproducible
+    # from `policies.json` and the deterministic compiler).
+    policy_ids: Mapped[list] = mapped_column(JsonCol, nullable=False)
+
+
 class HitlStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
@@ -429,3 +497,137 @@ class HitlRepo:
 
     def reject(self, item_id: int, *, approver: str, note: str | None = None) -> None:
         self._decide(item_id, new_status=HitlStatus.rejected, approver=approver, note=note)
+
+
+# ── P10: endpoint heartbeat repo ─────────────────────────────────────
+DEFAULT_STALE_ENDPOINT_SECONDS = 24 * 3600
+
+
+def stale_endpoint_threshold_seconds() -> int:
+    """Issue #1 P1 (#18): operator-tunable stale threshold.
+
+    Reads `MAGI_CP_STALE_ENDPOINT_SECONDS` and returns a positive
+    integer; falls back to `DEFAULT_STALE_ENDPOINT_SECONDS` (24h) on
+    unset / invalid / non-positive. Pure function so the dashboard
+    server-side renderer + the API both read the same value without
+    drifting.
+    """
+    import os as _os
+    raw = _os.environ.get("MAGI_CP_STALE_ENDPOINT_SECONDS")
+    if not raw:
+        return DEFAULT_STALE_ENDPOINT_SECONDS
+    try:
+        v = int(raw)
+    except ValueError:
+        return DEFAULT_STALE_ENDPOINT_SECONDS
+    if v <= 0:
+        return DEFAULT_STALE_ENDPOINT_SECONDS
+    return v
+
+
+# Back-compat: existing callers expect a module constant.
+STALE_ENDPOINT_SECONDS = DEFAULT_STALE_ENDPOINT_SECONDS
+
+
+class EndpointHeartbeatRepo:
+    """Upsert / list endpoint heartbeats.
+
+    Concurrent-safe via SQLAlchemy MERGE pattern: read-then-insert with
+    PK collision → UPDATE. Postgres ON CONFLICT and SQLite INSERT OR
+    REPLACE both work via the merge() helper Sqlalchemy provides; we
+    use plain session.merge() for portability."""
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+    def beat(self, *, endpoint_id: str, tenant_id: str,
+             active_policy_digest: str | None,
+             agent_version: str | None = None,
+             label: str | None = None,
+             signed_attestation: str | None = None,
+             nonce: str | None = None) -> EndpointHeartbeat:
+        with Session(self.engine) as s:
+            row = EndpointHeartbeat(
+                endpoint_id=endpoint_id,
+                tenant_id=tenant_id,
+                last_seen=int(time.time()),
+                active_policy_digest=active_policy_digest,
+                agent_version=agent_version,
+                label=label,
+                signed_attestation=signed_attestation,
+                last_nonce=nonce,
+            )
+            merged = s.merge(row)
+            s.commit()
+            s.refresh(merged)
+            s.expunge(merged)
+            return merged
+
+    def list_by_tenant(self, tenant_id: str) -> list[EndpointHeartbeat]:
+        with Session(self.engine) as s:
+            rows = list(s.scalars(
+                select(EndpointHeartbeat)
+                .where(EndpointHeartbeat.tenant_id == tenant_id)
+                .order_by(EndpointHeartbeat.endpoint_id)
+            ))
+            for r in rows:
+                s.expunge(r)
+            return rows
+
+    def get(self, endpoint_id: str) -> EndpointHeartbeat | None:
+        with Session(self.engine) as s:
+            row = s.get(EndpointHeartbeat, endpoint_id)
+            if row:
+                s.expunge(row)
+            return row
+
+
+def is_stale(hb: EndpointHeartbeat, *, now: int | None = None,
+             threshold_s: int | None = None) -> bool:
+    """True iff the heartbeat is older than the configured threshold.
+
+    Issue #1 P1 (#18): threshold defaults to
+    `stale_endpoint_threshold_seconds()` so tightening
+    `MAGI_CP_STALE_ENDPOINT_SECONDS` takes effect without code changes.
+    Explicit override (used by tests) bypasses the env lookup.
+
+    Pure function so the dashboard renderer can reuse it for the
+    red-flag styling without re-implementing the threshold."""
+    cur = now if now is not None else int(time.time())
+    thr = threshold_s if threshold_s is not None else stale_endpoint_threshold_seconds()
+    return (cur - int(hb.last_seen)) > thr
+
+
+class CompiledPolicySnapshotRepo:
+    """Issue #1 P0 (#2) + non-blocking #b — snapshot history repo.
+
+    `record(digest, policy_ids)` is idempotent (the digest is the
+    primary key, no-op on duplicate). `known_digests_for_tenant()` lets
+    the dashboard classify endpoint digests as confirmed-current,
+    confirmed-historical, or unknown.
+    """
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+    def record(self, *, digest: str, tenant_id: str,
+                policy_ids: list[str]) -> None:
+        with Session(self.engine) as s:
+            existing = s.get(CompiledPolicySnapshot, digest)
+            if existing is not None:
+                # Idempotent — the same digest must always describe the
+                # same policy set (deterministic compile).
+                return
+            s.add(CompiledPolicySnapshot(
+                digest=digest, tenant_id=tenant_id,
+                ts=int(time.time()), policy_ids=list(policy_ids),
+            ))
+            s.commit()
+
+    def known_digests_for_tenant(self, tenant_id: str) -> set[str]:
+        with Session(self.engine) as s:
+            rows = list(s.scalars(
+                select(CompiledPolicySnapshot.digest)
+                .where(CompiledPolicySnapshot.tenant_id == tenant_id)
+            ))
+            return set(rows)

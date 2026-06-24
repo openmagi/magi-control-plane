@@ -4,10 +4,11 @@ import path from "node:path"
 
 /**
  * Source-level invariants for Sidebar. guards the IA contract:
- * 4 groups, 6 leaf items (1+2+2+1). Authoring group has one leaf
+ * 4 groups, 7 leaf items (1+2+3+1). Authoring group has one leaf
  * ("Rules") since policy authoring is reachable from the page's CTA;
- * /rules/new is not surfaced in the sidebar. All keyed to i18n +
- * HITL badge plumbing.
+ * /rules/new is not surfaced in the sidebar. The audit group gained
+ * /endpoints (P10) alongside /overview and /ledger. All keyed to
+ * i18n + HITL badge plumbing.
  */
 describe("Sidebar IA invariants", () => {
   const src = readFileSync(
@@ -25,9 +26,14 @@ describe("Sidebar IA invariants", () => {
     ])
   })
 
-  it("contains exactly 6 NavItem entries (1+2+2+1)", () => {
+  it("contains exactly 7 NavItem entries (1+2+3+1)", () => {
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(6)
+    expect(items).toHaveLength(7)
+  })
+
+  it("audit group surfaces the P10 /endpoints attestation page", () => {
+    expect(src).toMatch(/href="\/endpoints"/)
+    expect(src).toMatch(/icon="endpoints"/)
   })
 
   it("authoring group points only at /rules (New policy lives in-page)", () => {
