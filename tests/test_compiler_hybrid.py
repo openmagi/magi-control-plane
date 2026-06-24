@@ -252,13 +252,40 @@ def test_context_injection_emits_command_hook_and_sidecar():
     assert "_magi_context_templates_bytes" not in ms
 
 
-def test_context_injection_rejects_wrong_event():
-    with pytest.raises(ValueError, match="UserPromptSubmit or SessionStart"):
+def test_context_injection_rejects_unknown_event():
+    """D58: ContextInjectionPolicy now legalizes any CC hook event the
+    matrix recognizes (the binary's `additionalContext` channel is
+    available on every hook per the bundled docs). The reject path
+    therefore narrows from "wrong event" to "event the runtime does
+    not recognize at all"."""
+    with pytest.raises(ValueError, match="not a recognized CC hook"):
         ContextInjectionPolicy(
             id="bad/v1", description="",
-            event="PreToolUse",  # type: ignore[arg-type]
+            event="NotARealHook",  # type: ignore[arg-type]
             template="x",
         )
+
+
+def test_context_injection_accepts_d58_extended_events():
+    """D58: context injection is no longer narrowed to
+    UserPromptSubmit + SessionStart. A policy targeting PreToolUse
+    (or any other recognized hook) must construct + validate cleanly,
+    and the compiler must emit the same `command + shim` hook entry
+    so an operator can drop a per-tool note into the model's view of
+    the tool input."""
+    for ev in ("PreToolUse", "PostToolUse", "SubagentStart",
+                "PreCompact", "Notification"):
+        p = ContextInjectionPolicy(
+            id=f"ctx-{ev.lower()}/v1",
+            description=f"context on {ev}",
+            event=ev,  # type: ignore[arg-type]
+            template="hello",
+        )
+        ms = compile_to_managed_settings([p])
+        hooks = ms["hooks"][ev]
+        assert len(hooks) == 1
+        assert hooks[0]["hooks"][0]["type"] == "command"
+        assert f"--event {ev}" in hooks[0]["hooks"][0]["command"]
 
 
 # ── EvidencePolicy backward compat ───────────────────────────────────

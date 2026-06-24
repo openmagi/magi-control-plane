@@ -6,12 +6,33 @@
  * UX) and so the server enforces the source-of-truth (good security). The
  * server's response is authoritative on disagreement.
  */
+// D58 — full CC hook surface (30 events as of CC 2.1.170; the
+// architecture doc still says "23 hook events"). The
+// architectural truth source is the binary's `nV` enum, NOT the doc.
 export type EventKind =
+  // pre-D58
   | "PreToolUse" | "PostToolUse"
   | "Stop" | "SubagentStop"
   | "UserPromptSubmit"
   | "PreCompact"
   | "SessionStart" | "SessionEnd"
+  // D58: tool-context observability variants
+  | "PostToolUseFailure" | "PostToolBatch"
+  // D58: permission gate
+  | "PermissionRequest" | "PermissionDenied"
+  // D58: content-flow extensions
+  | "UserPromptExpansion" | "PostCompact"
+  | "Elicitation" | "ElicitationResult"
+  // D58: subagent / stop
+  | "SubagentStart" | "StopFailure"
+  // D58: lifecycle / observability long tail
+  | "Setup" | "Notification"
+  | "TeammateIdle" | "TaskCreated" | "TaskCompleted"
+  | "ConfigChange"
+  | "WorktreeCreate" | "WorktreeRemove"
+  | "InstructionsLoaded"
+  | "CwdChanged" | "FileChanged"
+  | "MessageDisplay"
 
 // D31: action archetypes replace the old decision vocabulary. block /
 // ask map to the previous deny / ask 1:1; audit replaces both log and
@@ -46,27 +67,62 @@ export function classifyMatcher(matcher: string): MatcherClass | "unknown" {
 
 // D31: triples now use action archetype vocabulary (block / ask /
 // audit). Mirrors backend policy/matrix.LEGAL_COMBINATIONS exactly.
-const LEGAL = new Set<string>([
-  // PreToolUse. every action class is legal on every concrete matcher;
+// D58: expanded to cover the full 30-event surface — see
+// src/magi_cp/policy/matrix.py for the family-by-family breakdown
+// (tool-context / permissions / content-flow / subagent+stop /
+// lifecycle+observability). Adding a row there MUST add the mirror
+// triple here too.
+const _AUDIT_ONLY_WILDCARD_EVENTS = [
+  // Tool-context observability variants
+  "PostToolUseFailure", "PostToolBatch",
+  // Permission gate post-side
+  "PermissionDenied",
+  // Content-flow post-side
+  "PostCompact", "ElicitationResult",
+  // Subagent / Stop boundary
+  "SubagentStart", "SubagentStop", "Stop", "StopFailure",
+  // Lifecycle / observability
+  "Setup", "Notification",
+  "SessionStart", "SessionEnd",
+  "TeammateIdle", "TaskCreated", "TaskCompleted",
+  "ConfigChange",
+  "WorktreeCreate", "WorktreeRemove",
+  "InstructionsLoaded",
+  "CwdChanged", "FileChanged",
+  "MessageDisplay",
+] as const
+
+const LEGAL = ((): Set<string> => {
+  const out = new Set<string>()
+  // PreToolUse: block / ask / audit on every concrete matcher;
   // wildcard narrows to audit only.
-  "PreToolUse|tool|block",     "PreToolUse|tool|ask",     "PreToolUse|tool|audit",
-  "PreToolUse|mcp_tool|block", "PreToolUse|mcp_tool|ask", "PreToolUse|mcp_tool|audit",
-  "PreToolUse|tool_alt|block", "PreToolUse|tool_alt|ask", "PreToolUse|tool_alt|audit",
-  "PreToolUse|wildcard|audit",
-  // PostToolUse. tool already ran, only audit makes sense.
-  "PostToolUse|tool|audit",
-  "PostToolUse|mcp_tool|audit",
-  // No-tool-context events all use wildcard.
-  "UserPromptSubmit|wildcard|block",
-  "UserPromptSubmit|wildcard|ask",
-  "UserPromptSubmit|wildcard|audit",
-  "PreCompact|wildcard|block",
-  "PreCompact|wildcard|audit",
-  "Stop|wildcard|audit",
-  "SubagentStop|wildcard|audit",
-  "SessionStart|wildcard|audit",
-  "SessionEnd|wildcard|audit",
-])
+  for (const klass of ["tool", "mcp_tool", "tool_alt"]) {
+    for (const act of ["block", "ask", "audit"]) {
+      out.add(`PreToolUse|${klass}|${act}`)
+    }
+  }
+  out.add("PreToolUse|wildcard|audit")
+  // PostToolUse: tool already ran; only audit.
+  out.add("PostToolUse|tool|audit")
+  out.add("PostToolUse|mcp_tool|audit")
+  // Pre-side gate hooks with full block/ask/audit.
+  for (const ev of ["UserPromptSubmit", "PermissionRequest", "Elicitation"]) {
+    for (const act of ["block", "ask", "audit"]) {
+      out.add(`${ev}|wildcard|${act}`)
+    }
+  }
+  // Pre-side gate hooks that can block but not ask.
+  for (const ev of ["UserPromptExpansion", "PreCompact"]) {
+    for (const act of ["block", "audit"]) {
+      out.add(`${ev}|wildcard|${act}`)
+    }
+  }
+  // Long-tail audit-only wildcard surface.
+  for (const ev of _AUDIT_ONLY_WILDCARD_EVENTS) {
+    out.add(`${ev}|wildcard|audit`)
+  }
+  return out
+})()
 
 // Migration shim: callers still using the old (deny / ask / log /
 // allow) wording get folded into the new archetype set so the legacy

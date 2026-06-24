@@ -86,15 +86,47 @@ def test_legal_combinations_are_tuples_of_three():
         assert action in {"block", "ask", "audit"}
 
 
-def test_supported_events_covers_full_8():
+def test_supported_events_covers_full_cc_surface():
+    """D58: matrix supports the full CC hook surface (30 events as of
+    CC 2.1.170; the doc still says 23 — the binary's `nV` enum is the
+    truth source). Each name MUST appear unchanged; CC validates
+    against this enum at managed-settings load time so a misspelled
+    event would either be silently dropped (audit policy never fires)
+    or reject the whole settings.json (gate goes fail-open until the
+    operator notices)."""
     s = supported_events()
-    assert s == {
+    expected = {
+        # Tool-context family
+        "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+        # Permission gate family
+        "PermissionRequest", "PermissionDenied",
+        # Content-flow family
+        "UserPromptSubmit", "UserPromptExpansion",
+        "PreCompact", "PostCompact",
+        "Elicitation", "ElicitationResult",
+        # Subagent / Stop boundary family
+        "SubagentStart", "SubagentStop",
+        "Stop", "StopFailure",
+        # Lifecycle / observability family
+        "Setup", "Notification",
+        "SessionStart", "SessionEnd",
+        "TeammateIdle", "TaskCreated", "TaskCompleted",
+        "ConfigChange",
+        "WorktreeCreate", "WorktreeRemove",
+        "InstructionsLoaded",
+        "CwdChanged", "FileChanged",
+        "MessageDisplay",
+    }
+    assert s == expected
+    # And the pre-D58 8 events stay intact (back-compat).
+    legacy_eight = {
         "PreToolUse", "PostToolUse",
         "Stop", "SubagentStop",
         "UserPromptSubmit",
         "PreCompact",
         "SessionStart", "SessionEnd",
     }
+    assert legacy_eight.issubset(s)
 
 
 @pytest.mark.parametrize("event,action", [
@@ -143,3 +175,113 @@ def test_audit_is_legal_on_every_event():
         # Use the matcher class that the event supports
         matcher = "Bash" if ev in ("PreToolUse", "PostToolUse") else "*"
         validate_combination(ev, matcher, "audit")
+
+
+# ── D58: full CC hook surface coverage ───────────────────────────────
+
+
+@pytest.mark.parametrize("event,action", [
+    # Gate-style pre-hooks the wizard surfaces with block/ask/audit.
+    ("PermissionRequest", "block"),
+    ("PermissionRequest", "ask"),
+    ("PermissionRequest", "audit"),
+    ("Elicitation", "block"),
+    ("Elicitation", "ask"),
+    ("Elicitation", "audit"),
+])
+def test_d58_pre_gate_events_accept_block_ask_audit(event, action):
+    """PermissionRequest + Elicitation share the PreToolUse
+    "override" channel (CC's hook stdout schema returns
+    `{decision, updatedInput, additionalContext, continue}` on every
+    hook); the wizard surfaces the full block/ask/audit set."""
+    validate_combination(event, "*", action)
+
+
+@pytest.mark.parametrize("event,action", [
+    # Mid-process hooks: block is meaningful, ask has no interactive
+    # surface to interrupt to (the prompt is already being expanded;
+    # the compaction is already running).
+    ("UserPromptExpansion", "block"),
+    ("UserPromptExpansion", "audit"),
+    ("PreCompact",          "block"),
+    ("PreCompact",          "audit"),
+])
+def test_d58_block_audit_only_events(event, action):
+    validate_combination(event, "*", action)
+
+
+@pytest.mark.parametrize("event,action", [
+    # ask is not legal on these (no interactive surface).
+    ("UserPromptExpansion", "ask"),
+    ("PreCompact",          "ask"),
+])
+def test_d58_block_audit_events_reject_ask(event, action):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", action)
+
+
+@pytest.mark.parametrize("event", [
+    # The full audit-only wildcard surface.
+    "PostToolUseFailure", "PostToolBatch",
+    "PermissionDenied",
+    "PostCompact", "ElicitationResult",
+    "SubagentStart", "SubagentStop",
+    "Stop", "StopFailure",
+    "Setup", "Notification",
+    "SessionStart", "SessionEnd",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+    "MessageDisplay",
+])
+def test_d58_audit_only_events_legal(event):
+    validate_combination(event, "*", "audit")
+
+
+@pytest.mark.parametrize("event,bad_action", [
+    # By policy intent, audit-only observability hooks cannot block.
+    # The runtime can't refuse a Notification it already fired; it
+    # can't undo a WorktreeCreate that already mutated the filesystem.
+    ("Notification",       "block"),
+    ("SessionStart",       "block"),
+    ("WorktreeCreate",     "block"),
+    ("FileChanged",        "block"),
+    ("InstructionsLoaded", "block"),
+    ("ConfigChange",       "ask"),
+])
+def test_d58_audit_only_events_reject_gate_actions(event, bad_action):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", bad_action)
+
+
+def test_d58_extended_events_reject_tool_matcher():
+    """Every D58 no-tool-context event must reject a tool matcher.
+    Same constraint the pre-D58 6 events carried."""
+    new_events = [
+        "PostToolUseFailure", "PostToolBatch",
+        "PermissionRequest", "PermissionDenied",
+        "UserPromptExpansion", "PostCompact",
+        "Elicitation", "ElicitationResult",
+        "SubagentStart",
+        "StopFailure",
+        "Setup", "Notification",
+        "TeammateIdle", "TaskCreated", "TaskCompleted",
+        "ConfigChange",
+        "WorktreeCreate", "WorktreeRemove",
+        "InstructionsLoaded",
+        "CwdChanged", "FileChanged",
+        "MessageDisplay",
+    ]
+    for ev in new_events:
+        with pytest.raises(ValueError, match="illegal combination"):
+            validate_combination(ev, "Bash", "audit")
+
+
+def test_d58_supported_events_count_is_30():
+    """Bookmark the count so a future event addition is forced
+    through the named-event review path — the binary's `nV` enum is
+    the truth source, and adding to it without updating the matrix
+    would silently fail-open."""
+    assert len(supported_events()) == 30

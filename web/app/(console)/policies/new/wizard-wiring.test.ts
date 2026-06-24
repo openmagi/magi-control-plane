@@ -157,14 +157,17 @@ describe("policies/new wizard — P9 steering wiring", () => {
     expect(src).toMatch(/action:\s*action\s*\?\?\s*draftState\?\.action/)
   })
 
-  it("D56a: IR-to-WizardState mapping covers the prebuilt event surface", () => {
-    // The 5 prebuilts emit PreToolUse / PostToolUse / Stop. The
-    // mapper must cover all three; anything else degrades to
-    // undefined (Step 1's default kicks in). Source-level pin so
-    // a future widening of the event surface lands consciously.
-    expect(src).toMatch(/case "PreToolUse":\s*lifecycle = "before_tool_use"/)
-    expect(src).toMatch(/case "PostToolUse":\s*lifecycle = "after_tool_use"/)
-    expect(src).toMatch(/case "Stop":\s*lifecycle = "pre_final"/)
+  it("D56a / D58: IR-to-WizardState mapping covers the prebuilt event surface", () => {
+    // The 5 prebuilts emit PreToolUse / PostToolUse / Stop. D58
+    // collapsed the per-event switch into a single LIFECYCLE_TO_EVENT
+    // / EVENT_TO_LIFECYCLE pair so a future event addition only
+    // touches one table. Pin the canonical forward-map entries so
+    // a refactor cannot silently lose a prebuilt event mapping.
+    expect(src).toMatch(/before_tool_use:\s*"PreToolUse"/)
+    expect(src).toMatch(/after_tool_use:\s*"PostToolUse"/)
+    expect(src).toMatch(/pre_final:\s*"Stop"/)
+    // The reverse map IS the IR -> wizard projection.
+    expect(src).toContain("EVENT_TO_LIFECYCLE[ir.trigger?.event ?? \"\"]")
     // step requires -> evidence_ref conditionKind (the prebuilt
     // catalog's whole shape) must round-trip cleanly.
     expect(src).toMatch(/conditionKind = "evidence_ref"/)
@@ -343,10 +346,15 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
 
     it("_irToWizardState round-trips every CC event the wizard understands", () => {
-      // 8 case statements: three pinned by the D56a tests above, five
-      // added in D56c. Pin all eight here so a future trim to the IR
-      // -> wizard mapper is intentional rather than a silent regression.
+      // Pre-D58 there were 8 explicit `case "<Event>": lifecycle =
+      // "<slug>"` statements. D58 collapsed them into the
+      // LIFECYCLE_TO_EVENT map (and its computed reverse
+      // EVENT_TO_LIFECYCLE) so a 30-event surface stays maintainable
+      // in one place. We now pin each forward-map entry instead —
+      // the pre-D58 8 events plus the D58 additions land in the
+      // same table, and `_irToWizardState` reads the reverse map.
       const cases = [
+        // pre-D58
         ["PreToolUse", "before_tool_use"],
         ["PostToolUse", "after_tool_use"],
         ["Stop", "pre_final"],
@@ -355,11 +363,39 @@ describe("policies/new wizard — P9 steering wiring", () => {
         ["PreCompact", "pre_compact"],
         ["SessionStart", "session_start"],
         ["SessionEnd", "session_end"],
+        // D58 additions
+        ["PostToolUseFailure", "post_tool_use_failure"],
+        ["PostToolBatch", "post_tool_batch"],
+        ["PermissionRequest", "permission_request"],
+        ["PermissionDenied", "permission_denied"],
+        ["UserPromptExpansion", "user_prompt_expansion"],
+        ["PostCompact", "post_compact"],
+        ["Elicitation", "elicitation"],
+        ["ElicitationResult", "elicitation_result"],
+        ["SubagentStart", "subagent_start"],
+        ["StopFailure", "stop_failure"],
+        ["Setup", "setup"],
+        ["Notification", "notification"],
+        ["TeammateIdle", "teammate_idle"],
+        ["TaskCreated", "task_created"],
+        ["TaskCompleted", "task_completed"],
+        ["ConfigChange", "config_change"],
+        ["WorktreeCreate", "worktree_create"],
+        ["WorktreeRemove", "worktree_remove"],
+        ["InstructionsLoaded", "instructions_loaded"],
+        ["CwdChanged", "cwd_changed"],
+        ["FileChanged", "file_changed"],
+        ["MessageDisplay", "message_display"],
       ]
       for (const [ev, life] of cases) {
-        const re = new RegExp(`case "${ev}":\\s*[^\\n]*lifecycle = "${life}"`)
+        const re = new RegExp(`${life}:\\s*"${ev}"`)
         expect(src).toMatch(re)
       }
+      // The reverse map (event-name keyed) is what
+      // `_irToWizardState` actually reads. Pin the construction so
+      // a future refactor flipping the source of truth has to
+      // intentionally update this assertion.
+      expect(src).toContain("const EVENT_TO_LIFECYCLE")
     })
   })
 

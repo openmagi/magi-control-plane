@@ -59,14 +59,53 @@ const WIZARD_TOTAL = 6
  * which the cloud uses to validate on save).
  * ───────────────────────────────────────────────────────────────────── */
 
+// D58 — full CC hook surface (30 events as of CC 2.1.170; the
+// architecture doc still says "23 hook events" because the doc was
+// written before the four 2.1.x rounds of additions). Names come from
+// the canonical `nV` enum in the bundled CC binary. Mapping mirrors
+// matrix.LEGAL_COMBINATIONS — adding a new row there must add a row
+// here too. Slugs are kebab-case with a 1:1 mapping to the
+// PascalCase CC event name.
 type Lifecycle =
+  // pre-D58 8 events (back-compat: slugs unchanged)
   | "before_tool_use" | "after_tool_use" | "pre_final"
   | "subagent_stop"   | "user_prompt"    | "pre_compact"
   | "session_start"   | "session_end"
+  // D58: tool-context observability variants
+  | "post_tool_use_failure" | "post_tool_batch"
+  // D58: permission gate
+  | "permission_request" | "permission_denied"
+  // D58: content-flow extensions
+  | "user_prompt_expansion" | "post_compact"
+  | "elicitation" | "elicitation_result"
+  // D58: subagent / stop
+  | "subagent_start" | "stop_failure"
+  // D58: lifecycle / observability long tail
+  | "setup" | "notification"
+  | "teammate_idle" | "task_created" | "task_completed"
+  | "config_change"
+  | "worktree_create" | "worktree_remove"
+  | "instructions_loaded"
+  | "cwd_changed" | "file_changed"
+  | "message_display"
 const LIFECYCLES: readonly Lifecycle[] = [
+  // pre-D58
   "before_tool_use", "after_tool_use", "pre_final",
   "subagent_stop",   "user_prompt",    "pre_compact",
   "session_start",   "session_end",
+  // D58
+  "post_tool_use_failure", "post_tool_batch",
+  "permission_request", "permission_denied",
+  "user_prompt_expansion", "post_compact",
+  "elicitation", "elicitation_result",
+  "subagent_start", "stop_failure",
+  "setup", "notification",
+  "teammate_idle", "task_created", "task_completed",
+  "config_change",
+  "worktree_create", "worktree_remove",
+  "instructions_loaded",
+  "cwd_changed", "file_changed",
+  "message_display",
 ]
 
 const LIFECYCLE_TO_EVENT: Record<Lifecycle, string> = {
@@ -78,7 +117,39 @@ const LIFECYCLE_TO_EVENT: Record<Lifecycle, string> = {
   pre_compact:     "PreCompact",
   session_start:   "SessionStart",
   session_end:     "SessionEnd",
+  // D58
+  post_tool_use_failure: "PostToolUseFailure",
+  post_tool_batch:       "PostToolBatch",
+  permission_request:    "PermissionRequest",
+  permission_denied:     "PermissionDenied",
+  user_prompt_expansion: "UserPromptExpansion",
+  post_compact:          "PostCompact",
+  elicitation:           "Elicitation",
+  elicitation_result:    "ElicitationResult",
+  subagent_start:        "SubagentStart",
+  stop_failure:          "StopFailure",
+  setup:                 "Setup",
+  notification:          "Notification",
+  teammate_idle:         "TeammateIdle",
+  task_created:          "TaskCreated",
+  task_completed:        "TaskCompleted",
+  config_change:         "ConfigChange",
+  worktree_create:       "WorktreeCreate",
+  worktree_remove:       "WorktreeRemove",
+  instructions_loaded:   "InstructionsLoaded",
+  cwd_changed:           "CwdChanged",
+  file_changed:          "FileChanged",
+  message_display:       "MessageDisplay",
 }
+
+// D58: reverse of LIFECYCLE_TO_EVENT, computed once at module load
+// so `_irToWizardState` has one place to look up event→lifecycle.
+// Adding a new event only requires editing LIFECYCLE_TO_EVENT.
+const EVENT_TO_LIFECYCLE: Record<string, Lifecycle | undefined> =
+  Object.fromEntries(
+    (Object.entries(LIFECYCLE_TO_EVENT) as [Lifecycle, string][])
+      .map(([slug, ev]) => [ev, slug as Lifecycle]),
+  )
 
 // D56c: which lifecycles carry a tool context (Step 2 makes sense).
 // Everything else auto-skips Step 2 and uses matcher="*".
@@ -124,6 +195,36 @@ const CONDITION_KINDS_BY_LIFECYCLE: Record<Lifecycle, readonly ConditionKind[]> 
   pre_compact:     ["none", "regex", "llm_critic"],
   session_start:   ["none"],
   session_end:     ["none"],
+  // D58: extended events. The condition surface for each is matched
+  // to what the runtime payload actually carries — gate-style hooks
+  // (permission / elicitation) accept regex + llm_critic on the
+  // request body; tool-context observability hooks
+  // (PostToolUseFailure / PostToolBatch) accept regex + llm_critic
+  // on the failure / batch payload; lifecycle markers default to
+  // "none" because they fire on every event and the wizard's IR
+  // already keys per-hook.
+  post_tool_use_failure: ["none", "regex", "llm_critic"],
+  post_tool_batch:       ["none", "regex", "llm_critic"],
+  permission_request:    ["none", "regex", "llm_critic"],
+  permission_denied:     ["none", "regex"],
+  user_prompt_expansion: ["none", "regex", "llm_critic"],
+  post_compact:          ["none", "regex"],
+  elicitation:           ["none", "regex", "llm_critic"],
+  elicitation_result:    ["none", "regex"],
+  subagent_start:        ["none", "regex", "llm_critic"],
+  stop_failure:          ["none", "regex"],
+  setup:                 ["none"],
+  notification:          ["none", "regex"],
+  teammate_idle:         ["none"],
+  task_created:          ["none", "regex"],
+  task_completed:        ["none", "regex"],
+  config_change:         ["none", "regex"],
+  worktree_create:       ["none", "regex"],
+  worktree_remove:       ["none", "regex"],
+  instructions_loaded:   ["none", "regex"],
+  cwd_changed:           ["none", "regex"],
+  file_changed:          ["none", "regex"],
+  message_display:       ["none", "regex"],
 }
 
 const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
@@ -151,6 +252,36 @@ const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
   pre_compact:     ["block", "audit"],
   session_start:   ["audit"],
   session_end:     ["audit"],
+  // D58: pre-side gate hooks where CC supports decision overrides
+  // (block) plus optional human review (ask). Same channel
+  // PreToolUse uses.
+  permission_request:    ["block", "ask", "audit"],
+  elicitation:           ["block", "ask", "audit"],
+  // D58: pre-side gates where there is no interactive surface to
+  // interrupt to (the prompt is mid-expansion, the compaction is
+  // already running). block + audit only.
+  user_prompt_expansion: ["block", "audit"],
+  // D58: everything else is audit-only — by the time CC fires the
+  // hook the runtime cannot rewind.
+  post_tool_use_failure: ["audit"],
+  post_tool_batch:       ["audit"],
+  permission_denied:     ["audit"],
+  post_compact:          ["audit"],
+  elicitation_result:    ["audit"],
+  subagent_start:        ["audit"],
+  stop_failure:          ["audit"],
+  setup:                 ["audit"],
+  notification:          ["audit"],
+  teammate_idle:         ["audit"],
+  task_created:          ["audit"],
+  task_completed:        ["audit"],
+  config_change:         ["audit"],
+  worktree_create:       ["audit"],
+  worktree_remove:       ["audit"],
+  instructions_loaded:   ["audit"],
+  cwd_changed:           ["audit"],
+  file_changed:          ["audit"],
+  message_display:       ["audit"],
 }
 
 // D56d (P1 #1 + #2 fidelity follow-up): matrix.py LEGAL_COMBINATIONS
@@ -224,6 +355,32 @@ const ACTIONS_BY_COMBINATION: Record<
   pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit"] },
   session_start: { tool: [], mcp_tool: [], wildcard: ["audit"] },
   session_end:   { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  // D58 extensions — every new lifecycle is wildcard-only at the
+  // matcher level (the new payloads either carry no tool name or
+  // the wizard doesn't yet surface per-tool authoring on them).
+  // Action set follows matrix.LEGAL_COMBINATIONS exactly.
+  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
+  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
+  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit"] },
+  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  notification:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
 }
 
 function allowedActionsForCombination(
@@ -507,6 +664,29 @@ const LIFECYCLE_LABEL_KO: Record<Lifecycle, string> = {
   pre_compact:     "컨텍스트 컴팩션 직전",
   session_start:   "세션 시작 시점",
   session_end:     "세션 종료 시점",
+  // D58
+  post_tool_use_failure: "도구 실행 실패 시점",
+  post_tool_batch:       "도구 배치 실행 직후",
+  permission_request:    "권한 요청 직전",
+  permission_denied:     "권한 거부 직후",
+  user_prompt_expansion: "유저 프롬프트 확장 직전",
+  post_compact:          "컨텍스트 컴팩션 직후",
+  elicitation:           "유저 응답 요청 직전",
+  elicitation_result:    "유저 응답 수신 직후",
+  subagent_start:        "서브에이전트 시작 시점",
+  stop_failure:          "에이전트 종료 실패 시점",
+  setup:                 "최초 셋업 시점",
+  notification:          "알림 발송 시점",
+  teammate_idle:         "팀메이트 유휴 시점",
+  task_created:          "백그라운드 태스크 생성 시점",
+  task_completed:        "백그라운드 태스크 완료 시점",
+  config_change:         "설정 변경 시점",
+  worktree_create:       "워크트리 생성 시점",
+  worktree_remove:       "워크트리 제거 시점",
+  instructions_loaded:   "지침 로드 시점",
+  cwd_changed:           "작업 디렉터리 변경 시점",
+  file_changed:          "파일 변경 감지 시점",
+  message_display:       "메시지 표시 시점",
 }
 const LIFECYCLE_LABEL_EN: Record<Lifecycle, string> = {
   before_tool_use: "before a tool runs",
@@ -517,6 +697,29 @@ const LIFECYCLE_LABEL_EN: Record<Lifecycle, string> = {
   pre_compact:     "before context compaction",
   session_start:   "when the session opens",
   session_end:     "when the session closes",
+  // D58
+  post_tool_use_failure: "when a tool call fails",
+  post_tool_batch:       "after a tool batch returns",
+  permission_request:    "before a permission decision",
+  permission_denied:     "when a permission was denied",
+  user_prompt_expansion: "while a user prompt is being expanded",
+  post_compact:          "right after a context compaction",
+  elicitation:           "before the runtime asks the user a question",
+  elicitation_result:    "when the user has answered an elicitation",
+  subagent_start:        "when a subagent is about to start",
+  stop_failure:          "when an agent stop fails",
+  setup:                 "during one-shot environment setup",
+  notification:          "when CC raises a notification",
+  teammate_idle:         "when a teammate goes idle",
+  task_created:          "when a background task is created",
+  task_completed:        "when a background task completes",
+  config_change:         "when a setting changes",
+  worktree_create:       "when a git worktree is created",
+  worktree_remove:       "when a git worktree is removed",
+  instructions_loaded:   "when project instructions are loaded",
+  cwd_changed:           "when the working directory changes",
+  file_changed:          "when a watched file changes",
+  message_display:       "when a message is rendered to the user",
 }
 
 function plainSummary(s: WizardState, locale: "ko" | "en"): string {
@@ -963,22 +1166,14 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
  * partial state and surfaces "—" placeholders on Step 6). */
 function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   if (!ir) return null
-  // event -> lifecycle. D56c: the wizard now covers all 8 CC hooks
-  // so every prebuilt / advanced IR shape round-trips cleanly. Anything
-  // outside the 8-event surface degrades to undefined and Step 1's
-  // default (`before_tool_use`) takes over.
-  let lifecycle: Lifecycle | undefined
-  switch (ir.trigger?.event) {
-    case "PreToolUse":       lifecycle = "before_tool_use"; break
-    case "PostToolUse":      lifecycle = "after_tool_use";  break
-    case "Stop":             lifecycle = "pre_final";       break
-    case "SubagentStop":     lifecycle = "subagent_stop";   break
-    case "UserPromptSubmit": lifecycle = "user_prompt";     break
-    case "PreCompact":       lifecycle = "pre_compact";     break
-    case "SessionStart":     lifecycle = "session_start";   break
-    case "SessionEnd":       lifecycle = "session_end";     break
-    default:                 lifecycle = undefined
-  }
+  // event -> lifecycle. D56c covered the original 8 hooks; D58
+  // extends to the full 30-event CC surface. Anything outside the
+  // recognized set degrades to undefined and Step 1's default
+  // (`before_tool_use`) takes over. We compute the reverse map at
+  // module load (LIFECYCLE_TO_EVENT is the forward direction) so a
+  // future event addition only touches one table.
+  const lifecycle: Lifecycle | undefined =
+    EVENT_TO_LIFECYCLE[ir.trigger?.event ?? ""] ?? undefined
 
   // matcher -> toolScope. `*` (wildcard) is "any tool" which we
   // model as undefined; a bare tool name stays as-is. No-tool-context
@@ -1982,6 +2177,95 @@ function lifecycleCardCopy(
       label: "세션 종료 (SessionEnd)",
       sub: "세션이 종료될 때 한 번 발동. 감사 경계 마커로 사용합니다.",
     },
+    // D58
+    post_tool_use_failure: {
+      label: "도구 실행 실패 (PostToolUseFailure)",
+      sub: "도구 호출이 실패로 끝났을 때 발동. 실패 페이로드를 감사용으로 기록합니다.",
+    },
+    post_tool_batch: {
+      label: "도구 배치 종료 (PostToolBatch)",
+      sub: "여러 도구 호출이 묶여 끝났을 때 발동. 배치 단위 감사용.",
+    },
+    permission_request: {
+      label: "권한 요청 (PermissionRequest)",
+      sub: "CC 가 사용자에게 권한 결정을 묻기 직전. allow/deny/ask 를 정책으로 오버라이드 가능.",
+    },
+    permission_denied: {
+      label: "권한 거부 (PermissionDenied)",
+      sub: "권한이 거부된 직후. 거부 사유를 감사용으로 기록합니다.",
+    },
+    user_prompt_expansion: {
+      label: "프롬프트 확장 중 (UserPromptExpansion)",
+      sub: "유저 프롬프트가 expansion 중일 때. 차단은 가능하지만 ask 인터럽트는 불가.",
+    },
+    post_compact: {
+      label: "컴팩션 직후 (PostCompact)",
+      sub: "컨텍스트 컴팩션이 끝난 직후. 압축 결과를 감사용으로 기록합니다.",
+    },
+    elicitation: {
+      label: "유저 응답 요청 직전 (Elicitation)",
+      sub: "런타임이 유저에게 추가 정보를 묻기 직전. 정책으로 차단/승인 가능.",
+    },
+    elicitation_result: {
+      label: "유저 응답 수신 (ElicitationResult)",
+      sub: "유저가 elicitation 에 답한 직후. 응답 내용 감사용.",
+    },
+    subagent_start: {
+      label: "서브에이전트 시작 (SubagentStart)",
+      sub: "서브에이전트가 spawn 되기 직전. mandate 를 컨텍스트로 주입할 수 있습니다.",
+    },
+    stop_failure: {
+      label: "에이전트 종료 실패 (StopFailure)",
+      sub: "Stop 훅 처리 중 실패가 발생했을 때. 감사용.",
+    },
+    setup: {
+      label: "최초 셋업 (Setup)",
+      sub: "CC 가 워크스페이스를 한 번 설정할 때. 설정 결과 감사용.",
+    },
+    notification: {
+      label: "알림 (Notification)",
+      sub: "CC 가 유저에게 알림(터미널 벨, 데스크톱 푸시 등) 을 띄울 때.",
+    },
+    teammate_idle: {
+      label: "팀메이트 유휴 (TeammateIdle)",
+      sub: "팀 모드에서 다른 에이전트가 유휴 상태로 들어갈 때.",
+    },
+    task_created: {
+      label: "백그라운드 태스크 생성 (TaskCreated)",
+      sub: "/workflows 백그라운드 태스크가 큐에 들어갈 때.",
+    },
+    task_completed: {
+      label: "백그라운드 태스크 완료 (TaskCompleted)",
+      sub: "백그라운드 태스크가 종료될 때. 완료 메타데이터 감사용.",
+    },
+    config_change: {
+      label: "설정 변경 (ConfigChange)",
+      sub: "CC settings.json 의 값이 바뀔 때 발동. 설정 표류 감사용.",
+    },
+    worktree_create: {
+      label: "워크트리 생성 (WorktreeCreate)",
+      sub: "isolation:worktree 가 git worktree 를 새로 만들 때.",
+    },
+    worktree_remove: {
+      label: "워크트리 제거 (WorktreeRemove)",
+      sub: "isolation 워크트리가 정리될 때. 변경 사항 감사용.",
+    },
+    instructions_loaded: {
+      label: "지침 로드 (InstructionsLoaded)",
+      sub: "프로젝트 CLAUDE.md / AGENTS.md 가 로드될 때. 지침 표류 감사용.",
+    },
+    cwd_changed: {
+      label: "작업 디렉터리 변경 (CwdChanged)",
+      sub: "에이전트의 cwd 가 다른 폴더로 옮겨갈 때 발동.",
+    },
+    file_changed: {
+      label: "파일 변경 감지 (FileChanged)",
+      sub: "managed FileChanged matcher 가 잡은 파일이 외부에서 변경될 때.",
+    },
+    message_display: {
+      label: "메시지 표시 (MessageDisplay)",
+      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동.",
+    },
   } : {
     before_tool_use: {
       label: "Before a tool runs (PreToolUse)",
@@ -2015,6 +2299,95 @@ function lifecycleCardCopy(
       label: "When the session closes (SessionEnd)",
       sub: "Fires once at session end. Audit boundary marker.",
     },
+    // D58
+    post_tool_use_failure: {
+      label: "Tool call failed (PostToolUseFailure)",
+      sub: "Fires when a tool call ends in error. Audit the failure payload.",
+    },
+    post_tool_batch: {
+      label: "Tool batch finished (PostToolBatch)",
+      sub: "Fires after a batched tool invocation returns. Batch-level audit.",
+    },
+    permission_request: {
+      label: "Permission request (PermissionRequest)",
+      sub: "Right before CC asks the user for a permission decision. Policy can override allow/deny/ask.",
+    },
+    permission_denied: {
+      label: "Permission denied (PermissionDenied)",
+      sub: "Right after a permission was denied. Audit the rejection reason.",
+    },
+    user_prompt_expansion: {
+      label: "Prompt expansion (UserPromptExpansion)",
+      sub: "Fires while a user prompt is being expanded. Block is supported; ask cannot interrupt.",
+    },
+    post_compact: {
+      label: "After compaction (PostCompact)",
+      sub: "Fires right after a context compaction. Audit the compacted summary.",
+    },
+    elicitation: {
+      label: "Before elicitation (Elicitation)",
+      sub: "Right before the runtime prompts the user for extra info. Block / ask / audit.",
+    },
+    elicitation_result: {
+      label: "Elicitation answered (ElicitationResult)",
+      sub: "Fires when the user has answered an elicitation. Audit the response.",
+    },
+    subagent_start: {
+      label: "Subagent starting (SubagentStart)",
+      sub: "Fires just before a subagent is spawned. Inject mandate into context.",
+    },
+    stop_failure: {
+      label: "Stop failure (StopFailure)",
+      sub: "Fires when the Stop hook chain itself errored out. Audit-only.",
+    },
+    setup: {
+      label: "Workspace setup (Setup)",
+      sub: "Fires once during CC's workspace bootstrap. Audit the setup result.",
+    },
+    notification: {
+      label: "Notification (Notification)",
+      sub: "Fires when CC surfaces a notification (terminal bell, desktop push, …).",
+    },
+    teammate_idle: {
+      label: "Teammate idle (TeammateIdle)",
+      sub: "Fires when a team-mode agent enters idle. Useful for team-coordination audits.",
+    },
+    task_created: {
+      label: "Background task created (TaskCreated)",
+      sub: "Fires when a /workflows background task is queued.",
+    },
+    task_completed: {
+      label: "Background task done (TaskCompleted)",
+      sub: "Fires when a background task finishes. Audit completion metadata.",
+    },
+    config_change: {
+      label: "Config change (ConfigChange)",
+      sub: "Fires when a CC settings.json value changes. Catch config drift.",
+    },
+    worktree_create: {
+      label: "Worktree created (WorktreeCreate)",
+      sub: "Fires when isolation:worktree creates a new git worktree.",
+    },
+    worktree_remove: {
+      label: "Worktree removed (WorktreeRemove)",
+      sub: "Fires when an isolation worktree is cleaned up.",
+    },
+    instructions_loaded: {
+      label: "Instructions loaded (InstructionsLoaded)",
+      sub: "Fires when CC loads project CLAUDE.md / AGENTS.md. Catch instructions drift.",
+    },
+    cwd_changed: {
+      label: "Working directory changed (CwdChanged)",
+      sub: "Fires when the agent's cwd moves to another folder.",
+    },
+    file_changed: {
+      label: "Watched file changed (FileChanged)",
+      sub: "Fires when a file matched by a managed FileChanged matcher is modified externally.",
+    },
+    message_display: {
+      label: "Message displayed (MessageDisplay)",
+      sub: "Fires when an assistant message is rendered in the user's terminal.",
+    },
   }
 }
 
@@ -2025,15 +2398,38 @@ const LIFECYCLE_GROUPS: ReadonlyArray<{
     | "newPolicy.wizard.step1.group.toolActions"
     | "newPolicy.wizard.step1.group.contentFlow"
     | "newPolicy.wizard.step1.group.boundaries"
+    | "newPolicy.wizard.step1.group.permissions"
+    | "newPolicy.wizard.step1.group.subagents"
+    | "newPolicy.wizard.step1.group.workspace"
   members: readonly Lifecycle[]
 }> = [
   {
     groupKey: "newPolicy.wizard.step1.group.toolActions",
-    members: ["before_tool_use", "after_tool_use"],
+    members: [
+      "before_tool_use", "after_tool_use",
+      // D58: tool-context observability variants
+      "post_tool_use_failure", "post_tool_batch",
+    ],
   },
   {
     groupKey: "newPolicy.wizard.step1.group.contentFlow",
-    members: ["user_prompt", "pre_compact"],
+    members: [
+      "user_prompt", "pre_compact",
+      // D58: content-flow extensions
+      "user_prompt_expansion", "post_compact",
+      "elicitation", "elicitation_result",
+    ],
+  },
+  // D58: dedicated permission group so the gate-style PermissionRequest
+  // hook is discoverable next to its post-decision audit sibling.
+  {
+    groupKey: "newPolicy.wizard.step1.group.permissions",
+    members: ["permission_request", "permission_denied"],
+  },
+  // D58: subagent group covers spawn + lifecycle of subagent runs.
+  {
+    groupKey: "newPolicy.wizard.step1.group.subagents",
+    members: ["subagent_start", "subagent_stop"],
   },
   // D56d (P2 #10): pre_final (Stop) moved into the audit-only group so
   // the group header honestly signals the action constraint. Operators
@@ -2042,7 +2438,27 @@ const LIFECYCLE_GROUPS: ReadonlyArray<{
   // PreCompact) instead of being misled into a Stop+block save bounce.
   {
     groupKey: "newPolicy.wizard.step1.group.boundaries",
-    members: ["pre_final", "subagent_stop", "session_start", "session_end"],
+    members: [
+      "pre_final", "stop_failure",
+      "session_start", "session_end",
+      // D58: lifecycle / observability events without a more
+      // specific home.
+      "setup", "notification",
+      "instructions_loaded",
+      "task_created", "task_completed",
+      "teammate_idle", "message_display",
+      "config_change",
+    ],
+  },
+  // D58: workspace-level events (worktree + cwd + file watcher) live
+  // in their own group so an operator wiring up workspace-mutation
+  // audits finds them together.
+  {
+    groupKey: "newPolicy.wizard.step1.group.workspace",
+    members: [
+      "worktree_create", "worktree_remove",
+      "cwd_changed", "file_changed",
+    ],
   },
 ]
 

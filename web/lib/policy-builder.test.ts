@@ -81,6 +81,52 @@ describe("isLegal. mirrors backend matrix", () => {
   it("rejects SubagentStop × * × block (observe-only event)", () => {
     expect(isLegal("SubagentStop", "*", "block")).toBe(false)
   })
+
+  // ── D58: full CC hook surface ───────────────────────────────────
+  it("D58 accepts the gate-style permission + elicitation hooks with block/ask/audit", () => {
+    for (const ev of ["PermissionRequest", "Elicitation"] as const) {
+      expect(isLegal(ev, "*", "block")).toBe(true)
+      expect(isLegal(ev, "*", "ask")).toBe(true)
+      expect(isLegal(ev, "*", "audit")).toBe(true)
+    }
+  })
+
+  it("D58 accepts block/audit (no ask) on the mid-process hooks", () => {
+    for (const ev of ["UserPromptExpansion"] as const) {
+      expect(isLegal(ev, "*", "block")).toBe(true)
+      expect(isLegal(ev, "*", "audit")).toBe(true)
+      expect(isLegal(ev, "*", "ask")).toBe(false)
+    }
+  })
+
+  it("D58 audit-only events accept audit on wildcard and reject block", () => {
+    const auditOnly = [
+      "PostToolUseFailure", "PostToolBatch",
+      "PermissionDenied",
+      "PostCompact", "ElicitationResult",
+      "SubagentStart", "StopFailure",
+      "Setup", "Notification",
+      "TeammateIdle", "TaskCreated", "TaskCompleted",
+      "ConfigChange",
+      "WorktreeCreate", "WorktreeRemove",
+      "InstructionsLoaded",
+      "CwdChanged", "FileChanged",
+      "MessageDisplay",
+    ] as const
+    for (const ev of auditOnly) {
+      expect(isLegal(ev, "*", "audit")).toBe(true)
+      expect(isLegal(ev, "*", "block")).toBe(false)
+    }
+  })
+
+  it("D58 no-tool-context events reject tool matchers", () => {
+    for (const ev of [
+      "PermissionRequest", "Elicitation", "UserPromptExpansion",
+      "WorktreeCreate", "FileChanged", "Notification",
+    ] as const) {
+      expect(isLegal(ev, "Bash", "audit")).toBe(false)
+    }
+  })
 })
 
 describe("validateDraft", () => {

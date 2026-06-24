@@ -30,19 +30,52 @@ def _validate_id(s: str) -> None:
             raise ValueError(f"policy id must not end with {suf!r}: {s!r}")
 
 
+# D58 — full CC hook surface (30 events, CC 2.1.170 binary `nV` enum).
+# See matrix.py for the family-by-family breakdown. The legal action set
+# per event still lives in matrix.LEGAL_COMBINATIONS — this list ONLY
+# decides whether the runtime *recognizes* the event name. The doc
+# (docs/architecture/claude-code-cli/08-coding-harness-internals.md:233)
+# names "23 hook events"; that copy was authored for an earlier 2.1.x
+# build and lags the live binary. Truth source is the binary, not the
+# doc.
 EventLiteral = Literal[
-    "PreToolUse", "PostToolUse",
-    "Stop", "SubagentStop",
-    "UserPromptSubmit",
-    "PreCompact",
+    # Tool-context family
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+    # Permission gate family
+    "PermissionRequest", "PermissionDenied",
+    # Content-flow family
+    "UserPromptSubmit", "UserPromptExpansion",
+    "PreCompact", "PostCompact",
+    "Elicitation", "ElicitationResult",
+    # Subagent / Stop boundary family
+    "SubagentStart", "SubagentStop",
+    "Stop", "StopFailure",
+    # Lifecycle / observability family
+    "Setup", "Notification",
     "SessionStart", "SessionEnd",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+    "MessageDisplay",
 ]
 _SUPPORTED_EVENTS: frozenset[str] = frozenset({
-    "PreToolUse", "PostToolUse",
-    "Stop", "SubagentStop",
-    "UserPromptSubmit",
-    "PreCompact",
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+    "PermissionRequest", "PermissionDenied",
+    "UserPromptSubmit", "UserPromptExpansion",
+    "PreCompact", "PostCompact",
+    "Elicitation", "ElicitationResult",
+    "SubagentStart", "SubagentStop",
+    "Stop", "StopFailure",
+    "Setup", "Notification",
     "SessionStart", "SessionEnd",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+    "MessageDisplay",
 })
 
 
@@ -274,7 +307,19 @@ Policy = EvidencePolicy
 
 _PERMISSION_LITERALS = ("allow", "deny", "ask")
 _MCP_ACTION_LITERALS = ("allow", "deny")
-_CONTEXT_EVENT_LITERALS = ("UserPromptSubmit", "SessionStart")
+# D58 — CC's bundled binary documents `additionalContext` on the JSON
+# stdout schema for every hook (`{decision, updatedInput,
+# additionalContext, continue}`), so the historical UserPromptSubmit
+# / SessionStart restriction here was an artificial narrowing of the
+# IR — a ContextInjectionPolicy authored against PreToolUse (or any
+# other event the cloud now legalizes) compiles to the same `command
+# + shim` route the original two events used. The matrix.py
+# LEGAL_COMBINATIONS table is what drops impossible authoring;
+# ContextInjectionPolicy's own validate() just confirms the event is
+# one the runtime recognizes. We expose the full _SUPPORTED_EVENTS
+# tuple here (sorted for stable docstrings + error messages) so a
+# future event addition lands in one place.
+_CONTEXT_EVENT_LITERALS = tuple(sorted(_SUPPORTED_EVENTS))
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 
@@ -464,8 +509,8 @@ class McpGatingPolicy:
 
 @dataclass
 class ContextInjectionPolicy:
-    """Static text injected into UserPromptSubmit / SessionStart hook
-    handlers.
+    """Static text injected into a CC hook handler via
+    `additionalContext`.
 
     Issue #1 P0 (#3, #8): the original design emitted
     `{"type": "write", "content": <template>}`. That hook type does NOT
@@ -480,10 +525,25 @@ class ContextInjectionPolicy:
     managed-settings JSON, keyed by sha256(template); the shim reads it
     by hash so the hook entry stays constant-time and the template
     bytes never need to fit in the settings file.
+
+    D58: event is no longer hard-narrowed to UserPromptSubmit /
+    SessionStart. Per the CC binary's bundled hook docs the JSON
+    stdout schema accepts `additionalContext` on every hook event, so
+    the previous restriction was an artificial limit of the IR. We now
+    accept any event the matrix legalizes — a context injection on
+    PreToolUse becomes a per-tool note prepended to the model's view
+    of the tool input, a context injection on SubagentStart documents
+    the spawned child's mandate, etc.
     """
     id: str
     description: str
-    event: Literal["UserPromptSubmit", "SessionStart"]
+    # D58: type-checker sees the full event surface (same Literal that
+    # Trigger.event uses) so a `ContextInjectionPolicy(event="…")`
+    # call site catches typos at lint time. The runtime check below
+    # still validates against the canonical _SUPPORTED_EVENTS set so
+    # a JSON-deserialized event that bypasses the Literal still
+    # raises if it names an unknown hook.
+    event: EventLiteral
     template: str
     matcher: str = "*"
     version: str = "0.1"
@@ -496,8 +556,9 @@ class ContextInjectionPolicy:
         _validate_id(self.id)
         if self.event not in _CONTEXT_EVENT_LITERALS:
             raise ValueError(
-                f"ContextInjectionPolicy '{self.id}': event must be "
-                f"UserPromptSubmit or SessionStart; got {self.event!r}"
+                f"ContextInjectionPolicy '{self.id}': event {self.event!r} "
+                f"is not a recognized CC hook; expected one of "
+                f"{', '.join(_CONTEXT_EVENT_LITERALS)}"
             )
         if not isinstance(self.template, str) or not self.template:
             raise ValueError(
