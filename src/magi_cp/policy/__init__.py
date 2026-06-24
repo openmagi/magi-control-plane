@@ -1,7 +1,8 @@
 """Policy IR + deterministic compiler (LLM-free) + v1 resolved-set."""
 from .ir import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, EvidenceReq,
-    McpGatingPolicy, PermissionPolicy, Policy, SubagentPolicy, Trigger,
+    InputRewritePolicy, McpGatingPolicy, PermissionPolicy, Policy,
+    SubagentPolicy, Trigger,
     load_policy, policy_from_dict, policy_to_dict,
 )
 from .compiler import compile_to_managed_settings, compile_files
@@ -16,11 +17,14 @@ from .precedence import (
 from .resolved import (
     PolicyOverride, ResolvedPolicy, ResolvedPolicySet, resolve_with_tightening,
 )
+from .rewriters import (
+    REWRITER_KINDS, apply_rewriter, validate_rewriter_spec,
+)
 
 __all__ = [
     "Policy", "EvidencePolicy", "Trigger", "EvidenceReq", "load_policy",
     "PermissionPolicy", "SubagentPolicy", "McpGatingPolicy",
-    "ContextInjectionPolicy", "AnyPolicy",
+    "ContextInjectionPolicy", "InputRewritePolicy", "AnyPolicy",
     "policy_from_dict", "policy_to_dict",
     "compile_to_managed_settings", "compile_files",
     "LEGAL_COMBINATIONS", "MatcherClass",
@@ -29,4 +33,5 @@ __all__ = [
     "resolve_by_id", "tighten_against", "is_loosening", "LooseningError",
     "PolicyOverride", "ResolvedPolicy", "ResolvedPolicySet",
     "resolve_with_tightening",
+    "REWRITER_KINDS", "apply_rewriter", "validate_rewriter_spec",
 ]

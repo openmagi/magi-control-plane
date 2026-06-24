@@ -268,7 +268,12 @@ const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
 // when the operator picks it on Step 4. Step 4b (an inline template
 // editor) renders the static text + KO/EN labels the runtime shim
 // will inject as additionalContext.
-type Action = "block" | "ask" | "audit" | "strip" | "inject_context"
+// D57f-2: input_rewrite is a 6th action archetype, available ONLY on
+// before_tool_use with a per-tool matcher (tool / mcp_tool / tool_alt).
+// CC supports updatedInput on the PreToolUse hook stdout, which lets
+// the gate rewrite a tool's input before the tool runs (e.g. strip
+// "sudo" from a Bash command, force https:// on a URL).
+type Action = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite"
 
 // D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
 //   before_tool_use → block / ask / audit (the runtime can refuse)
@@ -279,7 +284,7 @@ type Action = "block" | "ask" | "audit" | "strip" | "inject_context"
 //   pre_compact     → block / audit (compaction hasn't fired yet)
 //   subagent_stop / session_* → audit only (boundary markers)
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
-  before_tool_use: ["block", "ask", "audit", "inject_context"],
+  before_tool_use: ["block", "ask", "audit", "inject_context", "input_rewrite"],
   after_tool_use:  ["audit", "inject_context"],
   pre_final:       ["audit", "inject_context"],
   subagent_stop:   ["audit", "inject_context"],
@@ -378,8 +383,8 @@ const ACTIONS_BY_COMBINATION: Record<
   Lifecycle, Record<MatcherClassKey, readonly Action[]>
 > = {
   before_tool_use: {
-    tool:     ["block", "ask", "audit", "inject_context"],
-    mcp_tool: ["block", "ask", "audit", "inject_context"],
+    tool:     ["block", "ask", "audit", "inject_context", "input_rewrite"],
+    mcp_tool: ["block", "ask", "audit", "inject_context", "input_rewrite"],
     wildcard: ["audit", "inject_context"],
   },
   after_tool_use: {
@@ -499,6 +504,19 @@ interface WizardState {
   injectTemplate?: string
   injectLabelKo?: string
   injectLabelEn?: string
+  // D57f-2: when action=input_rewrite the wizard compiles to an
+  // InputRewritePolicy with these fields. rewriterKind picks which
+  // operation runs; the rewriter*-prefixed fields are per-kind config
+  // applied to a single field name in the tool_input dict.
+  rewriterKind?: "prefix_strip" | "scheme_force" | "regex_substitute"
+  rewriterField?: string                  // e.g. "command" for Bash, "url" for WebFetch
+  rewriterPrefix?: string                 // prefix_strip
+  rewriterStripRepeat?: "true" | "false"  // prefix_strip
+  rewriterFrom?: string                   // scheme_force
+  rewriterTo?: string                     // scheme_force
+  rewriterPattern?: string                // regex_substitute
+  rewriterReplacement?: string            // regex_substitute
+  rewriterCount?: string                  // regex_substitute (stringified int)
   id?: string
   description?: string
   // P9 (D49): suppression of the cumulative-judgment steering tip is
@@ -625,8 +643,12 @@ function buildGuidedDraftForDryRun(s: WizardState): Record<string, unknown> {
   // (the panel never actually renders for that archetype — see Step6
   // Review — but a stale call path bypassing the gate should still
   // produce a valid evidence-shape draft instead of crashing).
-  const action = s.action === "strip" || s.action === "inject_context"
-    ? "audit" : (s.action ?? "audit")
+  // D57f-2: input_rewrite has the same fallback rationale.
+  const action =
+    s.action === "strip" || s.action === "inject_context" ||
+    s.action === "input_rewrite"
+      ? "audit"
+      : (s.action ?? "audit")
   return {
     id: s.id ?? "",
     description: s.description || summaryForBackend(s),
@@ -811,6 +833,31 @@ function plainSummary(s: WizardState, locale: "ko" | "en"): string {
       ? `${lifeLabel}, 다음 텍스트가 모델 컨텍스트에 추가됩니다: ${snippet || "(본문 비어있음)"}`
       : `${capitalize(lifeLabel)}: this policy injects the following text into the model's context: ${snippet || "(template empty)"}`
   }
+  // D57f-2: input_rewrite surfaces the rewriter operation in plain
+  // language. The cloud applies the rewriter spec; the gate's hook
+  // emits the new tool_input dict to CC via updatedInput.
+  if (act === "input_rewrite") {
+    const kind = s.rewriterKind ?? "prefix_strip"
+    const field = (s.rewriterField ?? "").trim() || "(field?)"
+    let op = ""
+    if (kind === "prefix_strip") {
+      const prefix = (s.rewriterPrefix ?? "").trim()
+      op = ko
+        ? `\`${field}\`에서 접두사 \`${prefix || "(?)"}\`를 제거`
+        : `strip prefix \`${prefix || "(?)"}\` from \`${field}\``
+    } else if (kind === "scheme_force") {
+      op = ko
+        ? `\`${field}\` 의 스킴을 \`${s.rewriterFrom ?? "?"}\` → \`${s.rewriterTo ?? "?"}\`로 강제`
+        : `force \`${field}\` scheme from \`${s.rewriterFrom ?? "?"}\` → \`${s.rewriterTo ?? "?"}\``
+    } else {
+      op = ko
+        ? `\`${field}\` 에 정규식 치환 적용`
+        : `apply a regex substitution to \`${field}\``
+    }
+    return ko
+      ? `${lifeLabel}, 도구가 실행되기 전에 입력을 수정합니다: ${op}.`
+      : `${capitalize(lifeLabel)}: rewrite the tool's input before it runs — ${op}.`
+  }
   const actLabel = ko
     ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[act])
     : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[act])
@@ -846,13 +893,30 @@ type ContextInjectionDraft = {
   template: string
 }
 
+/** D57f-2: persisted shape for an InputRewritePolicy. Mirrors the
+ * cloud's IR — the rewriter spec is a bounded {kind, config} pair the
+ * cloud applies server-side at PreToolUse time. */
+type InputRewriteDraft = {
+  type: "input_rewrite"
+  id: string
+  description: string
+  version: string
+  trigger: { host: "claude-code"; event: "PreToolUse"; matcher: string }
+  rewriter: {
+    kind: "prefix_strip" | "scheme_force" | "regex_substitute"
+    config: Record<string, unknown>
+  }
+}
+
 async function persistDraft(
-  draft: PolicyDraft | ContextInjectionDraft, source: string,
+  draft: PolicyDraft | ContextInjectionDraft | InputRewriteDraft, source: string,
 ): Promise<void> {
-  // D57f-1: validateDraft only knows the evidence shape; skip it for
-  // context_injection (the cloud-side ContextInjectionPolicy.validate
-  // is canonical).
-  if ((draft as ContextInjectionDraft).type !== "context_injection") {
+  // D57f-1 / D57f-2: validateDraft only knows the evidence shape; skip
+  // it for the sibling archetypes (the cloud's per-type validate() is
+  // canonical and the dashboard surfaces the cloud's 4xx via the flash
+  // redirect path).
+  const draftType = (draft as { type?: string }).type
+  if (draftType !== "context_injection" && draftType !== "input_rewrite") {
     const errs = validateDraft(draft as PolicyDraft)
     if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
   }
@@ -1149,6 +1213,100 @@ async function saveWizard(formData: FormData): Promise<void> {
     return
   }
 
+  // D57f-2: input_rewrite branches BEFORE the matcher / requires
+  // pipeline because InputRewritePolicy has its own (trigger.matcher,
+  // rewriter spec) shape. The cloud's validate() is the canonical
+  // gate; we surface its 4xx via the redirect path.
+  if (action === "input_rewrite") {
+    if (!allowedActionsForCombination(lifecycle, undefined).includes("input_rewrite")) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    // Tool scope is mandatory for input_rewrite (wildcard is refused
+    // both client-side and by the cloud — rewriters target a specific
+    // tool's input field name).
+    const rawScope = String(formData.get("toolScope") ?? "").trim()
+    let matcherIr = rawScope
+    if (rawScope.includes(",")) {
+      matcherIr = rawScope.split(",").map((s) => s.trim()).filter(Boolean)[0] ?? ""
+    }
+    if (!matcherIr || matcherIr === "*") {
+      redirect("/policies/new?mode=guided&step=2&err=invalid_input"); return
+    }
+    const idIr = String(formData.get("id") ?? "").trim()
+    if (!idIr) {
+      redirect("/policies/new?mode=guided&step=5&err=invalid_input"); return
+    }
+    const rewriterKindRaw = String(formData.get("rewriterKind") ?? "")
+    if (
+      rewriterKindRaw !== "prefix_strip" &&
+      rewriterKindRaw !== "scheme_force" &&
+      rewriterKindRaw !== "regex_substitute"
+    ) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    const fieldName = String(formData.get("rewriterField") ?? "").trim()
+    if (!fieldName || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(fieldName)) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    let cfg: Record<string, unknown>
+    if (rewriterKindRaw === "prefix_strip") {
+      const prefix = String(formData.get("rewriterPrefix") ?? "")
+      if (!prefix) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      if (prefix.length > 2000) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      cfg = {
+        field: fieldName,
+        prefix,
+        strip_repeat: String(formData.get("rewriterStripRepeat") ?? "") === "true",
+      }
+    } else if (rewriterKindRaw === "scheme_force") {
+      const fromVal = String(formData.get("rewriterFrom") ?? "")
+      const toVal = String(formData.get("rewriterTo") ?? "")
+      if (!fromVal || !toVal || fromVal.length > 2000 || toVal.length > 2000) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      cfg = { field: fieldName, from: fromVal, to: toVal }
+    } else {
+      const pattern = String(formData.get("rewriterPattern") ?? "")
+      const replacement = String(formData.get("rewriterReplacement") ?? "")
+      if (!pattern || pattern.length > 2000 || replacement.length > 2000) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      const countRaw = String(formData.get("rewriterCount") ?? "0").trim()
+      const count = Number.parseInt(countRaw || "0", 10)
+      if (!Number.isFinite(count) || count < 0 || count > 1000) {
+        redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+      }
+      cfg = { field: fieldName, pattern, replacement, count }
+    }
+    const { locale: actionLocaleIr } = await getT()
+    const fallbackLifecycleLabelIr =
+      actionLocaleIr === "ko"
+        ? LIFECYCLE_LABEL_KO[lifecycle]
+        : LIFECYCLE_LABEL_EN[lifecycle]
+    const descriptionIr = String(formData.get("description") ?? "").trim()
+      || (actionLocaleIr === "ko"
+            ? `${fallbackLifecycleLabelIr}, 도구 입력 재작성 (${matcherIr})`
+            : `Rewrite tool input ${fallbackLifecycleLabelIr} (${matcherIr})`)
+    const draftIr: InputRewriteDraft = {
+      type: "input_rewrite",
+      id: idIr,
+      description: descriptionIr,
+      version: "0.1",
+      trigger: { host: "claude-code", event: "PreToolUse", matcher: matcherIr },
+      rewriter: {
+        kind: rewriterKindRaw,
+        config: cfg,
+      },
+    }
+    const sourceIr = String(formData.get("source") ?? "org")
+    await persistDraft(draftIr, sourceIr)
+    return
+  }
+
   // Resolve toolScope: prefer the hidden carry (most steps) over the
   // Step 2 mode submission. Step 2 itself runs through advanceWizard
   // which already wrote the merged value into the URL.
@@ -1262,9 +1420,10 @@ async function saveWizard(formData: FormData): Promise<void> {
   // Strip is reserved. Backend doesn't have a payload-mutation channel
   // so we map to "audit" with no requires. The validation above already
   // blocked strip when STRIP_AVAILABLE=false.
-  // D57f-1: inject_context has its own early-return branch above, so
-  // here action is narrowed to block / ask / audit / strip — all of
-  // which the evidence draft accepts (strip after the audit fallback).
+  // D57f-1 / D57f-2: inject_context + input_rewrite have their own
+  // early-return branches above, so here action is narrowed to block /
+  // ask / audit / strip — all of which the evidence draft accepts
+  // (strip after the audit fallback).
   const irAction = action === "strip" ? "audit" : action
   const draft: PolicyDraft = {
     id: state.id!,
@@ -1387,6 +1546,51 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
       id: (ir.id ?? "").toString() || undefined,
       description: ir.description?.toString() || undefined,
       _droppedAlternation: droppedAlternationCi,
+    }
+  }
+  // D57f-2: input_rewrite IR round-trip. The persisted shape carries
+  // trigger.{event,matcher} and a rewriter spec; we map back into the
+  // wizard's per-kind fields so the operator can re-author without
+  // hand-editing the raw IR.
+  if (rawType === "input_rewrite") {
+    const trig = (ir as unknown as { trigger?: { matcher?: string } }).trigger
+    const matcherRaw = trig?.matcher ?? ""
+    const rewriter = (ir as unknown as {
+      rewriter?: { kind?: string; config?: Record<string, unknown> }
+    }).rewriter
+    const kindRaw = rewriter?.kind
+    const cfg = rewriter?.config ?? {}
+    const kindOk =
+      kindRaw === "prefix_strip" || kindRaw === "scheme_force" ||
+      kindRaw === "regex_substitute"
+    const field = typeof cfg.field === "string" ? cfg.field : ""
+    let toolScopeIr: string | undefined
+    if (matcherRaw && matcherRaw !== "*") {
+      if (matcherRaw.includes("|")) {
+        toolScopeIr = matcherRaw.split("|").map((s) => s.trim())
+          .filter(Boolean)[0]
+      } else {
+        toolScopeIr = matcherRaw
+      }
+    }
+    return {
+      lifecycle: "before_tool_use",
+      toolScope: toolScopeIr,
+      conditionKind: "none",
+      action: "input_rewrite",
+      rewriterKind: kindOk ? (kindRaw as WizardState["rewriterKind"]) : "prefix_strip",
+      rewriterField: field || undefined,
+      rewriterPrefix: typeof cfg.prefix === "string" ? cfg.prefix : undefined,
+      rewriterStripRepeat: cfg.strip_repeat === true ? "true" : "false",
+      rewriterFrom: typeof cfg.from === "string" ? cfg.from : undefined,
+      rewriterTo: typeof cfg.to === "string" ? cfg.to : undefined,
+      rewriterPattern: typeof cfg.pattern === "string" ? cfg.pattern : undefined,
+      rewriterReplacement: typeof cfg.replacement === "string"
+        ? cfg.replacement : undefined,
+      rewriterCount: typeof cfg.count === "number"
+        ? String(cfg.count) : undefined,
+      id: (ir.id ?? "").toString() || undefined,
+      description: ir.description?.toString() || undefined,
     }
   }
   // event -> lifecycle. D56c covered the original 8 hooks; D58
@@ -2022,6 +2226,17 @@ function buildWizardHref(state: WizardState, step: number): string {
   if (state.injectTemplate) params.set("injectTemplate", state.injectTemplate)
   if (state.injectLabelKo) params.set("injectLabelKo", state.injectLabelKo)
   if (state.injectLabelEn) params.set("injectLabelEn", state.injectLabelEn)
+  // D57f-2: rewriter fields ride through URL state so the wizard's
+  // Edit-jump round-trip preserves what the operator typed in Step 4b.
+  if (state.rewriterKind) params.set("rewriterKind", state.rewriterKind)
+  if (state.rewriterField) params.set("rewriterField", state.rewriterField)
+  if (state.rewriterPrefix !== undefined) params.set("rewriterPrefix", state.rewriterPrefix)
+  if (state.rewriterStripRepeat) params.set("rewriterStripRepeat", state.rewriterStripRepeat)
+  if (state.rewriterFrom !== undefined) params.set("rewriterFrom", state.rewriterFrom)
+  if (state.rewriterTo !== undefined) params.set("rewriterTo", state.rewriterTo)
+  if (state.rewriterPattern !== undefined) params.set("rewriterPattern", state.rewriterPattern)
+  if (state.rewriterReplacement !== undefined) params.set("rewriterReplacement", state.rewriterReplacement)
+  if (state.rewriterCount !== undefined) params.set("rewriterCount", state.rewriterCount)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
   return `/policies/new?${params.toString()}`
@@ -2045,6 +2260,15 @@ function HiddenState({ state }: { state: WizardState }) {
       {state.injectTemplate && <input type="hidden" name="injectTemplate" value={state.injectTemplate} />}
       {state.injectLabelKo && <input type="hidden" name="injectLabelKo" value={state.injectLabelKo} />}
       {state.injectLabelEn && <input type="hidden" name="injectLabelEn" value={state.injectLabelEn} />}
+      {state.rewriterKind && <input type="hidden" name="rewriterKind" value={state.rewriterKind} />}
+      {state.rewriterField && <input type="hidden" name="rewriterField" value={state.rewriterField} />}
+      {state.rewriterPrefix !== undefined && <input type="hidden" name="rewriterPrefix" value={state.rewriterPrefix} />}
+      {state.rewriterStripRepeat && <input type="hidden" name="rewriterStripRepeat" value={state.rewriterStripRepeat} />}
+      {state.rewriterFrom !== undefined && <input type="hidden" name="rewriterFrom" value={state.rewriterFrom} />}
+      {state.rewriterTo !== undefined && <input type="hidden" name="rewriterTo" value={state.rewriterTo} />}
+      {state.rewriterPattern !== undefined && <input type="hidden" name="rewriterPattern" value={state.rewriterPattern} />}
+      {state.rewriterReplacement !== undefined && <input type="hidden" name="rewriterReplacement" value={state.rewriterReplacement} />}
+      {state.rewriterCount !== undefined && <input type="hidden" name="rewriterCount" value={state.rewriterCount} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
     </>
@@ -2113,7 +2337,7 @@ function GuidedWizard({
   // D57f-1: inject_context joins block / ask / audit / strip as a
   // legal action archetype. Step 4 surfaces it on every lifecycle;
   // saveWizard branches into the ContextInjectionPolicy compile target.
-  const action = (["block", "ask", "audit", "strip", "inject_context"] as const).includes(actionParam as Action)
+  const action = (["block", "ask", "audit", "strip", "inject_context", "input_rewrite"] as const).includes(actionParam as Action)
     ? (actionParam as Action) : undefined
   const evidenceRefs = (searchParams.evidence_refs ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 
@@ -2198,6 +2422,18 @@ function GuidedWizard({
     injectTemplate: searchParams.injectTemplate || draftState?.injectTemplate,
     injectLabelKo: searchParams.injectLabelKo || draftState?.injectLabelKo,
     injectLabelEn: searchParams.injectLabelEn || draftState?.injectLabelEn,
+    // D57f-2: rewriter fields. Note: rewriter kind is constrained at
+    // save-time; here we just shuttle whatever was in the URL or the
+    // prefilled draft. The Step 4b editor narrows to the legal set.
+    rewriterKind: (searchParams.rewriterKind as WizardState["rewriterKind"]) || draftState?.rewriterKind,
+    rewriterField: searchParams.rewriterField || draftState?.rewriterField,
+    rewriterPrefix: searchParams.rewriterPrefix ?? draftState?.rewriterPrefix,
+    rewriterStripRepeat: (searchParams.rewriterStripRepeat as WizardState["rewriterStripRepeat"]) || draftState?.rewriterStripRepeat,
+    rewriterFrom: searchParams.rewriterFrom ?? draftState?.rewriterFrom,
+    rewriterTo: searchParams.rewriterTo ?? draftState?.rewriterTo,
+    rewriterPattern: searchParams.rewriterPattern ?? draftState?.rewriterPattern,
+    rewriterReplacement: searchParams.rewriterReplacement ?? draftState?.rewriterReplacement,
+    rewriterCount: searchParams.rewriterCount ?? draftState?.rewriterCount,
     id: searchParams.id || draftState?.id,
     description: searchParams.description || draftState?.description,
     // D56d (P2 #4): if the prebuilt draft carried a conditionKind that
@@ -2226,6 +2462,11 @@ function GuidedWizard({
   if (effectiveStep === 3 && state.action === "inject_context") {
     effectiveStep = 4
   }
+  // D57f-2: same skip for input_rewrite — InputRewritePolicy has no
+  // requires list; Step 3's condition picker would be a dead surface.
+  if (effectiveStep === 3 && state.action === "input_rewrite") {
+    effectiveStep = 4
+  }
   // P2 follow-up (wizard-state): scrub condition-side fields when
   // action=inject_context so a previously-authored
   // pattern/llmCriterion/shaclTtl/evidence_refs does not silently
@@ -2234,6 +2475,18 @@ function GuidedWizard({
   // these anyway, but a back-and-forth Edit-jump would otherwise
   // ferry stale condition state through the URL.
   if (state.action === "inject_context") {
+    state.conditionKind = "none"
+    state.pattern = undefined
+    state.llmCriterion = undefined
+    state.shaclTtl = undefined
+    state.fetchDomain = undefined
+    state.allowlist = undefined
+    state.evidenceRefs = undefined
+  }
+  // D57f-2: same scrub for input_rewrite. The saveWizard branch for
+  // input_rewrite ignores condition state; carrying it through the URL
+  // would re-emerge if the operator switches back to block/audit.
+  if (state.action === "input_rewrite") {
     state.conditionKind = "none"
     state.pattern = undefined
     state.llmCriterion = undefined
@@ -2294,7 +2547,7 @@ function StepShell({
  * audit=blue, strip=purple) is consistent end-to-end. The accent color
  * still wins when the card is selected so the "this is the picked one"
  * affordance reads first. */
-type ActionTone = "block" | "ask" | "audit" | "strip" | "inject_context"
+type ActionTone = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite"
 
 function actionCardClasses(tone?: ActionTone): string {
   // Idle border / hover hue per archetype. Selected state is still
@@ -2314,6 +2567,10 @@ function actionCardClasses(tone?: ActionTone): string {
       // the affordance as "we add to the model's view" not "we
       // observe and log."
       return "border-emerald-300 hover:border-emerald-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "input_rewrite":
+      // D57f-2: indigo tone reads as "mutating but bounded" — distinct
+      // from strip's purple (which means "remove from output").
+      return "border-indigo-300 hover:border-indigo-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
     default:
       return "border-black/[0.08] hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
   }
@@ -3512,6 +3769,10 @@ function Step4Action({
       label: "추가 정보 주입",
       sub: "이 시점에서 모델 컨텍스트에 정적 텍스트를 끼워 넣습니다. 검증 단계는 필요 없습니다.",
     },
+    input_rewrite: {
+      label: "도구 입력 재작성",
+      sub: "도구가 실행되기 전에 입력을 안전한 형태로 자동 수정합니다 (예: Bash의 `sudo` 접두사 제거, URL을 https로 강제).",
+    },
   } : {
     block: { label: "Block",        sub: "Refuse the call. The agent cannot proceed." },
     ask:   { label: "Ask a human",  sub: "Send to the review queue; a human must approve to proceed." },
@@ -3520,6 +3781,10 @@ function Step4Action({
     inject_context: {
       label: "Inject extra context",
       sub: "Inject a static block of text into the model's context at this hook. No condition required.",
+    },
+    input_rewrite: {
+      label: "Rewrite tool input",
+      sub: "Mutate the tool's input before it runs (e.g. strip `sudo` from Bash commands, force URLs to https://). The agent's request is silently corrected — no human in the loop.",
     },
   }
   return (
@@ -3681,6 +3946,202 @@ function Step4Action({
                       />
                     </div>
                   </div>
+                </div>
+              </label>
+            )
+          }
+          // D57f-2: input_rewrite renders an inline rewriter-kind picker
+          // + per-kind config form below the action card via the same
+          // peer-checked CSS reveal pattern inject_context uses. The
+          // wizard scopes the surface to before_tool_use with a non-
+          // wildcard matcher (matrix.LEGAL_COMBINATIONS) so the operator
+          // has already pinned the tool family on Step 2.
+          if (a === "input_rewrite") {
+            const kindPick = state.rewriterKind ?? "prefix_strip"
+            const matcherForHint = (state.toolScope ?? "").trim()
+            const fieldHintEn = matcherForHint === "WebFetch" ? "url"
+              : matcherForHint === "Read" || matcherForHint === "Write" || matcherForHint === "Edit"
+                ? "file_path"
+                : "command"
+            return (
+              <label key={a} className="block cursor-pointer">
+                <input
+                  type="radio"
+                  name="action"
+                  value={a}
+                  defaultChecked={defaultPick === a}
+                  required
+                  className="peer sr-only"
+                />
+                <span
+                  data-action-tone="input_rewrite"
+                  className={
+                    "block rounded-xl border bg-white p-4 transition-colors " +
+                    actionCardClasses("input_rewrite")
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                </span>
+                <div
+                  data-testid="step4b-rewriter-editor"
+                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                >
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+                    {ko
+                      ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
+                      : "Right before the tool runs, mutate one field of its input. The tool still executes; no human in the loop."}
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <FieldLabel>
+                        {ko ? "재작성 종류" : "Rewriter kind"}
+                      </FieldLabel>
+                      <select
+                        name="rewriterKind"
+                        defaultValue={kindPick}
+                        className={inputCls()}
+                      >
+                        <option value="prefix_strip">
+                          {ko ? "접두사 제거 (prefix strip)" : "Strip a prefix"}
+                        </option>
+                        <option value="scheme_force">
+                          {ko ? "URL 스킴 강제 (force scheme)" : "Force URL scheme"}
+                        </option>
+                        <option value="regex_substitute">
+                          {ko ? "정규식 치환 (regex substitute)" : "Regex substitute"}
+                        </option>
+                      </select>
+                    </div>
+                    <div>
+                      <FieldLabel>
+                        {ko ? "도구 입력 필드명" : "Tool input field name"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterField"
+                        required
+                        maxLength={64}
+                        pattern="[A-Za-z_][A-Za-z0-9_]{0,63}"
+                        defaultValue={state.rewriterField ?? fieldHintEn}
+                        placeholder={fieldHintEn}
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                        {ko
+                          ? "예: Bash → command, WebFetch → url, Read/Write/Edit → file_path."
+                          : "Bash → command, WebFetch → url, Read/Write/Edit → file_path."}
+                      </p>
+                    </div>
+                  </div>
+                  {/* prefix_strip config */}
+                  <div className="space-y-3" data-rewriter-kind="prefix_strip">
+                    <div>
+                      <FieldLabel>
+                        {ko ? "제거할 접두사" : "Prefix to strip"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterPrefix"
+                        maxLength={2000}
+                        defaultValue={state.rewriterPrefix ?? ""}
+                        placeholder={ko ? "예: sudo " : "e.g. sudo "}
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                    <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
+                      <input
+                        type="checkbox"
+                        name="rewriterStripRepeat"
+                        value="true"
+                        defaultChecked={state.rewriterStripRepeat === "true"}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        {ko
+                          ? "접두사가 연속해서 여러 번 붙어 있어도 모두 제거 (예: `sudo sudo ls` → `ls`)."
+                          : "Peel every consecutive occurrence (e.g. `sudo sudo ls` → `ls`)."}
+                      </span>
+                    </label>
+                  </div>
+                  {/* scheme_force config */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-rewriter-kind="scheme_force">
+                    <div>
+                      <FieldLabel>
+                        {ko ? "기존 스킴" : "From scheme"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterFrom"
+                        maxLength={2000}
+                        defaultValue={state.rewriterFrom ?? "http://"}
+                        placeholder="http://"
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>
+                        {ko ? "강제 스킴" : "To scheme"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterTo"
+                        maxLength={2000}
+                        defaultValue={state.rewriterTo ?? "https://"}
+                        placeholder="https://"
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                  </div>
+                  {/* regex_substitute config */}
+                  <div className="space-y-3" data-rewriter-kind="regex_substitute">
+                    <div>
+                      <FieldLabel>
+                        {ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterPattern"
+                        maxLength={2000}
+                        defaultValue={state.rewriterPattern ?? ""}
+                        placeholder="^\\s*sudo\\s+"
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>
+                        {ko ? "치환 본문 (backref: \\1 / \\g<name>)" : "Replacement (backrefs: \\1 / \\g<name>)"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterReplacement"
+                        maxLength={2000}
+                        defaultValue={state.rewriterReplacement ?? ""}
+                        placeholder=""
+                        spellCheck={false}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>
+                        {ko ? "최대 치환 횟수 (0 = 전부)" : "Max substitutions (0 = all)"}
+                      </FieldLabel>
+                      <input
+                        name="rewriterCount"
+                        type="number"
+                        min={0}
+                        max={1000}
+                        defaultValue={state.rewriterCount ?? "0"}
+                        className={inputCls() + " font-mono"}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">
+                    {ko
+                      ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
+                      : "The rewriter DSL is bounded — no code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
+                  </p>
                 </div>
               </label>
             )

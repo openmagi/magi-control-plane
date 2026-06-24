@@ -219,7 +219,9 @@ describe("policies/new wizard — P9 steering wiring", () => {
     // round-trip.
     const start = src.indexOf("function buildWizardHref")
     expect(start).toBeGreaterThan(-1)
-    const body = src.slice(start, start + 1500)
+    // D57f-2 widened buildWizardHref with rewriter fields; bump the
+    // slice window so the trailing `description` write stays in scope.
+    const body = src.slice(start, start + 3000)
     for (const field of [
       "lifecycle", "conditionKind", "toolScope",
       "fetchDomain", "allowlist", "pattern", "llmCriterion",
@@ -340,9 +342,12 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // description fallback, and the prose comments documenting the
       // ux-internal-leak fix — so the slice widened again to keep the
       // tail (matrix-action gate) inside the window.
+      // D57f-2: input_rewrite added another early-return branch
+      // to saveWizard so the matrix-action gate sits further down;
+      // widen the slice to 16000 to keep the gate inside the window.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 9000)
+      const body = src.slice(start, start + 16000)
       expect(body).toMatch(/allowedActionsForCombination\(lifecycle,\s*toolScope\)/)
       expect(body).toMatch(/!allowedActions\.includes\(action\)/)
       // D56d (P1 #2): also rejects matrix-illegal matcher classes
@@ -558,9 +563,12 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // D57f-1: slice widened to 4500 chars because the
       // context_injection discriminator branch sits above the
       // evidence-shape mapper.
+      // D57f-2: slice widened (4500 → 7000) because the input_rewrite
+      // round-trip branch sits between the context_injection discriminator
+      // and the evidence-shape mapper.
       const start = src.indexOf("function _irToWizardState")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 4500)
+      const body = src.slice(start, start + 7000)
       expect(body).toMatch(/droppedAlternation/)
       expect(body).toMatch(/matcher\.includes\("\|"\)/)
     })
@@ -572,9 +580,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // Pin the early-refusal block and the redirect target.
       // Slice widened to accommodate the 06-24 inject_context branch
       // growth above the multi-tool refusal.
+      // D57f-2: slice widened (8000 → 16000) because the input_rewrite
+      // early-return branch grew saveWizard above the multi-tool refusal.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 8000)
+      const body = src.slice(start, start + 16000)
       // Multi detection (CSV or alternation)
       expect(body).toMatch(/parseCsv\(toolScope\)\.length\s*>\s*1/)
       expect(body).toMatch(/toolScope\.includes\("\|"\)/)
@@ -593,8 +603,10 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // growth (template-length guard + matrix-action guard + locale-
       // aware fallback push the wildcard-only normalize step further
       // down the function body).
+      // D57f-2: slice widened (8000 → 16000) per input_rewrite branch
+      // growth above the wildcard-only normalize step.
       const start = src.indexOf("async function saveWizard")
-      const body = src.slice(start, start + 8000)
+      const body = src.slice(start, start + 16000)
       expect(body).toMatch(/!lifecycleHasToolScope\(lifecycle\)/)
       expect(body).toMatch(/toolScope = undefined/)
     })

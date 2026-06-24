@@ -707,6 +707,133 @@ def test_put_mcp_gating_policy_round_trips(client_with_registry):
     ]
 
 
+def test_put_input_rewrite_policy_round_trips(client_with_registry):
+    """D57f-2: an InputRewritePolicy PUT round-trips through the cloud
+    + compiles into a PreToolUse hook command that names the policy
+    id (and NOT the rewriter literal value)."""
+    pid = "strip-sudo-from-bash/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "strip sudo from bash commands",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    got = client_with_registry.get(f"/policies/{pid}", headers=ADMIN).json()
+    assert got["policy"]["type"] == "input_rewrite"
+    assert got["policy"]["rewriter"]["config"]["prefix"] == "sudo "
+
+    compiled = client_with_registry.get(f"/policies/{pid}/compiled",
+                                         headers=ADMIN).json()
+    hooks = compiled["managed_settings"]["hooks"]["PreToolUse"]
+    assert hooks[0]["matcher"] == "Bash"
+    cmd = hooks[0]["hooks"][0]
+    assert cmd["type"] == "command"
+    assert "magi-cp-input-rewrite" in cmd["command"]
+    assert pid in cmd["command"]
+    # Rewriter literal MUST NOT leak into the managed-settings hook.
+    assert "sudo " not in cmd["command"]
+
+
+def test_input_rewrite_runtime_endpoint_returns_updated_input(client_with_registry):
+    """The local shim POSTs (policy_id, tool_name, tool_input); cloud
+    looks up the InputRewritePolicy and applies the rewriter."""
+    pid = "strip-sudo-from-bash/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo apt update", "other": 1},
+        },
+    )
+    assert rr.status_code == 200, rr.text
+    data = rr.json()
+    assert data["rewrote"] is True
+    assert data["updated_input"]["command"] == "apt update"
+    # Unrelated input fields preserved.
+    assert data["updated_input"]["other"] == 1
+
+
+def test_input_rewrite_endpoint_refuses_wrong_tool(client_with_registry):
+    pid = "wrong-tool/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    assert _put(client_with_registry, pid, body).status_code == 200
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        json={
+            "policy_id": pid,
+            "tool_name": "Edit",
+            "tool_input": {"command": "sudo apt update"},
+        },
+    )
+    assert rr.status_code == 200
+    assert rr.json() == {"rewrote": False}
+
+
+def test_input_rewrite_endpoint_unknown_policy_id(client_with_registry):
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        json={
+            "policy_id": "does-not-exist/v1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo ls"},
+        },
+    )
+    assert rr.status_code == 200
+    assert rr.json() == {"rewrote": False}
+
+
+def test_put_input_rewrite_rejects_post_tool_use(client_with_registry):
+    """Authoring-time gate: PostToolUse can't carry an input_rewrite."""
+    pid = "bad-event/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PostToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 400
+    assert "PreToolUse" in r.json()["detail"]
+
+
 def test_put_context_injection_policy_round_trips(client_with_registry):
     pid = "team-context/v1"
     body = {

@@ -33,8 +33,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
 from ..policy import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, McpGatingPolicy, PermissionPolicy, PolicyOverride,
-    SubagentPolicy, compile_to_managed_settings,
+    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
+    McpGatingPolicy, PermissionPolicy, PolicyOverride,
+    SubagentPolicy, apply_rewriter, compile_to_managed_settings,
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
@@ -1962,6 +1963,14 @@ def _serialize_policy_for_api(p: AnyPolicy) -> dict:
             "id": p.id, "description": p.description, "version": p.version,
             "event": p.event, "matcher": p.matcher, "template": p.template,
         }
+    if isinstance(p, InputRewritePolicy):
+        return {
+            "type": "input_rewrite",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "rewriter": p.rewriter,
+        }
     raise HTTPException(500, f"unserializable policy type: {type(p).__name__}")
 
 
@@ -2031,7 +2040,7 @@ class PolicyIn(BaseModel):
                      pattern=_POLICY_ID_PATTERN)
     type: str | None = Field(
         default=None,
-        pattern=r"^(evidence|permission|subagent|mcp_gating|context_injection)$",
+        pattern=r"^(evidence|permission|subagent|mcp_gating|context_injection|input_rewrite)$",
     )
 
 
@@ -2047,6 +2056,16 @@ class PutPolicyReq(BaseModel):
 
 class PatchEnabledReq(BaseModel):
     enabled: bool
+
+
+class InputRewriteReq(BaseModel):
+    """D57f-2 — request body for the `magi-cp-input-rewrite` shim's
+    POST /policies/input_rewrite call."""
+    model_config = {"extra": "forbid"}
+    policy_id: str = Field(..., min_length=1, max_length=128,
+                            pattern=_POLICY_ID_PATTERN)
+    tool_name: str = Field(..., min_length=1, max_length=128)
+    tool_input: dict
 
 
 _RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
@@ -2239,6 +2258,61 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     def list_prebuilt_policies() -> dict:
         from ..policy.prebuilt import all_prebuilt_policies
         return {"items": all_prebuilt_policies()}
+
+    # D57f-2 — input-rewrite verdict endpoint. Called by the
+    # `magi-cp-input-rewrite` shim at PreToolUse time. Stays open
+    # (no auth) for the same reason `/pubkey` does: the local gate has
+    # no tenant credential by default, and the only side effect is a
+    # tool-input rewrite the gate's own admin already authored. Routed
+    # BEFORE the `/policies/{policy_id:path}` catch-all so the literal
+    # `input_rewrite` segment is not parsed as a policy id.
+    @app.post("/policies/input_rewrite")
+    async def policies_input_rewrite(req: InputRewriteReq) -> dict:
+        """Apply an `InputRewritePolicy` to a PreToolUse payload.
+
+        The shim sends the policy id + tool_name + raw tool_input dict;
+        the cloud looks up the policy, checks the matcher against the
+        tool_name (defense in depth — CC's hook matcher already filtered
+        before the shim ran, but a stale managed-settings could deliver
+        the wrong policy id), runs the bounded rewriter, and returns the
+        new tool_input dict.
+
+        Soft failure modes (every one returns `{"rewrote": false}`):
+          - policy not found / disabled
+          - policy is not an `InputRewritePolicy`
+          - matcher does not cover `tool_name`
+          - rewriter is a no-op against the payload
+        """
+        target_id = req.policy_id
+        match: AnyPolicy | None = None
+        match_enabled = False
+        for ov in store.load():
+            if ov.policy.id != target_id:
+                continue
+            match = ov.policy
+            match_enabled = ov.enabled
+            break
+        if match is None or not match_enabled:
+            return {"rewrote": False}
+        if not isinstance(match, InputRewritePolicy):
+            return {"rewrote": False}
+        # Matcher coverage: tool / mcp_tool exact, tool_alt any-of.
+        matcher = match.trigger.matcher
+        if matcher == "*":
+            # Disallowed at authoring time; refuse defensively.
+            return {"rewrote": False}
+        if "|" in matcher:
+            if req.tool_name not in {p.strip() for p in matcher.split("|") if p.strip()}:
+                return {"rewrote": False}
+        elif matcher != req.tool_name:
+            return {"rewrote": False}
+        try:
+            new_input = apply_rewriter(match.rewriter, req.tool_input)
+        except Exception:
+            return {"rewrote": False}
+        if new_input == req.tool_input:
+            return {"rewrote": False}
+        return {"rewrote": True, "updated_input": new_input}
 
     # Order matters: more specific (/compiled, /enabled) before the catch-all
     # {policy_id:path} so FastAPI matches them first.

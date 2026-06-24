@@ -163,6 +163,62 @@ Archetypes (set `type` accordingly):
       "document the spawned child's mandate on subagent start"
         → event=SubagentStart, matcher="*"
 
+  type=input_rewrite — rewrite a tool's input BEFORE the tool runs.
+    Use this when the NL describes silently correcting an agent's request
+    instead of refusing it (e.g. "strip sudo from bash", "force https on
+    web fetches", "trim file paths to the workspace root"). The cloud
+    applies a small bounded DSL server-side; CC then runs the tool with
+    the modified input via the PreToolUse `updatedInput` channel.
+
+    ⚠ DISAMBIGUATION:
+    - "strip / drop / remove / rewrite / force / coerce / trim X" with
+      no mention of blocking or human approval → input_rewrite.
+    - "block / refuse / forbid / deny X" → permission(deny) or
+      evidence(block). input_rewrite NEVER refuses; it always lets the
+      tool run after the rewrite.
+    - "warn / require approval before X" → permission(ask) or
+      evidence(ask). input_rewrite has no HITL surface.
+
+    PINS:
+    - event MUST be PreToolUse. CC only supports updatedInput there.
+    - matcher MUST be a per-tool name (Bash / WebFetch / Read / Write /
+      Edit / mcp__server__tool). Wildcard is NOT legal — the rewriter
+      targets a single field of the tool's input dict.
+
+    Rewriter DSL (only these three kinds; pick one):
+      "prefix_strip"     — drop a literal prefix from a string field.
+        config: {{"field": "<key>", "prefix": "<literal>",
+                  "strip_repeat": false}}
+      "scheme_force"     — replace a literal scheme prefix.
+        config: {{"field": "<key>", "from": "http://", "to": "https://"}}
+      "regex_substitute" — Python re.sub on a string field (\\1, \\g<name>
+        backrefs OK; no code-eval).
+        config: {{"field": "<key>", "pattern": "<re>",
+                  "replacement": "<repl>", "count": 0}}
+
+    Field naming convention (per CC's payload schema):
+      Bash → "command" | WebFetch → "url" | Read/Write/Edit → "file_path"
+
+    Schema:
+      {{"type": "input_rewrite", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "trigger": {{"host": "claude-code",
+                    "event": "PreToolUse",
+                    "matcher": "<tool name>"}},
+        "rewriter": {{"kind": "<dsl kind>", "config": {{...}}}}}}
+
+    Examples:
+      "strip sudo from bash"
+        → matcher=Bash, kind=prefix_strip,
+           config={{"field": "command", "prefix": "sudo "}}
+      "force every web fetch to https"
+        → matcher=WebFetch, kind=scheme_force,
+           config={{"field": "url", "from": "http://", "to": "https://"}}
+      "replace any literal newline in bash commands with semicolon"
+        → matcher=Bash, kind=regex_substitute,
+           config={{"field": "command", "pattern": "\\n",
+                   "replacement": "; ", "count": 0}}
+
   type=evidence    — gate that runs a verifier (or inline regex / SHACL /
                      LLM critic) at hook time. Use this when the rule
                      needs runtime data (cite count, payload shape,
@@ -229,6 +285,19 @@ For EVERY archetype, flag:
   - trigger event makes sense for the matcher,
   - action is legal for the (event, matcher_class) pair,
   - requires=[] is paired with action="audit".
+
+For type=input_rewrite specifically, ALSO flag:
+  - trigger.event != "PreToolUse". Issue:
+    "input_rewrite only fires on PreToolUse; CC ignores updatedInput on
+    other events".
+  - matcher == "*". Issue:
+    "input_rewrite matcher must be a specific tool; wildcard would mutate
+    every tool's input field of that name".
+  - Enforcement vocabulary mismatch — NL says "block/refuse/forbid/
+    require approval/warn the user" but the IR is input_rewrite.
+    input_rewrite NEVER refuses; the tool still runs with the rewritten
+    input. Issue: "input_rewrite cannot gate — NL asks to gate; consider
+    permission(deny/ask) or evidence(block/ask)".
 
 For type=context_injection specifically, ALSO flag (each maps to ok=False
 + a concrete issue string):

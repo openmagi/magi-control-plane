@@ -228,6 +228,17 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
             out.add(("PreToolUse", kls, act))
     out.add(("PreToolUse", MatcherClass.wildcard, "audit"))
 
+    # D57f-2: input_rewrite — CC PreToolUse hook stdout supports
+    # `updatedInput` which lets the gate rewrite the tool's input before
+    # the tool runs. Legal on per-tool matchers only (the rewriter targets
+    # a single named field in the tool_input dict; the field grammar
+    # only makes sense once you've picked a tool family). Wildcard is
+    # intentionally NOT registered — see InputRewritePolicy.validate()
+    # for the rationale (a wildcard rewriter would mutate every tool's
+    # input field of the same name, which is rarely intended).
+    for kls in (MatcherClass.tool, MatcherClass.mcp_tool, MatcherClass.tool_alt):
+        out.add(("PreToolUse", kls, "input_rewrite"))
+
     # PostToolUse — tool already ran; only audit is legal. (strip will
     # land here in a follow-up once verifier-protocol mutation lands.)
     out.add(("PostToolUse", MatcherClass.tool, "audit"))

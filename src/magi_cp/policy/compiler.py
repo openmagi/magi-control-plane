@@ -37,8 +37,8 @@ import json
 import sys
 
 from .ir import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, McpGatingPolicy,
-    PermissionPolicy, SubagentPolicy, load_policy,
+    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
+    McpGatingPolicy, PermissionPolicy, SubagentPolicy, load_policy,
 )
 
 
@@ -47,6 +47,12 @@ from .ir import (
 # documented install path). The context shim resolves the template by
 # sha256 against a sidecar directory.
 DEFAULT_CONTEXT_WRITE_SHIM = "/usr/local/bin/magi-cp-context-write"
+# D57f-2: the input-rewrite shim asks the cloud whether the current
+# PreToolUse payload matches any input_rewrite policy and, if so, what
+# the new tool_input dict should be. The shim itself does NOT interpret
+# rewriter spec — it forwards the cloud's reply unchanged. A leaked
+# policy file therefore cannot translate into novel local-side mutation.
+DEFAULT_INPUT_REWRITE_SHIM = "/usr/local/bin/magi-cp-input-rewrite"
 
 
 def _context_template_hash(template: str) -> str:
@@ -143,6 +149,25 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
             hooks.setdefault(p.trigger.event, []).append({
                 "matcher": p.trigger.matcher,
                 "hooks": [{"type": "command", "command": p.gate_binary}],
+            })
+        elif isinstance(p, InputRewritePolicy):
+            # D57f-2: a PreToolUse hook entry that calls the
+            # input-rewrite shim with the policy id. The shim asks the
+            # cloud whether this policy fires for the current payload,
+            # applies the rewriter spec server-side, and prints the
+            # `hookSpecificOutput` JSON including `updatedInput` (or
+            # exits silently when the policy is a no-op). The compiler
+            # does NOT bake the rewriter config into the hook command
+            # line — only the policy id — so a leaked managed-settings
+            # file leaks the WIRING but not the rewriter operation.
+            hooks.setdefault(p.trigger.event, []).append({
+                "matcher": p.trigger.matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": (
+                        f"{DEFAULT_INPUT_REWRITE_SHIM} --policy {p.id}"
+                    ),
+                }],
             })
         else:
             raise ValueError(

@@ -617,13 +617,102 @@ class ContextInjectionPolicy:
             )
 
 
+@dataclass
+class InputRewritePolicy:
+    """Mutate a tool's input BEFORE the tool runs.
+
+    D57f-2: CC's PreToolUse hook stdout supports a ``updatedInput`` field
+    on its ``hookSpecificOutput`` JSON. When the gate emits the new input
+    dict, CC runs the tool with that input instead of the one the agent
+    proposed. The classic use case is "strip ``sudo`` from a Bash command
+    so the agent's instinct to escalate becomes a no-op", but the same
+    seam handles "force a URL to https://", "trim a path to a workspace-
+    relative segment", etc.
+
+    Security model:
+      - ``event`` is pinned to ``PreToolUse``. CC only honors
+        ``updatedInput`` on the pre-tool hook (the post-tool hook fires
+        AFTER the tool already ran).
+      - ``matcher`` follows the regular tool / mcp_tool / tool_alt /
+        wildcard rules so the operator can scope to one tool family.
+      - ``rewriter`` is a small bounded DSL (see
+        :mod:`magi_cp.policy.rewriters`). NO jinja, NO code-eval. A
+        leaked policy file cannot translate into arbitrary mutation —
+        the worst it can do is rewrite a single tool-input field via
+        one of three known operations (prefix_strip / scheme_force /
+        regex_substitute).
+      - The cloud applies the rewriter spec server-side and returns the
+        new tool_input shape to the gate. The gate.py shim forwards
+        whatever the cloud returned; it does NOT interpret rewriter
+        config locally (a compromised gate runtime cannot inject novel
+        operations either way).
+    """
+    id: str
+    description: str
+    trigger: Trigger
+    rewriter: dict
+    version: str = "0.1"
+    type: Literal["input_rewrite"] = "input_rewrite"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _validate_id(self.id)
+        # event pin: CC only supports updatedInput on PreToolUse.
+        if self.trigger.event != "PreToolUse":
+            raise ValueError(
+                f"InputRewritePolicy '{self.id}': event must be PreToolUse "
+                f"(CC only honors updatedInput on the pre-tool hook); got "
+                f"{self.trigger.event!r}"
+            )
+        # Matcher: tool / mcp_tool / tool_alt — wildcard would let a
+        # rewriter chew on every tool's input, which is rarely what the
+        # author intended and rules out the per-tool field name in the
+        # rewriter config. Reject wildcard so authoring stays explicit.
+        from .matrix import MatcherClass, matcher_class_of
+        try:
+            kls = matcher_class_of(self.trigger.matcher)
+        except ValueError as e:
+            raise ValueError(
+                f"InputRewritePolicy '{self.id}': matcher "
+                f"{self.trigger.matcher!r} {e}"
+            ) from e
+        if kls is MatcherClass.wildcard:
+            raise ValueError(
+                f"InputRewritePolicy '{self.id}': matcher='*' is not allowed "
+                f"(rewriters target a specific tool's input field; pick a tool "
+                f"or alternation)"
+            )
+        # Rewriter DSL: hand off to the bounded validator. Raises
+        # ValueError with a precise reason on any structural problem;
+        # we surface that under our policy id for easier debugging.
+        from .rewriters import validate_rewriter_spec
+        try:
+            validate_rewriter_spec(self.rewriter)
+        except ValueError as e:
+            raise ValueError(
+                f"InputRewritePolicy '{self.id}': rewriter {e}"
+            ) from e
+        # Matrix coherence: even though the matcher class is constrained
+        # above, ensure the (event, matcher_class, "input_rewrite") triple
+        # is registered as legal so a future LEGAL_COMBINATIONS edit can't
+        # silently leave this archetype unwired.
+        from .matrix import validate_combination
+        try:
+            validate_combination(self.trigger.event, self.trigger.matcher,
+                                  "input_rewrite")
+        except ValueError as e:
+            raise ValueError(f"policy '{self.id}': {e}") from e
+
+
 # Union of every IR policy type. The compiler dispatches on
 # `isinstance(p, X)` rather than on the `type` field so the runtime
 # stays string-key-free internally — `type` only matters when crossing
 # JSON / REST boundaries.
 AnyPolicy = (
     EvidencePolicy | PermissionPolicy | SubagentPolicy
-    | McpGatingPolicy | ContextInjectionPolicy
+    | McpGatingPolicy | ContextInjectionPolicy | InputRewritePolicy
 )
 
 
@@ -718,6 +807,14 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             matcher=raw.get("matcher", "*"),
             version=raw.get("version", "0.1"),
         )
+    if type_ == "input_rewrite":
+        return InputRewritePolicy(
+            id=raw["id"],
+            description=raw.get("description", ""),
+            trigger=Trigger(**raw["trigger"]),
+            rewriter=raw["rewriter"],
+            version=raw.get("version", "0.1"),
+        )
     raise ValueError(f"unknown policy type: {type_!r}")
 
 
@@ -783,5 +880,13 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
             "type": "context_injection",
             "id": p.id, "description": p.description, "version": p.version,
             "event": p.event, "matcher": p.matcher, "template": p.template,
+        }
+    if isinstance(p, InputRewritePolicy):
+        return {
+            "type": "input_rewrite",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "rewriter": p.rewriter,
         }
     raise ValueError(f"unknown policy type: {type(p).__name__}")

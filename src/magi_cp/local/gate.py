@@ -699,5 +699,119 @@ def heartbeat_cli() -> int:  # pragma: no cover (CLI entry)
     return 0
 
 
+# D57f-2 — input-rewrite shim. Compiler emits a PreToolUse hook of shape
+# `magi-cp-input-rewrite --policy <id>`. The shim reads the standard
+# PreToolUse JSON on stdin, POSTs (policy_id, tool_input) to the cloud,
+# and prints whatever updatedInput the cloud returns.
+#
+# Authoring contract recap (see InputRewritePolicy + rewriters.py):
+#   - The shim does NOT interpret a rewriter spec itself. The cloud is
+#     the rewriter; the shim is the courier. A compromised endpoint
+#     cannot mint a novel rewrite operation locally.
+#   - All failure modes degrade to "exit 0, empty stdout" so a missing
+#     cloud / malformed reply / oversize payload becomes a transparent
+#     no-op (CC runs the tool with the original input). Fail-closed on
+#     the rewrite path would block the tool over a config blip — the
+#     EvidencePolicy lane is the right surface to refuse.
+_INPUT_REWRITE_POLICY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$")
+
+
+def _emit_updated_input(updated_input: dict) -> None:
+    """Print the CC-canonical hookSpecificOutput JSON carrying the
+    rewritten tool_input under `updatedInput` and exit 0.
+
+    Single emission path so every PreToolUse rewrite produces
+    byte-identical JSON (modulo the dict body). CC consumes the
+    `updatedInput` field on PreToolUse only — the matrix + policy
+    validator already pin event=PreToolUse.
+    """
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": updated_input,
+        }
+    }, ensure_ascii=False))
+    sys.exit(0)
+
+
+def input_rewrite_cli() -> int:
+    """`magi-cp-input-rewrite` entry point.
+
+    Reads the PreToolUse hook JSON on stdin, asks the cloud for a
+    rewrite verdict against the policy named on `--policy`, and emits
+    the updatedInput JSON when the cloud returns a changed dict.
+
+    Failure modes (every one exits 0 with empty stdout):
+      - missing / malformed `--policy <id>` argv
+      - missing / unparseable stdin payload
+      - missing tool_input dict
+      - cloud unreachable / non-200 / malformed reply
+      - cloud returned `updated_input` identical to the original (no-op)
+      - cloud returned a non-dict updated_input (refuse silently)
+    """
+    argv = sys.argv[1:]
+    policy_id = ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--policy" and i + 1 < len(argv):
+            policy_id = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    if not policy_id or not _INPUT_REWRITE_POLICY_ID_RE.match(policy_id):
+        return 0
+
+    raw = sys.stdin.read()
+    if not raw or len(raw) > 256_000:
+        # Outsized payloads are not the rewrite path's concern.
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return 0
+    tool_name = payload.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name:
+        return 0
+
+    cloud = _cloud_url()
+    try:
+        _enforce_url_scheme(cloud)
+    except ValueError:
+        return 0
+    body = json.dumps({
+        "policy_id": policy_id,
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        cloud + "/policies/input_rewrite",
+        method="POST",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            reply = json.loads(r.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(reply, dict):
+        return 0
+    if not reply.get("rewrote"):
+        return 0
+    new_input = reply.get("updated_input")
+    if not isinstance(new_input, dict):
+        return 0
+    if new_input == tool_input:
+        return 0
+    _emit_updated_input(new_input)
+    return 0   # unreachable; _emit_updated_input exits
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(cli())
