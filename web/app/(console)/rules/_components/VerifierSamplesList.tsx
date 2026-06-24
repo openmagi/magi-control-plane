@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ledgerHref } from "@/lib/ledger-url"
 import { Skeleton } from "@/components/ui/Skeleton"
+import { translate, type Locale, type TKey } from "@/lib/i18n/dict"
 
 /**
  * D53a: inline list of the most-recent N redacted samples for one
@@ -30,9 +31,11 @@ import { Skeleton } from "@/components/ui/Skeleton"
  * can scroll-anchor to the row when that surface lands.
  */
 
-// i18n helper signature matches the rest of the rules tab.
+// i18n helper signature matches the rest of the rules tab. Reconstructed
+// client-side from `locale` so we never cross the server -> client
+// boundary with a function (Next 14 RSC forbids that).
 type T = (
-  k: import("@/lib/i18n/dict").TKey,
+  k: TKey,
   v?: Record<string, string | number>,
 ) => string
 
@@ -57,16 +60,20 @@ export type VerifierSampleRow = {
 
 export function VerifierSamplesList({
   step,
-  t,
+  locale,
   initialCount,
 }: {
   step: string
-  t: T
+  locale: Locale
   /** Server-rendered count from `/ledger/counts`. Used in the header
    * so the empty case ("no samples returned") never contradicts a
    * stale count (we re-key the empty state on this number too). */
   initialCount: number | null
 }) {
+  const t: T = useCallback(
+    (key, vars) => translate(locale, key, vars),
+    [locale],
+  )
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [samples, setSamples] = useState<VerifierSampleRow[] | null>(null)

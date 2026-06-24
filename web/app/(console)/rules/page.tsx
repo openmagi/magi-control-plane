@@ -37,7 +37,7 @@ export default async function RulesPage({
 }: {
   searchParams: { tab?: string; msg?: string; err?: string }
 }) {
-  const { t } = await getT()
+  const { t, locale } = await getT()
   const { nf } = await getIntl()
   const tab = parseTab(searchParams.tab)
   const flash = resolveFlash(searchParams.msg, searchParams.err)
@@ -158,6 +158,7 @@ export default async function RulesPage({
           err={evidenceErr}
           nfFormat={nf.format.bind(nf)}
           t={t}
+          locale={locale}
           emissionCounts={emissionCounts}
         />
       )}
@@ -411,12 +412,16 @@ function prebuiltDraftHref(p: PrebuiltPolicyEntry): string {
 }
 
 function EvidenceTab({
-  items, err, nfFormat, t, emissionCounts,
+  items, err, nfFormat, t, locale, emissionCounts,
 }: {
   items: EvidenceTypeEntry[]
   err: string | null
   nfFormat: (n: number) => string
   t: TFunc
+  /** Threaded down to VerifierExpander -> VerifierSamplesList so the
+   * client-component leaf can rebuild `t` locally without crossing
+   * the RSC boundary with a function. */
+  locale: import("@/lib/i18n/dict").Locale
   // D52c: undefined value = the cloud call failed (render dash). 0 =
   // cloud answered, no emissions in window.
   emissionCounts: Record<string, number>
@@ -498,6 +503,7 @@ function EvidenceTab({
                 <VerifierExpander
                   step={row.step}
                   t={t}
+                  locale={locale}
                   recentEmissions24h={
                     Object.prototype.hasOwnProperty.call(emissionCounts, row.step)
                       ? emissionCounts[row.step]

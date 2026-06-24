@@ -34,10 +34,14 @@ import { VerifierSamplesList } from "./VerifierSamplesList"
 type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
 export function VerifierExpander({
-  step, t, recentEmissions24h, nfFormat, source, enforcement, fieldChecksOverride,
+  step, t, locale, recentEmissions24h, nfFormat, source, enforcement, fieldChecksOverride,
 }: {
   step: string
   t: T
+  /** Resolved locale, threaded down to client-component children that
+   * cannot accept the `t` closure across the RSC boundary. They
+   * rebuild `t` via the pure `translate()` from dict.ts. */
+  locale: import("@/lib/i18n/dict").Locale
   /** D52c: count of ledger entries emitted by this verifier in the last
    * 24h. `null` = cloud unreachable for the count (render dash so
    * operators don't misread a transient outage as "no emissions"). */
@@ -129,6 +133,7 @@ export function VerifierExpander({
           source={source}
           enforcement={enforcement}
           t={t}
+          locale={locale}
         />
       </div>
     </details>
@@ -136,7 +141,7 @@ export function VerifierExpander({
 }
 
 function RecentEmissionsPanel({
-  step, count, nfFormat, source, enforcement, t,
+  step, count, nfFormat, source, enforcement, t, locale,
 }: {
   step: string
   count: number | null
@@ -144,6 +149,9 @@ function RecentEmissionsPanel({
   source?: "builtin" | "custom" | "policy-derived"
   enforcement?: "enforcing" | "always-on" | "preview" | "missing"
   t: T
+  /** Threaded down to VerifierSamplesList (client) so it can rebuild
+   * `t` locally without crossing the RSC boundary with a function. */
+  locale: import("@/lib/i18n/dict").Locale
 }) {
   // D52c follow-up: a `custom` verifier has no runtime binding today
   // (D52b authored at /verifiers/new but POST /verify/{name} returns
@@ -212,7 +220,7 @@ function RecentEmissionsPanel({
         </p>
       )}
       {showSamples && (
-        <VerifierSamplesList step={step} t={t} initialCount={count} />
+        <VerifierSamplesList step={step} locale={locale} initialCount={count} />
       )}
     </div>
   )
