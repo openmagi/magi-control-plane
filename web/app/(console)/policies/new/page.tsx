@@ -16,7 +16,6 @@ import {
 import { CloudConfigError, cloud } from "@/lib/cloud"
 import {
   availableFields as payloadAvailableFields,
-  lifecycleToEvent as payloadLifecycleToEvent,
   lintShaclTargets as payloadLintShaclTargets,
   type FieldDescriptor as PayloadFieldDescriptor,
 } from "@/lib/payload-schemas"
@@ -32,32 +31,62 @@ type Mode = "guided" | "advanced" | "conversational"
 const WIZARD_TOTAL = 6
 
 /* ─────────────────────────────────────────────────────────────────────
- * New guided model (D41).
+ * New guided model (D41, expanded in D56c).
  *
- * Step 1  Lifecycle  before_tool_use / after_tool_use / pre_final
+ * Step 1  Lifecycle  one of the 8 CC hook events
  * Step 2  ConditionKind  (varies by lifecycle, see below)
  * Step 3  Specifics  per-kind form (auto-skip when kind=none)
  * Step 4  Action  block / ask / audit / strip  (lifecycle-filtered)
  * Step 5  Name  policy id + optional description
  * Step 6  Review  plain English + IR preview
  *
- * The 8 hook events map down to 3 lifecycles for the guided path:
+ * D56c: full 8-hook coverage. Lifecycle slugs map 1:1 to CC events:
  *
- *   before_tool_use  →  trigger.event = PreToolUse
- *   after_tool_use   →  trigger.event = PostToolUse
- *   pre_final        →  trigger.event = Stop
+ *   before_tool_use  →  PreToolUse        (tool-context, recommended)
+ *   after_tool_use   →  PostToolUse       (tool-context, audit-only)
+ *   pre_final        →  Stop              (no-tool-context, audit-only)
+ *   subagent_stop    →  SubagentStop      (no-tool-context, audit-only)
+ *   user_prompt      →  UserPromptSubmit  (no-tool-context, block/ask/audit)
+ *   pre_compact      →  PreCompact        (no-tool-context, block/audit)
+ *   session_start    →  SessionStart      (no-tool-context, audit-only)
+ *   session_end      →  SessionEnd        (no-tool-context, audit-only)
  *
- * Other events (UserPromptSubmit, PreCompact, Subagent*, Session*) stay
- * in Raw mode only; guided is opinionated.
+ * Tool scope is only meaningful for the two tool-context lifecycles
+ * (before_tool_use, after_tool_use); the other 6 auto-skip Step 2 and
+ * use matcher="*". Action set is matrix-filtered (see ACTIONS_BY_
+ * LIFECYCLE below + src/magi_cp/policy/matrix.py LEGAL_COMBINATIONS
+ * which the cloud uses to validate on save).
  * ───────────────────────────────────────────────────────────────────── */
 
-type Lifecycle = "before_tool_use" | "after_tool_use" | "pre_final"
-const LIFECYCLES: readonly Lifecycle[] = ["before_tool_use", "after_tool_use", "pre_final"]
+type Lifecycle =
+  | "before_tool_use" | "after_tool_use" | "pre_final"
+  | "subagent_stop"   | "user_prompt"    | "pre_compact"
+  | "session_start"   | "session_end"
+const LIFECYCLES: readonly Lifecycle[] = [
+  "before_tool_use", "after_tool_use", "pre_final",
+  "subagent_stop",   "user_prompt",    "pre_compact",
+  "session_start",   "session_end",
+]
 
 const LIFECYCLE_TO_EVENT: Record<Lifecycle, string> = {
   before_tool_use: "PreToolUse",
   after_tool_use:  "PostToolUse",
   pre_final:       "Stop",
+  subagent_stop:   "SubagentStop",
+  user_prompt:     "UserPromptSubmit",
+  pre_compact:     "PreCompact",
+  session_start:   "SessionStart",
+  session_end:     "SessionEnd",
+}
+
+// D56c: which lifecycles carry a tool context (Step 2 makes sense).
+// Everything else auto-skips Step 2 and uses matcher="*".
+const TOOL_CONTEXT_LIFECYCLES: ReadonlySet<Lifecycle> = new Set<Lifecycle>([
+  "before_tool_use", "after_tool_use",
+])
+
+function lifecycleHasToolScope(life: Lifecycle | undefined): boolean {
+  return life !== undefined && TOOL_CONTEXT_LIFECYCLES.has(life)
 }
 
 type ConditionKind =
@@ -74,6 +103,14 @@ type ConditionKind =
 //   pre_final       → tool scope is irrelevant (fires once before the
 //                     agent's final answer); Step 2 auto-skips.
 //
+// D56c: 5 more no-tool-context lifecycles also skip Step 2. Their
+// condition surface is matched to the runtime payload they carry:
+//   user_prompt   → regex / llm_critic on the prompt string
+//   pre_compact   → regex on the transcript window
+//   subagent_stop → audit-style: regex / llm_critic on the child's
+//                   transcript_path
+//   session_*     → boundary marker; "none" is the meaningful default
+//
 // fetch_domain / domain_allowlist still surface as condition kinds but
 // only when WebFetch is in the picked tool scope; they're convenience
 // shortcuts that build a URL regex for you.
@@ -81,6 +118,11 @@ const CONDITION_KINDS_BY_LIFECYCLE: Record<Lifecycle, readonly ConditionKind[]> 
   before_tool_use: ["none", "regex", "llm_critic", "fetch_domain", "domain_allowlist"],
   after_tool_use:  ["none", "regex", "llm_critic"],
   pre_final:       ["none", "evidence_ref", "regex", "shacl", "llm_critic"],
+  subagent_stop:   ["none", "regex", "llm_critic"],
+  user_prompt:     ["none", "regex", "llm_critic"],
+  pre_compact:     ["none", "regex", "llm_critic"],
+  session_start:   ["none"],
+  session_end:     ["none"],
 }
 
 const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
@@ -91,10 +133,25 @@ const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
 
 type Action = "block" | "ask" | "audit" | "strip"
 
+// D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
+//   before_tool_use → block / ask / audit (the runtime can refuse)
+//   after_tool_use  → audit (tool already ran; strip ships in a follow-up)
+//   pre_final       → audit (Stop fires after the agent has chosen its
+//                     final answer; the runtime cannot rewind. Block /
+//                     ask are surfaced for UI parity with the previous
+//                     model but the cloud demotes them to audit.)
+//   user_prompt     → block / ask / audit (prompt hasn't reached the LLM)
+//   pre_compact     → block / audit (compaction hasn't fired yet)
+//   subagent_stop / session_* → audit only (boundary markers)
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
   before_tool_use: ["block", "ask", "audit"],
-  after_tool_use:  ["block", "audit", "strip"],
-  pre_final:       ["block", "ask", "audit"],
+  after_tool_use:  ["audit", "strip"],
+  pre_final:       ["audit"],
+  subagent_stop:   ["audit"],
+  user_prompt:     ["block", "ask", "audit"],
+  pre_compact:     ["block", "audit"],
+  session_start:   ["audit"],
+  session_end:     ["audit"],
 }
 
 // Strip needs a verifier-protocol mutation channel that isn't built
@@ -152,8 +209,11 @@ interface WizardState {
 // customers carry a sentinel pattern explicitly.
 
 function deriveMatcher(s: WizardState): string {
-  // pre_final has no tool scope (fires once on the final answer).
-  if (s.lifecycle === "pre_final") return "*"
+  // D56c: only tool-context lifecycles (PreToolUse / PostToolUse) carry
+  // a tool matcher. Every no-tool-context event (Stop, SubagentStop,
+  // UserPromptSubmit, PreCompact, SessionStart, SessionEnd) is forced
+  // to wildcard per the cloud's LEGAL_COMBINATIONS matrix.
+  if (!lifecycleHasToolScope(s.lifecycle)) return "*"
   const scope = (s.toolScope ?? "").trim()
   if (!scope || scope === "*") return "*"
   // Single tool → use as-is. Multi → alternation.
@@ -244,7 +304,20 @@ function buildGuidedDraftForDryRun(s: WizardState): Record<string, unknown> {
 
 // Step 4 dynamic header phrasing.
 function actionHeaderEN(s: WizardState): string {
-  if (s.conditionKind === "none") return "On every matching tool call,"
+  if (s.conditionKind === "none") {
+    // D56c: tone the header to the lifecycle when there is no per-call
+    // check. The action runs every time the hook fires.
+    switch (s.lifecycle) {
+      case "user_prompt":   return "On every user prompt,"
+      case "pre_compact":   return "Right before each context compaction,"
+      case "subagent_stop": return "Each time a subagent finishes,"
+      case "session_start": return "When the session opens,"
+      case "session_end":   return "When the session closes,"
+      case "pre_final":     return "When the agent is about to send its final answer,"
+      case "after_tool_use":return "On every matching tool call (after),"
+      default:              return "On every matching tool call,"
+    }
+  }
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "When the tool args match,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "When the LLM critic on tool args returns NO,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "When the fetch domain matches,"
@@ -255,11 +328,28 @@ function actionHeaderEN(s: WizardState): string {
   if (s.lifecycle === "pre_final"       && s.conditionKind === "regex") return "When the final answer matches,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "shacl") return "When the SHACL shape does NOT conform,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "llm_critic") return "When the LLM critic returns NO,"
+  if (s.lifecycle === "user_prompt"     && s.conditionKind === "regex") return "When the user prompt matches,"
+  if (s.lifecycle === "user_prompt"     && s.conditionKind === "llm_critic") return "When the LLM critic on the prompt returns NO,"
+  if (s.lifecycle === "pre_compact"     && s.conditionKind === "regex") return "When the transcript window matches,"
+  if (s.lifecycle === "pre_compact"     && s.conditionKind === "llm_critic") return "When the LLM critic on the transcript returns NO,"
+  if (s.lifecycle === "subagent_stop"   && s.conditionKind === "regex") return "When the subagent transcript matches,"
+  if (s.lifecycle === "subagent_stop"   && s.conditionKind === "llm_critic") return "When the LLM critic on the subagent transcript returns NO,"
   return "When the condition fires,"
 }
 
 function actionHeaderKO(s: WizardState): string {
-  if (s.conditionKind === "none") return "조건에 매칭되는 도구 호출마다,"
+  if (s.conditionKind === "none") {
+    switch (s.lifecycle) {
+      case "user_prompt":   return "유저 프롬프트가 도착할 때마다,"
+      case "pre_compact":   return "컨텍스트 컴팩션 직전마다,"
+      case "subagent_stop": return "서브에이전트가 끝날 때마다,"
+      case "session_start": return "세션이 시작될 때,"
+      case "session_end":   return "세션이 종료될 때,"
+      case "pre_final":     return "에이전트가 최종 응답을 내보내려 할 때,"
+      case "after_tool_use":return "도구 호출 후마다 (조건 없음),"
+      default:              return "조건에 매칭되는 도구 호출마다,"
+    }
+  }
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "도구 인자가 패턴에 매칭될 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "llm_critic") return "도구 인자에 대한 LLM critic이 NO를 반환할 때,"
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "fetch_domain") return "fetch 도메인이 매칭될 때,"
@@ -270,16 +360,43 @@ function actionHeaderKO(s: WizardState): string {
   if (s.lifecycle === "pre_final"       && s.conditionKind === "regex") return "최종 응답이 패턴에 매칭될 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "shacl") return "SHACL shape에 conform 하지 않을 때,"
   if (s.lifecycle === "pre_final"       && s.conditionKind === "llm_critic") return "LLM critic이 NO를 반환할 때,"
+  if (s.lifecycle === "user_prompt"     && s.conditionKind === "regex") return "유저 프롬프트가 패턴에 매칭될 때,"
+  if (s.lifecycle === "user_prompt"     && s.conditionKind === "llm_critic") return "프롬프트에 대한 LLM critic이 NO를 반환할 때,"
+  if (s.lifecycle === "pre_compact"     && s.conditionKind === "regex") return "컴팩션 대상 트랜스크립트가 패턴에 매칭될 때,"
+  if (s.lifecycle === "pre_compact"     && s.conditionKind === "llm_critic") return "트랜스크립트에 대한 LLM critic이 NO를 반환할 때,"
+  if (s.lifecycle === "subagent_stop"   && s.conditionKind === "regex") return "서브에이전트 트랜스크립트가 패턴에 매칭될 때,"
+  if (s.lifecycle === "subagent_stop"   && s.conditionKind === "llm_critic") return "서브에이전트 트랜스크립트에 대한 LLM critic이 NO를 반환할 때,"
   return "조건이 발동할 때,"
+}
+
+// D56c: localized lifecycle labels for both languages, one place.
+const LIFECYCLE_LABEL_KO: Record<Lifecycle, string> = {
+  before_tool_use: "도구 실행 전",
+  after_tool_use:  "도구 실행 후",
+  pre_final:       "최종 응답 직전",
+  subagent_stop:   "서브에이전트 종료 시점",
+  user_prompt:     "유저 프롬프트 직전",
+  pre_compact:     "컨텍스트 컴팩션 직전",
+  session_start:   "세션 시작 시점",
+  session_end:     "세션 종료 시점",
+}
+const LIFECYCLE_LABEL_EN: Record<Lifecycle, string> = {
+  before_tool_use: "before a tool runs",
+  after_tool_use:  "after a tool runs",
+  pre_final:       "before the final answer",
+  subagent_stop:   "when a subagent stops",
+  user_prompt:     "before a user prompt reaches the LLM",
+  pre_compact:     "before context compaction",
+  session_start:   "when the session opens",
+  session_end:     "when the session closes",
 }
 
 function plainSummary(s: WizardState, locale: "ko" | "en"): string {
   const ko = locale === "ko"
   const header = ko ? actionHeaderKO(s) : actionHeaderEN(s)
   const act = s.action ?? "audit"
-  const lifeLabel = ko
-    ? ({ before_tool_use: "도구 실행 전", after_tool_use: "도구 실행 후", pre_final: "최종 응답 직전" }[s.lifecycle ?? "before_tool_use"])
-    : ({ before_tool_use: "before a tool runs", after_tool_use: "after a tool runs", pre_final: "before the final answer" }[s.lifecycle ?? "before_tool_use"])
+  const life = s.lifecycle ?? "before_tool_use"
+  const lifeLabel = ko ? LIFECYCLE_LABEL_KO[life] : LIFECYCLE_LABEL_EN[life]
   const actLabel = ko
     ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[act])
     : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[act])
@@ -466,9 +583,11 @@ async function advanceWizard(formData: FormData): Promise<void> {
     params.set(k, v.trim())
   }
 
-  // pre_final has no tool scope; auto-skip Step 2.
+  // D56c: every no-tool-context lifecycle auto-skips Step 2 (Stop,
+  // SubagentStop, UserPromptSubmit, PreCompact, SessionStart, SessionEnd).
+  // Only PreToolUse and PostToolUse carry a tool matcher.
   const lifecycle = params.get("lifecycle") as Lifecycle | null
-  if (stepIn === 1 && lifecycle === "pre_final") {
+  if (stepIn === 1 && lifecycle && !lifecycleHasToolScope(lifecycle)) {
     nextStep = 3
   }
 
@@ -482,7 +601,9 @@ async function advanceWizard(formData: FormData): Promise<void> {
 /** Final step. Build a PolicyDraft from URL state and PUT. */
 async function saveWizard(formData: FormData): Promise<void> {
   "use server"
-  const lifecycle = String(formData.get("lifecycle") ?? "before_tool_use") as Lifecycle
+  const lifecycleRaw = String(formData.get("lifecycle") ?? "before_tool_use")
+  const lifecycle: Lifecycle = (LIFECYCLES as readonly string[]).includes(lifecycleRaw)
+    ? (lifecycleRaw as Lifecycle) : "before_tool_use"
   const conditionKindRaw = String(formData.get("conditionKind") ?? "")
   const conditionKind = (ALL_CONDITION_KINDS as readonly string[]).includes(conditionKindRaw)
     ? (conditionKindRaw as ConditionKind) : "none"
@@ -490,6 +611,16 @@ async function saveWizard(formData: FormData): Promise<void> {
 
   if (action === "strip" && !STRIP_AVAILABLE) {
     redirect("/policies/new?mode=guided&step=4&err=strip_unsupported"); return
+  }
+
+  // D56c: refuse matrix-illegal action choices before the round-trip
+  // to the cloud. The cloud's policy.validate() enforces the same
+  // table canonically (matrix.LEGAL_COMBINATIONS); this client-side
+  // check just lands the error on the right step. ACTIONS_BY_
+  // LIFECYCLE mirrors that table.
+  const allowedActions = ACTIONS_BY_LIFECYCLE[lifecycle]
+  if (!allowedActions.includes(action)) {
+    redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
   }
 
   // Resolve toolScope: prefer the hidden carry (most steps) over the
@@ -612,27 +743,31 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
  * partial state and surfaces "—" placeholders on Step 6). */
 function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   if (!ir) return null
-  // event -> lifecycle. Anything outside the wizard's 3-lifecycle
-  // model (UserPromptSubmit / PreCompact / Subagent* / Session*)
-  // can't be authored in guided mode, so we leave lifecycle
-  // undefined and let Step 1's default (`before_tool_use`) take
-  // over. The prebuilt catalog only emits PreToolUse / PostToolUse
-  // / Stop today; future ones still degrade safely.
+  // event -> lifecycle. D56c: the wizard now covers all 8 CC hooks
+  // so every prebuilt / advanced IR shape round-trips cleanly. Anything
+  // outside the 8-event surface degrades to undefined and Step 1's
+  // default (`before_tool_use`) takes over.
   let lifecycle: Lifecycle | undefined
   switch (ir.trigger?.event) {
-    case "PreToolUse":  lifecycle = "before_tool_use"; break
-    case "PostToolUse": lifecycle = "after_tool_use";  break
-    case "Stop":        lifecycle = "pre_final";       break
-    default:            lifecycle = undefined
+    case "PreToolUse":       lifecycle = "before_tool_use"; break
+    case "PostToolUse":      lifecycle = "after_tool_use";  break
+    case "Stop":             lifecycle = "pre_final";       break
+    case "SubagentStop":     lifecycle = "subagent_stop";   break
+    case "UserPromptSubmit": lifecycle = "user_prompt";     break
+    case "PreCompact":       lifecycle = "pre_compact";     break
+    case "SessionStart":     lifecycle = "session_start";   break
+    case "SessionEnd":       lifecycle = "session_end";     break
+    default:                 lifecycle = undefined
   }
 
   // matcher -> toolScope. `*` (wildcard) is "any tool" which we
   // model as undefined; `A|B|C` (alternation, the runtime convention
   // for multi-tool) maps to a CSV the wizard's Step 2 understands;
-  // a bare tool name stays as-is. pre_final's toolScope is irrelevant.
+  // a bare tool name stays as-is. No-tool-context lifecycles
+  // (pre_final + the 5 D56c additions) have no toolScope.
   let toolScope: string | undefined
   const matcher = ir.trigger?.matcher ?? "*"
-  if (lifecycle !== "pre_final" && matcher && matcher !== "*") {
+  if (lifecycleHasToolScope(lifecycle) && matcher && matcher !== "*") {
     toolScope = matcher.includes("|")
       ? matcher.split("|").map((s) => s.trim()).filter(Boolean).join(",")
       : matcher
@@ -1306,9 +1441,11 @@ function GuidedWizard({
     description: searchParams.description || draftState?.description,
   }
 
-  // pre_final auto-skips Step 2 (tool scope is irrelevant).
+  // D56c: every no-tool-context lifecycle auto-skips Step 2 (tool
+  // scope is irrelevant when matcher is forced to wildcard).
   const effectiveStep =
-    state.lifecycle === "pre_final" && step === 2 ? 3 : step
+    step === 2 && state.lifecycle && !lifecycleHasToolScope(state.lifecycle)
+      ? 3 : step
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -1467,6 +1604,105 @@ function inputCls(): string {
 
 /* ─── Step 1. Lifecycle ──────────────────────────────────────────── */
 
+// D56c: per-lifecycle label + sub copy for both languages. We keep the
+// label and helper local to the wizard (rather than threading 16 new
+// i18n keys) so the future event additions land in one place. The 8
+// lifecycle slugs match LIFECYCLE_TO_EVENT 1:1.
+function lifecycleCardCopy(
+  locale: "ko" | "en",
+): Record<Lifecycle, { label: string; sub: string }> {
+  return locale === "ko" ? {
+    before_tool_use: {
+      label: "도구 실행 전 (PreToolUse)",
+      sub: "Bash, Edit, WebFetch 등 도구 호출이 실행되기 직전에 게이트가 발동합니다.",
+    },
+    after_tool_use: {
+      label: "도구 실행 후 (PostToolUse)",
+      sub: "도구가 결과를 돌려준 직후, 출력을 검사하거나 후속 동작을 정합니다.",
+    },
+    user_prompt: {
+      label: "유저 프롬프트 직전 (UserPromptSubmit)",
+      sub: "유저 프롬프트가 LLM 으로 가기 직전. PII / 특권 정보 누출을 차단합니다.",
+    },
+    pre_compact: {
+      label: "컨텍스트 컴팩션 직전 (PreCompact)",
+      sub: "컨텍스트 컴팩션 직전에 발동. evidence 체인 보존에 사용합니다.",
+    },
+    pre_final: {
+      label: "최종 응답 직전 (Stop)",
+      sub: "메인 에이전트 턴 종료 시점. 감사용으로만 사용합니다 (런타임은 차단 불가).",
+    },
+    subagent_stop: {
+      label: "서브에이전트 종료 (SubagentStop)",
+      sub: "서브에이전트 한 사이클이 끝났을 때 발동. 결과 트랜스크립트 감사 용도.",
+    },
+    session_start: {
+      label: "세션 시작 (SessionStart)",
+      sub: "세션이 시작될 때 한 번 발동. 감사 경계 마커로 사용합니다.",
+    },
+    session_end: {
+      label: "세션 종료 (SessionEnd)",
+      sub: "세션이 종료될 때 한 번 발동. 감사 경계 마커로 사용합니다.",
+    },
+  } : {
+    before_tool_use: {
+      label: "Before a tool runs (PreToolUse)",
+      sub: "Fires right before a tool call (Bash, Edit, WebFetch, …) executes.",
+    },
+    after_tool_use: {
+      label: "After a tool returns (PostToolUse)",
+      sub: "Fires right after a tool returns; inspect or react to the output.",
+    },
+    user_prompt: {
+      label: "Before a user prompt (UserPromptSubmit)",
+      sub: "Right before a user prompt reaches the LLM. Catch PII or privileged content.",
+    },
+    pre_compact: {
+      label: "Before context compaction (PreCompact)",
+      sub: "Fires before the runtime compacts the transcript; preserve evidence chains.",
+    },
+    pre_final: {
+      label: "Before the final answer (Stop)",
+      sub: "Main agent turn ends. Audit-only (the runtime cannot rewind the answer).",
+    },
+    subagent_stop: {
+      label: "When a subagent stops (SubagentStop)",
+      sub: "Fires when a subagent task ends. Use it to audit child transcripts.",
+    },
+    session_start: {
+      label: "When the session opens (SessionStart)",
+      sub: "Fires once at session start. Audit boundary marker.",
+    },
+    session_end: {
+      label: "When the session closes (SessionEnd)",
+      sub: "Fires once at session end. Audit boundary marker.",
+    },
+  }
+}
+
+// D56c: lifecycles grouped by family so the 8-card grid stays scannable.
+// Group headers come from the dict (newPolicy.wizard.step1.group.*).
+const LIFECYCLE_GROUPS: ReadonlyArray<{
+  groupKey:
+    | "newPolicy.wizard.step1.group.toolActions"
+    | "newPolicy.wizard.step1.group.contentFlow"
+    | "newPolicy.wizard.step1.group.boundaries"
+  members: readonly Lifecycle[]
+}> = [
+  {
+    groupKey: "newPolicy.wizard.step1.group.toolActions",
+    members: ["before_tool_use", "after_tool_use"],
+  },
+  {
+    groupKey: "newPolicy.wizard.step1.group.contentFlow",
+    members: ["user_prompt", "pre_compact", "pre_final"],
+  },
+  {
+    groupKey: "newPolicy.wizard.step1.group.boundaries",
+    members: ["subagent_stop", "session_start", "session_end"],
+  },
+]
+
 function Step1Lifecycle({
   t, locale, state, action,
 }: {
@@ -1476,15 +1712,7 @@ function Step1Lifecycle({
 }) {
   const current = state.lifecycle ?? "before_tool_use"
   const ko = locale === "ko"
-  const labels: Record<Lifecycle, { label: string; sub: string }> = ko ? {
-    before_tool_use: { label: "도구 실행 전 (before_tool_use)", sub: "Bash, Edit, WebFetch 등 도구 호출이 실행되기 직전에 게이트가 발동합니다." },
-    after_tool_use:  { label: "도구 실행 후 (after_tool_use)",  sub: "도구가 결과를 돌려준 직후, 출력을 검사하거나 후속 동작을 정합니다." },
-    pre_final:       { label: "최종 응답 직전 (pre_final)",       sub: "에이전트가 최종 응답을 사용자에게 내놓기 직전, 마지막 검증 단계." },
-  } : {
-    before_tool_use: { label: "Before a tool runs (before_tool_use)", sub: "Fires right before a tool call (Bash, Edit, WebFetch, …) executes." },
-    after_tool_use:  { label: "After a tool returns (after_tool_use)", sub: "Fires right after a tool returns, lets you inspect or react to the output." },
-    pre_final:       { label: "Before the final answer (pre_final)",   sub: "Last-chance verification before the agent sends its final answer to the user." },
-  }
+  const labels = lifecycleCardCopy(locale)
   return (
     <StepShell
       t={t}
@@ -1492,18 +1720,29 @@ function Step1Lifecycle({
       heading={t("newPolicy.wizard.step1.heading")}
       helper={t("newPolicy.wizard.step1.helper")}
     >
-      <form action={action} className="space-y-3">
+      <form action={action} className="space-y-5">
         <input type="hidden" name="_step" value="1" />
-        {LIFECYCLES.map((life) => (
-          <RadioCard
-            key={life}
-            name="lifecycle"
-            value={life}
-            defaultChecked={current === life}
-            label={labels[life].label}
-            sub={labels[life].sub}
-            badge={life === "before_tool_use" ? { variant: "ok", text: ko ? "추천" : "recommended" } : undefined}
-          />
+        {LIFECYCLE_GROUPS.map((group) => (
+          <div key={group.groupKey} className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)] m-0">
+              {t(group.groupKey)}
+            </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {group.members.map((life) => (
+                <RadioCard
+                  key={life}
+                  name="lifecycle"
+                  value={life}
+                  defaultChecked={current === life}
+                  label={labels[life].label}
+                  sub={labels[life].sub}
+                  badge={life === "before_tool_use"
+                    ? { variant: "ok", text: ko ? "추천" : "recommended" }
+                    : undefined}
+                />
+              ))}
+            </div>
+          </div>
         ))}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
@@ -1720,8 +1959,8 @@ function Step3Condition({
   // (Bash / Edit / Write / Read / WebFetch) we get tool-specific
   // paths; otherwise the generic tool_input dict shape (honest about
   // what the runtime can guarantee).
-  const ccEvent = payloadLifecycleToEvent(lifecycle)
-  const ccMatcher = lifecycle === "pre_final" ? undefined : state.toolScope
+  const ccEvent = LIFECYCLE_TO_EVENT[lifecycle]
+  const ccMatcher = lifecycleHasToolScope(lifecycle) ? state.toolScope : undefined
   const payloadFields = payloadAvailableFields(ccEvent, ccMatcher)
   // Filter condition kinds by lifecycle AND by whether WebFetch is in
   // the toolScope (for fetch_domain / domain_allowlist shortcuts).
@@ -1750,7 +1989,9 @@ function Step3Condition({
     shacl:             { label: "SHACL shape",     sub: "Fires when the evidence graph doesn't conform to a Turtle shape." },
   }
   const previewBadge = ko ? "프리뷰" : "preview"
-  const prevStep = state.lifecycle === "pre_final" ? 1 : 2
+  // D56c: every no-tool-context lifecycle skips Step 2, so the
+  // "Back" link from Step 3 jumps to Step 1.
+  const prevStep = lifecycleHasToolScope(state.lifecycle) ? 2 : 1
 
   // P9 (D49): the per-kind cumulative-judgment tip lives in a client
   // island (SteeringAwareField). It needs two same-page hrefs as a
@@ -2269,8 +2510,8 @@ function InlineSubConfigPanel({
 
   // Per-event payload chip context (matches Step 3's wiring).
   const lifecycle = state.lifecycle ?? "before_tool_use"
-  const ccEvent = payloadLifecycleToEvent(lifecycle)
-  const ccMatcher = lifecycle === "pre_final" ? undefined : state.toolScope
+  const ccEvent = LIFECYCLE_TO_EVENT[lifecycle]
+  const ccMatcher = lifecycleHasToolScope(lifecycle) ? state.toolScope : undefined
   const fields = useChips ? payloadAvailableFields(ccEvent, ccMatcher) : []
 
   return (
@@ -2395,8 +2636,10 @@ function Step6Review({
             <EditLink t={t} state={state} step={1} />
           </li>
 
-          {/* Tool scope row → Step 2 (only when lifecycle != pre_final). */}
-          {state.lifecycle !== "pre_final" && (
+          {/* Tool scope row → Step 2 (only when the lifecycle carries
+              a tool context. D56c broadened from `!== "pre_final"` to
+              cover the 5 added no-tool-context events too). */}
+          {lifecycleHasToolScope(state.lifecycle) && (
             <li data-testid="step6-row-tool-scope" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
               <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "도구" : "tool scope"}</span>
               <span className="text-[var(--color-text-secondary)]">

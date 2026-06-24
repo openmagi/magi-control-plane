@@ -220,4 +220,132 @@ describe("policies/new wizard — P9 steering wiring", () => {
     // evidence_refs joins into the CSV form the wizard reads back.
     expect(body).toMatch(/evidenceRefs\.join\(","\)/)
   })
+
+  // ── D56c ─────────────────────────────────────────────────────
+  // Wizard Step 1 now exposes all 8 CC hook events. The Lifecycle
+  // union, LIFECYCLES array, and LIFECYCLE_TO_EVENT map must stay
+  // in lockstep with the cloud's matrix.LEGAL_COMBINATIONS table.
+  describe("D56c: lifecycle expansion covers all 8 CC hooks", () => {
+    it("Lifecycle type union has all 8 slugs", () => {
+      // type Lifecycle = "..." | ... matches the literal union block.
+      const m = src.match(/type Lifecycle\s*=\s*([\s\S]+?)const LIFECYCLES/)
+      expect(m).not.toBeNull()
+      const block = m![1]
+      for (const slug of [
+        "before_tool_use", "after_tool_use", "pre_final",
+        "subagent_stop", "user_prompt", "pre_compact",
+        "session_start", "session_end",
+      ]) {
+        expect(block).toContain(`"${slug}"`)
+      }
+    })
+
+    it("LIFECYCLES array enumerates all 8 slugs", () => {
+      const m = src.match(/const LIFECYCLES:[\s\S]*?=\s*\[([\s\S]+?)\]/)
+      expect(m).not.toBeNull()
+      const arr = m![1]
+      for (const slug of [
+        "before_tool_use", "after_tool_use", "pre_final",
+        "subagent_stop", "user_prompt", "pre_compact",
+        "session_start", "session_end",
+      ]) {
+        expect(arr).toContain(`"${slug}"`)
+      }
+    })
+
+    it("LIFECYCLE_TO_EVENT maps each slug to its CC event name", () => {
+      const m = src.match(/LIFECYCLE_TO_EVENT[\s\S]*?=\s*\{([\s\S]+?)\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      for (const [slug, event] of [
+        ["before_tool_use", "PreToolUse"],
+        ["after_tool_use", "PostToolUse"],
+        ["pre_final", "Stop"],
+        ["subagent_stop", "SubagentStop"],
+        ["user_prompt", "UserPromptSubmit"],
+        ["pre_compact", "PreCompact"],
+        ["session_start", "SessionStart"],
+        ["session_end", "SessionEnd"],
+      ]) {
+        const re = new RegExp(`${slug}\\s*:\\s*"${event}"`)
+        expect(body).toMatch(re)
+      }
+    })
+
+    it("Step 1 renders the 8 lifecycle cards", () => {
+      // Step1Lifecycle iterates LIFECYCLE_GROUPS (3 groups, 8 total
+      // members). Pin the group declaration so a future refactor that
+      // drops one of the lifecycles from the UI is obvious in the diff.
+      const m = src.match(/const LIFECYCLE_GROUPS[\s\S]*?=\s*\[([\s\S]+?)\n\]/)
+      expect(m).not.toBeNull()
+      const block = m![1]
+      const members = [
+        "before_tool_use", "after_tool_use",
+        "user_prompt", "pre_compact", "pre_final",
+        "subagent_stop", "session_start", "session_end",
+      ]
+      for (const slug of members) {
+        expect(block).toContain(`"${slug}"`)
+      }
+    })
+
+    it("ACTIONS_BY_LIFECYCLE narrows audit-only events per the matrix", () => {
+      // pre_final + subagent_stop + session_start + session_end are
+      // audit-only per matrix.LEGAL_COMBINATIONS. Saving with block
+      // on one of those must be refused before the round-trip.
+      const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      expect(body).toMatch(/pre_final:\s*\[\s*"audit"\s*\]/)
+      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit"\s*\]/)
+      expect(body).toMatch(/session_start:\s*\[\s*"audit"\s*\]/)
+      expect(body).toMatch(/session_end:\s*\[\s*"audit"\s*\]/)
+      // user_prompt has the full pre-event action set.
+      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit"\s*\]/)
+      // pre_compact has block + audit (matrix admits both).
+      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit"\s*\]/)
+    })
+
+    it("saveWizard refuses matrix-illegal action choices", () => {
+      // Pinning the validation block keeps the client-side guard from
+      // silently disappearing on a future refactor (the cloud's
+      // canonical guard is matrix.validate_combination).
+      const start = src.indexOf("async function saveWizard")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 4000)
+      expect(body).toMatch(/ACTIONS_BY_LIFECYCLE\[lifecycle\]/)
+      expect(body).toMatch(/!allowedActions\.includes\(action\)/)
+    })
+
+    it("Step 2 auto-skips for every no-tool-context lifecycle", () => {
+      // The advance / GuidedWizard step-routing widened from a
+      // hardcoded `=== "pre_final"` to lifecycleHasToolScope; pin both
+      // call sites so the broadened skip can't silently regress to
+      // pre_final-only.
+      expect(src).toContain("lifecycleHasToolScope")
+      const advanceStart = src.indexOf("async function advanceWizard")
+      const advanceBody = src.slice(advanceStart, advanceStart + 3000)
+      expect(advanceBody).toMatch(/!lifecycleHasToolScope\(lifecycle\)/)
+    })
+
+    it("_irToWizardState round-trips every CC event the wizard understands", () => {
+      // 8 case statements: three pinned by the D56a tests above, five
+      // added in D56c. Pin all eight here so a future trim to the IR
+      // -> wizard mapper is intentional rather than a silent regression.
+      const cases = [
+        ["PreToolUse", "before_tool_use"],
+        ["PostToolUse", "after_tool_use"],
+        ["Stop", "pre_final"],
+        ["SubagentStop", "subagent_stop"],
+        ["UserPromptSubmit", "user_prompt"],
+        ["PreCompact", "pre_compact"],
+        ["SessionStart", "session_start"],
+        ["SessionEnd", "session_end"],
+      ]
+      for (const [ev, life] of cases) {
+        const re = new RegExp(`case "${ev}":\\s*[^\\n]*lifecycle = "${life}"`)
+        expect(src).toMatch(re)
+      }
+    })
+  })
 })
