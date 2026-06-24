@@ -39,7 +39,11 @@ export default function NavBarClient({
   }, [open])
 
   return (
-    <header className="topbar relative" role="banner">
+    <header
+      className="sticky top-0 z-50 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)]/80 backdrop-blur-xl relative"
+      role="banner"
+    >
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
       <Link
         href="/"
         aria-label={`${brand} home`}
@@ -105,6 +109,7 @@ export default function NavBarClient({
           )}
         </svg>
       </button>
+      </div>
 
       {/* Mobile drawer */}
       {open && (
