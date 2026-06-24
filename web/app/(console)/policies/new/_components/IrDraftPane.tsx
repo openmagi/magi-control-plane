@@ -271,7 +271,7 @@ export function IrDraftPane({
        *  Advanced mode (PolicyBuilder), not here. */}
 
       <DryRunPanel
-        t={t}
+        locale={locale}
         ir={readyToSave && draft ? draft : null}
         disabled={!readyToSave}
         action={action ?? "audit"}

@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic"
 export default async function PolicyDetailPage({
   params,
 }: { params: { id: string[] } }) {
-  const { t } = await getT()
+  const { t, locale } = await getT()
   const raw = params.id.join("/")
   let id: string
   try { id = validatePolicyId(raw) }
@@ -147,7 +147,7 @@ export default async function PolicyDetailPage({
           replay the active policy over recent ledger rows without
           re-compiling anything. */}
       <DryRunPanel
-        t={t}
+        locale={locale}
         ir={detail.policy as unknown as Record<string, unknown>}
         action={extractAction(detail.policy)}
       />

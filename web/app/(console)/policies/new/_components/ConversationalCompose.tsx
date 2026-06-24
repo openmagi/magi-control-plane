@@ -26,9 +26,10 @@
  * pulls a server-only chain into the client bundle and breaks build.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/Button"
 import { Skeleton } from "@/components/ui/Skeleton"
+import { translate } from "@/lib/i18n/dict"
 import ChatTurn, { type QuestionVM } from "./ChatTurn"
 import IrDraftPane from "./IrDraftPane"
 
@@ -90,7 +91,6 @@ const STARTER_PILLS: StarterPill[] = [
 ]
 
 export interface ConversationalComposeProps {
-  t: T
   locale: "ko" | "en"
   /** Server action threaded from policies/new/page.tsx. Posts the
    *  current draft to PUT /policies (same path the NL and Raw modes
@@ -99,8 +99,12 @@ export interface ConversationalComposeProps {
 }
 
 export function ConversationalCompose({
-  t, locale, saveAction,
+  locale, saveAction,
 }: ConversationalComposeProps) {
+  const t: T = useMemo(
+    () => (key, vars) => translate(locale, key, vars),
+    [locale],
+  )
   const [history, setHistory] = useState<HistoryTurn[]>([])
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [readyToSave, setReadyToSave] = useState(false)

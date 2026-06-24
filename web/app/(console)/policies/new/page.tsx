@@ -808,7 +808,7 @@ export default async function NewPolicyPage({
           </Card>
 
           {compileResult && (
-            <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} />
+            <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} locale={locale} />
           )}
         </AuthoringShell>
       )}
@@ -867,7 +867,7 @@ export default async function NewPolicyPage({
               }}
               dryRunSlot={({ draft, isValid }) => (
                 <DryRunPanel
-                  t={t}
+                  locale={locale}
                   ir={isValid ? (draft as unknown as Record<string, unknown>) : null}
                   disabled={!isValid}
                   action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
@@ -893,7 +893,6 @@ export default async function NewPolicyPage({
               saveCompiled, the same server action the NL mode uses
               (writes via persistDraft + PUT /policies). */}
           <ConversationalCompose
-            t={t}
             locale={locale === "ko" ? "ko" : "en"}
             saveAction={saveCompiled}
           />
@@ -2226,7 +2225,7 @@ function Step6Review({
           when the wizard has not produced an id yet (saving would
           fail validation for the same reason). */}
       <DryRunPanel
-        t={t}
+        locale={locale}
         ir={state.id
           ? buildGuidedDraftForDryRun(state)
           : null}
@@ -2240,11 +2239,12 @@ function Step6Review({
 /* ─── compile-result block (NL mode) ─────────────────────────────── */
 
 function CompileResultBlock({
-  t, data, saveAction,
+  t, data, saveAction, locale,
 }: {
   data: CompileResult & { nl: string }
   saveAction: (fd: FormData) => Promise<void>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+  locale: import("@/lib/i18n/dict").Locale
 }) {
   const irJson = JSON.stringify(data.ir, null, 2)
   const hasSchemaIssues = data.schema_issues.length > 0
@@ -2338,7 +2338,7 @@ function CompileResultBlock({
           would 422 here too. Loading + error states are inline so a
           failed dry-run never blocks the Save action above. */}
       <DryRunPanel
-        t={t}
+        locale={locale}
         ir={canSave ? (data.ir as Record<string, unknown>) : null}
         disabled={!canSave}
         action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}

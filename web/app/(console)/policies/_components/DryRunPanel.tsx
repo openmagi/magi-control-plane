@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 import { Button } from "@/components/ui/Button"
+import { translate, type Locale, type TKey } from "@/lib/i18n/dict"
 
 /**
  * D53b: "Dry-run on last 24h" client panel.
@@ -35,8 +36,10 @@ import { Button } from "@/components/ui/Button"
  */
 
 // i18n helper signature matches the rest of the policies/* tree.
+// Reconstructed client-side from `locale` so we never cross the
+// server -> client boundary with a function closure.
 type T = (
-  k: import("@/lib/i18n/dict").TKey,
+  k: TKey,
   v?: Record<string, string | number>,
 ) => string
 
@@ -78,7 +81,7 @@ export type DryRunResult = {
 type ActionArchetype = "block" | "ask" | "audit" | "strip"
 
 export function DryRunPanel({
-  t,
+  locale,
   /** The policy IR draft as a JSON-serializable object. Required.
    *  The parent passes either the compile result (NL mode), the
    *  built draft (Guided / Raw / Edit), or the stored row (the
@@ -94,11 +97,15 @@ export function DryRunPanel({
    *  conservative pill color). */
   action,
 }: {
-  t: T
+  locale: Locale
   ir: Record<string, unknown> | null
   disabled?: boolean
   action?: ActionArchetype
 }) {
+  const t: T = useCallback(
+    (key, vars) => translate(locale, key, vars),
+    [locale],
+  )
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<DryRunResult | null>(null)
   const [err, setErr] = useState<string | null>(null)
