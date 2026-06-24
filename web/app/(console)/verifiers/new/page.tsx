@@ -172,7 +172,7 @@ async function createVerifierAction(formData: FormData): Promise<void> {
     redirect(`/verifiers/new?err=${codeForError(e)}`)
     return
   }
-  redirect("/rules?tab=evidence&msg=verifier_created")
+  redirect("/rules?tab=checks&msg=verifier_created")
 }
 
 export default async function NewCustomVerifierPage({
@@ -221,7 +221,7 @@ export default async function NewCustomVerifierPage({
         description={t("verifiers.new.description.page")}
         actions={
           <Link
-            href="/rules?tab=evidence"
+            href="/rules?tab=checks"
             className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:no-underline"
           >
             <ArrowLeftIcon className="h-4 w-4" aria-hidden />

@@ -43,12 +43,16 @@ describe("verifiers/new page source invariants", () => {
     expect(src).not.toContain("X-Admin-Api-Key")
   })
 
-  it("redirects to /rules?tab=evidence&msg=verifier_created on success", () => {
-    expect(src).toContain("/rules?tab=evidence&msg=verifier_created")
+  it("D56e: redirects to /rules?tab=checks&msg=verifier_created on success", () => {
+    // D56e merged the old Verifiers + Conditions tabs into a single
+    // Checks tab. Custom verifiers now land under Checks; the legacy
+    // tab=evidence target was repurposed for the new Evidence record-
+    // types catalog.
+    expect(src).toContain("/rules?tab=checks&msg=verifier_created")
   })
 
-  it("includes a back link to the verifiers tab", () => {
-    expect(src).toContain('href="/rules?tab=evidence"')
+  it("D56e: includes a back link to the checks tab", () => {
+    expect(src).toContain('href="/rules?tab=checks"')
   })
 
   it("renders form via the client island (server form, client state)", () => {

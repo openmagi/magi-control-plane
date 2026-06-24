@@ -305,6 +305,61 @@ describe("cloud client", () => {
     expect(r[0].policy_id).toBe("x/v1")
   })
 
+  // ── D56e: /checks + /evidence-types ─────────────────────────────
+  it("listChecks hits /checks with the data-plane key and parses rows", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ items: [
+        {
+          id: "citation_verify", name: "citation_verify", kind: "builtin",
+          source: "built-in", description: "",
+          field_checks: [{ path: "citations[].quote", check_description: "" }],
+          used_by_policies: ["p1"], body: null,
+        },
+        {
+          id: "p1:requires[0]:regex", name: "DROP", kind: "inline-regex",
+          source: "p1", description: "Inline regex pattern matched against the payload text.",
+          field_checks: [], used_by_policies: ["p1"], body: "DROP TABLE",
+        },
+      ] }), { status: 200 }) as any
+    })
+    const r = await cloud.listChecks()
+    expect(String(captured.url)).toBe("http://test/checks")
+    expect(new Headers(captured.init?.headers || {}).get("X-Api-Key")).toBe("tenant-test")
+    expect(r).toHaveLength(2)
+    expect(r[0].kind).toBe("builtin")
+    expect(r[1].kind).toBe("inline-regex")
+    expect(r[1].body).toBe("DROP TABLE")
+  })
+
+  it("listEvidenceRecordTypes hits /evidence-types and parses payload_schema", async () => {
+    process.env.MAGI_CP_API_KEY = "tenant-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ items: [
+        {
+          id: "citation_verify", name: "citation_verify",
+          origin: "builtin", kind: "builtin", description: "",
+          verdict_set: ["pass", "review", "deny"],
+          payload_schema: [
+            { path: "step", type: "str", description: "verifier step" },
+            { path: "verdict", type: "str", description: "verdict label" },
+          ],
+          used_by_policies: ["p1"], preview: false,
+        },
+      ] }), { status: 200 }) as any
+    })
+    const r = await cloud.listEvidenceRecordTypes()
+    expect(String(captured.url)).toBe("http://test/evidence-types")
+    expect(new Headers(captured.init?.headers || {}).get("X-Api-Key")).toBe("tenant-test")
+    expect(r).toHaveLength(1)
+    expect(r[0].origin).toBe("builtin")
+    expect(r[0].payload_schema.map((f) => f.path)).toEqual(["step", "verdict"])
+  })
+
   it("listVerifiers propagates 5xx as cloud N", async () => {
     process.env.MAGI_CP_API_KEY = "tenant-test"
     global.fetch = vi.fn(async () => new Response("", { status: 503 }) as any)

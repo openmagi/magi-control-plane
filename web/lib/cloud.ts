@@ -632,6 +632,37 @@ export const cloud = {
     return d.items
   },
 
+  /** D56e: merged checks catalog backing the new Rules → Checks tab.
+   *
+   * One row per pure function the runtime can evaluate:
+   *   - built-in verifiers from the registry,
+   *   - tenant-scoped custom verifiers from /custom-verifiers,
+   *   - inline regex / llm_critic / shacl bodies extracted from the
+   *     policy store.
+   *
+   * Read-only — the catalog is derived from the policy + verifier
+   * state. Edits go through /policies (inline) or /custom-verifiers
+   * (custom). Built-in entries are immutable.
+   */
+  listChecks: async (): Promise<CheckEntry[]> => {
+    const d = await _fetch<{ items: CheckEntry[] }>(
+      "/checks", { method: "GET", keyType: "api" },
+    )
+    return d.items
+  },
+
+  /** D56e: evidence record-types catalog backing the new Rules →
+   * Evidence tab. Distinct from the legacy `/catalog/evidence-types`
+   * which still feeds the verifiers tab on older dashboards. One row
+   * per evidence record shape (built-in verifier schema, inline kind
+   * generic shape, custom verifier preview). */
+  listEvidenceRecordTypes: async (): Promise<EvidenceRecordType[]> => {
+    const d = await _fetch<{ items: EvidenceRecordType[] }>(
+      "/evidence-types", { method: "GET", keyType: "api" },
+    )
+    return d.items
+  },
+
   /** P10: list endpoint heartbeats for the calling tenant. Read-only. */
   listEndpoints: async (): Promise<EndpointEntry[]> => {
     const d = await _fetch<EndpointListing>(
@@ -783,6 +814,66 @@ export type ConditionEntry = {
   policy_id: string
   trigger_event: string
   tool_matcher: string
+}
+
+/** D56e: one row on the new Rules → Checks tab. A check is any pure
+ * function the runtime can evaluate. Built-in verifiers + custom
+ * verifiers + inline regex / llm_critic / shacl bodies pulled from
+ * policies.
+ *
+ *   id              stable identifier (verifier step / name / inline locator)
+ *   name            display label
+ *   kind            "builtin" | "custom" | "inline-regex" | "inline-llm-critic" | "inline-shacl"
+ *   source          "built-in" | "custom" | originating policy id (for inline)
+ *   description     one-line summary for the row card
+ *   field_checks    optional (path, check_description) tree (present on
+ *                   builtins from descriptors, custom from authoring;
+ *                   empty for inline)
+ *   used_by_policies  policies referencing this check by step/name
+ *                     (inline rows always carry their own policy id)
+ *   body            present on inline rows — truncated pattern /
+ *                   criterion / shape preview; null for builtins/customs
+ */
+export type CheckEntry = {
+  id: string
+  name: string
+  kind: "builtin" | "custom" | "inline-regex" | "inline-llm-critic" | "inline-shacl"
+  source: string
+  description: string
+  field_checks: Array<{ path: string; check_description: string }>
+  used_by_policies: string[]
+  body: string | null
+}
+
+/** D56e: one row on the new Rules → Evidence tab. One per kind of
+ * ledger record the system can emit.
+ *
+ *   id              ledger step name (verifier step or `inline_<kind>`)
+ *   name            display label
+ *   origin          "builtin" | "custom" | "inline"
+ *   kind            same as origin today, present for forward-compat
+ *                   with future inline subtype splits.
+ *   description     one-line summary
+ *   verdict_set     possible verdicts the writer of this record can emit
+ *   payload_schema  the body shape — array of (path, type, description)
+ *   used_by_policies  policies that trigger this record type
+ *   preview         true → custom-source row with no runtime binding
+ *                   (count of 0 emissions is "no runtime", not "no usage")
+ */
+export type EvidenceRecordType = {
+  id: string
+  name: string
+  origin: "builtin" | "custom" | "inline"
+  kind: "builtin" | "custom" | "inline-regex" | "inline-llm-critic" | "inline-shacl"
+  description: string
+  verdict_set: string[]
+  payload_schema: Array<{
+    path: string
+    type: string
+    description: string
+  }>
+  used_by_policies: string[]
+  preview: boolean
 }
 
 /** P10: a single endpoint heartbeat as surfaced by /endpoints.
