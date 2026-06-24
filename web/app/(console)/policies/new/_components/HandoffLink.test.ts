@@ -90,6 +90,22 @@ describe("HandoffLink source invariants", () => {
     expect(src).toContain('"action"')
     expect(src).toContain('"id"')
   })
+
+  it("ferries the run_command archetype URL keys (D66)", () => {
+    // D66: a wizard mid-flight with action=run_command must carry its
+    // per-archetype body fields (Step4bRunCommandFields) through the
+    // seed. Without these keys the backend serializer would receive
+    // action=run_command with no body and the assistant would have
+    // to re-ask for the command from scratch.
+    expect(src).toContain('"runCommandMode"')
+    expect(src).toContain('"runCommandRuntime"')
+    expect(src).toContain('"runCommandBody"')
+    expect(src).toContain('"runCommandScriptId"')
+    expect(src).toContain('"runCommandScriptName"')
+    expect(src).toContain('"runCommandArgs"')
+    expect(src).toContain('"runCommandTimeoutMs"')
+    expect(src).toContain('"runCommandFailClosed"')
+  })
 })
 
 describe("ConversationalCompose seed handling", () => {

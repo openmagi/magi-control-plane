@@ -55,6 +55,13 @@ from .nl_compiler_interactive import (
     _LIFECYCLE_TO_EVENT,
     _ON_MISSING_VALUES,
     _REQUIRES_KINDS,
+    _RC_SCRIPT_ID_RE,
+    _RUN_COMMAND_RUNTIMES,
+    _MAX_RUN_COMMAND_ARGS,
+    _MAX_RUN_COMMAND_ARG_LEN,
+    _MAX_RUN_COMMAND_INLINE_LEN,
+    _MAX_RUN_COMMAND_TIMEOUT_MS,
+    _MIN_RUN_COMMAND_TIMEOUT_MS,
     _apply_answer_to_draft,
     _detect_korean,
     _draft_passes_ir_validator,
@@ -120,17 +127,20 @@ _ACTION_DROPPED_LABEL_KO: dict[str, str] = {
     "inject_context": "맥락 주입",
     "input_rewrite":  "입력 다시 쓰기",
     "strip":          "응답에서 제거",
-    # D63 review (P2): run_command joins the wizard-only archetype
-    # group so a wizard-built RunCommandPolicy handed off into
-    # conversational compose reads as "this rule runs a shell
-    # command" rather than as if it were a generic block/audit.
-    "run_command":    "쉘 명령 실행",
+    # D66: `run_command` USED to live here as a "wizard-only" archetype
+    # that the conversational vocabulary could not store. D66 widened
+    # the serializer so a wizard-built RunCommandPolicy now ROUND-TRIPS
+    # through the seed (lifecycle + matcher + id + command + runtime +
+    # args + timeout_ms + fail_closed + script_id). The conversational
+    # compiler in turn already understands `type: "run_command"` (D65)
+    # and the IrDraftPane already renders the run_command body slot
+    # (D63 review). So `run_command` is intentionally absent from this
+    # table — it is no longer a dropped archetype.
 }
 _ACTION_DROPPED_LABEL_EN: dict[str, str] = {
     "inject_context": "context injection",
     "input_rewrite":  "input rewriting",
     "strip":          "stripping the output",
-    "run_command":    "running a shell command",
 }
 
 # Plain-language labels for wizard-only ConditionKind values that the
@@ -204,6 +214,195 @@ class HandoffContextError(ValueError):
 _TOOL_CONTEXT_LIFECYCLES: frozenset[str] = frozenset({
     "before_tool_use", "after_tool_use",
 })
+
+
+# D66: wizard URL field names that ferry the in-progress
+# RunCommandPolicy state (see Step4bRunCommandFields). These are the
+# only run_command-shaped keys the serializer reads from `wizard_state`;
+# anything outside this set is silently ignored so a malicious client
+# cannot smuggle a fictional `runCommandFoo` field through.
+_RUN_COMMAND_WIZARD_KEYS: frozenset[str] = frozenset({
+    "runCommandMode", "runCommandRuntime", "runCommandBody",
+    "runCommandScriptId", "runCommandScriptName",
+    "runCommandArgs", "runCommandTimeoutMs", "runCommandFailClosed",
+})
+
+
+def _project_run_command_state(
+    state: dict[str, Any], draft: dict[str, Any],
+) -> None:
+    """Write the run_command archetype fields from `state` into `draft`.
+
+    Mirrors the per-field allowlists `_sanitize_draft_so_far` applies to
+    the raw editor's run_command passthrough (same caps, same regex). A
+    value that survives this projection is canonical and safe to feed
+    back through `policy_from_dict` for the ready_to_save decision.
+
+    Notes on what we DO and DO NOT seed:
+
+    * `type: "run_command"` is always written — this is the archetype
+      discriminator the rest of the conversational compiler dispatches
+      on (`_is_run_command_draft`). Without this the draft would look
+      like an evidence-archetype draft to `_missing_fields_for_draft`
+      and ask for `requires` / `on_missing` instead of asking for the
+      missing command body.
+    * Inline `command` and attached `script_path` (alias `script_id` on
+      the wire) are mutually exclusive per `RunCommandPolicy.validate`.
+      The wizard's `runCommandMode` URL key picks which lane is live;
+      when the mode is "inline" we drop any half-typed script id, and
+      vice versa, so the merged draft never carries both lanes filled
+      (which would 422 in `policy_from_dict`).
+    * `script_path` is gated to the 64-hex sha256 shape that
+      `RunCommandPolicy.validate` accepts. A half-typed id (e.g.
+      "abc123") would be dropped here; the conversational follow-up
+      then re-asks via the `requires_body` question slot.
+    * `args` parses the wizard's raw CSV (`runCommandArgs`) the same
+      way the wizard server action does. Per-arg length and total-arg
+      count caps mirror the IR.
+    * `timeout_ms` clamps to `[_MIN_RUN_COMMAND_TIMEOUT_MS,
+      _MAX_RUN_COMMAND_TIMEOUT_MS]`; anything outside the range is
+      dropped (NOT clamped) so a malicious client cannot smuggle a
+      sub-tick value past the IR's range check.
+    * `fail_closed` is the checkbox state — "true"/"false" strings on
+      the URL, coerced to bool here.
+
+    The operator-facing `runCommandScriptName` label is stashed on a
+    dedicated `_script_name` key. The IR does NOT persist it (only the
+    hash id matters at gate time) but the IrDraftPane can render it as
+    a friendly affordance next to the bare hash. The key is prefixed
+    with `_` so `_sanitize_draft_so_far`'s passthrough drops it on a
+    save round-trip — it never crosses the persistence boundary.
+    """
+    # Discriminator. Always set so the conversational dispatcher takes
+    # the run_command path.
+    draft["type"] = "run_command"
+
+    mode_raw = state.get("runCommandMode")
+    mode = mode_raw if mode_raw in ("inline", "attach") else None
+
+    runtime = state.get("runCommandRuntime")
+    if isinstance(runtime, str) and runtime in _RUN_COMMAND_RUNTIMES:
+        draft["runtime"] = runtime
+
+    # Inline lane.
+    if mode != "attach":
+        body = state.get("runCommandBody")
+        if (
+            isinstance(body, str)
+            and body.strip()
+            and len(body) <= _MAX_RUN_COMMAND_INLINE_LEN
+        ):
+            draft["command"] = body
+
+    # Attached-script lane. Only land the path when the id matches the
+    # canonical 64-hex shape; a half-typed id stays unwritten and the
+    # follow-up turn re-asks. Always preserve the operator-typed name
+    # alongside (see docstring).
+    if mode != "inline":
+        script_id = state.get("runCommandScriptId")
+        if (
+            isinstance(script_id, str)
+            and script_id.strip()
+            and _RC_SCRIPT_ID_RE.match(script_id.strip())
+        ):
+            draft["script_path"] = script_id.strip()
+        script_name = state.get("runCommandScriptName")
+        if (
+            isinstance(script_name, str)
+            and script_name.strip()
+            and len(script_name) <= 200
+        ):
+            draft["_script_name"] = script_name.strip()
+
+    # Args: parse CSV. Drop anything past the IR's cap so a malicious
+    # client cannot pre-seed a 1000-element list and rely on the
+    # validator catching it later (we want a clean ready_to_save here).
+    args_raw = state.get("runCommandArgs")
+    if isinstance(args_raw, str) and args_raw.strip():
+        parts = [p.strip() for p in args_raw.split(",")]
+        kept: list[str] = []
+        for p in parts:
+            if not p:
+                continue
+            if len(p) > _MAX_RUN_COMMAND_ARG_LEN:
+                continue
+            kept.append(p)
+            if len(kept) >= _MAX_RUN_COMMAND_ARGS:
+                break
+        if kept:
+            draft["args"] = kept
+
+    # Timeout: stringified int on the URL; drop a non-integer or
+    # out-of-range value.
+    timeout_raw = state.get("runCommandTimeoutMs")
+    if isinstance(timeout_raw, str) and timeout_raw.strip():
+        try:
+            tm = int(timeout_raw.strip())
+        except ValueError:
+            tm = None
+        if (
+            isinstance(tm, int)
+            and not isinstance(tm, bool)
+            and _MIN_RUN_COMMAND_TIMEOUT_MS <= tm <= _MAX_RUN_COMMAND_TIMEOUT_MS
+        ):
+            draft["timeout_ms"] = tm
+    elif isinstance(timeout_raw, int) and not isinstance(timeout_raw, bool):
+        if _MIN_RUN_COMMAND_TIMEOUT_MS <= timeout_raw <= _MAX_RUN_COMMAND_TIMEOUT_MS:
+            draft["timeout_ms"] = timeout_raw
+
+    # Checkbox: the wizard URL key is "true"/"false". Map to bool.
+    fc_raw = state.get("runCommandFailClosed")
+    if fc_raw == "true":
+        draft["fail_closed"] = True
+    elif fc_raw == "false":
+        draft["fail_closed"] = False
+    elif isinstance(fc_raw, bool):
+        draft["fail_closed"] = fc_raw
+
+
+# Lifecycle slug → human label for the run_command summary "at <event>"
+# clause. We render even D58-only lifecycle buckets here so a
+# run_command policy authored on, e.g., `permission_request` can still
+# round-trip its "at the permission-request moment" framing — the
+# run_command archetype is uniformly legal across the matrix per
+# RUN_COMMAND_LEGAL_BY_LIFECYCLE in page.tsx, so the summary must
+# describe ALL of them in plain language.
+_RUN_COMMAND_LIFECYCLE_LABEL_KO: dict[str, str] = {
+    "before_tool_use":     "도구 실행 전",
+    "after_tool_use":      "도구 실행 후",
+    "pre_final":           "최종 응답 직전",
+    "subagent_stop":       "서브에이전트 종료 시점",
+    "user_prompt":         "사용자 입력 직전",
+    "user_prompt_submit":  "사용자 입력 제출 시점",
+    "pre_compact":         "메모리 정리 직전",
+    "session_start":       "세션 시작 시점",
+    "session_end":         "세션 종료 시점",
+    "stop":                "에이전트 종료 시점",
+    "permission_request":  "권한 요청 시점",
+    "subagent_start":      "서브에이전트 시작 시점",
+    "worktree_create":     "워크트리 생성 시점",
+    "worktree_remove":     "워크트리 제거 시점",
+    "notification":        "알림 시점",
+    "hook_call":           "후크 호출 시점",
+}
+_RUN_COMMAND_LIFECYCLE_LABEL_EN: dict[str, str] = {
+    "before_tool_use":     "before a tool runs",
+    "after_tool_use":      "after a tool runs",
+    "pre_final":           "just before the final answer",
+    "subagent_stop":       "when a subagent stops",
+    "user_prompt":         "before a user prompt reaches the LLM",
+    "user_prompt_submit":  "at the prompt-submit moment",
+    "pre_compact":         "before context compaction",
+    "session_start":       "when the session opens",
+    "session_end":         "when the session closes",
+    "stop":                "when the agent stops",
+    "permission_request":  "at the permission-request moment",
+    "subagent_start":      "when a subagent starts",
+    "worktree_create":     "when a worktree is created",
+    "worktree_remove":     "when a worktree is removed",
+    "notification":        "at the notification moment",
+    "hook_call":           "at the hook-call moment",
+}
 
 
 def _first_requires_body(draft: dict[str, Any]) -> str | None:
@@ -396,9 +595,26 @@ def _draft_from_wizard_state(state: dict[str, Any]) -> dict[str, Any]:
     # does not report on_missing as still-missing; the assistant
     # summary calls out the collapse in plain language so the operator
     # knows it happened.
+    #
+    # D66 — `action == "run_command"` is special: the conversational
+    # compiler DOES model the run_command archetype (via the `type:
+    # "run_command"` discriminator, see D65). When the wizard handed
+    # off mid-flight on a run_command policy, project its per-field
+    # body (command / runtime / args / timeout_ms / fail_closed /
+    # script_id / scriptName) straight onto the draft. The verifier
+    # fields `requires` / `on_missing` are NOT meaningful on
+    # run_command — `_missing_fields_for_draft` already dispatches on
+    # the `type` discriminator so we do NOT need to seed `on_missing`.
     action = state.get("action")
     if isinstance(action, str):
-        if action in _ON_MISSING_VALUES:
+        if action == "run_command":
+            _project_run_command_state(state, draft)
+            # If `_project_run_command_state` did not seed a command or
+            # script_path, the conversational follow-up will re-ask via
+            # the `requires_body` question slot (see
+            # `_run_command_missing_fields`). The `requires` slot stays
+            # absent — it is verifier vocabulary.
+        elif action in _ON_MISSING_VALUES:
             _apply_answer_to_draft(draft, "on_missing", action)
 
     # Id + description.
@@ -421,10 +637,27 @@ def _merge_drafts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
     exist (the user just clicked Continue from the wizard surface, so
     the wizard state IS the most recent intent), and fall back to the
     raw editor's values for anything the wizard surface did not author.
+
+    D66 — when the overlay commits to `type: "run_command"` we DROP the
+    base's verifier-only keys (`requires`, `action`) so the merged
+    draft is a pure run_command archetype. Otherwise a raw editor
+    draft that had a half-typed evidence rule would collide with the
+    wizard's run_command intent and `_draft_passes_ir_validator` would
+    reject both archetypes' field union as an unknown shape.
+    Conversely when the BASE committed to run_command but the overlay
+    did not (e.g. the wizard handed off before the operator picked the
+    run_command action) the base wins on the discriminator.
     """
     out: dict[str, Any] = copy.deepcopy(base) if base else {}
     if not isinstance(overlay, dict):
         return out
+    # D66 — drop verifier-only keys when the overlay commits to
+    # run_command. The two archetypes are mutually exclusive and
+    # mixing them would produce a draft no IR loader accepts.
+    if overlay.get("type") == "run_command":
+        out.pop("requires", None)
+        out.pop("action", None)
+        out.pop("on_missing", None)
     for k, v in overlay.items():
         if k == "trigger" and isinstance(v, dict):
             cur = out.get("trigger") if isinstance(out.get("trigger"), dict) else {}
@@ -442,6 +675,13 @@ def _merge_drafts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
             # (kind selected, body still missing), fall back to the
             # base's value so a well-formed `requires` from the raw
             # editor is not clobbered by the wizard's empty slot.
+            continue
+        # D66 — `fail_closed=False` is a meaningful run_command value
+        # (the operator explicitly opted INTO non-blocking failure).
+        # The blanket "drop empty / falsy" rule below would otherwise
+        # erase it on the merge.
+        if k == "fail_closed" and isinstance(v, bool):
+            out["fail_closed"] = v
             continue
         if v in (None, "", []):
             continue
@@ -478,6 +718,145 @@ def _dropped_lifecycle_label(slug: str, ko: bool) -> str:
     return _LIFECYCLE_DROPPED_FALLBACK_KO if ko else _LIFECYCLE_DROPPED_FALLBACK_EN
 
 
+def _summarize_run_command_line(
+    draft: dict[str, Any], *, ko: bool,
+) -> str | None:
+    """Build the brief's run_command summary line.
+
+    Per the D66 brief:
+        "Continuing where you left off. So far: run <command> at <event>
+        with <timeout>s timeout, <fail_closed | non-blocking on failure>."
+
+    We render the localised KO/EN variant deterministically (no LLM
+    call). Anything the draft has NOT yet filled is silently elided so
+    the line still reads naturally for a half-typed draft:
+
+        "run <X> at <event>"
+        "run <X> at <event> with 3.0s timeout"
+        "<event>"  (event-only handoff, no command yet)
+        None       (no run_command material at all)
+    """
+    if draft.get("type") != "run_command":
+        return None
+    trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
+    event = trig.get("event") if isinstance(trig, dict) else None
+    # Map back through both LIFECYCLE_TO_EVENT (conversational vocab)
+    # and the wider D58 table so the line still names the timing for a
+    # wizard-built run_command policy on permission_request etc.
+    lifecycle_slug: str | None = None
+    if isinstance(event, str):
+        for slug, ev in _LIFECYCLE_TO_EVENT.items():
+            if ev == event:
+                lifecycle_slug = slug
+                break
+        if lifecycle_slug is None:
+            # Conservative reverse map for the D58 wider surface.
+            # Mirrors the LIFECYCLE labels in
+            # web/app/(console)/policies/new/page.tsx LIFECYCLE_TO_EVENT.
+            _EVENT_TO_WIDER_SLUG: dict[str, str] = {
+                "PreToolUse":         "before_tool_use",
+                "PostToolUse":        "after_tool_use",
+                "Stop":               "pre_final",
+                "SubagentStop":       "subagent_stop",
+                "UserPromptSubmit":   "user_prompt_submit",
+                "PreCompact":         "pre_compact",
+                "SessionStart":       "session_start",
+                "SessionEnd":         "session_end",
+                "PermissionRequest":  "permission_request",
+                "SubagentStart":      "subagent_start",
+                "WorktreeCreate":     "worktree_create",
+                "WorktreeRemove":     "worktree_remove",
+                "Notification":       "notification",
+            }
+            lifecycle_slug = _EVENT_TO_WIDER_SLUG.get(event)
+    lifecycle_label: str | None = None
+    if lifecycle_slug:
+        table = (
+            _RUN_COMMAND_LIFECYCLE_LABEL_KO if ko
+            else _RUN_COMMAND_LIFECYCLE_LABEL_EN
+        )
+        lifecycle_label = table.get(lifecycle_slug)
+
+    command = draft.get("command")
+    script_path = draft.get("script_path")
+    script_name = draft.get("_script_name")
+    timeout_ms = draft.get("timeout_ms")
+    fail_closed = draft.get("fail_closed")
+
+    # Build the "what runs" phrase: prefer the inline command verbatim
+    # (truncated for the assistant line so a 4000-char inline body does
+    # not blow the summary). For an attached script, show the
+    # operator-typed name when present, else the bare id (operators
+    # need SOMETHING to recognise their policy by).
+    what: str | None = None
+    if isinstance(command, str) and command.strip():
+        body = command.strip()
+        truncated = body if len(body) <= 80 else (body[:80] + "...")
+        what = f"`{truncated}`"
+    elif isinstance(script_path, str) and script_path.strip():
+        if isinstance(script_name, str) and script_name.strip():
+            what = script_name.strip()
+        else:
+            # Show only the first 8 chars of the hash so the assistant
+            # line stays readable.
+            sid = script_path.strip()
+            short = sid[:8] + "..." if len(sid) > 8 else sid
+            what = (
+                f"스크립트 {short}" if ko else f"script {short}"
+            )
+
+    # Compose the assemble-as-you-go line. We avoid string-format
+    # acrobatics so the KO branch reads idiomatic Korean (postpositions
+    # depend on whether `what` ends in a consonant or vowel; we just
+    # use a connector that works in both cases).
+    if ko:
+        if what and lifecycle_label:
+            base = f"{lifecycle_label}에 {what} 실행"
+        elif what:
+            base = f"{what} 실행"
+        elif lifecycle_label:
+            base = f"{lifecycle_label}에 명령 실행"
+        else:
+            base = "명령 실행"
+    else:
+        if what and lifecycle_label:
+            base = f"run {what} {lifecycle_label}"
+        elif what:
+            base = f"run {what}"
+        elif lifecycle_label:
+            base = f"run a command {lifecycle_label}"
+        else:
+            base = "run a command"
+
+    # Timeout suffix.
+    if isinstance(timeout_ms, int) and not isinstance(timeout_ms, bool):
+        seconds = timeout_ms / 1_000
+        # Trim trailing zero on whole-second timeouts so "5s timeout"
+        # reads cleaner than "5.0s timeout".
+        if seconds == int(seconds):
+            secs_str = f"{int(seconds)}s"
+        else:
+            secs_str = f"{seconds:g}s"
+        if ko:
+            base += f", 타임아웃 {secs_str}"
+        else:
+            base += f" with {secs_str} timeout"
+
+    # Fail-closed suffix.
+    if isinstance(fail_closed, bool):
+        if fail_closed:
+            base += (
+                ", 실패 시 차단" if ko else ", deny on failure"
+            )
+        else:
+            base += (
+                ", 실패 시 통과 + 기록"
+                if ko else ", non-blocking on failure"
+            )
+
+    return base
+
+
 def _summarize_so_far(
     draft: dict[str, Any],
     *,
@@ -495,7 +874,70 @@ def _summarize_so_far(
     handoff. Mirrors the brief's "so far: …" framing. Never names an
     internal field, never emits an internal vocabulary token (the
     `_to_plain_language` scrubber runs at the end as defense in depth).
+
+    D66 — when the merged draft carries `type: "run_command"` the
+    summary uses the brief's run-command framing instead of the
+    verifier-shaped (when / applies-to / check / on-failure) bullets.
     """
+    # D66 — run_command archetype short-circuit. We render the brief's
+    # framing ("Continuing where you left off. So far: run <X> at
+    # <when> with <T>s timeout, <fail mode>.") instead of the
+    # verifier-shaped bullets. This stays plain language: no internal
+    # vocabulary, no raw enum slugs.
+    if draft.get("type") == "run_command":
+        rc_line = _summarize_run_command_line(draft, ko=ko)
+        head = (
+            "지금까지 작성하신 내용을 이어서 받았어요:"
+            if ko else
+            "Continuing where you left off. So far:"
+        )
+        if origin == "review":
+            head = (
+                "마지막 검토 화면에서 이어서 받았어요:"
+                if ko else
+                "Picking up from the review screen. So far:"
+            )
+        elif origin == "advanced":
+            head = (
+                "직접 작성 모드에서 이어서 받았어요:"
+                if ko else
+                "Continuing from the rule editor. So far:"
+            )
+        # Optional matcher line for tool-context lifecycles.
+        matcher_line: str | None = None
+        trig_ = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
+        mch = trig_.get("matcher") if isinstance(trig_, dict) else None
+        if isinstance(mch, str) and mch.strip() and mch.strip() != "*":
+            if ko:
+                matcher_line = f"적용 대상: {mch.strip()}"
+            else:
+                matcher_line = f"applies to: {mch.strip()}"
+        # Optional id line.
+        id_line: str | None = None
+        pid_ = draft.get("id")
+        if isinstance(pid_, str) and pid_:
+            if ko:
+                id_line = f"이름: {pid_}"
+            else:
+                id_line = f"name: {pid_}"
+        body_lines: list[str] = []
+        if rc_line:
+            body_lines.append(f"  - {rc_line}")
+        if matcher_line:
+            body_lines.append(f"  - {matcher_line}")
+        if id_line:
+            body_lines.append(f"  - {id_line}")
+        tail_q = (
+            "\n\n남은 부분을 같이 채워볼까요?"
+            if ko else
+            "\n\nLet's fill in what's still missing."
+        )
+        rendered = head
+        if body_lines:
+            rendered += "\n" + "\n".join(body_lines)
+        rendered += tail_q
+        return _to_plain_language(rendered)
+
     pieces: list[str] = []
     trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
     event = trig.get("event") if isinstance(trig, dict) else None
@@ -791,9 +1233,21 @@ def build_handoff_turn(
     # Track ahead of the merge so the summary can mention archetype
     # collapses (input_rewrite / inject_context / strip → audit; long
     # tail of wizard-only condition kinds → none).
+    #
+    # D66 — `run_command` is NOT a dropped archetype anymore. It
+    # round-trips through `_project_run_command_state` so the
+    # conversational compiler picks it up as a `type: "run_command"`
+    # draft. Treating it as dropped would emit a misleading collapse
+    # note in the summary ("rolling shell-command was collapsed to the
+    # closest default") while the draft actually carries the body.
     raw_action = ws.get("action")
     dropped_action: str | None = None
-    if isinstance(raw_action, str) and raw_action and raw_action not in _ON_MISSING_VALUES:
+    if (
+        isinstance(raw_action, str)
+        and raw_action
+        and raw_action not in _ON_MISSING_VALUES
+        and raw_action != "run_command"
+    ):
         dropped_action = raw_action
 
     raw_cond_kind = ws.get("conditionKind")

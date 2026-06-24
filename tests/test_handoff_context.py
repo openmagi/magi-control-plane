@@ -470,6 +470,314 @@ def test_complete_draft_is_ready_to_save():
     assert out["questions"] == []
 
 
+# ── D66 run_command handoff round-trip ────────────────────────────────
+
+
+def test_run_command_inline_state_round_trips_through_seed():
+    """The brief's leading scenario: wizard mid-flight with
+    action=run_command + half-typed inline command + 3s timeout. The
+    serializer must carry the body to the draft (so the IrDraftPane
+    renders it the same way it would after a typed reply) and frame
+    the summary line with the brief's "run <X> at <when> with <T>s
+    timeout" template."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandMode": "inline",
+        "runCommandRuntime": "bash",
+        "runCommandBody": "echo \"audit-stamp $TOOL_INPUT\"",
+        "runCommandArgs": "",
+        "runCommandTimeoutMs": "3000",
+        "runCommandFailClosed": "false",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    # The archetype discriminator landed.
+    assert merged["type"] == "run_command"
+    # Run_command body fields are present.
+    assert merged["command"] == "echo \"audit-stamp $TOOL_INPUT\""
+    assert merged["runtime"] == "bash"
+    assert merged["timeout_ms"] == 3_000
+    assert merged["fail_closed"] is False
+    # Trigger carries through from lifecycle / toolScope.
+    assert merged["trigger"]["event"] == "PreToolUse"
+    assert merged["trigger"]["matcher"] == "Bash"
+    # Verifier-only fields are NOT seeded — they have no meaning on
+    # run_command.
+    assert "requires" not in merged
+    assert "on_missing" not in merged
+    assert "action" not in merged
+    # Summary line follows the brief template.
+    msg = out["assistant_message"]
+    assert "Continuing where you left off" in msg
+    # "run <X> at <when> with <T>s timeout" template parts.
+    assert "echo " in msg
+    assert "before a tool runs" in msg
+    assert "3s timeout" in msg
+    assert "non-blocking on failure" in msg
+
+
+def test_run_command_attached_script_state_round_trips_with_name():
+    """Attached-script lane: a 64-hex script id + operator-typed name.
+    The IR persists only the hash, but the handoff seed preserves the
+    name on `_script_name` so the assistant line and the IR pane can
+    render the friendly label alongside the bare id."""
+    sid = "a" * 64
+    state = {
+        "lifecycle": "after_tool_use",
+        "toolScope": "WebFetch",
+        "action": "run_command",
+        "runCommandMode": "attach",
+        "runCommandRuntime": "python3",
+        "runCommandScriptId": sid,
+        "runCommandScriptName": "audit-stamp.py",
+        "runCommandArgs": "foo, bar",
+        "runCommandTimeoutMs": "10000",
+        "runCommandFailClosed": "true",
+        "id": "wf-audit-stamp",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    assert merged["script_path"] == sid
+    assert merged["_script_name"] == "audit-stamp.py"
+    assert merged["runtime"] == "python3"
+    assert merged["args"] == ["foo", "bar"]
+    assert merged["timeout_ms"] == 10_000
+    assert merged["fail_closed"] is True
+    assert merged["id"] == "wf-audit-stamp"
+    # No `command` was supplied — the attach lane is exclusive.
+    assert "command" not in merged
+    # Summary line uses the operator-typed script name, not the bare id.
+    msg = out["assistant_message"]
+    assert "audit-stamp.py" in msg
+    # Long hash should NOT leak in full to the rendered chat.
+    assert sid not in msg
+    assert "after a tool runs" in msg
+    assert "10s timeout" in msg
+    assert "deny on failure" in msg
+
+
+def test_run_command_only_action_no_body_yet_asks_for_command():
+    """Edge case: operator picked run_command but has not typed the
+    command body yet. The draft must still commit to `type:
+    "run_command"` (so the conversational missing-fields loop dispatches
+    to `_run_command_missing_fields`) and ask for the body via the
+    requires_body question slot."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        # No runCommandBody / scriptId yet.
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    # requires_body is the canonical missing slot for a body-less
+    # run_command draft (per _run_command_missing_fields).
+    assert "requires_body" in out["missing_fields"]
+    # `id` is also missing.
+    assert "id" in out["missing_fields"]
+    # The summary line still mentions running a command at the picked
+    # event even though the body is empty.
+    msg = out["assistant_message"]
+    assert "run a command" in msg
+    assert "before a tool runs" in msg
+
+
+def test_run_command_only_mode_toggle_picked_no_command():
+    """Edge case: operator opened Step 4b, switched mode to `attach`,
+    then clicked Continue. The mode toggle alone must not produce a
+    half-shaped draft that smuggles a script_path."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandMode": "attach",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    assert "script_path" not in merged
+    assert "command" not in merged
+    assert "requires_body" in out["missing_fields"]
+
+
+def test_run_command_invalid_script_id_is_dropped():
+    """A half-typed (non-64-hex) script id MUST NOT leak past the
+    serializer. The conversational follow-up re-asks via
+    requires_body."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandMode": "attach",
+        "runCommandScriptId": "deadbeef",  # too short
+        "id": "block-sudo",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    assert "script_path" not in merged
+    assert "requires_body" in out["missing_fields"]
+
+
+def test_run_command_out_of_range_timeout_is_dropped():
+    """A timeout outside the IR's bounds is dropped, not clamped."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "runCommandTimeoutMs": "999999",  # > _MAX_RUN_COMMAND_TIMEOUT_MS
+        "id": "tmt",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert "timeout_ms" not in merged
+
+
+def test_run_command_does_not_appear_as_dropped_action():
+    """`run_command` USED to be a dropped archetype in the summary
+    (D63 review labeled it). D66 widened the serializer so it now
+    round-trips; the summary must not emit the dropped-action collapse
+    note for run_command."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "id": "x",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    msg = out["assistant_message"]
+    # The "collapsed to the closest default" note must NOT appear.
+    assert "collapsed to the closest default" not in msg
+    # Neither the KO variant.
+    assert "가까운 기본값으로 정리했어요" not in msg
+
+
+def test_run_command_korean_summary_uses_korean_template():
+    """KO locale yields the Korean variant of the brief's template:
+    "<event>에 <X> 실행, 타임아웃 <T>s, ..."."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "runCommandTimeoutMs": "2000",
+        "runCommandFailClosed": "true",
+        "description": "감사 스탬프 정책",
+        "id": "audit-stamp",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    msg = out["assistant_message"]
+    # Korean lifecycle label.
+    assert "도구 실행 전" in msg
+    # Korean timeout phrasing.
+    assert "타임아웃 2s" in msg
+    # Korean fail-closed phrasing.
+    assert "실패 시 차단" in msg
+
+
+def test_run_command_inline_lane_drops_smuggled_script_id():
+    """When mode=inline, a smuggled `runCommandScriptId` must NOT land.
+    The two lanes are mutually exclusive per RunCommandPolicy.validate;
+    leaving both filled would 422 on save."""
+    sid = "b" * 64
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandMode": "inline",
+        "runCommandBody": "echo hi",
+        "runCommandScriptId": sid,  # smuggled
+        "id": "x",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["command"] == "echo hi"
+    assert "script_path" not in merged
+
+
+def test_run_command_complete_draft_is_ready_to_save():
+    """A run_command wizard state with every required field set must
+    flip ready_to_save=True on the handoff seam — same end-state as
+    the verifier-shaped equivalent at the top of the file."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandMode": "inline",
+        "runCommandRuntime": "bash",
+        "runCommandBody": "echo hi",
+        "runCommandTimeoutMs": "5000",
+        "runCommandFailClosed": "false",
+        "id": "echo-hi",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    assert out["ready_to_save"] is True, out["assistant_message"]
+    assert out["needs_more"] is False
+    assert out["questions"] == []
+
+
+def test_run_command_overlay_clears_verifier_fields_from_base():
+    """If the raw editor had a half-typed verifier draft and the wizard
+    handed off committing to run_command, the merge must drop the base's
+    `requires` / `action` so the merged draft is a pure run_command
+    archetype (the two archetypes are mutually exclusive)."""
+    draft_ir = {
+        "id": "old-evidence",
+        "version": "0.1",
+        "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": "^foo$"}],
+        "action": "block",
+    }
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "id": "echo-hi",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=draft_ir)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    assert merged["command"] == "echo hi"
+    # Verifier-only fields are cleared.
+    assert "requires" not in merged
+    assert "action" not in merged
+    # id from the wizard wins (most recent intent).
+    assert merged["id"] == "echo-hi"
+
+
+def test_run_command_args_csv_caps_per_arg_length():
+    """A 300-char per-arg token must NOT smuggle past the per-arg cap.
+    The cap mirrors the IR's `_MAX_RUN_COMMAND_ARG_LEN`."""
+    long_arg = "x" * 300
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "runCommandArgs": f"ok,{long_arg},also-ok",
+        "id": "args-cap",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["args"] == ["ok", "also-ok"]
+
+
 # ── route-level tests ─────────────────────────────────────────────────
 
 

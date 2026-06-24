@@ -60,7 +60,15 @@ export type HandoffLinkProps = {
 
 /** Subset of URL params the guided wizard ferries between steps. We
  *  list them explicitly so a future URL key cannot silently smuggle a
- *  non-wizard field into the seed payload. */
+ *  non-wizard field into the seed payload.
+ *
+ *  D66 widened the list with the run_command archetype keys (Step 4b)
+ *  so a wizard mid-flight on a RunCommandPolicy actually carries its
+ *  body / runtime / args / timeout / fail_closed / script_id /
+ *  scriptName into the conversational seed. Without these the
+ *  backend serializer would receive `action=run_command` with no
+ *  body fields and the assistant would have to re-ask for the
+ *  command from scratch. */
 const WIZARD_URL_KEYS = [
   "lifecycle", "conditionKind", "toolScope",
   "fetchDomain", "allowlist", "pattern", "llmCriterion",
@@ -69,6 +77,10 @@ const WIZARD_URL_KEYS = [
   "rewriterKind", "rewriterField", "rewriterPrefix",
   "rewriterStripRepeat", "rewriterFrom", "rewriterTo",
   "rewriterPattern", "rewriterReplacement", "rewriterCount",
+  // D66: run_command archetype URL keys (Step4bRunCommandFields).
+  "runCommandMode", "runCommandRuntime", "runCommandBody",
+  "runCommandScriptId", "runCommandScriptName",
+  "runCommandArgs", "runCommandTimeoutMs", "runCommandFailClosed",
   "id", "description",
 ] as const
 
