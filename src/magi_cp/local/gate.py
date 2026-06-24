@@ -1,7 +1,21 @@
 """Local PreToolUse hook entry point.
 
 CC pipes the hook event JSON on stdin. We parse `tool_input.command` for the
-sentinel `FILE_COURT_<matter>_<doc_id>`, then ask the cloud for a verdict.
+sentinel `FILE_COURT_<subject>_<payload_hash>` (legacy: `<matter>_<doc_id>`),
+then ask the cloud for a verdict.
+
+PR2 NOTE — sentinel-less policies (`sentinel_re=None`):
+  As of D43/D44, `Policy.sentinel_re` is Optional and the wizard no longer
+  auto-emits a default sentinel. A policy authored with `sentinel_re=None`
+  produces NO local-gate hook trigger in this v2.x line — every PreToolUse
+  silently `_allow()`s before any policy logic runs. The cloud-side runtime
+  surfaces (e.g. `/verify_inline`, /verify/{step}) still enforce such policies
+  end-to-end, but the local CC PreToolUse path requires a literal sentinel
+  match in `tool_input.command`. Surfacing sentinel-less policies on the
+  local gate is tracked as the "missing CC native surfaces" bullet of
+  tracking-issue #1 and is intended for a future surface (out of scope for
+  PR2/PR3). Until then, authors who need local CC enforcement MUST keep a
+  `sentinel_re` on the policy.
 
 Output protocol:
   - Allow → exit 0 silently (CC continues normal permission flow).
@@ -100,39 +114,78 @@ def _load_pubkey() -> Ed25519PublicKey:
     return _load_pubkey_for_kid(None)
 
 
-def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *, matter: str, doc_id: str) -> dict | None:
-    """Scan WAL for the *latest* citation_verify token bound to (matter, doc_id)
-    whose signature verifies under `pub` and which is not expired.
+def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *,
+                       subject: str, payload_hash: str) -> dict | None:
+    """Scan WAL for the *latest* citation_verify token bound to
+    (subject, payload_hash) whose signature verifies under `pub` and which
+    is not expired.
 
-    Why latest, not first: a later `verdict=fail|review|deny` token for the same
-    (matter, doc_id) MUST invalidate an earlier `pass` — otherwise a stale
-    success could authorize a re-edited document. The latest decision wins.
+    PR2: keying renamed from (matter, doc_id/doc_hash) → (subject, payload_hash).
+    For back-compat the lookup accepts EITHER set of token-body fields: a
+    token written by a pre-PR2 cloud carries `matter`/`doc_hash` only; a
+    post-PR2 cloud carries both legacy mirror fields AND `subject`/
+    `payload_hash`. We accept a hit if EITHER pair matches the requested
+    keys. This lets a gate cross the upgrade boundary without flushing its
+    WAL.
+
+    Why latest, not first: a later `verdict=fail|review|deny` token for the
+    same key MUST invalidate an earlier `pass` — otherwise a stale success
+    could authorize a re-edited document. The latest decision wins.
+
+    PR2 review fix (issue #1 follow-up):
+      Kid-pinning is decided from the NEWEST verifying token (by iat),
+      not the oldest-encountered one. Pre-PR2 the loop visited WAL entries
+      in append (oldest-first) order, pinned `expected_kid` to the first
+      match, and dropped every later entry whose `kid` differed. PR2's
+      dual-shape lookup expanded the pool of matched entries, so a gate
+      crossing the upgrade boundary could end up pinning to a stale,
+      older-kid pass token and discarding the newer, rotated-kid pass
+      token for the same logical key — letting a stale pass win.
+
+      Two-pass approach: first collect ALL verifying tokens that match by
+      either shape, then pick the highest-iat entry, then drop any sibling
+      whose kid disagrees with that newest entry's kid. This matches the
+      "latest decision wins" intent. Each token's signature is still
+      independently verified inside `verify_token`, and
+      `_load_pubkey_for_kid` already fail-closes on a kid-vs-cloud
+      mismatch — so dropping the older-kid sibling here is purely a
+      defense-in-depth pin, not the load-bearing trust check.
     """
-    latest: dict | None = None
-    latest_iat = -1
-    expected_kid: str | None = None
+    candidates: list[dict] = []
     for entry in wal.entries():
         if entry.get("step") != "citation_verify":
             continue
         body = verify_token(entry.get("token", ""), pub)
         if not body:
             continue
-        if body.get("matter") != matter or body.get("doc_hash") != doc_id:
+        new_match = (body.get("subject") == subject
+                     and body.get("payload_hash") == payload_hash)
+        legacy_match = (body.get("matter") == subject
+                        and body.get("doc_hash") == payload_hash)
+        if not (new_match or legacy_match):
             continue
-        # Kid pinning: every valid token for this (matter, doc_id) must agree
-        # on kid. A late-rotated token with a *different* kid means the gate
-        # is holding a stale pubkey; treat as suspect and reject.
-        kid = body.get("kid")
-        if expected_kid is None:
-            expected_kid = kid
-        elif kid != expected_kid:
-            continue
-        iat = body.get("iat", 0)
-        if iat > latest_iat:
-            latest_iat, latest = iat, body
-    if latest is None or latest.get("verdict") != "pass":
+        candidates.append(body)
+
+    if not candidates:
         return None
-    return latest
+
+    # Newest first by iat. Stable sort preserves WAL order for ties so we
+    # still get deterministic behaviour when two tokens share an iat.
+    candidates.sort(key=lambda b: b.get("iat", 0), reverse=True)
+    newest = candidates[0]
+    expected_kid = newest.get("kid")
+
+    # Walk newest-first, taking the first kid-matching pass — any later
+    # `review|deny` token for the same key already short-circuits the
+    # selection because it sits above an earlier `pass` in the sorted list.
+    for body in candidates:
+        if body.get("kid") != expected_kid:
+            continue
+        if body.get("verdict") != "pass":
+            # Latest decision is not a pass; stale earlier pass cannot win.
+            return None
+        return body
+    return None
 
 
 def evaluate(payload: dict) -> None:
@@ -156,11 +209,20 @@ def evaluate(payload: dict) -> None:
     # Every sentinel must individually validate. Multi-statement commands like
     # `FILE_COURT_A_X; FILE_COURT_B_Y` would otherwise allow Y to ride on X's
     # token (or vice versa).
+    #
+    # PR2: the sentinel's two captured groups are now treated as
+    # (subject, payload_hash). For legal-vertical sentinels that's still
+    # (matter, doc_id) semantically — the token-body match handles both
+    # naming schemes so legacy and new tokens both find a match.
     for m in matches:
-        matter, doc_id = m.group(1), m.group(2)
-        body = _find_signed_token(wal, pub, matter=matter, doc_id=doc_id)
+        subject, payload_hash = m.group(1), m.group(2)
+        body = _find_signed_token(wal, pub, subject=subject,
+                                  payload_hash=payload_hash)
         if body is None:
-            _deny(f"no signed citation_verify=pass for matter={matter} doc={doc_id}")
+            _deny(
+                f"no signed citation_verify=pass for subject={subject} "
+                f"payload_hash={payload_hash}"
+            )
     _allow()
 
 

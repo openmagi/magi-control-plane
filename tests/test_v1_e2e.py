@@ -183,3 +183,428 @@ def test_e2e_persistence_across_restart(tmp_path):
     c2 = TestClient(app2)
     items = c2.get("/policies", headers=ADMIN).json()["items"]
     assert any(i["id"] == "legal-filing/v1" for i in items)
+
+
+# ── PR2: subject/payload_hash dual-shape keying ──────────────────────
+def test_citation_verify_accepts_legacy_matter_doc_id(client):
+    """Legacy callers using `matter` + `doc_id` keep working unchanged."""
+    r = client.post("/citation_verify", json={
+        "matter": "M1", "doc_id": "D1", "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS).json()
+    assert r["verdict"] == "pass"
+    assert r["token"]
+
+
+def test_citation_verify_accepts_new_subject_payload_hash(client):
+    """PR2 canonical names — same request shape but with the new keys."""
+    r = client.post("/citation_verify", json={
+        "subject": "M1", "payload_hash": "D1", "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS).json()
+    assert r["verdict"] == "pass"
+    assert r["token"]
+
+
+def test_citation_verify_token_carries_both_naming_pairs(client):
+    """Issued token body MUST mirror both legacy and PR2 keys so gates on
+    either side of the upgrade boundary can verify the same token."""
+    from magi_cp.evidence.tokens import verify_token
+    pub_pem = client.get("/pubkey").json()["pubkey_pem"]
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    pub = load_pem_public_key(pub_pem.encode())
+    r = client.post("/citation_verify", json={
+        "subject": "S2", "payload_hash": "P2", "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS).json()
+    body = verify_token(r["token"], pub)
+    # legacy mirror
+    assert body["matter"] == "S2"
+    assert body["doc_hash"] == "P2"
+    # PR2 canonical
+    assert body["subject"] == "S2"
+    assert body["payload_hash"] == "P2"
+
+
+def test_citation_verify_rejects_when_subject_and_matter_disagree(client):
+    """If a caller sends BOTH naming pairs and they conflict, refuse — a
+    silent-winner heuristic would let typos slip through."""
+    r = client.post("/citation_verify", json={
+        "subject": "S", "matter": "OTHER",
+        "payload_hash": "P", "doc_id": "P",
+        "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_citation_verify_rejects_when_payload_hash_and_doc_id_disagree(client):
+    r = client.post("/citation_verify", json={
+        "subject": "S", "matter": "S",
+        "payload_hash": "P", "doc_id": "OTHER",
+        "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_citation_verify_missing_both_pairs_is_422(client):
+    r = client.post("/citation_verify", json={
+        "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS)
+    assert r.status_code == 422
+
+
+def _client_with_registry(tmp_path):
+    from magi_cp.verifier.builtins import register_builtins
+    from magi_cp.verifier.protocol import VerifierRegistry
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    reg = VerifierRegistry()
+    register_builtins(reg)
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                     policy_store_path=str(tmp_path / "policies.json"),
+                     verifier_registry=reg)
+    return TestClient(app)
+
+
+def test_verify_dispatch_accepts_new_keys(tmp_path):
+    """The generic /verify/{step} endpoint takes subject/payload_hash too."""
+    c = _client_with_registry(tmp_path)
+    r = c.post(
+        "/verify/privilege_scan",
+        headers=HEADERS,
+        json={"payload": {"text": "clean filing"},
+              "subject": "S3", "payload_hash": "P3"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "pass"
+
+
+def test_verify_dispatch_accepts_legacy_keys(tmp_path):
+    c = _client_with_registry(tmp_path)
+    r = c.post(
+        "/verify/privilege_scan",
+        headers=HEADERS,
+        json={"payload": {"text": "clean filing"},
+              "matter": "M3", "doc_id": "D3"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "pass"
+
+
+def test_verify_inline_accepts_new_keys(client):
+    r = client.post(
+        "/verify_inline",
+        headers=HEADERS,
+        json={"kind": "regex", "pattern": r"x",
+              "payload": {"text": "x"},
+              "subject": "S4", "payload_hash": "P4"},
+    )
+    assert r.status_code == 200
+    assert r.json()["verdict"] == "pass"
+
+
+def test_verify_inline_accepts_legacy_keys(client):
+    r = client.post(
+        "/verify_inline",
+        headers=HEADERS,
+        json={"kind": "regex", "pattern": r"x",
+              "payload": {"text": "x"},
+              "matter": "M4", "doc_id": "D4"},
+    )
+    assert r.status_code == 200
+    assert r.json()["verdict"] == "pass"
+
+
+def test_hitl_detail_surfaces_both_naming_pairs(client):
+    """List + detail responses expose subject/payload_hash AND
+    matter/doc_id so dashboards can render whichever they prefer."""
+    r = client.post("/citation_verify", json={
+        "subject": "S5", "payload_hash": "P5", "document": "",
+        "citations": [MISQUOTE_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS).json()
+    assert r["verdict"] == "review"
+    hitl_id = r["hitl_id"]
+    items = client.get("/hitl", headers=HITL_HEADERS).json()["items"]
+    target = next(i for i in items if i["id"] == hitl_id)
+    assert target["matter"] == "S5"
+    assert target["subject"] == "S5"
+    assert target["doc_id"] == "P5"
+    assert target["payload_hash"] == "P5"
+    d = client.get(f"/hitl/{hitl_id}/detail", headers=HITL_HEADERS).json()
+    assert d["matter"] == "S5" and d["subject"] == "S5"
+    assert d["doc_id"] == "P5" and d["payload_hash"] == "P5"
+
+
+def test_ledger_entries_surface_subject_alias(client):
+    """/ledger entries carry both `matter` (legacy) and `subject` (PR2)."""
+    client.post("/citation_verify", json={
+        "subject": "S6", "payload_hash": "P6", "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS)
+    led = client.get("/ledger?include_body=true", headers=HEADERS).json()
+    assert led["entries"]
+    e = led["entries"][-1]
+    assert e["matter"] == "S6"
+    assert e["subject"] == "S6"
+    # Body mirrors both pairs too.
+    body = e["body"]
+    assert body["matter"] == "S6" and body["subject"] == "S6"
+    assert body["doc_hash"] == "P6" and body["payload_hash"] == "P6"
+
+
+def test_synth_subject_and_hash_uses_session_id_when_present():
+    """When the caller has a session id, synth uses it for subject so the
+    ledger entry threads to that session — payload_hash is sha256 over the
+    canonical payload (deterministic).
+
+    PR2 review fix: synth output is constrained to the legacy `_KEY_PATTERN`
+    charset (no colon separator). `session_<id>` keeps the ledger key shape
+    uniform with caller-supplied subjects and reachable from the sentinel
+    charset."""
+    from magi_cp.cloud.app import _synth_subject_and_hash
+    s1, p1 = _synth_subject_and_hash({"a": 1}, session_id="abc")
+    s2, p2 = _synth_subject_and_hash({"a": 1}, session_id="abc")
+    # Subject deterministic when session_id is supplied
+    assert s1 == s2 == "session_abc"
+    # Payload hash deterministic across calls (same payload → same hash)
+    assert p1 == p2
+    assert len(p1) == 32   # sha256 prefix
+
+
+def test_synth_subject_and_hash_uses_random_subject_when_no_session():
+    """Without a session id we mint a one-shot tag so the ledger entry is
+    still uniquely keyed."""
+    from magi_cp.cloud.app import _synth_subject_and_hash
+    s1, _ = _synth_subject_and_hash({"a": 1})
+    s2, _ = _synth_subject_and_hash({"a": 1})
+    assert s1.startswith("req_") and s2.startswith("req_")
+    assert s1 != s2   # nonce differs
+
+
+def test_synth_subject_strips_unsafe_session_id_chars():
+    """A hostile or malformed session_id (newlines, quotes, control chars,
+    100KB of junk) must NOT smuggle bytes into the ledger key. Synth strips
+    anything outside `[A-Za-z0-9_\\-]` and bounds the length. If nothing
+    survives the strip, the synth falls back to a one-shot req_<hex> tag
+    so the ledger entry is still uniquely keyed."""
+    from magi_cp.cloud.app import _synth_subject_and_hash
+    import re as _re
+    safe_re = _re.compile(r"^[A-Za-z0-9_\-]+$")
+    # Newline + quote + control chars: stripped → `safe` survives
+    s, _ = _synth_subject_and_hash({"a": 1}, session_id='abc"\n\x00def')
+    assert safe_re.match(s)
+    assert s == "session_abcdef"
+    # All bad → fall back to req_<hex>
+    s, _ = _synth_subject_and_hash({"a": 1}, session_id='":!@#$%^&*()')
+    assert s.startswith("req_")
+    assert safe_re.match(s)
+    # 100KB junk: trimmed to bounded length → fits in String(64)
+    s, _ = _synth_subject_and_hash({"a": 1}, session_id="A" * 100_000)
+    assert safe_re.match(s)
+    assert len(s) <= 64
+
+
+def test_verify_dispatch_synthesises_when_no_keys_supplied(tmp_path):
+    """When the caller omits BOTH naming pairs the dispatch endpoint
+    still works — internal synthesis covers the gap (verdict + ledger
+    entry still get a stable binding)."""
+    c = _client_with_registry(tmp_path)
+    r = c.post(
+        "/verify/privilege_scan",
+        headers=HEADERS,
+        json={"payload": {"text": "clean filing"}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "pass"
+
+
+def test_verify_dispatch_synthesised_subject_threads_into_token_and_ledger(tmp_path):
+    """PR2 review fix (issue #1) integration coverage:
+
+    Unit tests prove `_synth_subject_and_hash` produces deterministic
+    output. This integration test proves the route layer actually wires
+    that output into the issued token body AND the ledger entry — a
+    silent regression where the validator computes synth values but the
+    route reads pre-validation `req.subject` (i.e. `None`) would slip
+    through the unit test."""
+    c = _client_with_registry(tmp_path)
+    payload = {"session_id": "sess123", "text": "clean filing"}
+    r = c.post(
+        "/verify/privilege_scan",
+        headers=HEADERS,
+        json={"payload": payload},
+    )
+    assert r.status_code == 200, r.text
+    body_resp = r.json()
+    assert body_resp["verdict"] == "pass"
+    # Decode the returned token and check subject is the synthesised one
+    from magi_cp.evidence.tokens import verify_token
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    pub_pem = c.get("/pubkey").json()["pubkey_pem"]
+    pub = load_pem_public_key(pub_pem.encode())
+    token_body = verify_token(body_resp["token"], pub)
+    assert token_body is not None
+    # Subject MUST be `session_sess123` (synth path; underscore separator per
+    # PR2 review fix to keep the ledger key uniform with legacy callers).
+    assert token_body["subject"] == "session_sess123"
+    # Both naming pairs in the token body get the synth value
+    assert token_body["matter"] == "session_sess123"
+    # payload_hash MUST be the sha256 prefix of canonical_json(payload)
+    import hashlib as _hashlib, json as _json
+    expected_hash = _hashlib.sha256(_json.dumps(
+        payload, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+    assert token_body["payload_hash"] == expected_hash
+    assert token_body["doc_hash"] == expected_hash
+    # And the ledger entry surfaces the same subject (paranoia: a route
+    # that issued the token correctly but persisted on a different key
+    # would still fool the token-only assertion above).
+    led = c.get("/ledger?include_body=true", headers=HEADERS).json()
+    # Last entry should be the pass we just issued.
+    last = led["entries"][-1]
+    assert last["matter"] == "session_sess123"
+    assert last["subject"] == "session_sess123"
+    assert last["body"]["subject"] == "session_sess123"
+    assert last["body"]["payload_hash"] == expected_hash
+
+
+def test_protected_token_fields_include_subject_and_payload_hash():
+    """PR2 review fix (issue #1) — load-bearing security invariant:
+
+    The protected-token-fields set must include BOTH the legacy keying
+    (`matter`, `doc_hash`) AND the canonical PR2 keying (`subject`,
+    `payload_hash`). A future refactor that drops either pair from the
+    set would let an HITL `extra={"subject": "attacker", ...}` payload
+    smuggle a clobbered subject through `_issue_token`'s body splat,
+    minting a token whose body looks legitimate but whose subject was
+    chosen by an outside caller.
+
+    Test the set directly so the assertion is independent of any
+    particular route — if anyone changes the set name or trims it, the
+    grep-level breakage is loud and immediate."""
+    from magi_cp.cloud.app import PROTECTED_TOKEN_FIELDS
+    assert {"subject", "payload_hash", "matter", "doc_hash"} <= PROTECTED_TOKEN_FIELDS
+    # Other invariants — these are the verdict/issuance fields a clobber
+    # would let an outside caller forge. Spell them out so an accidental
+    # removal is also caught.
+    assert {"verdict", "iat", "exp", "issuer", "kid", "step"} <= PROTECTED_TOKEN_FIELDS
+
+
+@pytest.mark.parametrize("clash_field", ["subject", "payload_hash", "matter", "doc_hash"])
+def test_issue_token_rejects_protected_field_clobber_via_extra(tmp_path, clash_field):
+    """Calling `_issue_token(..., extra={protected_field: <atk>})` MUST
+    raise an HTTPException(500) "protected field clash: {…}". Today the
+    only callers funnel through trusted route code, but the HITL approve
+    route's `extra={"hitl_id": …, "approver": …}` is one branch where
+    operator-controlled data lands inside `extra` — keeping the clash
+    check covered guards against a future approve handler that
+    accidentally passes user-controlled fields through."""
+    from fastapi import HTTPException
+    from magi_cp.cloud.app import _issue_token
+    from magi_cp.cloud.db import LedgerRepo, init_schema, make_engine
+    from magi_cp.cloud.keys import KeyStore
+    engine = make_engine("sqlite:///:memory:")
+    init_schema(engine)
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    ks.ensure_keypair()
+    ledger = LedgerRepo(engine)
+    with pytest.raises(HTTPException) as exc:
+        _issue_token(
+            "S", "P", "pass",
+            ledger=ledger, keystore=ks, kid="k",
+            extra={clash_field: "attacker_value"},
+        )
+    assert exc.value.status_code == 500
+    assert "protected field clash" in str(exc.value.detail)
+    assert clash_field in str(exc.value.detail)
+
+
+def test_verify_dispatch_rejects_payload_subject_over_64_chars(tmp_path):
+    """PR2 review fix (issue #1) — DB column alignment:
+
+    `LedgerEntry.matter` is `String(64)`. A 65-128 char subject /
+    payload_hash through `/verify/{step}` would pass pydantic (under the
+    pre-fix `max_length=128`), reach `ledger.append()` mid-issue, and
+    crash on Postgres with DataError AFTER the chain_lock and verifier
+    have already run — observable as a 500 with side effects (signed
+    token already in memory, never persisted). Cap at 64 to match the
+    column width."""
+    c = _client_with_registry(tmp_path)
+    r = c.post(
+        "/verify/privilege_scan",
+        headers=HEADERS,
+        json={"payload": {"text": "clean"},
+              "subject": "S" * 65, "payload_hash": "P"},
+    )
+    assert r.status_code == 422
+
+
+def test_verify_dispatch_rejects_unsafe_charset_in_subject(tmp_path):
+    """A subject containing newlines, quotes, or control characters must
+    be rejected at the pydantic boundary — without the regex constraint
+    those characters land inside the cloud-signed token body and the
+    ledger column, confusing downstream log + dashboard renderers."""
+    c = _client_with_registry(tmp_path)
+    bad_subjects = [
+        "with newline\nstill",
+        'with "quote"',
+        "with\x00null",
+        "with space",
+        "with:colon",   # rejected under tightened _KEY_PATTERN
+    ]
+    for bad in bad_subjects:
+        r = c.post(
+            "/verify/privilege_scan",
+            headers=HEADERS,
+            json={"payload": {"text": "x"},
+                  "subject": bad, "payload_hash": "P"},
+        )
+        assert r.status_code == 422, f"expected 422 for subject={bad!r}, got {r.status_code}"
+
+
+def test_gate_finds_token_issued_with_new_keys(tmp_path, capsys, monkeypatch):
+    """Round-trip: cloud issues a token with new keys, local gate accepts
+    it via either lookup path. The sentinel regex captures (subject,
+    payload_hash) — the gate's WAL scan must match by either naming pair."""
+    import os
+    from fastapi.testclient import TestClient
+    from magi_cp.cloud.app import create_app
+    from magi_cp.cloud.keys import KeyStore
+    from magi_cp.evidence import Wal
+    monkeypatch.setenv("MAGI_CP_API_KEY", API_KEY)
+    monkeypatch.setenv("MAGI_CP_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("MAGI_CP_CLOUD_URL", "http://magi-cp-test")
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    app = create_app(keystore=ks, dsn="sqlite:///:memory:")
+    client = TestClient(app)
+    # Prime pubkey
+    pem = client.get("/pubkey").json()["pubkey_pem"]
+    local_dir = str(tmp_path / "local")
+    os.makedirs(local_dir, exist_ok=True)
+    pkpath = os.path.join(local_dir, "pubkey.pem")
+    with open(pkpath, "w") as f:
+        f.write(pem)
+    os.chmod(pkpath, 0o600)
+    # Request with NEW keys
+    r = client.post("/citation_verify", json={
+        "subject": "M9", "payload_hash": "D9", "document": "",
+        "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
+    }, headers=HEADERS).json()
+    assert r["token"]
+    Wal(path=os.path.join(local_dir, "wal.jsonl")).append(
+        {"step": "citation_verify", "token": r["token"]}
+    )
+    # Gate scans WAL by the sentinel-captured (subject, payload_hash) =
+    # ("M9", "D9"). Token body has both pairs; either should match.
+    from magi_cp.local.gate import evaluate
+    payload = {"hook_event_name": "PreToolUse",
+                "tool_input": {"command": "echo FILE_COURT_M9_D9 motion"}}
+    import pytest as _pytest
+    with _pytest.raises(SystemExit) as exc:
+        evaluate(payload)
+    out = capsys.readouterr().out
+    assert exc.value.code == 0
+    # Silent allow → no JSON output
+    assert out == ""

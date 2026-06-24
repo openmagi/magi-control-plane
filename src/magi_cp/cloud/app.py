@@ -52,7 +52,92 @@ MAX_REF_LEN = 1_000
 MAX_DOCUMENT_LEN = 200_000
 MAX_CORPUS_OVERRIDE_BYTES = 200_000
 
-PROTECTED_TOKEN_FIELDS = {"step", "matter", "doc_hash", "verdict", "iat", "exp", "issuer", "kid"}
+PROTECTED_TOKEN_FIELDS = {
+    "step",
+    # legacy keying — pre-PR2 token shape; kept in the token body as
+    # mirror fields so old gates still verify post-PR2 tokens.
+    #
+    # NOTE the asymmetry between TOKEN bodies and LEDGER bodies:
+    #   - tokens (pre-PR2 + post-PR2 mirror): field is `doc_hash`
+    #   - ledger bodies (pre-PR2 + post-PR2 mirror): field is `doc_id`
+    # This is intentional. The pre-PR2 sides had different field names
+    # for the same value and we preserve each side's existing shape so
+    # legacy gates / consumers keep verifying without a flag-flip. The
+    # gate's `legacy_match` correctly reads `doc_hash` (token-side);
+    # any cross-surface auditor that walks BOTH should be told the two
+    # spellings mean the same value. PR4 will unify both sides on
+    # `payload_hash` once every deployed gate honours the new names.
+    "matter", "doc_hash",
+    # PR2: canonical keying. Subject = generic subject identifier
+    # (e.g. "session_abc", "req_xyz", or for legal verticals: matter id).
+    # payload_hash = sha256 of canonical tool payload (or for legal:
+    # doc_id). New gates / clients should rely on these.
+    "subject", "payload_hash",
+    "verdict", "iat", "exp", "issuer", "kid",
+}
+
+
+# ── PR2 synthesis helpers ─────────────────────────────────────────────
+def _canonical_json_bytes(payload: dict) -> bytes:
+    """Compact canonical JSON used ONLY for `_synth_subject_and_hash`.
+
+    NOTE: This uses `separators=(",", ":")` (compact); the ledger's
+    `_canonical` in `cloud/db.py` and the token signer's `_canonical` in
+    `evidence/tokens.py` both use Python's DEFAULT separators (with
+    whitespace). The byte sequences therefore differ — this hash is an
+    opaque request-time tag, NOT a value you can cross-check against a
+    ledger-chain hash or a token body. PR3/PR4 work that wants to verify a
+    request-time payload_hash against a ledger entry must canonicalise via
+    the matching helper, not this one.
+    """
+    import json as _json
+    return _json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                        separators=(",", ":")).encode("utf-8")
+
+
+def _synth_subject_and_hash(payload: dict | None,
+                             session_id: str | None = None) -> tuple[str, str]:
+    """Derive (subject, payload_hash) when neither was supplied.
+
+    subject defaults to:
+      - `session_<session_id>` when a session id is known
+      - `req_<random hex>`     otherwise (one-shot opaque tag)
+
+    Per PR2 review (issue #1 follow-up), synth output is constrained to the
+    legacy `_KEY_PATTERN` charset (`[A-Za-z0-9_\\-]`). Earlier drafts used a
+    colon separator (`session:<id>`), but mixing colon-bearing and legacy
+    alphanumeric-only matter shapes in the ledger / HITL index produces
+    silent data drift (two cohorts of identifiers with no documented
+    schema). Underscore separator keeps the column shape uniform during the
+    PR2→PR3 widening window AND makes the subject reachable from the
+    sentinel charset `[A-Za-z0-9_\\-]+` should anyone wire it into a future
+    sentinel template.
+
+    session_id is also sanitised here: any characters outside `_KEY_PATTERN`
+    are stripped. This closes the equivalent injection path that
+    VerifyDispatchReq.subject explicitly rejects via regex constraint —
+    without this, a hand-crafted `payload={"session_id": "...\\n..."}` would
+    smuggle bad bytes into the ledger key.
+
+    payload_hash is sha256 of the canonical_json(payload) — empty payload
+    becomes sha256("{}"), which is still a stable address (a verifier
+    looking at "no payload" deterministically reproduces it).
+    """
+    import secrets
+    if session_id:
+        # Strip anything outside the legacy key charset; bound the length so
+        # the synthesised subject stays well under the 64-char DB column.
+        safe = re.sub(r"[^A-Za-z0-9_\-]", "", session_id)[:48]
+        if safe:
+            subject = f"session_{safe}"
+        else:
+            # session_id contained nothing usable — fall back to nonce.
+            subject = f"req_{secrets.token_hex(8)}"
+    else:
+        subject = f"req_{secrets.token_hex(8)}"
+    body = payload if isinstance(payload, dict) else {}
+    payload_hash = hashlib.sha256(_canonical_json_bytes(body)).hexdigest()[:32]
+    return subject, payload_hash
 
 
 # ── request/response shapes (size-bounded per P3 #C2) ────────────────
@@ -61,15 +146,93 @@ class CitationIn(BaseModel):
     ref: str = Field(..., min_length=1, max_length=MAX_REF_LEN)
 
 
+# Shared regex for both old and new key fields — kept identical so the
+# alias path doesn't smuggle in shapes the legacy path would reject.
+_KEY_PATTERN = r"^[A-Za-z0-9_\-]+$"
+
+
 class VerifyReq(BaseModel):
-    matter: str = Field(..., min_length=1, max_length=64,
-                        pattern=r"^[A-Za-z0-9_\-]+$")
-    doc_id: str = Field(..., min_length=1, max_length=64,
-                        pattern=r"^[A-Za-z0-9_\-]+$")
+    """v1 citation_verify request shape.
+
+    PR2: `subject`/`payload_hash` are the canonical fields. The legacy
+    `matter`/`doc_id` are accepted as aliases — supply EITHER pair, the
+    validator mirrors missing fields onto their counterparts so existing
+    callers keep working while new callers can speak the new vocabulary.
+    Supplying both pairs is fine; both must agree if both are present
+    (rejected with 422 otherwise so a typo can't silently win).
+    """
+    # All four start optional; the model_validator below enforces
+    # "at least one pair supplied" and mirrors the values so internal
+    # code can read either name interchangeably.
+    subject: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    payload_hash: str | None = Field(default=None, min_length=1, max_length=64,
+                                      pattern=_KEY_PATTERN)
+    matter: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    doc_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
     document: str = Field(default="", max_length=MAX_DOCUMENT_LEN)
     citations: list[CitationIn] = Field(default_factory=list,
                                          max_length=MAX_CITATIONS_PER_REQUEST)
     corpus_override: dict[str, str] | None = None
+
+    def model_post_init(self, _ctx) -> None:
+        # Mirror new ↔ legacy. New wins when both are supplied but agree;
+        # disagreement is a 422 (caught by the route layer).
+        subj, phash = _reconcile_key_pair(
+            self.subject, self.payload_hash, self.matter, self.doc_id,
+        )
+        # __setattr__ on a frozen pydantic model would normally fail; the
+        # default ConfigDict is mutable so direct assignment works.
+        object.__setattr__(self, "subject", subj)
+        object.__setattr__(self, "payload_hash", phash)
+        object.__setattr__(self, "matter", subj)
+        object.__setattr__(self, "doc_id", phash)
+
+
+def _reconcile_key_pair(subject: str | None, payload_hash: str | None,
+                         matter: str | None, doc_id: str | None,
+                         *, default_subject: str = "generic",
+                         default_payload_hash: str = "generic",
+                         require: bool = True) -> tuple[str, str]:
+    """PR2 — normalise the dual-shape (subject, payload_hash) /
+    (matter, doc_id) keying. Returns the canonical (subject, payload_hash).
+
+    Rules:
+      - If both new and legacy are supplied AND they disagree → ValueError.
+      - If only one pair is supplied → mirror that pair across both.
+      - If nothing is supplied AND `require` is False → return the supplied
+        defaults (used by dispatch / inline whose old shape defaulted to
+        "generic"). When `require=True` (citation_verify) the missing pair
+        is a ValueError because there's no safe synthesis without the
+        caller's context.
+    """
+    subj = subject if subject is not None else matter
+    phash = payload_hash if payload_hash is not None else doc_id
+    # Cross-check: if all four were supplied and disagree, refuse.
+    if (subject is not None and matter is not None and subject != matter):
+        raise ValueError(
+            "subject and matter disagree; pass only one or make them equal",
+        )
+    if (payload_hash is not None and doc_id is not None
+            and payload_hash != doc_id):
+        raise ValueError(
+            "payload_hash and doc_id disagree; pass only one or make them equal",
+        )
+    if subj is None:
+        if require:
+            raise ValueError(
+                "subject (or legacy `matter`) is required",
+            )
+        subj = default_subject
+    if phash is None:
+        if require:
+            raise ValueError(
+                "payload_hash (or legacy `doc_id`) is required",
+            )
+        phash = default_payload_hash
+    return subj, phash
 
 
 class DecideReq(BaseModel):
@@ -100,8 +263,29 @@ class VerifyDispatchReq(BaseModel):
     # The verifier's input_schema is verifier-specific — we accept any dict
     # and let the verifier handle shape errors with a deny verdict.
     payload: dict = Field(..., description="opaque payload passed to verifier.run()")
-    matter: str = Field(default="generic", min_length=1, max_length=128)
-    doc_id: str = Field(default="generic", min_length=1, max_length=128)
+    # PR2: dual-shape keying. All four optional — defaults synth at validation
+    # time (this endpoint's old default was "generic"/"generic"; we preserve
+    # that exact behaviour so existing clients are byte-compatible).
+    #
+    # PR2 review fix (issue #1 follow-up):
+    #   - `max_length=64` matches `LedgerEntry.matter` / `HitlItem.matter` /
+    #     `HitlItem.doc_id` `String(64)` columns. Without this clamp, a
+    #     65-128 char value passes pydantic, makes it past the chain_lock,
+    #     and crashes the verifier with a Postgres DataError after the token
+    #     is already generated (silent 500 with side effects).
+    #   - `pattern=_KEY_PATTERN` is the same regex `VerifyReq` enforces —
+    #     subject is reachable from the legal-vertical sentinel only via
+    #     `[A-Za-z0-9_\-]`, and arbitrary characters here would land inside
+    #     the cloud-signed token body / ledger column and confuse downstream
+    #     log + dashboard renderers.
+    subject: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    payload_hash: str | None = Field(default=None, min_length=1, max_length=64,
+                                      pattern=_KEY_PATTERN)
+    matter: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    doc_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
 
     def model_post_init(self, _ctx) -> None:
         # Pydantic v2: enforce payload's serialized size after construction.
@@ -113,6 +297,36 @@ class VerifyDispatchReq(BaseModel):
                 f"verifier payload too large: {len(encoded)} > "
                 f"{MAX_VERIFIER_PAYLOAD_BYTES} bytes"
             )
+        # Synth or reconcile keys. If caller passed nothing for both pairs,
+        # use payload-derived synth so the verifier still sees a deterministic
+        # binding (rather than the literal string "generic" which loses any
+        # link to the actual call). When a session_id is in the payload we
+        # use it; the route layer can re-synth with the tenant context if
+        # it wants tighter scoping.
+        try:
+            subj, phash = _reconcile_key_pair(
+                self.subject, self.payload_hash, self.matter, self.doc_id,
+                default_subject="generic",
+                default_payload_hash="generic",
+                require=False,
+            )
+        except ValueError as e:
+            # Disagreement: surface as a pydantic ValidationError so FastAPI
+            # returns 422 (consistent with other request-shape problems).
+            raise ValueError(str(e))
+        # If both pairs were unset, synthesise from the payload so the
+        # ledger entry is bound to the actual call rather than a literal
+        # "generic" string. We only swap when the caller passed nothing —
+        # explicit "generic" defaults from older clients are preserved.
+        if (subj == "generic" and phash == "generic"
+                and self.subject is None and self.matter is None
+                and self.payload_hash is None and self.doc_id is None):
+            sid = self.payload.get("session_id") if isinstance(self.payload, dict) else None
+            subj, phash = _synth_subject_and_hash(self.payload, session_id=sid)
+        object.__setattr__(self, "subject", subj)
+        object.__setattr__(self, "payload_hash", phash)
+        object.__setattr__(self, "matter", subj)
+        object.__setattr__(self, "doc_id", phash)
 
 
 class VerifyInlineReq(BaseModel):
@@ -124,8 +338,19 @@ class VerifyInlineReq(BaseModel):
     no closure into the cloud layer."""
     kind: str = Field(..., pattern="^(regex|llm_critic|shacl)$")
     payload: dict
-    matter: str = Field(default="generic", min_length=1, max_length=128)
-    doc_id: str = Field(default="generic", min_length=1, max_length=128)
+    # PR2: dual-shape keying, same pattern as VerifyDispatchReq.
+    # max_length=64 + pattern=_KEY_PATTERN parity with VerifyReq/VerifyDispatchReq
+    # (rationale: aligns with String(64) DB columns + matches the legacy
+    # alphanumeric sentinel charset so synthesised + caller-supplied subjects
+    # share a single shape — see VerifyDispatchReq above).
+    subject: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    payload_hash: str | None = Field(default=None, min_length=1, max_length=64,
+                                      pattern=_KEY_PATTERN)
+    matter: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
+    doc_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=_KEY_PATTERN)
     # kind-specific
     pattern: str | None = Field(default=None, max_length=2000)
     criterion: str | None = Field(default=None, max_length=4000)
@@ -139,6 +364,24 @@ class VerifyInlineReq(BaseModel):
                 f"verifier payload too large: {len(encoded)} > "
                 f"{MAX_VERIFIER_PAYLOAD_BYTES} bytes"
             )
+        try:
+            subj, phash = _reconcile_key_pair(
+                self.subject, self.payload_hash, self.matter, self.doc_id,
+                default_subject="generic",
+                default_payload_hash="generic",
+                require=False,
+            )
+        except ValueError as e:
+            raise ValueError(str(e))
+        if (subj == "generic" and phash == "generic"
+                and self.subject is None and self.matter is None
+                and self.payload_hash is None and self.doc_id is None):
+            sid = self.payload.get("session_id") if isinstance(self.payload, dict) else None
+            subj, phash = _synth_subject_and_hash(self.payload, session_id=sid)
+        object.__setattr__(self, "subject", subj)
+        object.__setattr__(self, "payload_hash", phash)
+        object.__setattr__(self, "matter", subj)
+        object.__setattr__(self, "doc_id", phash)
 
 
 # ── middlewares ──────────────────────────────────────────────────────
@@ -455,21 +698,30 @@ def create_app(
         v = verifier_registry.get_by_step(step)
         if v is None:
             raise HTTPException(404, f"no verifier registered for step {step!r}")
+        # PR2: subject/payload_hash are the canonical keys; req.matter/req.doc_id
+        # are kept mirrored to them by the pydantic validator so callers that
+        # still speak the legacy shape continue to work. The ledger body
+        # carries BOTH naming pairs so downstream consumers can read either.
+        subj, phash = req.subject, req.payload_hash
         try:
             verdict = v.run(req.payload)
         except Exception as e:
             # Verifier blew up on a malformed payload → treat as deny, record.
             async with chain_lock:
-                ledger.append(matter=req.matter,
+                ledger.append(matter=subj,
                               body={"step": step, "verdict": "deny",
-                                    "doc_id": req.doc_id, "error": str(e)[:200]},
+                                    # legacy mirror
+                                    "matter": subj, "doc_id": phash,
+                                    # PR2 canonical
+                                    "subject": subj, "payload_hash": phash,
+                                    "error": str(e)[:200]},
                               token="", tenant_id=tenant_id)
             return {"verdict": "deny", "token": None,
                     "reasons": [f"verifier error: {type(e).__name__}"]}
         if verdict.status == "pass":
             async with chain_lock:
                 result = _issue_token(
-                    req.matter, req.doc_id, "pass",
+                    subj, phash, "pass",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
                     tenant_id=tenant_id,
                 )
@@ -478,7 +730,7 @@ def create_app(
         if verdict.status == "review":
             async with chain_lock:
                 result = _issue_token(
-                    req.matter, req.doc_id, "review",
+                    subj, phash, "review",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
                     tenant_id=tenant_id,
                 )
@@ -486,9 +738,10 @@ def create_app(
             return result
         # deny
         async with chain_lock:
-            ledger.append(matter=req.matter,
+            ledger.append(matter=subj,
                           body={"step": step, "verdict": "deny",
-                                "doc_id": req.doc_id,
+                                "matter": subj, "doc_id": phash,
+                                "subject": subj, "payload_hash": phash,
                                 "reasons": list(verdict.reasons)},
                           token="", tenant_id=tenant_id)
         return {"verdict": "deny", "token": None,
@@ -612,19 +865,24 @@ def create_app(
         else:
             raise HTTPException(422, f"unsupported kind: {kind!r}")
 
+        # PR2: subject/payload_hash already mirrored from any legacy
+        # matter/doc_id input by the pydantic validator.
+        subj, phash = req.subject, req.payload_hash
         if verdict_status in ("pass", "review"):
             async with chain_lock:
                 result = _issue_token(
-                    req.matter, req.doc_id, verdict_status,
+                    subj, phash, verdict_status,
                     ledger=ledger, keystore=ks, kid=kid, step=step_label,
                     tenant_id=tenant_id,
                 )
             result["reasons"] = reasons
             return result
         async with chain_lock:
-            ledger.append(matter=req.matter,
+            ledger.append(matter=subj,
                           body={"step": step_label, "verdict": "deny",
-                                "doc_id": req.doc_id, "reasons": reasons},
+                                "matter": subj, "doc_id": phash,
+                                "subject": subj, "payload_hash": phash,
+                                "reasons": reasons},
                           token="", tenant_id=tenant_id)
         return {"verdict": "deny", "token": None, "reasons": reasons}
 
@@ -640,16 +898,25 @@ def create_app(
         doc = verify_document(
             [Citation(c.quote, c.ref) for c in req.citations], resolver,
         )
-        # doc_hash binding: if a document is supplied, doc_hash MUST match its sha256.
-        # If only doc_id is supplied (no document), doc_id is used as the binding — gate
-        # callers can opt in to content-binding by passing the document.
+        # PR2: subject = generic subject identifier; payload_hash = sha256
+        # of canonical payload. The pydantic validator already mirrored any
+        # legacy matter/doc_id into these names.
+        subj, phash = req.subject, req.payload_hash
+        # payload_hash binding: if a document is supplied, payload_hash MUST
+        # match its sha256. If only payload_hash is supplied (no document),
+        # it is used as the binding — gate callers can opt in to content-
+        # binding by passing the document.
         if req.document:
             content_hash = hashlib.sha256(req.document.encode("utf-8")).hexdigest()[:32]
-            if req.doc_id != content_hash:
-                raise HTTPException(400, "doc_id must equal sha256(document)[:32] when document is supplied")
+            if phash != content_hash:
+                raise HTTPException(
+                    400,
+                    "payload_hash (or legacy doc_id) must equal "
+                    "sha256(document)[:32] when document is supplied",
+                )
         if doc.verdict == "pass":
             async with chain_lock:
-                return _issue_token(req.matter, req.doc_id, "pass",
+                return _issue_token(subj, phash, "pass",
                                      ledger=ledger, keystore=ks, kid=kid,
                                      tenant_id=tenant_id)
         if doc.verdict == "review":
@@ -665,23 +932,29 @@ def create_app(
                     if s.nli_label is not None:
                         review_payload[i]["nli_label"] = s.nli_label
                         review_payload[i]["nli_score"] = s.nli_score
+            # PR3 will widen the HITL table to carry subject/payload_hash; for
+            # now we still write `matter`/`doc_id` columns (schema names) with
+            # the canonical subject/payload_hash values.
             item = hitl.enqueue(
-                matter=req.matter, doc_id=req.doc_id, reason="citation_review",
+                matter=subj, doc_id=phash, reason="citation_review",
                 payload={"citations": review_payload},
                 tenant_id=tenant_id,
             )
             async with chain_lock:
-                ledger.append(matter=req.matter,
+                ledger.append(matter=subj,
                               body={"step": "citation_verify", "verdict": "review",
-                                    "doc_id": req.doc_id, "hitl_id": item.id},
+                                    "matter": subj, "doc_id": phash,
+                                    "subject": subj, "payload_hash": phash,
+                                    "hitl_id": item.id},
                               token="", tenant_id=tenant_id)
             return {"verdict": "review", "token": None, "hitl_id": item.id,
                     "citations": _citations_summary(doc)}
         # deny
         async with chain_lock:
-            ledger.append(matter=req.matter,
+            ledger.append(matter=subj,
                           body={"step": "citation_verify", "verdict": "deny",
-                                "doc_id": req.doc_id},
+                                "matter": subj, "doc_id": phash,
+                                "subject": subj, "payload_hash": phash},
                           token="", tenant_id=tenant_id)
         return {"verdict": "deny", "token": None,
                 "citations": _citations_summary(doc)}
@@ -700,8 +973,14 @@ def create_app(
                 "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
                 "body": e.body,
             })
+        # PR2: surface both legacy (matter/doc_id) and canonical
+        # (subject/payload_hash) names. PR3 will widen the underlying
+        # column; until then the DB stores the canonical value in the
+        # `matter`/`doc_id` columns.
         return {
-            "id": item.id, "matter": item.matter, "doc_id": item.doc_id,
+            "id": item.id,
+            "matter": item.matter, "doc_id": item.doc_id,
+            "subject": item.matter, "payload_hash": item.doc_id,
             "reason": item.reason, "payload": item.payload,
             "status": item.status.value,
             "approver": item.approver, "note": item.note,
@@ -712,7 +991,9 @@ def create_app(
     @app.get("/hitl", dependencies=[Depends(require_hitl_key)])
     def list_hitl() -> dict:
         return {"items": [
-            {"id": i.id, "matter": i.matter, "doc_id": i.doc_id,
+            {"id": i.id,
+             "matter": i.matter, "doc_id": i.doc_id,
+             "subject": i.matter, "payload_hash": i.doc_id,
              "reason": i.reason, "payload": i.payload,
              "ts_created": i.ts_created}
             for i in hitl.list_pending()
@@ -728,6 +1009,8 @@ def create_app(
         except ValueError as e:
             raise HTTPException(409, str(e))
         async with chain_lock:
+            # item.matter / item.doc_id are the schema names; semantically
+            # these hold (subject, payload_hash) post-PR2.
             return _issue_token(item.matter, item.doc_id, "pass",
                                 ledger=ledger, keystore=ks, kid=kid,
                                 extra={"hitl_id": item_id, "approver": body.approver})
@@ -744,7 +1027,11 @@ def create_app(
         async with chain_lock:
             ledger.append(matter=item.matter,
                           body={"step": "hitl_decision", "decision": "rejected",
-                                "doc_id": item.doc_id, "hitl_id": item_id,
+                                # legacy mirror + PR2 canonical
+                                "matter": item.matter, "doc_id": item.doc_id,
+                                "subject": item.matter,
+                                "payload_hash": item.doc_id,
+                                "hitl_id": item_id,
                                 "approver": body.approver},
                           token="")
         return {"verdict": "rejected", "token": None, "hitl_id": item_id}
@@ -760,10 +1047,14 @@ def create_app(
         tenant_entries = ledger.list_by_tenant(tenant_id)
         chain_ok = ledger.verify_chain()   # global integrity, not per-tenant
         page = [e for e in tenant_entries if e.id > since_id][:limit]
+        # PR2: surface both `matter` (legacy schema name) and `subject`
+        # (PR2 canonical) — same value, two visible spellings so new
+        # consumers can rely on the canonical name during the transition.
         return {"chain_ok": chain_ok,
                 "next_since_id": page[-1].id if page else since_id,
                 "entries": [
-                    {"id": e.id, "ts": e.ts, "matter": e.matter,
+                    {"id": e.id, "ts": e.ts,
+                     "matter": e.matter, "subject": e.matter,
                      "prev": e.prev, "h": e.h,
                      **({"body": e.body, "token": e.token} if include_body else {})}
                     for e in page
@@ -790,11 +1081,20 @@ def _citations_summary(doc) -> list[dict]:
     ]
 
 
-def _issue_token(matter: str, doc_id: str, verdict: str, *,
+def _issue_token(subject: str, payload_hash: str, verdict: str, *,
                  ledger: LedgerRepo, keystore: KeyStore, kid: str,
                  step: str = "citation_verify",
                  tenant_id: str = "default",
                  extra: dict | None = None) -> dict:
+    """Issue a cloud-signed verdict token.
+
+    PR2: arguments renamed (matter, doc_id) → (subject, payload_hash). The
+    signed body carries BOTH naming pairs so pre-PR2 gates (which look up
+    on `matter` + `doc_hash`) and post-PR2 gates (which look up on
+    `subject` + `payload_hash`) both verify the same token. PR4 will drop
+    the legacy mirror fields once every deployed gate honours the new
+    names.
+    """
     now = int(time.time())
     # L2: extras are *base*; protected fields go LAST so they always win.
     base = dict(extra) if extra else {}
@@ -804,8 +1104,12 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
     body = {
         **base,
         "step": step,
-        "matter": matter,
-        "doc_hash": doc_id,
+        # legacy mirror (pre-PR2 gates read these)
+        "matter": subject,
+        "doc_hash": payload_hash,
+        # PR2 canonical (new gates read these)
+        "subject": subject,
+        "payload_hash": payload_hash,
         "verdict": verdict,
         "iat": now,
         "exp": now + TOKEN_TTL_SECONDS,
@@ -813,7 +1117,10 @@ def _issue_token(matter: str, doc_id: str, verdict: str, *,
         "kid": kid,
     }
     token = sign_token(body, keystore.load_private())
-    entry = ledger.append(matter=matter, body=body, token=token,
+    # ledger.append still takes `matter` because the DB column is named
+    # `matter` (schema migration is PR3). The value we write is the
+    # canonical subject — semantically right, schema-name unchanged.
+    entry = ledger.append(matter=subject, body=body, token=token,
                            tenant_id=tenant_id)
     return {"verdict": verdict, "token": token, "exp": body["exp"],
             "kid": kid, "ledger_h": entry.h}

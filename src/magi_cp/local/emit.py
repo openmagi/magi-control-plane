@@ -3,6 +3,11 @@
 Run after the MCP verify_citations tool to materialize evidence into WAL so the
 hook can find it. In a real CC plugin this is wired as a PostToolUse hook;
 here it's an explicit CLI so it's testable in isolation.
+
+PR2: keying renamed from (matter, doc_id) → (subject, payload_hash). The
+legacy flags (`--matter`, `--doc-id`) still work as deprecated aliases so
+existing scripts / pipelines don't break overnight. New flags
+(`--subject`, `--payload-hash`) win when both are supplied.
 """
 from __future__ import annotations
 import argparse
@@ -14,15 +19,61 @@ import urllib.request
 from ..evidence import Wal
 
 
-def request_citation_evidence(*, matter: str, doc_id: str, document: str,
-                              citations: list[dict], corpus: dict[str, str],
-                              cloud_url: str, api_key: str) -> dict:
+def request_citation_evidence(*, subject: str | None = None,
+                              payload_hash: str | None = None,
+                              document: str = "",
+                              citations: list[dict] | None = None,
+                              corpus: dict[str, str] | None = None,
+                              cloud_url: str, api_key: str,
+                              matter: str | None = None,
+                              doc_id: str | None = None) -> dict:
+    """Send a citation_verify request to the cloud.
+
+    `subject` / `payload_hash` are the canonical names; `matter` / `doc_id`
+    are kept as deprecated aliases so existing call sites keep working
+    during the PR2/PR3 transition. New code should pass subject/payload_hash.
+    """
+    # PR2 review fix: emit a DeprecationWarning whenever the legacy kwargs
+    # are used — including the case where the caller ALSO passes the
+    # canonical kwarg for a rollback window. Without this signal,
+    # transitional callers lose the only cue that --matter / --doc-id are
+    # on their way out.
+    import warnings as _warnings
+    if matter is not None:
+        _warnings.warn(
+            "request_citation_evidence(matter=…) is deprecated; "
+            "use subject=… instead",
+            DeprecationWarning, stacklevel=2,
+        )
+    if doc_id is not None:
+        _warnings.warn(
+            "request_citation_evidence(doc_id=…) is deprecated; "
+            "use payload_hash=… instead",
+            DeprecationWarning, stacklevel=2,
+        )
+    # Resolve effective keys (new wins; fall back to legacy).
+    subj = subject if subject is not None else matter
+    phash = payload_hash if payload_hash is not None else doc_id
+    if subj is None or phash is None:
+        raise ValueError(
+            "subject (or legacy `matter`) and payload_hash (or legacy "
+            "`doc_id`) are required"
+        )
+    # The cloud /citation_verify endpoint accepts BOTH naming shapes for the
+    # duration of PR2; sending both makes the request robust against the
+    # cloud rolling forward or back across the transition.
+    body = {
+        "subject": subj,
+        "payload_hash": phash,
+        "matter": subj,        # legacy mirror
+        "doc_id": phash,       # legacy mirror
+        "document": document,
+        "citations": citations or [],
+        "corpus_override": corpus or None,
+    }
     req = urllib.request.Request(
         cloud_url + "/citation_verify",
-        data=json.dumps({
-            "matter": matter, "doc_id": doc_id, "document": document,
-            "citations": citations, "corpus_override": corpus or None,
-        }).encode("utf-8"),
+        data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json", "X-Api-Key": api_key},
     )
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -31,8 +82,17 @@ def request_citation_evidence(*, matter: str, doc_id: str, document: str,
 
 def cli() -> int:
     p = argparse.ArgumentParser(prog="magi-cp-emit")
-    p.add_argument("--matter", required=True)
-    p.add_argument("--doc-id", required=True)
+    # PR2: canonical names. Old --matter/--doc-id kept as deprecated aliases
+    # for back-compat. argparse's `required=True` would clash with mutually
+    # exclusive groups, so we enforce presence manually below.
+    p.add_argument("--subject", default=None,
+                   help="generic subject identifier (replaces --matter)")
+    p.add_argument("--payload-hash", default=None,
+                   help="sha256 of canonical tool payload (replaces --doc-id)")
+    p.add_argument("--matter", default=None,
+                   help="DEPRECATED alias for --subject (kept for back-compat)")
+    p.add_argument("--doc-id", default=None,
+                   help="DEPRECATED alias for --payload-hash (kept for back-compat)")
     p.add_argument("--doc-text", default="")
     p.add_argument("--cite", action="append", default=[], help="quote||ref (repeatable)")
     p.add_argument("--corpus", action="append", default=[], help="case_no=text (repeatable)")
@@ -47,6 +107,28 @@ def cli() -> int:
     if not args.api_key:
         print("error: --api-key or MAGI_CP_API_KEY required", file=sys.stderr)
         return 2
+
+    # Resolve canonical → legacy fallback. New wins.
+    subject = args.subject if args.subject is not None else args.matter
+    payload_hash = (args.payload_hash if args.payload_hash is not None
+                    else args.doc_id)
+    if subject is None:
+        print("error: --subject (or legacy --matter) required",
+              file=sys.stderr)
+        return 2
+    if payload_hash is None:
+        print("error: --payload-hash (or legacy --doc-id) required",
+              file=sys.stderr)
+        return 2
+    # Deprecation warning fires whenever the legacy flag is present, even
+    # if the operator also passes the canonical flag for a rollback window —
+    # otherwise scripts updated to "--subject + --matter" would lose the
+    # only signal that --matter is on its way out.
+    if args.matter is not None:
+        print("warning: --matter is deprecated; use --subject", file=sys.stderr)
+    if args.doc_id is not None:
+        print("warning: --doc-id is deprecated; use --payload-hash",
+              file=sys.stderr)
 
     citations = []
     for c in args.cite:
@@ -65,7 +147,8 @@ def cli() -> int:
     import urllib.error
     try:
         res = request_citation_evidence(
-            matter=args.matter, doc_id=args.doc_id, document=args.doc_text,
+            subject=subject, payload_hash=payload_hash,
+            document=args.doc_text,
             citations=citations, corpus=corpus,
             cloud_url=args.cloud_url, api_key=args.api_key,
         )
