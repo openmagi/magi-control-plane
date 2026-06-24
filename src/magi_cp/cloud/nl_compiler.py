@@ -85,7 +85,6 @@ object. The schema:
     "trigger": {{"host": "claude-code",
                 "event": "PreToolUse|PostToolUse|Stop|SubagentStop|UserPromptSubmit|PreCompact|SessionStart|SessionEnd",
                 "matcher": "<tool name (Bash, Edit, Write, …) | mcp__server__tool | * for no-tool events>"}},
-    "sentinel_re": "<Python re with (?P<matter>...) and (?P<doc_id>...) named groups>",
     "requires": [{{"step": "<verifier_step_name>", "verdict": "pass"}}],
     "action": "block|ask|audit",
     "on_signature_invalid": "deny"
@@ -136,9 +135,9 @@ _SYSTEM_REVIEWER_TMPL = """You are a Policy IR reviewer.
 
 Given a Policy IR JSON object and the original natural-language intent, judge
 whether the IR faithfully captures the intent and is internally consistent
-(sentinel_re has matter+doc_id named groups, trigger event makes sense for
-the matcher, action is legal for the (event, matcher_class) pair, and a
-requires=[] list is paired with action="audit").
+(trigger event makes sense for the matcher, action is legal for the
+(event, matcher_class) pair, and a requires=[] list is paired with
+action="audit").
 
 Output ONLY a JSON object: {{"ok": <bool>, "issues": [<string>, ...]}}.
 
@@ -344,7 +343,7 @@ def _server_side_validate(
             id=ir.get("id", ""),
             description=ir.get("description", "") or "",
             trigger=Trigger(**(ir.get("trigger") or {})),
-            sentinel_re=ir.get("sentinel_re", ""),
+            sentinel_re=ir.get("sentinel_re") or None,  # D43 optional
             requires=[EvidenceReq(**r) for r in (ir.get("requires") or [])],
             action=_coerce_action(ir),
             on_signature_invalid=ir.get("on_signature_invalid", "deny"),

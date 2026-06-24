@@ -41,9 +41,28 @@ def test_load_policy_ok(tmp_path):
     assert p.requires[0].step == "citation_verify"
 
 
-def test_load_policy_rejects_re_without_named_groups(tmp_path):
-    with pytest.raises(ValueError, match="named groups"):
-        load_policy(_write_policy(tmp_path, {"sentinel_re": r"FILE_COURT_\w+_\w+"}))
+def test_load_policy_accepts_sentinel_without_named_groups(tmp_path):
+    """D43: matter/doc_id requirement removed. Any compilable regex is OK
+    in sentinel_re; missing groups are no longer a hard error since the
+    runtime synthesizes labels from request context when absent."""
+    p = load_policy(_write_policy(tmp_path, {"sentinel_re": r"FILE_COURT_\w+_\w+"}))
+    assert p.sentinel_re == r"FILE_COURT_\w+_\w+"
+
+
+def test_load_policy_accepts_no_sentinel_re(tmp_path):
+    """D43: sentinel_re is fully optional. Most policies don't need it."""
+    # Build a fresh raw dict without the SAMPLE_IR default sentinel_re.
+    raw = {k: v for k, v in SAMPLE_IR.items() if k != "sentinel_re"}
+    p_path = tmp_path / "no_sentinel.json"
+    p_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    p = load_policy(str(p_path))
+    assert p.sentinel_re is None
+
+
+def test_load_policy_rejects_invalid_sentinel_regex(tmp_path):
+    """If sentinel_re is provided it still has to be a valid regex."""
+    with pytest.raises(ValueError, match="not a valid regex"):
+        load_policy(_write_policy(tmp_path, {"sentinel_re": "[unclosed"}))
 
 
 def test_load_policy_accepts_empty_requires_with_audit(tmp_path):

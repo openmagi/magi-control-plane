@@ -155,8 +155,18 @@ class Policy:
     id: str
     description: str
     trigger: Trigger
-    sentinel_re: str
-    requires: list[EvidenceReq]
+    # D43 (issue #1, P1): sentinel_re is now Optional. Pre-D43 policies
+    # carried a sentinel pattern with `(?P<matter>...)_(?P<doc_id>...)`
+    # named groups so the legal-document workflow could extract the case
+    # + document identifiers from the tool payload at runtime. That's a
+    # vertical concern; a general-purpose "block rm -rf" or "audit Bash"
+    # policy has no matter/doc_id. Policies without sentinel_re now load
+    # cleanly; the runtime falls back to context-synthesized labels
+    # (PR2). Legacy policies WITH a sentinel_re still validate — the
+    # matter/doc_id named-group requirement is dropped so customers can
+    # use whatever group names suit their domain.
+    sentinel_re: str | None = None
+    requires: list[EvidenceReq] = field(default_factory=list)
     action: ActionLiteral = "block"
     on_signature_invalid: Literal["deny"] = "deny"
     gate_binary: str = "/usr/local/bin/magi-gate.sh"
@@ -172,11 +182,16 @@ class Policy:
         # The cloud is the *canonical* boundary — a direct admin-key holder
         # bypasses the JS layer, so this check is the real gate.
         _validate_id(self.id)
-        rx = re.compile(self.sentinel_re)
-        if "matter" not in rx.groupindex or "doc_id" not in rx.groupindex:
-            raise ValueError(
-                f"policy '{self.id}': sentinel_re는 named groups (?P<matter>) (?P<doc_id>) 필요"
-            )
+        # sentinel_re, if present, must compile. Named groups are no
+        # longer prescribed; the runtime extracts whatever groups exist
+        # and synthesizes the rest from request context.
+        if self.sentinel_re is not None:
+            try:
+                re.compile(self.sentinel_re)
+            except re.error as e:
+                raise ValueError(
+                    f"policy '{self.id}': sentinel_re is not a valid regex: {e}"
+                ) from e
         if self.trigger.event not in _SUPPORTED_EVENTS:
             raise ValueError(f"policy '{self.id}': trigger.event 미지원: {self.trigger.event}")
         # D31: requires CAN be empty — that's the unconditional ("emit
@@ -237,8 +252,8 @@ def load_policy(path: str) -> Policy:
         id=raw["id"],
         description=raw.get("description", ""),
         trigger=Trigger(**raw["trigger"]),
-        sentinel_re=raw["sentinel_re"],
-        requires=[_coerce_evidence_req(r) for r in raw["requires"]],
+        sentinel_re=raw.get("sentinel_re"),  # D43: now optional
+        requires=[_coerce_evidence_req(r) for r in raw.get("requires", [])],
         action=_coerce_action(raw),
         on_signature_invalid=raw.get("on_signature_invalid", "deny"),
         gate_binary=raw.get("gate_binary", "/usr/local/bin/magi-gate.sh"),

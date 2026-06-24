@@ -854,7 +854,7 @@ def _deserialize_policy_from_api(d: dict) -> Policy:
         id=d["id"], description=d.get("description", ""),
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
-        sentinel_re=d["sentinel_re"],
+        sentinel_re=d.get("sentinel_re"),
         requires=[_coerce_evidence_req(r) for r in d["requires"]],
         action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),
@@ -884,8 +884,9 @@ class PolicyIn(BaseModel):
     description: str = Field(default="", max_length=2000)
     version: str = Field(default="0.1", max_length=32)
     trigger: dict
-    sentinel_re: str = Field(..., min_length=1, max_length=2000)
-    requires: list[dict]
+    # D43: sentinel_re is optional. See policy/ir.py for rationale.
+    sentinel_re: str | None = Field(default=None, max_length=2000)
+    requires: list[dict] = Field(default_factory=list)
     # D31: `action` is canonical. `on_missing` accepted as legacy alias
     # via _coerce_action() during deserialization. Either-or here, both
     # optional so old clients keep working until they migrate.

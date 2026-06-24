@@ -57,7 +57,7 @@ def _deserialize_policy(d: dict) -> Policy:
         id=d["id"], description=d.get("description", ""),
         version=d.get("version", "0.1"),
         trigger=Trigger(**d["trigger"]),
-        sentinel_re=d["sentinel_re"],
+        sentinel_re=d.get("sentinel_re"),
         requires=[_coerce_evidence_req(r) for r in d["requires"]],
         action=_coerce_action(d),
         on_signature_invalid=d.get("on_signature_invalid", "deny"),

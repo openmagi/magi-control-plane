@@ -130,8 +130,11 @@ interface WizardState {
 
 /* ─── IR + summary builders ───────────────────────────────────────── */
 
-const SENTINEL_RE_DEFAULT =
-  "GATE_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)"
+// D43 (issue #1, P1): sentinel_re is no longer required in core IR.
+// The wizard previously auto-emitted a fake "GATE_(?P<matter>…)_(?P<doc_id>…)"
+// to satisfy the matter/doc_id named-group requirement that's now gone.
+// New policies are authored without sentinel_re. Raw mode still lets
+// legacy / domain customers carry a sentinel pattern explicitly.
 
 function deriveMatcher(s: WizardState): string {
   // pre_final has no tool scope (fires once on the final answer).
@@ -466,7 +469,9 @@ async function saveWizard(formData: FormData): Promise<void> {
     version: "0.1",
     description: state.description || summaryForBackend(state),
     trigger: { host: "claude-code", event, matcher },
-    sentinel_re: SENTINEL_RE_DEFAULT,
+    // D43: no sentinel_re. Runtime synthesizes subject/payload_hash
+    // from request context. Legal customers carrying a sentinel_re
+    // pattern still author it explicitly via Raw mode.
     requires,
     action: irAction as PolicyDraft["action"],
     on_signature_invalid: "deny",
@@ -1763,12 +1768,6 @@ function Step6Review({
                 }).join(", ")}
           </dd>
 
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">sentinel_re</dt>
-          <dd>
-            <code className="font-mono text-[11.5px] break-all bg-gray-50 px-1.5 py-0.5 rounded border border-black/[0.06]">
-              {SENTINEL_RE_DEFAULT}
-            </code>
-          </dd>
         </dl>
       </Card>
       <form action={action}>

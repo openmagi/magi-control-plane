@@ -98,9 +98,14 @@ describe("validateDraft", () => {
     expect(errs.find(e => e.field === "id")?.message).toMatch(/compiled/)
   })
 
-  it("rejects sentinel without named groups", () => {
+  it("D43: accepts sentinel without matter/doc_id named groups", () => {
     const errs = validateDraft({ ...DEFAULT_DRAFT, id: "x", sentinel_re: "FILE_\\w+" })
-    expect(errs.find(e => e.field === "sentinel_re")).toBeDefined()
+    expect(errs.find(e => e.field === "sentinel_re")).toBeUndefined()
+  })
+
+  it("D43: accepts policy without sentinel_re entirely", () => {
+    const errs = validateDraft({ ...DEFAULT_DRAFT, id: "x", sentinel_re: undefined })
+    expect(errs.find(e => e.field === "sentinel_re")).toBeUndefined()
   })
 
   it("rejects empty requires", () => {

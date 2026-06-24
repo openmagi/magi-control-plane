@@ -113,7 +113,8 @@ export type PolicyDraft = {
   description: string
   version: string
   trigger: { host: "claude-code"; event: EventKind; matcher: string }
-  sentinel_re: string
+  /** D43: optional. Legal-vertical residue removed from core IR. */
+  sentinel_re?: string | null
   requires: EvidenceReqDraft[]
   action: Action
   on_signature_invalid: "deny"
@@ -125,7 +126,6 @@ export const DEFAULT_DRAFT: PolicyDraft = {
   description: "",
   version: "0.1",
   trigger: { host: "claude-code", event: "PreToolUse", matcher: "Bash" },
-  sentinel_re: "FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
   requires: [{ step: "citation_verify", verdict: "pass" }],
   action: "block",
   on_signature_invalid: "deny",
@@ -142,8 +142,11 @@ export function validateDraft(d: PolicyDraft): DraftError[] {
   if (d.id.includes("..")) errs.push({ field: "id", message: "id must not contain '..'" })
   if (d.id.endsWith("/compiled") || d.id.endsWith("/enabled"))
     errs.push({ field: "id", message: "id must not end with /compiled or /enabled" })
-  if (!d.sentinel_re || !d.sentinel_re.includes("?P<matter>") || !d.sentinel_re.includes("?P<doc_id>"))
-    errs.push({ field: "sentinel_re", message: "must contain named groups (?P<matter>...) and (?P<doc_id>...)" })
+  // D43: sentinel_re is optional and no longer requires specific named
+  // groups. If present, it just needs to be a non-empty regex string.
+  if (d.sentinel_re != null && typeof d.sentinel_re !== "string") {
+    errs.push({ field: "sentinel_re", message: "must be a string if present" })
+  }
   // D31: requires can be empty for the emit-signal archetype. We no
   // longer hard-fail on length 0; we DO surface a soft warning when
   // a non-audit action is paired with an empty list (almost always

@@ -174,9 +174,8 @@ export default function PolicyBuilder({
           label={labels.sentinelRe}
           helper={labels.sentinelReHint}
           rows={3}
-          value={draft.sentinel_re}
-          onChange={e => update("sentinel_re", e.target.value)}
-          required
+          value={draft.sentinel_re ?? ""}
+          onChange={e => update("sentinel_re", e.target.value || null)}
           maxLength={2000}
           spellCheck={false}
           autoComplete="off"
