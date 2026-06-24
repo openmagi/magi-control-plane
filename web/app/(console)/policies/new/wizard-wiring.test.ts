@@ -981,16 +981,25 @@ describe("policies/new wizard — P9 steering wiring", () => {
       )
       expect(body).toContain("step4-inject-context-disabled")
       expect(body).toMatch(/disabled\s*\n?\s*aria-disabled="true"/)
-      // Per-event tooltip text reads from `injectContextDisabledCopy`.
-      expect(body).toContain("injectContextDisabledCopy(lifecycle, locale)")
+      // D59 follow-up (#14): the disabled branch funnels the lifecycle
+      // through `asContextInjectionExcludedLifecycle` so the call to
+      // `injectContextDisabledCopy` receives a narrowed
+      // `ContextInjectionExcludedLifecycle` union (TS exhaustiveness).
+      // Pin both the narrowing helper and the copy call.
+      expect(body).toContain("asContextInjectionExcludedLifecycle(lifecycle)")
+      expect(body).toMatch(
+        /injectContextDisabledCopy\(\s*narrowedExcluded\s*,\s*locale\s*\)/,
+      )
+      // D59 follow-up (#11): screen-reader path uses aria-describedby
+      // wired to a stable id alongside the visual title attribute.
+      expect(body).toMatch(/aria-describedby=\{tipId\}/)
     })
 
     it("Step 4 unreachable template editor when picker disabled (no peer-checked sibling render)", () => {
-      // The disabled branch must NOT render the Step 4b inline editor
-      // — the editor's `data-testid="step4b-inject-editor"` only
-      // appears in the *active* branch. Pin source-level distance so
-      // a future merge that hoists the editor into the disabled
-      // branch is loud.
+      // The disabled branch must NOT render the Step 4b inline editor.
+      // The editor's `data-testid="step4b-inject-editor"` only appears
+      // in the *active* branch. Pin source-level distance so a future
+      // merge that hoists the editor into the disabled branch is loud.
       const start = src.indexOf("function Step4Action")
       const end = src.indexOf("/* ─── Step 5", start)
       const body = src.slice(start, end)
@@ -1001,6 +1010,24 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const activeStart = body.indexOf("step4b-inject-editor")
       expect(disabledStart).toBeGreaterThan(-1)
       expect(activeStart).toBeGreaterThan(disabledStart)
+      // D59 follow-up (#7 test rigor): the order check above is
+      // necessary but not sufficient. A future refactor that hoists
+      // the editor (`step4b-inject-editor`) into the disabled
+      // <label> body (e.g. for a "preview what the operator typed"
+      // affordance) would still pass the positional test if the
+      // closing </label> sits *before* the active branch. Slice the
+      // disabled <label> body explicitly and assert the editor token
+      // is NOT inside it. The label opens at
+      // `data-testid="step4-inject-context-disabled"` and closes at
+      // the first `</label>` after that marker.
+      const labelOpen = body.indexOf(
+        "data-testid=\"step4-inject-context-disabled\"",
+      )
+      expect(labelOpen).toBeGreaterThan(-1)
+      const labelClose = body.indexOf("</label>", labelOpen)
+      expect(labelClose).toBeGreaterThan(labelOpen)
+      const disabledLabelBody = body.slice(labelOpen, labelClose)
+      expect(disabledLabelBody).not.toContain("step4b-inject-editor")
     })
 
     it("saveWizard refuses inject_context on excluded lifecycle", () => {

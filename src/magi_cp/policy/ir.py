@@ -353,26 +353,69 @@ _CONTEXT_INJECTION_EXCLUDED_EVENTS: frozenset[str] = frozenset({
 _CONTEXT_EVENT_LITERALS: tuple[str, ...] = tuple(sorted(
     _SUPPORTED_EVENTS - _CONTEXT_INJECTION_EXCLUDED_EVENTS,
 ))
+# D59 follow-up (#6 type safety): mirror `_CONTEXT_EVENT_LITERALS` as a
+# typing.Literal so a direct dataclass call site
+# (`ContextInjectionPolicy(event="Elicitation", ...)`) gets a lint-time
+# refusal that matches the runtime gate below. The JSON deserialization
+# path stays funneled through `policy_from_dict` which calls the
+# runtime gate in `validate()`, so the asymmetric authoring path
+# (dict vs dataclass) keeps the runtime as the canonical truth.
+ContextEventLiteral = Literal[
+    "ConfigChange",
+    "CwdChanged",
+    "FileChanged",
+    "InstructionsLoaded",
+    "Notification",
+    "PermissionDenied",
+    "PermissionRequest",
+    "PostCompact",
+    "PostToolBatch",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PreCompact",
+    "PreToolUse",
+    "SessionEnd",
+    "SessionStart",
+    "Setup",
+    "Stop",
+    "StopFailure",
+    "SubagentStart",
+    "SubagentStop",
+    "TaskCompleted",
+    "TaskCreated",
+    "TeammateIdle",
+    "UserPromptExpansion",
+    "UserPromptSubmit",
+    "WorktreeRemove",
+]
 # Per-event alternate channel description used in the ValueError when
 # an operator tries to author a ContextInjectionPolicy on an excluded
 # event. The description names the actual hookSpecificOutput field
 # that hook uses so the error tells the operator where to look next.
+#
+# D59 follow-up (#8, #9, code-style): every entry stays a noun phrase so
+# the splice into the `this hook uses {channel}, not additionalContext`
+# template reads grammatically. The MessageDisplay entry is rephrased to
+# "no model-context channel" since there is literally no `hookSpecificOutput`
+# field that feeds the model view; the operator's options are EvidencePolicy
+# audit or a different hook event. No em-dashes per CLAUDE.md hard rule.
 _CONTEXT_INJECTION_ALTERNATE_CHANNEL: dict[str, str] = {
     "Elicitation": (
         "hookSpecificOutput.elicitationDecision (accept / decline an "
         "MCP elicitation request)"
     ),
     "ElicitationResult": (
-        "hookSpecificOutput overrides the action or content before the "
-        "response is sent to the MCP server"
+        "hookSpecificOutput action / content override (applied before "
+        "the response is sent to the MCP server)"
     ),
     "WorktreeCreate": (
         "hookSpecificOutput.worktreePath (the gate returns a worktree "
         "path)"
     ),
     "MessageDisplay": (
-        "display-only — CC replaces the on-screen delta without "
-        "changing the stored message or feeding the model context"
+        "no model-context channel (this hook is display-only; CC "
+        "replaces the on-screen delta without changing the stored "
+        "message)"
     ),
 }
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
@@ -592,18 +635,21 @@ class ContextInjectionPolicy:
     """
     id: str
     description: str
-    # D58: type-checker sees the full event surface (same Literal that
-    # Trigger.event uses) so a `ContextInjectionPolicy(event="…")`
-    # call site catches typos at lint time. The runtime check below
-    # is the ONLY guard against JSON-deserialized events that bypass
-    # the Literal (mypy enforces the union at construction time but
-    # `policy_from_dict` accepts any string). D57f-1 fix-followup:
-    # `_CONTEXT_EVENT_LITERALS` is the canonical `_SUPPORTED_EVENTS`
-    # frozen-set sorted; widening the candidate set MUST also expand
-    # the matrix-coherence gate in `validate()` (per-tool matcher
-    # classes are illegal on no-tool-context events even when the
-    # event name is recognized).
-    event: EventLiteral
+    # D58 / D59: type-checker sees the narrowed event surface
+    # (`ContextEventLiteral` = full 26-event subset) so a
+    # `ContextInjectionPolicy(event="Elicitation", ...)` call site
+    # catches typos AND the four specialized-channel events at lint
+    # time, matching the runtime gate below. The runtime check below
+    # is still the ONLY guard against JSON-deserialized events that
+    # bypass the Literal (mypy enforces the union at construction
+    # time but `policy_from_dict` accepts any string). D57f-1
+    # fix-followup: `_CONTEXT_EVENT_LITERALS` is the canonical
+    # `_SUPPORTED_EVENTS` frozen-set sorted minus the four hooks whose
+    # hookSpecificOutput shape is specialized; widening the candidate
+    # set MUST also expand the matrix-coherence gate in `validate()`
+    # (per-tool matcher classes are illegal on no-tool-context events
+    # even when the event name is recognized).
+    event: ContextEventLiteral
     template: str
     matcher: str = "*"
     version: str = "0.1"
@@ -626,13 +672,27 @@ class ContextInjectionPolicy:
             # through the docs.
             if self.event in _CONTEXT_INJECTION_EXCLUDED_EVENTS:
                 channel = _CONTEXT_INJECTION_ALTERNATE_CHANNEL[self.event]
+                # D59 follow-up (#2, #10, code-style): no em-dash. The
+                # error reaches operators verbatim via the dashboard's
+                # flash redirect path, Python tracebacks, and direct
+                # REST PUT responses. D59 follow-up (#10): name BOTH
+                # recovery paths the operator has. One is a different
+                # archetype (EvidencePolicy audit). The other is a
+                # different hook event (PreToolUse / SessionStart /
+                # UserPromptSubmit are the canonical
+                # additionalContext-bearing hooks per the CC binary).
+                # The dashboard's disabled-card tooltip names only the
+                # alternate archetype, so this string is the operator's
+                # only signpost on the non-UI path.
                 raise ValueError(
                     f"ContextInjectionPolicy '{self.id}': event "
                     f"{self.event!r} does not accept additionalContext "
-                    f"injection — this hook uses {channel}, not "
+                    f"injection. This hook uses {channel}, not "
                     f"additionalContext. EvidencePolicy (audit) is "
                     f"still legal on this event if you want to record "
-                    f"the trigger firing."
+                    f"the trigger firing; if you need additionalContext "
+                    f"injection, switch to a hook event that supports "
+                    f"it (e.g. PreToolUse, SessionStart, UserPromptSubmit)."
                 )
             raise ValueError(
                 f"ContextInjectionPolicy '{self.id}': event {self.event!r} "

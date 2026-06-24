@@ -219,12 +219,28 @@ function lifecycleAllowsInjectContext(life: Lifecycle | undefined): boolean {
     !CONTEXT_INJECTION_EXCLUDED_LIFECYCLES.has(life)
 }
 
+// D59 follow-up (#14 code-hygiene): explicit narrow union for the
+// excluded lifecycles so the switch below is compile-time exhaustive.
+// A future 5th excluded lifecycle widens this union, which propagates
+// to `injectContextDisabledCopy` and the `never`-guard in the default
+// branch, making the missing case loud at TS build time instead of
+// silently falling through to the generic copy at runtime.
+type ContextInjectionExcludedLifecycle =
+  | "elicitation"
+  | "elicitation_result"
+  | "worktree_create"
+  | "message_display"
+
 // Per-lifecycle tooltip explaining the alternate channel (mirror of
 // `_CONTEXT_INJECTION_ALTERNATE_CHANNEL` in src/magi_cp/policy/ir.py).
 // Surfaces on the greyed-out inject_context card on Step 4 and as a
-// caveat in the Step 1 lifecycleCardCopy helper text.
+// caveat in the Step 1 lifecycleCardCopy helper text. The parameter is
+// narrowed to the excluded-lifecycle union so call sites must prove
+// `lifecycleAllowsInjectContext(life) === false` before reaching this
+// function. The `never`-guard at the end keeps TS exhaustiveness loud
+// on any future widening.
 function injectContextDisabledCopy(
-  life: Lifecycle, locale: "ko" | "en",
+  life: ContextInjectionExcludedLifecycle, locale: "ko" | "en",
 ): string {
   const ko = locale === "ko"
   switch (life) {
@@ -242,12 +258,30 @@ function injectContextDisabledCopy(
         : "This hook uses hookSpecificOutput.worktreePath (the gate returns a worktree path); the additionalContext channel does not apply. Inject extra context is not available."
     case "message_display":
       return ko
-        ? "이 hook 은 표시 전용 — 화면의 delta 만 바꾸고 저장된 메시지나 모델 컨텍스트는 건드리지 않습니다. 추가 정보 주입은 불가합니다."
-        : "This hook is display-only — it replaces the on-screen delta without changing the stored message or feeding the model context. Inject extra context is not available."
+        ? "이 hook 은 표시 전용입니다. 화면의 delta 만 바꾸고 저장된 메시지나 모델 컨텍스트는 건드리지 않습니다. 추가 정보 주입은 불가합니다."
+        : "This hook is display-only. It replaces the on-screen delta without changing the stored message or feeding the model context. Inject extra context is not available."
+    default: {
+      const _exhaustive: never = life
+      return _exhaustive
+    }
+  }
+}
+
+// D59 follow-up (#14): narrow runtime guard returning a typed value so
+// the call site can pass `lifecycle` to `injectContextDisabledCopy`
+// without an `as` cast. Centralizes the excluded-set membership in one
+// place that both UI and TS agree on.
+function asContextInjectionExcludedLifecycle(
+  life: Lifecycle,
+): ContextInjectionExcludedLifecycle | null {
+  switch (life) {
+    case "elicitation":
+    case "elicitation_result":
+    case "worktree_create":
+    case "message_display":
+      return life
     default:
-      return ko
-        ? "이 hook 은 다른 출력 채널을 씁니다. 추가 정보 주입은 불가합니다."
-        : "This hook uses a different output channel; inject extra context is not available here."
+      return null
   }
 }
 
@@ -3050,7 +3084,7 @@ function lifecycleCardCopy(
     },
     message_display: {
       label: "Message displayed (MessageDisplay)",
-      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context — “Inject extra context” is not available here.",
+      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context. “Inject extra context” is not available here.",
     },
   }
 }
@@ -4011,40 +4045,76 @@ function Step4Action({
           // checked sibling can never match.
           if (a === "inject_context"
               && !lifecycleAllowsInjectContext(lifecycle)) {
-            const tip = injectContextDisabledCopy(lifecycle, locale)
-            return (
-              <label
-                key={a}
-                className="block cursor-not-allowed opacity-60"
-                title={tip}
-                data-testid="step4-inject-context-disabled"
-                data-disabled-lifecycle={lifecycle}
-              >
-                <input
-                  type="radio"
-                  name="action"
-                  value={a}
-                  disabled
-                  aria-disabled="true"
-                  className="peer sr-only"
-                />
-                <span
-                  data-action-tone="inject_context"
-                  className={
-                    "block rounded-xl border bg-white p-4 transition-colors " +
-                    "border-black/[0.08]"
-                  }
+            // D59 follow-up (#14): `lifecycleAllowsInjectContext` returns
+            // false iff `lifecycle` is in the excluded set OR undefined;
+            // the helper below narrows to the typed union so the
+            // disabled-copy switch stays exhaustive. `null` here is the
+            // "undefined lifecycle" edge (should not happen on Step 4
+            // because Step 1 is required, but the guard keeps TS sound).
+            const narrowedExcluded =
+              asContextInjectionExcludedLifecycle(lifecycle)
+            if (narrowedExcluded !== null) {
+              const tip = injectContextDisabledCopy(narrowedExcluded, locale)
+              // D59 follow-up (#11 a11y): give the descriptive copy a
+              // stable id and wire it via `aria-describedby` on the
+              // disabled radio so screen readers announce the
+              // channel-mismatch reason at the same moment as the
+              // disabled state. The HTML `title` attribute has
+              // notoriously inconsistent SR support (NVDA/VoiceOver/
+              // JAWS each behave differently), so we keep it as a
+              // mouse-tooltip nicety but rely on aria-describedby for
+              // the SR path.
+              const tipId =
+                `step4-inject-disabled-${narrowedExcluded}`
+              return (
+                <label
+                  key={a}
+                  className="block cursor-not-allowed opacity-60"
+                  title={tip}
+                  data-testid="step4-inject-context-disabled"
+                  data-disabled-lifecycle={lifecycle}
                 >
-                  <span className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                    <Badge variant="info">
-                      {ko ? "이 hook 에서는 비활성" : "not available"}
-                    </Badge>
+                  <input
+                    type="radio"
+                    name="action"
+                    value={a}
+                    disabled
+                    aria-disabled="true"
+                    aria-describedby={tipId}
+                    className="peer sr-only"
+                  />
+                  <span
+                    data-action-tone="inject_context"
+                    className={
+                      "block rounded-xl border bg-white p-4 transition-colors " +
+                      "border-black/[0.08]"
+                    }
+                  >
+                    <span className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                      {/* D59 follow-up (#13 ux-consistency): use the
+                          neutral `muted` Badge variant so the operator
+                          can distinguish "this archetype is
+                          fundamentally unavailable on this hook" from
+                          the blue `info` "coming soon" badge above
+                          (which signals "wait, it ships later"). The
+                          two disabled states are semantically different
+                          and benefit from distinct affordances. */}
+                      <Badge variant="muted">
+                        {ko ? "이 hook 에서는 비활성" : "not available"}
+                      </Badge>
+                    </span>
+                    <span
+                      id={tipId}
+                      role="note"
+                      className="block text-xs text-[var(--color-text-secondary)] leading-relaxed"
+                    >
+                      {tip}
+                    </span>
                   </span>
-                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{tip}</span>
-                </span>
-              </label>
-            )
+                </label>
+              )
+            }
           }
           // D57f-1: when a === "inject_context" the inline editor
           // (Step 4b) renders below the card via the peer-checked

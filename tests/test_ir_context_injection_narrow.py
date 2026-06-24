@@ -81,6 +81,14 @@ def test_alternate_channel_message_names_every_excluded_event():
     assert "display-only" in _CONTEXT_INJECTION_ALTERNATE_CHANNEL[
         "MessageDisplay"
     ]
+    # D59 follow-up (#3, code-style): no em-dash in any channel
+    # description. The strings splice into the user-facing ValueError
+    # and reach the dashboard's flash redirect path verbatim.
+    for ev, channel in _CONTEXT_INJECTION_ALTERNATE_CHANNEL.items():
+        assert "—" not in channel, (
+            f"channel description for {ev!r} carries an em-dash: "
+            f"{channel!r}"
+        )
 
 
 # ── ContextInjectionPolicy refusal per excluded event ───────────────
@@ -91,7 +99,7 @@ def test_context_injection_refuses_elicitation():
         ContextInjectionPolicy(
             id="ctx-elicit/v1",
             description="should be refused",
-            event="Elicitation",
+            event="Elicitation",  # type: ignore[arg-type]
             template="hello",
         )
     # The error must name the event AND the alternate channel so the
@@ -101,6 +109,15 @@ def test_context_injection_refuses_elicitation():
     assert "'Elicitation'" in msg
     assert "EvidencePolicy" in msg
     assert "additionalContext" in msg
+    # D59 follow-up (#10): the error must ALSO name the
+    # alternate-hook recovery path so a direct REST PUT or persisted-
+    # dict load (no dashboard tooltip in the loop) gets both options.
+    assert "PreToolUse" in msg
+    assert "SessionStart" in msg
+    assert "UserPromptSubmit" in msg
+    # D59 follow-up (code-style): the user-facing error string must
+    # carry no em-dash. Em-dashes are banned per CLAUDE.md hard rule.
+    assert "—" not in msg
 
 
 def test_context_injection_refuses_elicitation_result():
@@ -108,12 +125,21 @@ def test_context_injection_refuses_elicitation_result():
         ContextInjectionPolicy(
             id="ctx-elicit-result/v1",
             description="should be refused",
-            event="ElicitationResult",
+            event="ElicitationResult",  # type: ignore[arg-type]
             template="hello",
         )
     msg = str(ei.value)
     assert "'ElicitationResult'" in msg
     assert "EvidencePolicy" in msg
+    # D59 follow-up (#8): the alternate-channel description must read
+    # as a noun phrase so the spliced sentence "this hook uses
+    # <channel>, not additionalContext" stays grammatical. Pin the
+    # current noun-phrase token ("action / content override") so a
+    # future rewording can't slip back to a sentence fragment that
+    # produces two verbs back-to-back.
+    assert "action / content override" in msg
+    # No em-dash (CLAUDE.md hard rule).
+    assert "—" not in msg
 
 
 def test_context_injection_refuses_worktree_create():
@@ -121,13 +147,14 @@ def test_context_injection_refuses_worktree_create():
         ContextInjectionPolicy(
             id="ctx-worktree/v1",
             description="should be refused",
-            event="WorktreeCreate",
+            event="WorktreeCreate",  # type: ignore[arg-type]
             template="hello",
         )
     msg = str(ei.value)
     assert "'WorktreeCreate'" in msg
     assert "EvidencePolicy" in msg
     assert "additionalContext" in msg
+    assert "—" not in msg
 
 
 def test_context_injection_refuses_message_display():
@@ -135,12 +162,22 @@ def test_context_injection_refuses_message_display():
         ContextInjectionPolicy(
             id="ctx-message-display/v1",
             description="should be refused",
-            event="MessageDisplay",
+            event="MessageDisplay",  # type: ignore[arg-type]
             template="hello",
         )
     msg = str(ei.value)
     assert "'MessageDisplay'" in msg
     assert "EvidencePolicy" in msg
+    # D59 follow-up (#9): the MessageDisplay channel is a positive
+    # "no model-context channel" statement, not an adjective. Pin the
+    # token so a future rewording cannot revert to a dangling
+    # "uses display-only" fragment (the spliced sentence would
+    # otherwise read as: "this hook uses display-only ..., not
+    # additionalContext" which doesn't tell the operator what to do
+    # next).
+    assert "no model-context channel" in msg
+    # No em-dash (CLAUDE.md hard rule).
+    assert "—" not in msg
 
 
 # ── 26 still-legal events ───────────────────────────────────────────

@@ -12,11 +12,32 @@ Multi-tenant comes later (SECURITY.md §multi-tenant).
 """
 from __future__ import annotations
 import json
+import logging
 import os
 from typing import Iterable
 
-from ..policy.ir import EvidenceReq
+from ..policy.ir import EvidenceReq, _CONTEXT_INJECTION_EXCLUDED_EVENTS
 from ..policy.resolved import PolicyOverride
+
+
+_LOG = logging.getLogger(__name__)
+
+
+def _is_d59_narrowed_context_injection(item: dict) -> bool:
+    """D59 follow-up (#1 P1): a ContextInjectionPolicy persisted between
+    D58 (event accepted all 30 hooks) and D59 (narrowed to 26) on one of
+    the four specialized-channel events now refuses to construct in
+    `policy_from_dict` because `validate()` raises. Without recovery the
+    whole tenant's policy store goes dark on the next cloud reboot. This
+    helper detects that exact shape so `load()` can drop the row with a
+    structured warning instead of aborting the loader.
+    """
+    pol = item.get("policy") if isinstance(item, dict) else None
+    if not isinstance(pol, dict):
+        return False
+    if pol.get("type") != "context_injection":
+        return False
+    return pol.get("event") in _CONTEXT_INJECTION_EXCLUDED_EVENTS
 
 
 def _evidence_req_to_dict(r: EvidenceReq) -> dict:
@@ -103,6 +124,30 @@ class PolicyStore:
                 # → fail-fast with item index for actionable error messages.
                 policy = _deserialize_policy(item["policy"])
             except (ValueError, KeyError) as e:
+                # D59 follow-up (#1 P1): a ContextInjectionPolicy persisted
+                # between D58 and D59 on Elicitation / ElicitationResult /
+                # WorktreeCreate / MessageDisplay now fails `validate()`.
+                # Without a per-item recovery path the whole tenant's
+                # policy file would refuse to load on the next cloud
+                # reboot, dropping every OTHER policy in the file too.
+                # Drop just the offending row with a structured log so
+                # the operator can re-author it (as EvidencePolicy audit
+                # or a different hook event); the rest of the store
+                # keeps working.
+                if isinstance(e, ValueError) and \
+                        _is_d59_narrowed_context_injection(item):
+                    pol = item.get("policy", {})
+                    _LOG.warning(
+                        "policy store item %d: dropping ContextInjectionPolicy "
+                        "%r on event %r (D59 narrowed additionalContext to 26 "
+                        "events; this hook uses a specialized "
+                        "hookSpecificOutput channel). Re-author as "
+                        "EvidencePolicy audit or pick a hook event that "
+                        "supports additionalContext (PreToolUse, SessionStart, "
+                        "UserPromptSubmit). Underlying error: %s",
+                        i, pol.get("id", "<unknown>"), pol.get("event"), e,
+                    )
+                    continue
                 raise ValueError(f"policy store item {i}: {e}") from e
             out.append(PolicyOverride(
                 policy=policy, source=item["source"],
