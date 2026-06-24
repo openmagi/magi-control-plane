@@ -190,6 +190,17 @@ function matcherClassForToolScope(scope: string | undefined): MatcherClassKey {
   return "tool"
 }
 
+// D56d follow-up (P1): true predicate for "more than one tool name
+// arrived in the raw toolScope string." Used by saveWizard's early
+// refusal so a stale CSV URL (`?toolScope=Bash,Edit`) that bypassed
+// the GuidedWizard normalization seam cannot persist a single-tool
+// matcher under a multi-tool display string.
+function toolScopeIsMulti(scope: string | undefined): boolean {
+  const raw = (scope ?? "").trim()
+  if (!raw || raw === "*") return false
+  return parseCsv(raw).length > 1
+}
+
 // Per (lifecycle, matcher_class) action allowlist. Mirror of
 // matrix.LEGAL_COMBINATIONS in src/magi_cp/policy/matrix.py — adding a
 // new event/matcher there must be reflected here too.
@@ -1094,14 +1105,16 @@ export default async function NewPolicyPage({
     const tail = seed ? `&nl=${encodeURIComponent(seed)}` : ""
     redirect(`/policies/new?mode=conversational${tail}`)
   }
-  // D56b: first-time visitors (no mode= query and no draft= prefill)
-  // jump straight to Conversational compose instead of the legacy
-  // picker landing. The PickerLanding helper is kept in source and
-  // still reachable via `?mode=picker` for direct-URL access.
-  if (rawMode === undefined && searchParams.draft == null) {
-    redirect("/policies/new?mode=conversational")
-  }
+  // D56b hotfix: first-time visitors land on the PickerLanding which
+  // shows Conversational (recommended) / Guided / Raw side by side.
+  // The earlier auto-redirect to mode=conversational removed the user's
+  // ability to pick Guided or Raw without typing a query param.
+  // PickerLanding renders when rawMode is undefined; draft= prefill
+  // still routes straight into the advanced editor below.
   type ResolvedMode = Mode | "picker"
+  // D56b hotfix: unknown / undefined mode falls back to picker, not
+  // conversational. Conversational is the recommended first option on
+  // the picker, but the operator still gets Guided + Raw alongside.
   const mode: ResolvedMode =
     rawMode === "advanced" || (rawMode === undefined && searchParams.draft != null)
       ? "advanced"
@@ -1109,9 +1122,7 @@ export default async function NewPolicyPage({
         ? "guided"
         : rawMode === "conversational"
           ? "conversational"
-          : rawMode === "picker"
-            ? "picker"
-            : "conversational"
+          : "picker"
 
   const initialDraft =
     _parseDraftQuery(searchParams.draft) ??
