@@ -279,9 +279,55 @@ def test_d58_extended_events_reject_tool_matcher():
             validate_combination(ev, "Bash", "audit")
 
 
+# CC version this matrix was last calibrated against. Bump these
+# constants in lock-step with any change to the binary candidate list
+# (verified or unverified) so future maintainers know exactly which
+# refresh they have to redo before adjusting the matrix.
+CC_VERSION = "2.1.170"
+CC_SHA = "1cda84def004ef3a8f569f8e8284a153a6b98c3a"
+
+
 def test_d58_supported_events_count_is_30():
-    """Bookmark the count so a future event addition is forced
-    through the named-event review path — the binary's `nV` enum is
-    the truth source, and adding to it without updating the matrix
-    would silently fail-open."""
+    """Bookmark the count + the EXACT expected event set so a future
+    refresh has to explicitly name additions / removals. Anchoring on
+    a count alone (the pre-D58-followup behavior) was wrong: a future
+    maintainer's first instinct would be to bump 30 → 31 without
+    re-verifying matrix entries. The expected-set assertion
+    `test_supported_events_covers_full_cc_surface` is the strict
+    contract; this test pins the magnitude as a sanity check.
+
+    Calibrated against Claude Code CC_VERSION + CC_SHA above. Bump
+    those constants when refreshing the matrix off a newer binary."""
     assert len(supported_events()) == 30
+    # Witness that the constants exist in this module so reviewers
+    # see the binary they came from at the same time they see the
+    # count being changed.
+    assert CC_VERSION == "2.1.170"
+    assert CC_SHA == "1cda84def004ef3a8f569f8e8284a153a6b98c3a"
+
+
+def test_d58_verified_vs_unverified_event_split():
+    """D58-followup: matrix.py partitions the 30 names into a
+    `_VERIFIED_EVENTS` set (the pre-D58 8 covered by the existing
+    test fixtures + docs/architecture/claude-code-cli) and a larger
+    `_UNVERIFIED_EVENTS` set (22 candidate names extracted from the
+    binary's `strings(1)` output whose authorability has not been
+    demonstrated against a real CC binary). The split is informational
+    today; the wizard still surfaces unverified candidates. Any
+    candidate moved to `_VERIFIED_EVENTS` MUST come with a binary
+    fixture proving it authorable — see the matrix.py module docstring.
+    """
+    from magi_cp.policy.matrix import _VERIFIED_EVENTS, _UNVERIFIED_EVENTS
+    # Sanity: the two sets partition supported_events() exactly.
+    assert _VERIFIED_EVENTS.isdisjoint(_UNVERIFIED_EVENTS)
+    assert _VERIFIED_EVENTS | _UNVERIFIED_EVENTS == supported_events()
+    # Verified floor is exactly the pre-D58 8. This is the level the
+    # matrix can safely fall back to without losing existing fixtures.
+    assert _VERIFIED_EVENTS == {
+        "PreToolUse", "PostToolUse",
+        "Stop", "SubagentStop",
+        "UserPromptSubmit",
+        "PreCompact",
+        "SessionStart", "SessionEnd",
+    }
+    assert len(_UNVERIFIED_EVENTS) == 22

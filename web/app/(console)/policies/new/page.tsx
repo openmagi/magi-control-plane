@@ -32,31 +32,53 @@ type Mode = "guided" | "advanced" | "conversational"
 const WIZARD_TOTAL = 6
 
 /* ─────────────────────────────────────────────────────────────────────
- * New guided model (D41, expanded in D56c).
+ * New guided model (D41, expanded in D56c, D58 30-lifecycle surface).
  *
- * Step 1  Lifecycle  one of the 8 CC hook events
+ * Step 1  Lifecycle  one of 30 CC hook lifecycles (5 families)
  * Step 2  ConditionKind  (varies by lifecycle, see below)
  * Step 3  Specifics  per-kind form (auto-skip when kind=none)
  * Step 4  Action  block / ask / audit / strip  (lifecycle-filtered)
  * Step 5  Name  policy id + optional description
  * Step 6  Review  plain English + IR preview
  *
- * D56c: full 8-hook coverage. Lifecycle slugs map 1:1 to CC events:
+ * D58 lifecycle families (slugs map 1:1 to CC events; see
+ * LIFECYCLE_TO_EVENT below; src/magi_cp/policy/matrix.py
+ * LEGAL_COMBINATIONS is the canonical truth source the cloud uses to
+ * validate on save):
  *
- *   before_tool_use  →  PreToolUse        (tool-context, recommended)
- *   after_tool_use   →  PostToolUse       (tool-context, audit-only)
- *   pre_final        →  Stop              (no-tool-context, audit-only)
- *   subagent_stop    →  SubagentStop      (no-tool-context, audit-only)
- *   user_prompt      →  UserPromptSubmit  (no-tool-context, block/ask/audit)
- *   pre_compact      →  PreCompact        (no-tool-context, block/audit)
- *   session_start    →  SessionStart      (no-tool-context, audit-only)
- *   session_end      →  SessionEnd        (no-tool-context, audit-only)
+ *   tool actions       — PreToolUse / PostToolUse plus the
+ *                        observability variants (PostToolUseFailure,
+ *                        PostToolBatch).
+ *   content flow       — UserPromptSubmit / UserPromptExpansion /
+ *                        PreCompact / PostCompact / Elicitation /
+ *                        ElicitationResult.
+ *   permissions        — PermissionRequest (gate) / PermissionDenied
+ *                        (audit).
+ *   subagents          — SubagentStart / SubagentStop.
+ *   boundaries +       — Stop / StopFailure / SessionStart /
+ *   workspace            SessionEnd / Setup / Notification /
+ *                        TeammateIdle / TaskCreated / TaskCompleted /
+ *                        ConfigChange / InstructionsLoaded /
+ *                        MessageDisplay / WorktreeCreate /
+ *                        WorktreeRemove / CwdChanged / FileChanged.
+ *
+ * Action-set rule:
+ *   gate-style pre-hooks (PreToolUse / UserPromptSubmit /
+ *     PermissionRequest / Elicitation)        → block / ask / audit
+ *   mid-process pre-hooks (UserPromptExpansion / PreCompact —
+ *     no interactive surface to interrupt to)  → block / audit
+ *   everything else (post-hooks + observability) → audit only
  *
  * Tool scope is only meaningful for the two tool-context lifecycles
- * (before_tool_use, after_tool_use); the other 6 auto-skip Step 2 and
- * use matcher="*". Action set is matrix-filtered (see ACTIONS_BY_
- * LIFECYCLE below + src/magi_cp/policy/matrix.py LEGAL_COMBINATIONS
- * which the cloud uses to validate on save).
+ * (before_tool_use, after_tool_use); every other lifecycle auto-skips
+ * Step 2 and uses matcher="*".
+ *
+ * D58-followup verification status: only the pre-D58 8 events
+ * (PreToolUse / PostToolUse / Stop / SubagentStop / UserPromptSubmit /
+ * PreCompact / SessionStart / SessionEnd) are end-to-end verified to
+ * be authorable. The other 22 are CANDIDATE names — see
+ * matrix.py._UNVERIFIED_EVENTS for the full set + matrix.py module
+ * docstring for the silent-fail-open path candidates expose.
  * ───────────────────────────────────────────────────────────────────── */
 
 // D58 — full CC hook surface (30 events as of CC 2.1.170; the
@@ -590,6 +612,11 @@ function actionHeaderEN(s: WizardState): string {
   if (s.conditionKind === "none") {
     // D56c: tone the header to the lifecycle when there is no per-call
     // check. The action runs every time the hook fires.
+    // D58-followup (P1 #5): the default branch reads from
+    // LIFECYCLE_LABEL_EN so the 22 D58 lifecycles surface a
+    // lifecycle-accurate phrase instead of the tool-call default
+    // (which used to render "On every matching tool call," even when
+    // the user picked Notification / FileChanged / etc.).
     switch (s.lifecycle) {
       case "user_prompt":   return "On every user prompt,"
       case "pre_compact":   return "Right before each context compaction,"
@@ -598,7 +625,12 @@ function actionHeaderEN(s: WizardState): string {
       case "session_end":   return "When the session closes,"
       case "pre_final":     return "When the agent has just finished its answer,"
       case "after_tool_use":return "On every matching tool call,"
-      default:              return "On every matching tool call,"
+      case "before_tool_use":return "On every matching tool call,"
+      default: {
+        const life = s.lifecycle
+        if (life === undefined) return "On every matching tool call,"
+        return `${capitalize(LIFECYCLE_LABEL_EN[life])},`
+      }
     }
   }
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "When the tool args match,"
@@ -622,6 +654,9 @@ function actionHeaderEN(s: WizardState): string {
 
 function actionHeaderKO(s: WizardState): string {
   if (s.conditionKind === "none") {
+    // D58-followup (P1 #5): default branch reads LIFECYCLE_LABEL_KO
+    // so a D58 lifecycle without an explicit case still produces a
+    // lifecycle-accurate header (not the tool-call default).
     switch (s.lifecycle) {
       case "user_prompt":   return "유저 프롬프트가 도착할 때마다,"
       case "pre_compact":   return "컨텍스트 컴팩션 직전마다,"
@@ -630,7 +665,12 @@ function actionHeaderKO(s: WizardState): string {
       case "session_end":   return "세션이 종료될 때,"
       case "pre_final":     return "에이전트가 최종 응답을 마쳤을 때,"
       case "after_tool_use":return "도구 호출이 끝날 때마다,"
-      default:              return "조건에 매칭되는 도구 호출마다,"
+      case "before_tool_use":return "조건에 매칭되는 도구 호출마다,"
+      default: {
+        const life = s.lifecycle
+        if (life === undefined) return "조건에 매칭되는 도구 호출마다,"
+        return `${LIFECYCLE_LABEL_KO[life]}마다,`
+      }
     }
   }
   if (s.lifecycle === "before_tool_use" && s.conditionKind === "regex") return "도구 인자가 패턴에 매칭될 때,"
@@ -2264,7 +2304,7 @@ function lifecycleCardCopy(
     },
     message_display: {
       label: "메시지 표시 (MessageDisplay)",
-      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동.",
+      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동. 표시 전용 — 저장된 메시지나 모델 컨텍스트를 바꾸지 않습니다.",
     },
   } : {
     before_tool_use: {
@@ -2386,7 +2426,7 @@ function lifecycleCardCopy(
     },
     message_display: {
       label: "Message displayed (MessageDisplay)",
-      sub: "Fires when an assistant message is rendered in the user's terminal.",
+      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context.",
     },
   }
 }

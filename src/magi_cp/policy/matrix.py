@@ -52,15 +52,54 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # in ir.py). Audit is the universal "record only" action and is legal
 # for every event × matcher_class pair the runtime supports.
 #
-# D58 — event scope expanded from 8 to the full Claude Code hook
-# surface (30 events as of CC 2.1.170; the architecture doc still says
-# "23 hook events" because the doc was written before the four 2.1.x
-# rounds of additions). Names come from the canonical `nV` enum in the
-# bundled CC binary (Claude Code 2.1.170, sha
-# 1cda84def004ef3a8f569f8e8284a153a6b98c3a), extracted via
-# `strings(1)`. That list IS the truth source — the cloud refuses to
-# author a policy on an event CC never fires, and the binary's runtime
-# refuses to even load a settings.json that names an unknown event.
+# D58 — event scope expanded from 8 (pre-D58 verified) to a 30-event
+# candidate surface. CC version anchor: Claude Code 2.1.170, sha
+# 1cda84def004ef3a8f569f8e8284a153a6b98c3a.
+#
+# Truth source priority (D58-followup, in order):
+#
+#   1. `entrypoints/sdk/coreTypes.ts` in the bundled SDK type union —
+#      this is the *authoring contract*. Whatever event names that
+#      Literal accepts is what `settings.json -> hooks` can name.
+#   2. Documented hook table in
+#      docs/architecture/claude-code-cli/08-coding-harness-internals.md
+#      (currently anchored on 23 events; lags 2.1.x).
+#   3. `strings(1)` output from the binary — SUPERSET of (1)+(2). Binary
+#      strings include internal event-bus topics, log keys, and
+#      telemetry markers that the runtime fires but does NOT expose as
+#      authorable settings.json keys.
+#
+# Of the 30 names listed below, only the pre-D58 8 (named in
+# `_VERIFIED_EVENTS` below) are end-to-end verified to be authorable
+# via `settings.json -> hooks` against a real CC binary. The other 22
+# are CANDIDATE names extracted from binary strings whose authoring
+# behavior has NOT been demonstrated. They are kept in the matrix as
+# the working hypothesis so the wizard can surface them, but two
+# silent-fail-open paths the reviewer flagged are real:
+#
+#   (a) if CC silently drops unknown hook event keys, an unverified
+#       candidate event would round-trip as "saved" but the hook would
+#       never fire (operator sees a green check, no enforcement);
+#   (b) if CC rejects unknown event keys at settings.json load, an
+#       unverified candidate would refuse the whole file, sending the
+#       gate fail-open across every policy in it.
+#
+# Mitigations applied in this commit:
+#   - the unverified-21 are flagged via `_UNVERIFIED_EVENTS` so future
+#     readers see exactly which entries lack a binary fixture proof;
+#   - `ContextInjectionPolicy` is narrowed back to the two events with
+#     a documented `additionalContext` consumption seam in ir.py
+#     (`_CONTEXT_EVENT_LITERALS` in ir.py is the gate);
+#   - tests/test_policy_matrix.py asserts set-equality (not just the
+#     count) so a future binary refresh has to explicitly name added /
+#     removed events.
+#
+# Required follow-up before flipping any candidate event to verified:
+# a CC-binary integration fixture that authors a hook on the candidate
+# event and observes either (i) the hook firing on the corresponding
+# runtime event, or (ii) CC raising a `Hook JSON output had unrecognized
+# keys` / unknown-hook-event error. Until then the candidate stays in
+# `_UNVERIFIED_EVENTS`.
 #
 # The 30 names split into 5 families:
 #
@@ -98,6 +137,44 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 _BLOCK_ASK_AUDIT = ("block", "ask", "audit")
 _BLOCK_AUDIT = ("block", "audit")
 _AUDIT_ONLY = ("audit",)
+
+# D58-followup — verification status, per-event. The matrix-fidelity
+# floor (8 events) is exactly the pre-D58 surface, all of which the
+# existing test suite + the docs/architecture/claude-code-cli/
+# 08-coding-harness-internals.md table covers end-to-end. The 22 in
+# `_UNVERIFIED_EVENTS` are the binary-strings candidate names whose
+# authorability has NOT been demonstrated against a real CC binary;
+# see the module docstring above for the silent-fail-open paths they
+# expose. Adding a name here without a binary fixture is intentional
+# (we'd rather wire the wizard surface than refuse it), but every
+# entry in `_UNVERIFIED_EVENTS` is on notice: future cycles MUST
+# either prove it authorable (move to `_VERIFIED_EVENTS`) or drop it.
+_VERIFIED_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse", "PostToolUse",
+    "Stop", "SubagentStop",
+    "UserPromptSubmit",
+    "PreCompact",
+    "SessionStart", "SessionEnd",
+})
+_UNVERIFIED_EVENTS: frozenset[str] = frozenset({
+    # Tool-context observability variants
+    "PostToolUseFailure", "PostToolBatch",
+    # Permission gate family
+    "PermissionRequest", "PermissionDenied",
+    # Content-flow extensions
+    "UserPromptExpansion", "PostCompact",
+    "Elicitation", "ElicitationResult",
+    # Subagent / Stop boundary
+    "SubagentStart", "StopFailure",
+    # Lifecycle / observability surface
+    "Setup", "Notification",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+    "MessageDisplay",
+})
 
 # Lifecycle / boundary observability hooks — wildcard + audit-only.
 _AUDIT_ONLY_WILDCARD_EVENTS = (

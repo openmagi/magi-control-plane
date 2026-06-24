@@ -307,19 +307,33 @@ Policy = EvidencePolicy
 
 _PERMISSION_LITERALS = ("allow", "deny", "ask")
 _MCP_ACTION_LITERALS = ("allow", "deny")
-# D58 — CC's bundled binary documents `additionalContext` on the JSON
-# stdout schema for every hook (`{decision, updatedInput,
-# additionalContext, continue}`), so the historical UserPromptSubmit
-# / SessionStart restriction here was an artificial narrowing of the
-# IR — a ContextInjectionPolicy authored against PreToolUse (or any
-# other event the cloud now legalizes) compiles to the same `command
-# + shim` route the original two events used. The matrix.py
-# LEGAL_COMBINATIONS table is what drops impossible authoring;
-# ContextInjectionPolicy's own validate() just confirms the event is
-# one the runtime recognizes. We expose the full _SUPPORTED_EVENTS
-# tuple here (sorted for stable docstrings + error messages) so a
-# future event addition lands in one place.
-_CONTEXT_EVENT_LITERALS = tuple(sorted(_SUPPORTED_EVENTS))
+# D58-followup — narrowed back to the two events with a *documented*
+# additionalContext consumption seam:
+#
+#   UserPromptSubmit — CC reads hookSpecificOutput.additionalContext
+#                      and splices it into the user-prompt-as-seen-by-
+#                      the-model for the next model call.
+#   SessionStart     — CC reads additionalContext and stitches it into
+#                      the session bootstrap context the first model
+#                      call sees.
+#
+# The original D58 widening to the full event surface assumed
+# "additionalContext is in the JSON stdout schema on every hook"
+# transitively means "every hook will consume it". That is a syntactic
+# argument, not a semantic one. For events without an immediately-
+# following model-call seam (Notification, WorktreeRemove, FileChanged,
+# MessageDisplay, CwdChanged, TaskCompleted, ConfigChange, etc.) the
+# additionalContext field is silently discarded at runtime. Authoring
+# ContextInjectionPolicy on those events would compile cleanly and
+# save with a green check while doing nothing — exactly the
+# silent-fail-open the matrix is meant to refuse.
+#
+# Adding more events here REQUIRES a binary fixture demonstrating the
+# splice (settings.json + scripted CC invocation + observed
+# additionalContext bytes in a subsequent model call). PreToolUse is
+# plausibly correct (it's a documented gate with model-input
+# consumption) but stays out until proven.
+_CONTEXT_EVENT_LITERALS: tuple[str, ...] = ("SessionStart", "UserPromptSubmit")
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 

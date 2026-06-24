@@ -253,11 +253,11 @@ def test_context_injection_emits_command_hook_and_sidecar():
 
 
 def test_context_injection_rejects_unknown_event():
-    """D58: ContextInjectionPolicy now legalizes any CC hook event the
-    matrix recognizes (the binary's `additionalContext` channel is
-    available on every hook per the bundled docs). The reject path
-    therefore narrows from "wrong event" to "event the runtime does
-    not recognize at all"."""
+    """ContextInjectionPolicy rejects events outside its narrowed
+    consumption seam. The seam covers only events with a documented
+    additionalContext consumer in CC (UserPromptSubmit + SessionStart);
+    every other name (including matrix-legal but unverified events,
+    and bogus names) refuses."""
     with pytest.raises(ValueError, match="not a recognized CC hook"):
         ContextInjectionPolicy(
             id="bad/v1", description="",
@@ -266,15 +266,56 @@ def test_context_injection_rejects_unknown_event():
         )
 
 
-def test_context_injection_accepts_d58_extended_events():
-    """D58: context injection is no longer narrowed to
-    UserPromptSubmit + SessionStart. A policy targeting PreToolUse
-    (or any other recognized hook) must construct + validate cleanly,
-    and the compiler must emit the same `command + shim` hook entry
-    so an operator can drop a per-tool note into the model's view of
-    the tool input."""
-    for ev in ("PreToolUse", "PostToolUse", "SubagentStart",
-                "PreCompact", "Notification"):
+def test_context_injection_refuses_events_without_documented_consumer():
+    """D58-followup: ContextInjectionPolicy refuses events whose
+    hookSpecificOutput shape does not name `additionalContext` as
+    the consumed channel, OR for which CC has no model-call seam to
+    splice into (Notification, WorktreeRemove, FileChanged,
+    MessageDisplay, etc. fire for observability and discard
+    additionalContext). The matrix is the floor for what's
+    *authorable*; this validator is a second gate so a silent
+    fail-open ("policy saved, never injects") cannot land.
+
+    Events that pass this gate today: UserPromptSubmit, SessionStart.
+    Adding more REQUIRES a binary fixture proving the splice."""
+    refused_events = (
+        # Tool-context — model-call seam exists for PreToolUse but
+        # the consumption side is not yet binary-verified.
+        "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+        # Specialized hookSpecificOutput shapes per the bundled CC
+        # docs — these don't name additionalContext as the consumed
+        # channel at all:
+        "Elicitation",        # decline/accept channel
+        "ElicitationResult",  # override action/content channel
+        "WorktreeCreate",     # worktreePath return channel
+        "MessageDisplay",     # display-only delta replacement
+        # Observability hooks with no immediately-following model
+        # call to inject into:
+        "Notification", "WorktreeRemove", "FileChanged", "CwdChanged",
+        "TaskCreated", "TaskCompleted", "ConfigChange",
+        "SubagentStart", "SubagentStop", "StopFailure",
+        "Setup", "TeammateIdle", "InstructionsLoaded",
+        # Mid-flow events: pre-side gates without a documented
+        # additionalContext consumer.
+        "UserPromptExpansion", "PreCompact", "PostCompact",
+        "PermissionRequest", "PermissionDenied",
+        "SessionEnd", "Stop",
+    )
+    for ev in refused_events:
+        with pytest.raises(ValueError, match="not a recognized CC hook"):
+            ContextInjectionPolicy(
+                id=f"ctx-{ev.lower()}/v1",
+                description=f"context on {ev}",
+                event=ev,  # type: ignore[arg-type]
+                template="hello",
+            )
+
+
+def test_context_injection_accepts_documented_consumer_events():
+    """The two events with a documented additionalContext splice into
+    a subsequent model call still authorize cleanly and round-trip
+    through the compiler."""
+    for ev in ("UserPromptSubmit", "SessionStart"):
         p = ContextInjectionPolicy(
             id=f"ctx-{ev.lower()}/v1",
             description=f"context on {ev}",
