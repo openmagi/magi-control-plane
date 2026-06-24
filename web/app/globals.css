@@ -103,7 +103,13 @@
   }
   body {
     min-height: 100dvh;
-    /* transparent so the fixed MeshBackdrop (liquid glass) shows through */
+    /* clean off-white canvas with a subtle grid (matches the landing) */
+    background-color: var(--color-surface-base);
+    background-image:
+      linear-gradient(to right, rgba(17, 24, 39, 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(17, 24, 39, 0.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    background-attachment: fixed;
   }
 
   a {
