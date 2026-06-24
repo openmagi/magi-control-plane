@@ -310,11 +310,18 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // Pinning the validation block keeps the client-side guard from
       // silently disappearing on a future refactor (the cloud's
       // canonical guard is matrix.validate_combination).
+      // D56d: widened to a per-(lifecycle, matcher_class) check so
+      // (PreToolUse, wildcard, block) — lifecycle-legal but matrix-
+      // illegal — gets caught here. Pin the combination helper instead
+      // of the now-superseded lifecycle-only lookup.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
       const body = src.slice(start, start + 4000)
-      expect(body).toMatch(/ACTIONS_BY_LIFECYCLE\[lifecycle\]/)
+      expect(body).toMatch(/allowedActionsForCombination\(lifecycle,\s*toolScope\)/)
       expect(body).toMatch(/!allowedActions\.includes\(action\)/)
+      // D56d (P1 #2): also rejects matrix-illegal matcher classes
+      // (e.g. after_tool_use + wildcard / tool_alt).
+      expect(body).toMatch(/allowedMatcherClassesForLifecycle\(lifecycle\)/)
     })
 
     it("Step 2 auto-skips for every no-tool-context lifecycle", () => {

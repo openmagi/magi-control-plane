@@ -135,23 +135,100 @@ type Action = "block" | "ask" | "audit" | "strip"
 
 // D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
 //   before_tool_use → block / ask / audit (the runtime can refuse)
-//   after_tool_use  → audit (tool already ran; strip ships in a follow-up)
+//   after_tool_use  → audit (tool already ran)
 //   pre_final       → audit (Stop fires after the agent has chosen its
-//                     final answer; the runtime cannot rewind. Block /
-//                     ask are surfaced for UI parity with the previous
-//                     model but the cloud demotes them to audit.)
+//                     final answer; the runtime cannot rewind.)
 //   user_prompt     → block / ask / audit (prompt hasn't reached the LLM)
 //   pre_compact     → block / audit (compaction hasn't fired yet)
 //   subagent_stop / session_* → audit only (boundary markers)
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
   before_tool_use: ["block", "ask", "audit"],
-  after_tool_use:  ["audit", "strip"],
+  after_tool_use:  ["audit"],
   pre_final:       ["audit"],
   subagent_stop:   ["audit"],
   user_prompt:     ["block", "ask", "audit"],
   pre_compact:     ["block", "audit"],
   session_start:   ["audit"],
   session_end:     ["audit"],
+}
+
+// D56d (P1 #1 + #2 fidelity follow-up): matrix.py LEGAL_COMBINATIONS
+// constrains the action set per (event, matcher_class) — not just per
+// event. The wizard's coarse ACTIONS_BY_LIFECYCLE keys off lifecycle
+// alone, which passes block/ask through for (PreToolUse, wildcard) even
+// though matrix.py only legalizes audit there. Similarly the wizard
+// allowed tool_alt / wildcard matchers for after_tool_use even though
+// matrix.py only legalizes single tool / mcp_tool for PostToolUse.
+//
+// We mirror the per-matcher narrowing here. Step 4 reads
+// allowedActionsForCombination(lifecycle, toolScope) and Step 2 reads
+// allowedMatcherClassesForLifecycle(lifecycle) so the matrix surface
+// shows up at authoring time instead of as a generic 4xx flash on save.
+type MatcherClassKey = "tool" | "mcp_tool" | "wildcard" | "tool_alt"
+
+function matcherClassForToolScope(scope: string | undefined): MatcherClassKey {
+  const raw = (scope ?? "").trim()
+  if (!raw || raw === "*") return "wildcard"
+  const tools = parseCsv(raw).filter(Boolean)
+  if (tools.length <= 1) {
+    const single = (tools[0] ?? raw).trim()
+    if (single.startsWith("mcp__")) return "mcp_tool"
+    return "tool"
+  }
+  return "tool_alt"
+}
+
+// Per (lifecycle, matcher_class) action allowlist. Mirror of
+// matrix.LEGAL_COMBINATIONS in src/magi_cp/policy/matrix.py — adding a
+// new event/matcher there must be reflected here too.
+const ACTIONS_BY_COMBINATION: Record<
+  Lifecycle, Record<MatcherClassKey, readonly Action[]>
+> = {
+  before_tool_use: {
+    tool:     ["block", "ask", "audit"],
+    mcp_tool: ["block", "ask", "audit"],
+    tool_alt: ["block", "ask", "audit"],
+    wildcard: ["audit"],
+  },
+  after_tool_use: {
+    tool:     ["audit"],
+    mcp_tool: ["audit"],
+    tool_alt: [],
+    wildcard: [],
+  },
+  pre_final:     { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
+  subagent_stop: { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
+  user_prompt:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["block", "ask", "audit"] },
+  pre_compact:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["block", "audit"] },
+  session_start: { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
+  session_end:   { tool: [], mcp_tool: [], tool_alt: [], wildcard: ["audit"] },
+}
+
+function allowedActionsForCombination(
+  lifecycle: Lifecycle, toolScope: string | undefined,
+): readonly Action[] {
+  const klass = matcherClassForToolScope(toolScope)
+  const fromMatrix = ACTIONS_BY_COMBINATION[lifecycle][klass] ?? []
+  // Intersect with lifecycle defaults so a future widening of one
+  // table without the other never silently surfaces an action the
+  // wizard cannot save.
+  const lifeAllowed = new Set<Action>(ACTIONS_BY_LIFECYCLE[lifecycle])
+  return fromMatrix.filter((a) => lifeAllowed.has(a))
+}
+
+// D56d: which matcher classes are matrix-legal for a given lifecycle.
+// after_tool_use cannot use wildcard or tool_alt — Step 2 must refuse
+// the "any tool" radio and the multi-checkbox UI for that lifecycle.
+function allowedMatcherClassesForLifecycle(
+  lifecycle: Lifecycle,
+): ReadonlySet<MatcherClassKey> {
+  const out = new Set<MatcherClassKey>()
+  for (const klass of ["tool", "mcp_tool", "tool_alt", "wildcard"] as MatcherClassKey[]) {
+    if ((ACTIONS_BY_COMBINATION[lifecycle][klass] ?? []).length > 0) {
+      out.add(klass)
+    }
+  }
+  return out
 }
 
 // Strip needs a verifier-protocol mutation channel that isn't built
@@ -198,6 +275,11 @@ interface WizardState {
   // session-scoped, owned by SteeringAwareField via sessionStorage.
   // Intentionally not part of URL state — a Cmd-R / paste-link should
   // not survive a dismissal.
+  // D56d (P2 #4): when _irToWizardState dropped a conditionKind
+  // because the inbound lifecycle does not surface it, we carry the
+  // dropped kind here so Step 3 can surface a "we dropped X" banner.
+  // Read-only — not part of URL state.
+  _droppedConditionKind?: ConditionKind
 }
 
 /* ─── IR + summary builders ───────────────────────────────────────── */
@@ -313,8 +395,8 @@ function actionHeaderEN(s: WizardState): string {
       case "subagent_stop": return "Each time a subagent finishes,"
       case "session_start": return "When the session opens,"
       case "session_end":   return "When the session closes,"
-      case "pre_final":     return "When the agent is about to send its final answer,"
-      case "after_tool_use":return "On every matching tool call (after),"
+      case "pre_final":     return "When the agent has just finished its answer,"
+      case "after_tool_use":return "On every matching tool call,"
       default:              return "On every matching tool call,"
     }
   }
@@ -345,8 +427,8 @@ function actionHeaderKO(s: WizardState): string {
       case "subagent_stop": return "서브에이전트가 끝날 때마다,"
       case "session_start": return "세션이 시작될 때,"
       case "session_end":   return "세션이 종료될 때,"
-      case "pre_final":     return "에이전트가 최종 응답을 내보내려 할 때,"
-      case "after_tool_use":return "도구 호출 후마다 (조건 없음),"
+      case "pre_final":     return "에이전트가 최종 응답을 마쳤을 때,"
+      case "after_tool_use":return "도구 호출이 끝날 때마다,"
       default:              return "조건에 매칭되는 도구 호출마다,"
     }
   }
@@ -370,10 +452,12 @@ function actionHeaderKO(s: WizardState): string {
 }
 
 // D56c: localized lifecycle labels for both languages, one place.
+// D56d: pre_final label corrected to "agent turn ends" — CC's Stop
+// hook fires AFTER the main agent has finished responding, not before.
 const LIFECYCLE_LABEL_KO: Record<Lifecycle, string> = {
   before_tool_use: "도구 실행 전",
   after_tool_use:  "도구 실행 후",
-  pre_final:       "최종 응답 직전",
+  pre_final:       "에이전트 응답 직후",
   subagent_stop:   "서브에이전트 종료 시점",
   user_prompt:     "유저 프롬프트 직전",
   pre_compact:     "컨텍스트 컴팩션 직전",
@@ -383,7 +467,7 @@ const LIFECYCLE_LABEL_KO: Record<Lifecycle, string> = {
 const LIFECYCLE_LABEL_EN: Record<Lifecycle, string> = {
   before_tool_use: "before a tool runs",
   after_tool_use:  "after a tool runs",
-  pre_final:       "before the final answer",
+  pre_final:       "after the agent finishes responding",
   subagent_stop:   "when a subagent stops",
   user_prompt:     "before a user prompt reaches the LLM",
   pre_compact:     "before context compaction",
@@ -527,8 +611,10 @@ async function saveAdvanced(formData: FormData): Promise<void> {
 }
 
 /** Advance the wizard one step. Ferries all known fields via URL params
- * so browser back works as "previous step." Auto-skips Step 3 when
- * conditionKind === "none". */
+ * so browser back works as "previous step." Auto-skips Step 2 when the
+ * lifecycle has no tool context (Stop, SubagentStop, UserPromptSubmit,
+ * PreCompact, SessionStart, SessionEnd) so the matcher stays wildcard
+ * per the cloud's LEGAL_COMBINATIONS matrix. */
 async function advanceWizard(formData: FormData): Promise<void> {
   "use server"
   const params = new URLSearchParams()
@@ -613,21 +699,33 @@ async function saveWizard(formData: FormData): Promise<void> {
     redirect("/policies/new?mode=guided&step=4&err=strip_unsupported"); return
   }
 
-  // D56c: refuse matrix-illegal action choices before the round-trip
-  // to the cloud. The cloud's policy.validate() enforces the same
-  // table canonically (matrix.LEGAL_COMBINATIONS); this client-side
-  // check just lands the error on the right step. ACTIONS_BY_
-  // LIFECYCLE mirrors that table.
-  const allowedActions = ACTIONS_BY_LIFECYCLE[lifecycle]
-  if (!allowedActions.includes(action)) {
-    redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
-  }
-
   // Resolve toolScope: prefer the hidden carry (most steps) over the
   // Step 2 mode submission. Step 2 itself runs through advanceWizard
   // which already wrote the merged value into the URL.
   const toolScopeRaw = String(formData.get("toolScope") ?? "").trim()
   const toolScope = toolScopeRaw || undefined
+
+  // D56c+D56d: refuse matrix-illegal action choices before the round-
+  // trip to the cloud. The cloud's policy.validate() enforces the same
+  // table canonically (matrix.LEGAL_COMBINATIONS); this client-side
+  // check just lands the error on the right step. D56d widens from a
+  // per-lifecycle check to a per-(lifecycle, matcher_class) check so
+  // (PreToolUse, wildcard, block) — matrix-illegal but lifecycle-legal
+  // under the coarser table — gets caught here too.
+  const allowedActions = allowedActionsForCombination(lifecycle, toolScope)
+  if (!allowedActions.includes(action)) {
+    redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+  }
+
+  // D56d (P1 #2): after_tool_use only accepts single-tool / mcp_tool
+  // matchers per matrix.py. Refuse wildcard / tool_alt here so the
+  // operator lands back on Step 2 with the right correction hint
+  // instead of a generic 4xx.
+  const klass = matcherClassForToolScope(toolScope)
+  const matrixMatchers = allowedMatcherClassesForLifecycle(lifecycle)
+  if (!matrixMatchers.has(klass)) {
+    redirect("/policies/new?mode=guided&step=2&err=invalid_input"); return
+  }
   const state: WizardState = {
     lifecycle,
     toolScope,
@@ -818,10 +916,40 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   }
 
   const actionRaw = ir.action
-  const action: Action | undefined =
+  let action: Action | undefined =
     actionRaw === "block" || actionRaw === "ask" ||
     actionRaw === "audit" || actionRaw === "strip"
       ? actionRaw : undefined
+
+  // D56d (P2 #3): if the inbound action is not legal for the mapped
+  // lifecycle (e.g. prebuilt Stop+block round-tripping to pre_final),
+  // drop to undefined so Step 4's defaultPick picks the matrix-legal
+  // default instead. Without this Step 6's Dry-run panel would post
+  // an illegal IR before the user ever visits Step 4.
+  if (action && lifecycle && !ACTIONS_BY_LIFECYCLE[lifecycle].includes(action)) {
+    action = undefined
+  }
+
+  // D56d (P2 #3): same normalization for conditionKind. If the
+  // inbound IR carries a kind the wizard's CONDITION_KINDS_BY_LIFECYCLE
+  // does not surface for the mapped lifecycle, drop to "none" so the
+  // Step 3 picker default lands cleanly. We forward a flash hint via
+  // searchParams (kindDropped) so Step 3 surfaces a banner — see
+  // GuidedWizard for the wiring.
+  let conditionKindDroppedFrom: ConditionKind | undefined
+  if (lifecycle && conditionKind !== "none") {
+    const kindsForLife = CONDITION_KINDS_BY_LIFECYCLE[lifecycle]
+    if (!kindsForLife.includes(conditionKind)) {
+      conditionKindDroppedFrom = conditionKind
+      conditionKind = "none"
+      // Wipe per-kind specifics so the dropped condition doesn't
+      // leak its inputs into a different kind.
+      pattern = undefined
+      llmCriterion = undefined
+      shaclTtl = undefined
+      evidenceRefs = undefined
+    }
+  }
 
   // Drop the prebuilt's `prebuilt/...` slug as the suggested id so
   // the operator picks a fresh policy id on Step 5; description
@@ -841,7 +969,8 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
     action,
     id: suggestedId || undefined,
     description: ir.description?.toString() || undefined,
-  }
+    _droppedConditionKind: conditionKindDroppedFrom,
+  } as WizardState
 }
 
 /* ─── page ────────────────────────────────────────────────────────── */
@@ -1107,20 +1236,31 @@ const TEMPLATES: readonly Template[] = [
   },
   {
     id: "require-citations",
-    ko: { title: "인용 필수", sub: "최종 응답에 citation 검증 통과 강제" },
-    en: { title: "Require citations", sub: "Block final answer if citation_verify fails" },
+    // D56d (P1 #11): pre_final (Stop) is audit-only per matrix.py.
+    // Previously this template hardcoded action=block, which the
+    // client guard now refuses before the cloud round-trip — landing
+    // the operator on Step 4 with no action selected. Two honest
+    // options: audit the failure to the ledger here, or hard-block
+    // by checking citations earlier (before_tool_use on WebFetch).
+    // We keep the pre_final shape (its surface is "did the agent
+    // satisfy a check before answering?") and demote to audit.
+    ko: { title: "인용 감사", sub: "최종 응답이 citation 검증 통과 못하면 원장에 기록" },
+    en: { title: "Audit citations", sub: "Record to the ledger when the final answer misses citation_verify" },
     params: {
       lifecycle: "pre_final", conditionKind: "evidence_ref",
-      evidence_refs: "citation_verify", action: "block",
+      evidence_refs: "citation_verify", action: "audit",
     },
   },
   {
     id: "no-secret-in-answer",
-    ko: { title: "응답 시크릿 차단", sub: "최종 응답에 시크릿 패턴이 있으면 차단" },
-    en: { title: "No secrets in answer", sub: "Block any final answer that contains AKIA… patterns" },
+    // D56d (P1 #11): same matrix constraint — pre_final is audit-only.
+    // For a hard block on secret patterns, author at before_tool_use
+    // on the tools that emit them (Bash, Edit, Write).
+    ko: { title: "응답 시크릿 감사", sub: "최종 응답에 시크릿 패턴이 있으면 원장에 기록" },
+    en: { title: "Audit secrets in answer", sub: "Record to the ledger when a final answer contains AKIA… patterns" },
     params: {
       lifecycle: "pre_final", conditionKind: "regex",
-      pattern: "AKIA[A-Z0-9]+", action: "block",
+      pattern: "AKIA[A-Z0-9]+", action: "audit",
     },
   },
 ]
@@ -1439,6 +1579,14 @@ function GuidedWizard({
     action: action ?? draftState?.action,
     id: searchParams.id || draftState?.id,
     description: searchParams.description || draftState?.description,
+    // D56d (P2 #4): if the prebuilt draft carried a conditionKind that
+    // does not survive the lifecycle (e.g. SessionStart + step ref),
+    // surface a one-shot banner on Step 3 with the dropped kind name.
+    // URL params take precedence as usual, but if neither URL nor the
+    // user has navigated yet, the draft's dropped kind wins.
+    _droppedConditionKind:
+      !conditionKind && draftState?._droppedConditionKind
+        ? draftState._droppedConditionKind : undefined,
   }
 
   // D56c: every no-tool-context lifecycle auto-skips Step 2 (tool
@@ -1629,16 +1777,16 @@ function lifecycleCardCopy(
       sub: "컨텍스트 컴팩션 직전에 발동. evidence 체인 보존에 사용합니다.",
     },
     pre_final: {
-      label: "최종 응답 직전 (Stop)",
+      label: "에이전트 턴 종료 (Stop)",
       sub: "메인 에이전트 턴 종료 시점. 감사용으로만 사용합니다 (런타임은 차단 불가).",
     },
     subagent_stop: {
       label: "서브에이전트 종료 (SubagentStop)",
-      sub: "서브에이전트 한 사이클이 끝났을 때 발동. 결과 트랜스크립트 감사 용도.",
+      sub: "서브에이전트(Task) 호출이 응답을 마쳤을 때 발동. 결과 트랜스크립트 감사 용도.",
     },
     session_start: {
       label: "세션 시작 (SessionStart)",
-      sub: "세션이 시작될 때 한 번 발동. 감사 경계 마커로 사용합니다.",
+      sub: "세션이 시작·재개·초기화 될 때 발동. 감사 경계 마커로 사용합니다.",
     },
     session_end: {
       label: "세션 종료 (SessionEnd)",
@@ -1662,7 +1810,7 @@ function lifecycleCardCopy(
       sub: "Fires before the runtime compacts the transcript; preserve evidence chains.",
     },
     pre_final: {
-      label: "Before the final answer (Stop)",
+      label: "When the agent stops (Stop)",
       sub: "Main agent turn ends. Audit-only (the runtime cannot rewind the answer).",
     },
     subagent_stop: {
@@ -1671,7 +1819,7 @@ function lifecycleCardCopy(
     },
     session_start: {
       label: "When the session opens (SessionStart)",
-      sub: "Fires once at session start. Audit boundary marker.",
+      sub: "Fires on session startup, resume, or clear. Audit boundary marker.",
     },
     session_end: {
       label: "When the session closes (SessionEnd)",
@@ -1695,11 +1843,16 @@ const LIFECYCLE_GROUPS: ReadonlyArray<{
   },
   {
     groupKey: "newPolicy.wizard.step1.group.contentFlow",
-    members: ["user_prompt", "pre_compact", "pre_final"],
+    members: ["user_prompt", "pre_compact"],
   },
+  // D56d (P2 #10): pre_final (Stop) moved into the audit-only group so
+  // the group header honestly signals the action constraint. Operators
+  // scanning groups for a hard-block hook will land on Tool actions
+  // (PreToolUse / PostToolUse) or Content flow (UserPromptSubmit /
+  // PreCompact) instead of being misled into a Stop+block save bounce.
   {
     groupKey: "newPolicy.wizard.step1.group.boundaries",
-    members: ["subagent_stop", "session_start", "session_end"],
+    members: ["pre_final", "subagent_stop", "session_start", "session_end"],
   },
 ]
 
@@ -1764,6 +1917,15 @@ function Step2ToolScope({
   const isAny = !state.toolScope || state.toolScope === "*"
   const builtinChecks = new Set(picked.filter((p) => (TOOL_PRESETS as readonly string[]).includes(p)))
   const customStr = picked.filter((p) => !(TOOL_PRESETS as readonly string[]).includes(p)).join(", ")
+  // D56d (P1 #2): after_tool_use only legalizes (PostToolUse, tool,
+  // audit) and (PostToolUse, mcp_tool, audit) — no wildcard, no
+  // tool_alt. Step 2 must refuse "Any tool" and the multi-checkbox UI
+  // for this lifecycle. The radio/checkbox UI flips into a single-tool
+  // radio group; an inline note explains the matrix constraint.
+  const lifecycle = state.lifecycle ?? "before_tool_use"
+  const matrixMatchers = allowedMatcherClassesForLifecycle(lifecycle)
+  const wildcardLegal = matrixMatchers.has("wildcard")
+  const toolAltLegal = matrixMatchers.has("tool_alt")
   return (
     <StepShell
       t={t}
@@ -1777,12 +1939,24 @@ function Step2ToolScope({
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ lifecycle: state.lifecycle }} />
 
-        <label className="block cursor-pointer">
+        {!toolAltLegal && (
+          <p
+            data-testid="step2-single-tool-note"
+            className="rounded-xl border border-blue-300 bg-blue-50/60 px-3 py-2 text-xs text-blue-900"
+          >
+            {ko
+              ? "감사용 hook 은 정책 한 건당 도구 하나만 지정할 수 있습니다 (matrix 정책)."
+              : "Audit hooks need a single specific tool per matrix policy."}
+          </p>
+        )}
+
+        <label className={`block ${wildcardLegal ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
           <input
             type="radio"
             name="toolScope_mode"
             value="any"
-            defaultChecked={isAny}
+            defaultChecked={wildcardLegal && isAny}
+            disabled={!wildcardLegal}
             className="peer sr-only"
           />
           <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
@@ -1790,7 +1964,9 @@ function Step2ToolScope({
               {ko ? "모든 도구" : "Any tool"}
             </span>
             <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-              {ko ? "도구 종류 상관없이 모든 호출을 검사합니다." : "Match every tool call regardless of name."}
+              {wildcardLegal
+                ? (ko ? "도구 종류 상관없이 모든 호출을 검사합니다." : "Match every tool call regardless of name.")
+                : (ko ? "이 라이프사이클에서는 사용할 수 없습니다." : "Not available for this lifecycle.")}
             </span>
           </span>
           <input type="hidden" name="toolScope_any" value="1" disabled className="peer-checked:[&]:hidden hidden" />
@@ -1801,7 +1977,7 @@ function Step2ToolScope({
             type="radio"
             name="toolScope_mode"
             value="specific"
-            defaultChecked={!isAny && (picked.length > 0)}
+            defaultChecked={(!wildcardLegal) || (!isAny && (picked.length > 0))}
             className="peer sr-only"
           />
           <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
@@ -1809,7 +1985,9 @@ function Step2ToolScope({
               {ko ? "특정 도구만" : "Specific tools"}
             </span>
             <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-              {ko ? "고른 도구 중 하나라도 호출되면 정책이 발동합니다." : "Match if any picked tool is invoked."}
+              {toolAltLegal
+                ? (ko ? "고른 도구 중 하나라도 호출되면 정책이 발동합니다." : "Match if any picked tool is invoked.")
+                : (ko ? "정확히 한 도구를 골라주세요." : "Pick exactly one tool.")}
             </span>
           </span>
           <span className="mt-3 hidden peer-checked:block space-y-3">
@@ -1817,7 +1995,7 @@ function Step2ToolScope({
               {TOOL_PRESETS.map((tool) => (
                 <label key={tool} className="block cursor-pointer">
                   <input
-                    type="checkbox"
+                    type={toolAltLegal ? "checkbox" : "radio"}
                     name="toolScope_chip"
                     value={tool}
                     defaultChecked={builtinChecks.has(tool)}
@@ -1830,12 +2008,18 @@ function Step2ToolScope({
               ))}
             </div>
             <div>
-              <FieldLabel>{ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)"}</FieldLabel>
+              <FieldLabel>
+                {toolAltLegal
+                  ? (ko ? "추가 / MCP 도구 (쉼표 구분)" : "Extras / MCP tools (comma-separated)")
+                  : (ko ? "MCP 도구 (mcp__server__name)" : "MCP tool (mcp__server__name)")}
+              </FieldLabel>
               <input
                 name="toolScope_custom"
                 maxLength={2000}
                 defaultValue={customStr}
-                placeholder="mcp__court__file, mcp__db__query"
+                placeholder={toolAltLegal
+                  ? "mcp__court__file, mcp__db__query"
+                  : "mcp__court__file"}
                 spellCheck={false}
                 autoComplete="off"
                 className={inputCls() + " font-mono text-sm"}
@@ -2003,6 +2187,15 @@ function Step3Condition({
   const wizardSnap = steeringSnapshot(state)
   const fieldInputCls = inputCls()
 
+  // D56d (P2 #4): if _irToWizardState dropped a conditionKind because
+  // the inbound lifecycle does not surface it, surface a one-shot
+  // banner explaining the drop. Operator may have loaded a prebuilt
+  // that crosses lifecycles.
+  const droppedKind = state._droppedConditionKind
+  const lifecycleLabel = ko
+    ? LIFECYCLE_LABEL_KO[lifecycle]
+    : LIFECYCLE_LABEL_EN[lifecycle]
+
   return (
     <StepShell
       t={t}
@@ -2012,6 +2205,16 @@ function Step3Condition({
         ? "조건을 고르면 바로 아래에 기준 입력 칸이 열립니다."
         : "Pick a condition and the criteria input opens right below."}
     >
+      {droppedKind && (
+        <div
+          data-testid="step3-dropped-kind-banner"
+          className="rounded-xl border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-900"
+        >
+          {ko
+            ? `원래 정책에 있던 ${droppedKind} 조건은 ${lifecycleLabel} 라이프사이클에 적용되지 않아 제거되었습니다.`
+            : `The original policy carried a ${droppedKind} requirement that does not apply ${lifecycleLabel}; it has been dropped.`}
+        </div>
+      )}
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{
@@ -2247,11 +2450,25 @@ function Step4Action({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const lifecycle = state.lifecycle ?? "before_tool_use"
-  const allowed = ACTIONS_BY_LIFECYCLE[lifecycle]
+  // D56d (P1 #1): allowed actions follow (lifecycle, matcher_class).
+  // For wildcard toolScope on before_tool_use that narrows from
+  // [block, ask, audit] down to [audit] — surfacing the matrix
+  // constraint at authoring time instead of as a save-time 4xx.
+  // Fall back to the lifecycle default when the combination has no
+  // entry (Step 2 will catch the invalid matcher first; this keeps
+  // the action card render non-empty so the operator can still see
+  // what's allowed if they navigate back here directly).
+  const combinationAllowed = allowedActionsForCombination(lifecycle, state.toolScope)
+  const allowed = combinationAllowed.length > 0
+    ? combinationAllowed
+    : ACTIONS_BY_LIFECYCLE[lifecycle]
   const defaultPick: Action = state.action && allowed.includes(state.action)
     ? state.action : allowed[0]
   const ko = locale === "ko"
   const header = ko ? actionHeaderKO(state) : actionHeaderEN(state)
+  // D56d (P2 #5): "recommended" badge only renders when block is
+  // actually in the legal action set for the current combination.
+  const blockLegal = allowed.includes("block")
   const labels: Record<Action, { label: string; sub: string }> = ko ? {
     block: { label: "Block",        sub: "호출 자체를 거부합니다. 에이전트가 동작을 못합니다." },
     ask:   { label: "Ask a human",  sub: "리뷰 큐로 보내고 사람이 승인해야 진행됩니다." },
@@ -2308,7 +2525,7 @@ function Step4Action({
               label={labels[a].label}
               sub={labels[a].sub}
               tone={a}
-              badge={a === "block" && lifecycle === "before_tool_use" ? { variant: "ok", text: "recommended" } : undefined}
+              badge={a === "block" && lifecycle === "before_tool_use" && blockLegal ? { variant: "ok", text: ko ? "추천" : "recommended" } : undefined}
             />
           )
         })}

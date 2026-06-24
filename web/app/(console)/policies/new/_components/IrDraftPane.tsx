@@ -55,7 +55,15 @@ export interface IrDraftPaneProps {
 
 /* ── plain-language summary helpers ─────────────────────────────────── */
 
-type LifecycleKey = "before_tool_use" | "after_tool_use" | "pre_final"
+// D56d (P2 #14): widened to the full 8-event surface the wizard now
+// covers. The conversational compiler can emit any of these for an
+// IR draft; lifecycleFromDraft mirrors LIFECYCLE_TO_EVENT in
+// policies/new/page.tsx so the right-column draft pane renders the
+// When summary for every lifecycle the cloud accepts.
+type LifecycleKey =
+  | "before_tool_use" | "after_tool_use" | "pre_final"
+  | "subagent_stop"   | "user_prompt"    | "pre_compact"
+  | "session_start"   | "session_end"
 
 function lifecycleFromDraft(d: Record<string, unknown> | null): LifecycleKey | null {
   if (!d || typeof d !== "object") return null
@@ -63,10 +71,15 @@ function lifecycleFromDraft(d: Record<string, unknown> | null): LifecycleKey | n
   if (!trig || typeof trig !== "object") return null
   const ev = (trig as Record<string, unknown>).event
   if (typeof ev !== "string") return null
-  // Mirror nl_compiler_interactive._EVENT_TO_LIFECYCLE
+  // Mirror policies/new/page.tsx LIFECYCLE_TO_EVENT (inverse).
   if (ev === "PreToolUse") return "before_tool_use"
   if (ev === "PostToolUse") return "after_tool_use"
   if (ev === "Stop") return "pre_final"
+  if (ev === "SubagentStop") return "subagent_stop"
+  if (ev === "UserPromptSubmit") return "user_prompt"
+  if (ev === "PreCompact") return "pre_compact"
+  if (ev === "SessionStart") return "session_start"
+  if (ev === "SessionEnd") return "session_end"
   return null
 }
 
@@ -172,16 +185,29 @@ function whenLabel(d: Record<string, unknown> | null, ko: boolean): string {
   const life = lifecycleFromDraft(d)
   if (!life) return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
   const m = matcherFromDraft(d)
+  // D56d (P2 #14): widened lifecycle map mirrors page.tsx
+  // LIFECYCLE_LABEL_KO / _EN. CC Stop fires after the agent finishes
+  // responding (not "just before the final answer").
   const lifeLabel = ko
     ? ({
         before_tool_use: "도구 실행 전",
         after_tool_use: "도구 실행 후",
-        pre_final: "최종 응답 직전",
+        pre_final: "에이전트 응답 직후",
+        subagent_stop: "서브에이전트 종료 시점",
+        user_prompt: "유저 프롬프트 직전",
+        pre_compact: "컨텍스트 컴팩션 직전",
+        session_start: "세션 시작 시점",
+        session_end: "세션 종료 시점",
       } as const)[life]
     : ({
         before_tool_use: "Before a tool runs",
         after_tool_use: "After a tool runs",
-        pre_final: "Just before the final answer",
+        pre_final: "After the agent finishes responding",
+        subagent_stop: "When a subagent stops",
+        user_prompt: "Before a user prompt reaches the LLM",
+        pre_compact: "Before context compaction",
+        session_start: "When the session opens",
+        session_end: "When the session closes",
       } as const)[life]
   if (m && m !== "*") {
     const friendly = prettyMatcher(m, ko)

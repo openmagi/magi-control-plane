@@ -411,17 +411,23 @@ export function availableFieldPaths(event: string, matcher?: string): string[] {
 /** Convenience: lifecycle (the wizard's coarsened event grouping) →
  * the underlying CC event name. Mirrors the LIFECYCLE_TO_EVENT map
  * in policies/new/page.tsx so the chip row stays consistent with
- * whichever lifecycle the wizard is on. */
-export function lifecycleToEvent(
-  lifecycle: "before_tool_use" | "after_tool_use" | "pre_final",
-): string {
+ * whichever lifecycle the wizard is on. D56d: widened from the
+ * legacy 3-value union to all 8 CC hooks the wizard now covers. */
+export type Lifecycle =
+  | "before_tool_use" | "after_tool_use" | "pre_final"
+  | "subagent_stop"   | "user_prompt"    | "pre_compact"
+  | "session_start"   | "session_end"
+
+export function lifecycleToEvent(lifecycle: Lifecycle): string {
   switch (lifecycle) {
-    case "before_tool_use":
-      return "PreToolUse"
-    case "after_tool_use":
-      return "PostToolUse"
-    case "pre_final":
-      return "Stop"
+    case "before_tool_use":  return "PreToolUse"
+    case "after_tool_use":   return "PostToolUse"
+    case "pre_final":        return "Stop"
+    case "subagent_stop":    return "SubagentStop"
+    case "user_prompt":      return "UserPromptSubmit"
+    case "pre_compact":      return "PreCompact"
+    case "session_start":    return "SessionStart"
+    case "session_end":      return "SessionEnd"
   }
 }
 
