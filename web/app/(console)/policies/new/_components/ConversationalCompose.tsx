@@ -239,18 +239,22 @@ export function ConversationalCompose({
           code === "provider_unconfigured" ? "provider_unconfigured" : undefined
         // Carry the previous assistant turn's questions forward onto
         // the error bubble so the user can re-click and retry. The
-        // brief's provider_unconfigured-as-bubble rule still holds:
-        // we surface the error inline, with the same pill set so the
-        // user does not lose their place in the conversation.
+        // exception is errorKind === "provider_unconfigured": the
+        // ProviderUnconfiguredBubble render path renders escape-hatch
+        // CTAs + a setup disclosure and never reads h.questions, so
+        // carrying pills forward there would silently drop them from
+        // view. For that case we leave questions undefined.
         setHistory((prev) => {
-          const lastQuestions = (() => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i].role === "assistant") {
-                return prev[i].questions ?? []
+          const lastQuestions = errorKind === "provider_unconfigured"
+            ? undefined
+            : (() => {
+              for (let i = prev.length - 1; i >= 0; i--) {
+                if (prev[i].role === "assistant") {
+                  return prev[i].questions ?? []
+                }
               }
-            }
-            return []
-          })()
+              return []
+            })()
           return [
             ...prev,
             {
@@ -619,7 +623,9 @@ function ProviderUnconfiguredBubble({
           className={
             "rounded-xl border border-[var(--color-accent)] bg-[var(--color-accent)] " +
             "px-3 py-1.5 text-xs font-medium text-white " +
-            "hover:bg-[var(--color-accent)]/90"
+            "hover:bg-[var(--color-accent)]/90 " +
+            "focus-visible:outline-none focus-visible:ring-2 " +
+            "focus-visible:ring-offset-2 focus-visible:ring-[var(--color-accent)]"
           }
           data-testid="conv-provider-unconfigured-cta-guided"
         >
@@ -630,7 +636,9 @@ function ProviderUnconfiguredBubble({
           className={
             "rounded-xl border border-black/[0.12] bg-white px-3 py-1.5 " +
             "text-xs font-medium text-[var(--color-text-primary)] " +
-            "hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.04]"
+            "hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.04] " +
+            "focus-visible:outline-none focus-visible:ring-2 " +
+            "focus-visible:ring-offset-2 focus-visible:ring-[var(--color-accent)]"
           }
           data-testid="conv-provider-unconfigured-cta-advanced"
         >
@@ -646,8 +654,10 @@ function ProviderUnconfiguredBubble({
           aria-controls="conv-provider-unconfigured-setup"
           data-testid="conv-provider-unconfigured-setup-toggle"
           className={
-            "self-start text-xs font-medium text-[var(--color-text-secondary)] " +
-            "hover:text-[var(--color-accent)] focus:outline-none"
+            "self-start rounded text-xs font-medium text-[var(--color-text-secondary)] " +
+            "hover:text-[var(--color-accent)] " +
+            "focus-visible:outline-none focus-visible:ring-2 " +
+            "focus-visible:ring-offset-1 focus-visible:ring-[var(--color-accent)]"
           }
         >
           {open
