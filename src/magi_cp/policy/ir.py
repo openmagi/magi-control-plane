@@ -6,6 +6,7 @@ runtime. Authoring tools (NL assist / pack picker / structured builder) only
 """
 from __future__ import annotations
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Literal
@@ -207,6 +208,30 @@ class Policy:
                 req.validate()
             except ValueError as e:
                 raise ValueError(f"policy '{self.id}': requires[{i}] {e}") from e
+        # P7 (issue #1): SHACL shapes are linted against the payload
+        # schema for this trigger so a shape anchored on a path the
+        # runtime never delivers can't slip past authoring. Default
+        # mode is collect-only (warnings surface via shacl_lint_issues
+        # so the dashboard can render a banner); set
+        # `MAGI_CP_STRICT_SHACL_TARGETS=1` in the env to hard-fail
+        # `Policy.__post_init__` instead.
+        self._shacl_lint_issues: list[str] = []
+        strict = os.environ.get("MAGI_CP_STRICT_SHACL_TARGETS") == "1"
+        for i, req in enumerate(self.requires):
+            if req.kind != "shacl" or not req.shape_ttl:
+                continue
+            from .payload_schemas import lint_shacl_targets
+            issues = lint_shacl_targets(
+                req.shape_ttl, self.trigger.event, self.trigger.matcher,
+            )
+            for msg in issues:
+                tagged = f"requires[{i}] SHACL lint: {msg}"
+                self._shacl_lint_issues.append(tagged)
+                if strict:
+                    raise ValueError(
+                        f"policy '{self.id}': {tagged} "
+                        f"(MAGI_CP_STRICT_SHACL_TARGETS=1)"
+                    )
         if self.on_signature_invalid != "deny":
             raise ValueError(
                 f"policy '{self.id}': on_signature_invalid는 'deny'만 허용 (v0)"

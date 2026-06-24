@@ -343,6 +343,21 @@ export const cloud = {
     )
     return d.items
   },
+
+  /** P7: CC hook payload schema menu. Reference data — no auth needed.
+   *
+   * The dashboard ships a static mirror in lib/payload-schemas.ts for
+   * the Server-Component wizard (synchronous render). This client
+   * exists for third-party tooling / linters that want the cloud's
+   * authoritative copy at runtime. */
+  listPayloadSchemas: async (): Promise<{ schemas: unknown[] }> => {
+    const r = await fetch(`${_cloudUrl()}/payload-schemas`, {
+      method: "GET", cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!r.ok) throw new Error(`cloud ${r.status}`)
+    return r.json() as Promise<{ schemas: unknown[] }>
+  },
 }
 
 export type CompileResult = {

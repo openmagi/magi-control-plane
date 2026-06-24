@@ -747,8 +747,45 @@ def create_app(
                 ]
             else:
                 try:
-                    data = rdflib.Graph()
-                    # Treat payload["evidence_ttl"] or full dict as data:
+                    # P7 (issue #1, P0 #1): lift the CC hook payload
+                    # fields the chip menu advertises into RDF triples
+                    # BEFORE pyshacl runs. Without this, a shape
+                    # targeting `magi:tool_input.command` finds zero
+                    # focus nodes at runtime → pyshacl conforms →
+                    # silent fail-open. With this lift, a chip-picked
+                    # path resolves to exactly one focus node per hook
+                    # firing.
+                    #
+                    # The /verify_inline shape of the payload differs
+                    # from the raw CC stdin (callers wrap it under
+                    # `tool_input` keys etc.); we accept either shape:
+                    #   - direct CC payload  → lifted to triples
+                    #   - {"evidence_ttl": "..."} → kept for back-compat
+                    #     so existing legal-vertical shapes still work
+                    from ..policy.payload_schemas import (
+                        lift_payload_to_data_graph,
+                    )
+                    # The runtime doesn't know which (event, matcher)
+                    # this verify-call came from at the /verify_inline
+                    # surface — gate.py passes the payload through
+                    # verbatim. We accept hints in the payload itself
+                    # under reserved keys (`__event__`, `__matcher__`)
+                    # so the gate can opt in; without them we lift
+                    # under the most permissive (PreToolUse, *) frame.
+                    ev_hint = req.payload.get("__event__") if isinstance(req.payload, dict) else None
+                    mt_hint = req.payload.get("__matcher__") if isinstance(req.payload, dict) else None
+                    payload_for_lift = {
+                        k: v for k, v in (req.payload.items() if isinstance(req.payload, dict) else [])
+                        if k not in ("__event__", "__matcher__")
+                    }
+                    data = lift_payload_to_data_graph(
+                        payload_for_lift,
+                        event=str(ev_hint) if isinstance(ev_hint, str) else "PreToolUse",
+                        matcher=str(mt_hint) if isinstance(mt_hint, str) else None,
+                    )
+                    # Back-compat: callers carrying a legal-vertical
+                    # `evidence_ttl` Turtle blob get it merged onto the
+                    # same data graph so existing shapes keep working.
                     ev_ttl = req.payload.get("evidence_ttl") if isinstance(req.payload, dict) else None
                     if isinstance(ev_ttl, str):
                         data.parse(data=ev_ttl, format="turtle")
@@ -756,9 +793,54 @@ def create_app(
                         data, shacl_graph=req.shape_ttl,
                         inference="none", advanced=False,
                     )
+                    # P0 #1 second half: a shape that finds zero focus
+                    # nodes "conforms" per the SHACL spec — vacuous
+                    # satisfaction. We re-frame that as deny so a
+                    # mis-targeted shape stops failing open silently.
+                    # Heuristic: pyshacl's `conforms=True` with zero
+                    # focus nodes triggered by the shape graph means
+                    # the shape didn't even reach the data; we
+                    # confirm this by extracting target IRIs and
+                    # checking that AT LEAST ONE is present in the
+                    # data graph.
                     if conforms:
-                        verdict_status = "pass"
-                        reasons = ["shacl conforms"]
+                        from ..policy.payload_schemas import (
+                            MAGI_HOOK_NS, extract_targets,
+                        )
+                        targets = extract_targets(req.shape_ttl)
+                        # Determine if the shape has ANY focus-node
+                        # selector (sh:targetNode / sh:targetClass).
+                        # sh:path is a constraint detail, not an
+                        # anchor — a shape can include sh:path with
+                        # no targets and that's a constraint shape
+                        # invoked by something else; we don't treat
+                        # paths as anchors for the vacuous check.
+                        anchored = bool(targets["targetNode"] or targets["targetClass"])
+                        if anchored:
+                            ns = rdflib.Namespace(MAGI_HOOK_NS)
+                            present = False
+                            for ln in targets["targetNode"]:
+                                if (ns[ln], None, None) in data or (None, None, ns[ln]) in data:
+                                    present = True; break
+                            if not present:
+                                for ln in targets["targetClass"]:
+                                    if (None, rdflib.RDF.type, ns[ln]) in data:
+                                        present = True; break
+                            if not present:
+                                verdict_status = "deny"
+                                reasons = [
+                                    "shacl vacuous: shape anchored on a "
+                                    "node/class the runtime did not "
+                                    "materialize (0 focus nodes). Pick "
+                                    "a field from the wizard chip menu "
+                                    "or sh:targetClass magi:Hook.",
+                                ]
+                            else:
+                                verdict_status = "pass"
+                                reasons = ["shacl conforms"]
+                        else:
+                            verdict_status = "pass"
+                            reasons = ["shacl conforms"]
                     else:
                         verdict_status = "deny"
                         reasons = [f"shacl violation: {str(results_text)[:240]}"]
@@ -976,6 +1058,9 @@ def create_app(
 
     # ── /catalog/* — derived (read-only) evidence-type + condition view ──
     _attach_catalog_routes(app, policy_store, verifier_registry)
+
+    # ── /payload-schemas — P7 CC hook payload field menu (read-only) ──
+    _attach_payload_schema_routes(app)
 
     return app
 
@@ -1455,6 +1540,40 @@ def _attach_catalog_routes(
                     })
         items.sort(key=lambda r: (r["kind"], r["value"], r["policy_id"]))
         return {"items": items}
+
+
+def _attach_payload_schema_routes(app: FastAPI) -> None:
+    """P7: CC hook payload schema menu.
+
+    Read-only registry of what fields each (event, matcher_class) pair
+    delivers on the gate's stdin. The wizard's regex / llm_critic /
+    shacl steps render these as suggestion chips so authors stop
+    guessing the payload shape — a SHACL shape that targets a
+    non-existent field is "vacuously satisfied" (zero focus nodes →
+    conforms), so a mis-typed path silently fails open at gate time.
+
+    Public on purpose: this is reference data, not a tenant resource.
+    The schema content is identical for every caller; no auth needed.
+    Rate limit still applies via the global TokenBucketLimiter.
+    """
+    from ..policy.payload_schemas import (
+        PAYLOAD_SCHEMAS_BY_EVENT, all_schemas, available_fields,
+    )
+
+    @app.get("/payload-schemas")
+    def list_payload_schemas() -> dict:
+        return {"schemas": all_schemas()}
+
+    @app.get("/payload-schemas/{event}")
+    def get_payload_schema(event: str, matcher: str | None = None) -> dict:
+        if event not in PAYLOAD_SCHEMAS_BY_EVENT:
+            raise HTTPException(
+                404,
+                f"no payload schema for event {event!r}; "
+                f"known: {sorted(PAYLOAD_SCHEMAS_BY_EVENT.keys())}",
+            )
+        fields = available_fields(event, matcher)
+        return {"event": event, "matcher": matcher, "fields": fields}
 
 
 def _build_production_app() -> FastAPI:

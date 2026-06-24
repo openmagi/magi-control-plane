@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
+import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
@@ -9,6 +10,12 @@ import {
   validateDraft, type PolicyDraft,
 } from "@/lib/policy-builder"
 import { CloudConfigError, cloud, type CompileResult } from "@/lib/cloud"
+import {
+  availableFields as payloadAvailableFields,
+  lifecycleToEvent as payloadLifecycleToEvent,
+  lintShaclTargets as payloadLintShaclTargets,
+  type FieldDescriptor as PayloadFieldDescriptor,
+} from "@/lib/payload-schemas"
 import { getT } from "@/lib/i18n/server"
 import {
   Badge, Card, CodeBlock, ErrorState,
@@ -328,6 +335,31 @@ async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   redirect(`/policies/${encodeURI(draft.id)}?msg=saved`)
 }
 
+/** P7 (issue #1, P0 #3 / P1 #4): cross-check every SHACL requires
+ * entry on a draft against the payload schema menu for the draft's
+ * trigger. Returns a flat list of issue strings (empty list = clean).
+ *
+ * Soft-fail: callers surface it as a banner. Hard-fail when
+ * `MAGI_CP_STRICT_SHACL_TARGETS=1` is set in the dashboard env. The
+ * Python `Policy.validate()` enforces the same flag canonically — this
+ * client-side check is a fast author-time hint so the redirect lands
+ * before the round-trip to the cloud. */
+function lintDraftShaclTargets(draft: PolicyDraft): string[] {
+  const issues: string[] = []
+  const ev = draft.trigger?.event ?? "PreToolUse"
+  const matcher = draft.trigger?.matcher
+  for (const [i, r] of (draft.requires ?? []).entries()) {
+    const kind = "kind" in r ? r.kind : "step"
+    if (kind !== "shacl") continue
+    const ttl = ("shape_ttl" in r ? r.shape_ttl : "") ?? ""
+    if (!ttl.trim()) continue
+    for (const msg of payloadLintShaclTargets(ttl, ev, matcher)) {
+      issues.push(`requires[${i}]: ${msg}`)
+    }
+  }
+  return issues
+}
+
 async function saveCompiled(formData: FormData): Promise<void> {
   "use server"
   let draft: PolicyDraft
@@ -343,6 +375,29 @@ async function saveAdvanced(formData: FormData): Promise<void> {
   try { draft = JSON.parse(String(formData.get("draft_json") ?? "{}")) }
   catch { redirect("/policies/new?err=invalid_input"); return }
   const source = String(formData.get("source") ?? "org")
+  // P7 (issue #1, P1 #4): hard-fail SHACL shapes targeting paths the
+  // runtime never delivers when MAGI_CP_STRICT_SHACL_TARGETS=1 is set.
+  // Default mode is silent-warn (no block, no banner on this codepath —
+  // server actions can't carry data back without a redirect that loses
+  // the success message; canonical lint surface remains `Policy
+  // .validate()` server-side on the cloud, which logs the issues even
+  // when MAGI_CP_STRICT_SHACL_TARGETS is unset). Silent fail-open is
+  // exactly what P7 was built to close — the cloud enforces strict at
+  // the policy-store boundary too.
+  const shaclIssues = lintDraftShaclTargets(draft)
+  if (
+    shaclIssues.length > 0 &&
+    process.env.MAGI_CP_STRICT_SHACL_TARGETS === "1"
+  ) {
+    const params = new URLSearchParams()
+    params.set("mode", "advanced")
+    params.set("err", "shacl_unknown_paths")
+    params.set("paths", shaclIssues.slice(0, 8).join(" | "))
+    try { params.set("draft", encodeURIComponent(JSON.stringify(draft))) }
+    catch { /* over-length draft → fall back to err display only */ }
+    redirect(`/policies/new?${params.toString()}`)
+    return
+  }
   await persistDraft(draft, source)
 }
 
@@ -478,6 +533,25 @@ async function saveWizard(formData: FormData): Promise<void> {
     gate_binary: "/usr/local/bin/magi-gate.sh",
   }
   const source = String(formData.get("source") ?? "org")
+  // P7 (issue #1, P0 #3 / P1 #4): when the guided wizard built a
+  // SHACL requires entry, lint the shape against the chosen trigger.
+  // The chip stub-inserter targets canonical paths so a clean wizard
+  // flow always passes — anything failing here means the author
+  // hand-edited the textarea to a non-existent path. Hard-fail only
+  // under MAGI_CP_STRICT_SHACL_TARGETS=1; default mode lets the cloud
+  // record the warning to its log.
+  if (process.env.MAGI_CP_STRICT_SHACL_TARGETS === "1") {
+    const shaclIssues = lintDraftShaclTargets(draft)
+    if (shaclIssues.length > 0) {
+      const params = new URLSearchParams()
+      params.set("mode", "guided")
+      params.set("step", "3")
+      params.set("err", "shacl_unknown_paths")
+      params.set("paths", shaclIssues.slice(0, 8).join(" | "))
+      redirect(`/policies/new?${params.toString()}`)
+      return
+    }
+  }
   await persistDraft(draft, source)
 }
 
@@ -581,10 +655,35 @@ export default async function NewPolicyPage({
     } catch { /* best-effort */ }
   }
 
+  // P7 (issue #1, P0 #3 / P1 #4): SHACL lint hard-fail banner. Only
+  // surfaces under MAGI_CP_STRICT_SHACL_TARGETS=1 (the saveAdvanced /
+  // saveWizard server actions hard-fail to err=shacl_unknown_paths in
+  // that mode). `paths` carries up to 8 issue strings joined by " | ".
+  const shaclHardErr =
+    searchParams.err === "shacl_unknown_paths"
+      ? (searchParams.paths ?? "")
+      : null
+
   return (
     <>
       {flash?.kind === "error" && (
         <ErrorState title={flash.text} severity="error" />
+      )}
+
+      {shaclHardErr && (
+        <ErrorState
+          title={
+            locale === "ko"
+              ? `SHACL shape이 런타임이 전달하지 않는 path를 target합니다 (저장 차단됨, MAGI_CP_STRICT_SHACL_TARGETS=1).`
+              : `SHACL shape targets a path the runtime does not deliver (save blocked, MAGI_CP_STRICT_SHACL_TARGETS=1).`
+          }
+          severity="error"
+        />
+      )}
+      {shaclHardErr && (
+        <pre className="mt-2 mb-4 whitespace-pre-wrap rounded-md border border-red-400/40 bg-red-50 px-3 py-2 text-xs font-mono text-red-900">
+          {shaclHardErr.split(" | ").join("\n")}
+        </pre>
       )}
 
       {mode === null && <PickerLanding t={t} locale={locale === "ko" ? "ko" : "en"} />}
@@ -1340,6 +1439,45 @@ function Step2ToolScope({
 
 /* ─── Step 3. Specifics ──────────────────────────────────────────── */
 
+/** P7 (issue #1): chip row showing the CC hook payload fields the
+ * runtime actually delivers. Chips are <button>s in a client island so
+ * they are keyboard-focusable AND insert the picked path into the
+ * target textarea at the cursor — closing both the a11y gap (P1 #7
+ * review) and the inert-select footgun (P1 #8 review). Hover keeps
+ * surfacing type + description + example as a tooltip; aria-label
+ * carries the same info for screen readers.
+ *
+ * variant="path" inserts the bare field path (for regex / llm_critic).
+ * variant="shacl-stub" inserts a SHACL PropertyShape / NodeShape stub
+ * anchored on the canonical `magi:` namespace the runtime materializes
+ * — a shape extended from this stub is GUARANTEED to find a focus
+ * node at runtime (the vacuous-satisfaction failure mode P7 was
+ * built to eliminate). */
+function PayloadFieldChips({
+  fields, locale, intro, targetTextareaId, variant,
+}: {
+  fields: PayloadFieldDescriptor[]
+  locale: "ko" | "en"
+  intro?: string
+  targetTextareaId: string
+  variant: "path" | "shacl-stub"
+}) {
+  if (fields.length === 0) return null
+  const ko = locale === "ko"
+  const introText = intro ?? (ko
+    ? "런타임이 stdin으로 전달하는 필드 (클릭하면 삽입):"
+    : "Fields the runtime delivers on stdin (click to insert):")
+  return (
+    <PayloadFieldChipsClient
+      fields={fields}
+      targetTextareaId={targetTextareaId}
+      variant={variant}
+      introText={introText}
+      locale={locale}
+    />
+  )
+}
+
 function Step3Condition({
   t, locale, state, wiredSteps, action,
 }: {
@@ -1350,6 +1488,14 @@ function Step3Condition({
 }) {
   const ko = locale === "ko"
   const lifecycle = state.lifecycle ?? "before_tool_use"
+  // P7: which fields the runtime actually delivers on stdin for this
+  // (lifecycle, toolScope). When the scope is a specific known tool
+  // (Bash / Edit / Write / Read / WebFetch) we get tool-specific
+  // paths; otherwise the generic tool_input dict shape (honest about
+  // what the runtime can guarantee).
+  const ccEvent = payloadLifecycleToEvent(lifecycle)
+  const ccMatcher = lifecycle === "pre_final" ? undefined : state.toolScope
+  const payloadFields = payloadAvailableFields(ccEvent, ccMatcher)
   // Filter condition kinds by lifecycle AND by whether WebFetch is in
   // the toolScope (for fetch_domain / domain_allowlist shortcuts).
   const allowedRaw = CONDITION_KINDS_BY_LIFECYCLE[lifecycle]
@@ -1449,7 +1595,14 @@ function Step3Condition({
                 {k === "regex" && (
                   <div>
                     <FieldLabel>{ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}</FieldLabel>
+                    <PayloadFieldChips
+                      fields={payloadFields}
+                      locale={locale}
+                      targetTextareaId="w-regex-pattern"
+                      variant="path"
+                    />
                     <input
+                      id="w-regex-pattern"
                       name="pattern"
                       maxLength={2000}
                       defaultValue={state.pattern ?? ""}
@@ -1463,6 +1616,15 @@ function Step3Condition({
                 {k === "llm_critic" && (
                   <div>
                     <FieldLabel>{ko ? "LLM critic 기준" : "LLM critic criterion"}</FieldLabel>
+                    <PayloadFieldChips
+                      fields={payloadFields}
+                      locale={locale}
+                      intro={ko
+                        ? "기준에서 참조 가능한 필드 (클릭하면 삽입):"
+                        : "Fields you can reference in your criterion (click to insert):"}
+                      targetTextareaId={`w-llm-${k}`}
+                      variant="path"
+                    />
                     <Textarea
                       id={`w-llm-${k}`}
                       name="llmCriterion"
@@ -1505,12 +1667,21 @@ function Step3Condition({
                 {k === "shacl" && (
                   <div>
                     <FieldLabel>SHACL shape (Turtle)</FieldLabel>
+                    <PayloadFieldChips
+                      fields={payloadFields}
+                      locale={locale}
+                      intro={ko
+                        ? "클릭하면 shape stub 삽입 — magi: 네임스페이스 (런타임이 stdin을 RDF로 lift 하는 경로) 에 anchor 되어 vacuous-satisfaction(조용한 fail-open)을 막습니다:"
+                        : "Click to insert a SHACL stub anchored on the canonical magi: namespace (the runtime materializes stdin under it), so shapes can't be vacuously satisfied (silent fail-open):"}
+                      targetTextareaId="w-shacl"
+                      variant="shacl-stub"
+                    />
                     <Textarea
                       id="w-shacl"
                       name="shaclTtl"
                       rows={6}
                       defaultValue={state.shaclTtl ?? ""}
-                      placeholder={"@prefix sh: <http://www.w3.org/ns/shacl#> .\n…"}
+                      placeholder={"@prefix sh:   <http://www.w3.org/ns/shacl#> .\n@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n…"}
                       spellCheck={false}
                       autoComplete="off"
                       monospace

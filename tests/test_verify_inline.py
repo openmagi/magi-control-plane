@@ -150,6 +150,161 @@ def test_shacl_missing_shape_422(client):
     assert r.status_code == 422
 
 
+# ── P7 (issue #1, P0 #1): payload lift + vacuous-satisfaction guard ─
+
+import pytest as _pytest  # noqa: E402
+
+_pyshacl = _pytest.importorskip("pyshacl", reason="pyshacl required for lift")
+_rdflib = _pytest.importorskip("rdflib", reason="rdflib required for lift")
+
+
+def test_shacl_chip_path_lands_on_focus_node_at_runtime(client):
+    """The P0 fix: a SHACL shape targeting `magi:tool_input.command`
+    (the canonical chip-picked path) must find a focus node when the
+    runtime sees a Bash payload. Without the JSON → RDF lift the shape
+    would be vacuously satisfied (zero focus nodes → conforms → silent
+    allow). With the lift, a `sh:pattern` against the command actually
+    fires.
+
+    This shape DENIES any command containing `rm -rf`. We send a
+    matching payload; the verdict must be deny, not the legacy
+    silent-allow.
+    """
+    shape_ttl = (
+        "@prefix sh:   <http://www.w3.org/ns/shacl#> .\n"
+        "@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n"
+        "@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .\n"
+        "[] a sh:PropertyShape ;\n"
+        "   sh:targetClass magi:Hook ;\n"
+        "   sh:path magi:tool_input.command ;\n"
+        "   sh:datatype xsd:string ;\n"
+        "   sh:not [ sh:pattern \"rm -rf\" ] ;\n"
+        "   sh:minCount 1 .\n"
+    )
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "shacl",
+            "shape_ttl": shape_ttl,
+            "payload": {
+                "__event__": "PreToolUse",
+                "__matcher__": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "deny"
+
+
+def test_shacl_chip_path_clean_payload_passes(client):
+    """Same shape, clean command. The lift must still produce a focus
+    node so the negated pattern can succeed; otherwise vacuous-allow
+    would happen here too (false positive that would mask real bugs).
+    """
+    shape_ttl = (
+        "@prefix sh:   <http://www.w3.org/ns/shacl#> .\n"
+        "@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n"
+        "@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .\n"
+        "[] a sh:PropertyShape ;\n"
+        "   sh:targetClass magi:Hook ;\n"
+        "   sh:path magi:tool_input.command ;\n"
+        "   sh:datatype xsd:string ;\n"
+        "   sh:not [ sh:pattern \"rm -rf\" ] ;\n"
+        "   sh:minCount 1 .\n"
+    )
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "shacl",
+            "shape_ttl": shape_ttl,
+            "payload": {
+                "__event__": "PreToolUse",
+                "__matcher__": "Bash",
+                "tool_input": {"command": "ls -la"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "pass"
+
+
+def test_shacl_vacuous_target_denies_not_conforms(client):
+    """A shape anchored on a path the runtime never delivers MUST
+    deny, not conform. The canonical vacuous-conforms case is a
+    NodeShape `sh:targetNode magi:bogus` — pyshacl picks zero focus
+    nodes and reports conforms=True. The /verify_inline guard
+    re-reads the targets, checks the data graph, and flips the
+    verdict to deny with a clear reason."""
+    # `sh:targetClass magi:BogusType` selects zero focus nodes — the
+    # runtime only ever materializes `magi:Hook`. pyshacl conforms with
+    # zero focus nodes (per SHACL spec); the guard catches it.
+    shape_ttl = (
+        "@prefix sh:   <http://www.w3.org/ns/shacl#> .\n"
+        "@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n"
+        "@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .\n"
+        "[] a sh:NodeShape ;\n"
+        "   sh:targetClass magi:BogusType ;\n"
+        "   sh:property [\n"
+        "     sh:path magi:tool_input.command ;\n"
+        "     sh:datatype xsd:string ;\n"
+        "     sh:minCount 1\n"
+        "   ] .\n"
+    )
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "shacl",
+            "shape_ttl": shape_ttl,
+            "payload": {
+                "__event__": "PreToolUse",
+                "__matcher__": "Bash",
+                "tool_input": {"command": "ls"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "deny"
+    assert any("vacuous" in s.lower() for s in body["reasons"])
+
+
+def test_shacl_minCount_zero_focus_path_target_denies(client):
+    """A PropertyShape with `sh:targetClass magi:Hook` + a path that
+    doesn't exist in the lifted data graph DOES fire the SHACL minCount
+    violation (focus node = hook subject; minCount 1 fails). This is
+    still a "deny" verdict — the shape correctly reports the missing
+    field — so authors who accidentally pick a non-existent path get
+    a clear deny reason rather than silent allow."""
+    shape_ttl = (
+        "@prefix sh:   <http://www.w3.org/ns/shacl#> .\n"
+        "@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n"
+        "@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .\n"
+        "[] a sh:NodeShape ;\n"
+        "   sh:targetClass magi:Hook ;\n"
+        "   sh:property [\n"
+        "     sh:path magi:tool_input.bogus ;\n"
+        "     sh:datatype xsd:string ;\n"
+        "     sh:minCount 1\n"
+        "   ] .\n"
+    )
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "shacl",
+            "shape_ttl": shape_ttl,
+            "payload": {
+                "__event__": "PreToolUse",
+                "__matcher__": "Bash",
+                "tool_input": {"command": "ls"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "deny"
+
+
 # ── unknown kind rejected by pydantic ─────────────────────────────
 def test_unknown_kind_422(client):
     r = client.post(
