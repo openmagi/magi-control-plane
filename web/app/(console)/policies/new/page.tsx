@@ -2740,14 +2740,23 @@ function suggestPolicyId(state: WizardState): string {
     // wildcard policies. Once the operator picks an action, the action
     // segment carries that signal and the tool segment can be skipped.
     if (state.fetchDomain) {
-      toolPart = state.fetchDomain.replace(/[^a-z0-9]+/g, "-")
+      toolPart = state.fetchDomain.toLowerCase().replace(/[^a-z0-9]+/g, "-")
     } else if (state.conditionKind) {
-      toolPart = state.conditionKind
+      // Kebab-case the conditionKind so internal underscored tokens
+      // (e.g. `llm_critic`, `fetch_domain`) don't leak as-is into the
+      // auto-suggested id. The id field is an end-user surface; the
+      // operator can still rewrite it. AGENTS.md forbids surfacing
+      // internal terms verbatim, so this stays as a slug fallback only
+      // when no domain is set and no action has been chosen yet.
+      toolPart = state.conditionKind.replace(/_/g, "-")
     } else {
       toolPart = "any"
     }
   }
-  const toolCleaned = toolPart.replace(/^-+|-+$/g, "").slice(0, 24)
+  // D57d follow-up: slice BEFORE stripping leading/trailing dashes so
+  // the 24-char cap doesn't reintroduce a trailing `-` (which would
+  // join into a `--` artifact against the action segment).
+  const toolCleaned = toolPart.slice(0, 24).replace(/^-+|-+$/g, "").replace(/-+/g, "-")
   const segments = [lifeSlug, toolCleaned, action ?? ""].filter(Boolean)
   return `${segments.join("-")}/v1`
 }

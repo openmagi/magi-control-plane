@@ -563,7 +563,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // exported and the test file is source-inspection-only (the
       // wizard-wiring tests above all follow the same pattern).
       const start = src.indexOf("function suggestPolicyId")
-      const body = src.slice(start, start + 2200)
+      // Slice generously past the function body. The helper grew
+      // additional D57d follow-up comments (lifeSlug source pin,
+      // slice-before-strip note, conditionKind kebab note) so a 2200
+      // window now stops short of `segments.join("-")`.
+      const body = src.slice(start, start + 3000)
       // The action archetype must be read off state.action and
       // composed into the id segments. A bare regex pinning the
       // identifier is enough — refactoring the join can keep the
@@ -571,14 +575,24 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).toMatch(/state\.action/)
       // Segments join with "-" and the suffix is "/v1".
       expect(body).toMatch(/segments\.join\("-"\)[\s\S]*\/v1/)
+      // Pin the lifeSlug source rule. The lifecycle slug is the raw
+      // lifecycle key with `_`→`-` (NOT the LIFECYCLE_TO_EVENT kebab),
+      // so e.g. `before_tool_use`→`before-tool-use`, not
+      // `pre-tool-use`. A future refactor that swaps the source must
+      // update both this assertion and the contract examples below.
+      expect(body).toMatch(/life\.replace\(\/_\/g, "-"\)/)
       // The behavioural contract from the brief (mirrored as comment
       // markers so a refactor that drops a case is loud):
       //   suggestPolicyId({lifecycle: "before_tool_use",
       //                    toolScope:"Bash", action:"block"})
-      //     -> "pre-tool-use-bash-block/v1"
-      //   suggestPolicyId({lifecycle:"pre_final",
+      //     -> "before-tool-use-bash-block/v1"
+      //   suggestPolicyId({lifecycle:"user_prompt",
       //                    action:"block"})
-      //     -> wildcard skips the tool segment -> "pre-final-block/v1"
+      //     -> wildcard skips the tool segment -> "user-prompt-block/v1"
+      //     (pre_final + block is NOT a legal pairing — Step 4 only
+      //      surfaces `audit` for pre_final, so picking `pre_final` +
+      //      `audit` is what the wizard can actually emit:
+      //      "pre-final-audit/v1".)
       //   suggestPolicyId({lifecycle:"after_tool_use",
       //                    toolScope:"Grep"})
       //     -> action undefined -> back-compat
