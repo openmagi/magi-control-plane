@@ -145,7 +145,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
     expect(src).toContain("_parseDraftQuery(searchParams.draft)")
     // The state record uses ?? / || fallbacks against draftState.
     expect(src).toMatch(/lifecycle:\s*lifecycle\s*\?\?\s*draftState\?\.lifecycle/)
-    expect(src).toMatch(/toolScope:\s*searchParams\.toolScope\s*\|\|\s*draftState\?\.toolScope/)
+    // D56d follow-up: toolScope is canonicalized at the state-build
+    // seam (multi-tool URL collapses to first entry); the seam still
+    // sources raw value from searchParams.toolScope || draftState.
+    expect(src).toMatch(/searchParams\.toolScope\s*\|\|\s*draftState\?\.toolScope/)
+    expect(src).toMatch(/toolScope:\s*normalizedToolScope/)
     expect(src).toMatch(/conditionKind:\s*conditionKind\s*\?\?\s*draftState\?\.conditionKind/)
     expect(src).toMatch(/action:\s*action\s*\?\?\s*draftState\?\.action/)
   })
@@ -331,7 +335,7 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // pre_final-only.
       expect(src).toContain("lifecycleHasToolScope")
       const advanceStart = src.indexOf("async function advanceWizard")
-      const advanceBody = src.slice(advanceStart, advanceStart + 3000)
+      const advanceBody = src.slice(advanceStart, advanceStart + 6000)
       expect(advanceBody).toMatch(/!lifecycleHasToolScope\(lifecycle\)/)
     })
 
@@ -444,12 +448,180 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // `toolScope_custom` (single MCP name). advanceWizard picks one,
       // not the merge of many.
       const start = src.indexOf("async function advanceWizard")
-      const body = src.slice(start, start + 3000)
+      const body = src.slice(start, start + 4000)
       expect(body).not.toMatch(/scopeChipsRaw/)
       // No CSV merge: single pick wins.
       expect(body).not.toMatch(/merged\.join\(","\)/)
-      // The chip + custom values collapse to a single string.
-      expect(body).toMatch(/scopeChip\s*\|\|\s*scopeCustom/)
+      // D56d follow-up (P1): the typed MCP value wins so the runtime
+      // matches the user-facing helper copy ("If both are set, the MCP
+      // name wins"). The chip stays as a fallback.
+      expect(body).toMatch(/scopeCustom\s*\|\|\s*scopeChip/)
+    })
+  })
+
+  // ── D56d follow-up: tool-scope state-shape consistency ──────────
+  // The lens-asks: a stale CSV URL `?toolScope=Bash,Edit` must not
+  // result in Step 6 display ≠ saved matcher. The fixes hinge on
+  // normalizing toolScope at the GuidedWizard state-build seam plus a
+  // hard refusal in saveWizard so a server-action body that bypasses
+  // normalization cannot persist silent data loss.
+  describe("D56d follow-up: tool-scope state-shape consistency", () => {
+    it("GuidedWizard state-build seam normalizes multi-tool toolScope to first entry", () => {
+      // The seam must split on either `,` or `|`, take the first
+      // entry, and stash the original raw value on
+      // _droppedAlternation so Step 2 can surface a banner. Pin
+      // every step of the normalization so a future refactor that
+      // drops the seam is intentional.
+      const buildStart = src.indexOf("const draftState = _irToWizardState")
+      expect(buildStart).toBeGreaterThan(-1)
+      const body = src.slice(buildStart, buildStart + 2500)
+      // splits on `,` OR `|`
+      expect(body).toMatch(/split\(\s*\/\[,\|\]\/\s*\)/)
+      // canonical state.toolScope is the normalized form
+      expect(body).toMatch(/toolScope:\s*normalizedToolScope/)
+      // dropped value lands on _droppedAlternation for the Step 2 banner
+      expect(body).toMatch(/_droppedAlternation/)
+    })
+
+    it("WizardState carries an optional _droppedAlternation for the banner", () => {
+      const m = src.match(/interface WizardState\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      expect(m![1]).toMatch(/_droppedAlternation\?:\s*string\b/)
+    })
+
+    it("_irToWizardState surfaces _droppedAlternation when matcher is an alternation", () => {
+      // The IR mapper must detect `|` in the inbound matcher, split,
+      // collapse to first, AND stash the original on droppedAlternation
+      // so Step 2 can render the banner.
+      const start = src.indexOf("function _irToWizardState")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 2500)
+      expect(body).toMatch(/droppedAlternation/)
+      expect(body).toMatch(/matcher\.includes\("\|"\)/)
+    })
+
+    it("saveWizard refuses a multi-tool toolScope before classification", () => {
+      // The hard refusal must fire BEFORE matcherClassForToolScope
+      // collapses to first-token, otherwise a stale `Bash,Edit` would
+      // silently persist a Bash matcher under the multi-tool URL.
+      // Pin the early-refusal block and the redirect target.
+      const start = src.indexOf("async function saveWizard")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 5000)
+      // Multi detection (CSV or alternation)
+      expect(body).toMatch(/parseCsv\(toolScope\)\.length\s*>\s*1/)
+      expect(body).toMatch(/toolScope\.includes\("\|"\)/)
+      // Redirect target = Step 2 with invalid_input flash
+      expect(body).toMatch(/carry\.set\("step",\s*"2"\)/)
+      expect(body).toMatch(/carry\.set\("err",\s*"invalid_input"\)/)
+    })
+
+    it("saveWizard normalizes toolScope under a wildcard-only lifecycle", () => {
+      // A stale toolScope rides along on a bookmark; the
+      // wildcard-only lifecycle (pre_final, etc.) does not surface
+      // Step 2. Normalize toolScope to undefined before the matcher-
+      // class check so the save can proceed without bouncing the user
+      // back to Step 2 and dropping their wizard progress.
+      const start = src.indexOf("async function saveWizard")
+      const body = src.slice(start, start + 5000)
+      expect(body).toMatch(/!lifecycleHasToolScope\(lifecycle\)/)
+      expect(body).toMatch(/toolScope = undefined/)
+    })
+
+    it("advanceWizard refuses Step 2 'specific' with no chip and no custom", () => {
+      // P2 follow-up (matrix gate, empty specific): submitting Step 2
+      // with mode=specific but both inputs blank must bounce back to
+      // Step 2 with invalid_input, NOT silently advance with no
+      // toolScope (which would lose all later progress when saveWizard
+      // bounces from Step 6).
+      const start = src.indexOf("async function advanceWizard")
+      const body = src.slice(start, start + 4000)
+      // No-pick branch redirects to step=2 with err carry; pin the
+      // exact redirect target so a refactor that drops the early
+      // refusal is obvious.
+      expect(body).toMatch(/params\.set\("step",\s*"2"\)/)
+      expect(body).toMatch(/params\.set\("err",\s*"invalid_input"\)/)
+    })
+
+    it("suggestPolicyId slugifies the canonical matcher, not raw toolScope", () => {
+      // The P2 follow-up demands the policy id reflects the
+      // single-tool matcher that will actually save, not a stale CSV
+      // string. deriveMatcher(state) is the canonical seam.
+      const start = src.indexOf("function suggestPolicyId")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 800)
+      expect(body).toMatch(/deriveMatcher\(state\)/)
+      // No more direct slugify of state.toolScope
+      expect(body).not.toMatch(/state\.toolScope\.toLowerCase/)
+    })
+
+    it("Step 2 surfaces the _droppedAlternation banner", () => {
+      const start = src.indexOf("function Step2ToolScope")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toContain("step2-dropped-alternation-banner")
+      expect(body).toMatch(/droppedAlternation\s*&&/)
+    })
+
+    it("Step 2 helper hint is past-tense (URL-persisted state, refresh on submit)", () => {
+      // The hint is server-rendered from URL state and does NOT mirror
+      // live form selection. Use past-tense copy so the operator
+      // understands a re-pick takes effect on submit. The brief
+      // explicitly mandates honest copy here.
+      const start = src.indexOf("function Step2ToolScope")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toContain("step2-tool-helper")
+      // English copy: "Currently saved as ... pick a different one above and submit to refresh"
+      expect(body).toContain("Currently saved as")
+      expect(body).toContain("submit to refresh")
+    })
+
+    it("availableFields surfaces tool-specific paths for Bash and WebFetch", async () => {
+      // Wiring-level test: Step 2 picks a tool → Step 3 reads tool-
+      // specific payload fields. Pin the contract end-to-end so a
+      // future refactor that drops the matcher arg lands intentionally.
+      const mod = await import("../../../../lib/payload-schemas")
+      const bashPaths = mod.availableFields("PreToolUse", "Bash").map((f) => f.path)
+      expect(bashPaths).toContain("tool_input.command")
+      expect(bashPaths).not.toContain("tool_input.url")
+      const webFetchPaths = mod.availableFields("PreToolUse", "WebFetch").map((f) => f.path)
+      expect(webFetchPaths).toContain("tool_input.url")
+      expect(webFetchPaths).not.toContain("tool_input.command")
+      // Unknown MCP tool degrades to generic tool_input
+      const mcpPaths = mod.availableFields("PreToolUse", "mcp__court__file").map((f) => f.path)
+      expect(mcpPaths).toContain("tool_input")
+      expect(mcpPaths).not.toContain("tool_input.command")
+      expect(mcpPaths).not.toContain("tool_input.url")
+    })
+
+    it("Step 3 + Step 6 InlineSubConfigPanel pass canonical toolScope into payloadAvailableFields", () => {
+      // The brief: pin `ccMatcher = lifecycleHasToolScope(lifecycle) ?
+      // state.toolScope : undefined` so a future refactor that drops
+      // the matcher arg lands intentionally. state.toolScope is
+      // already canonical because GuidedWizard normalized it at the
+      // state-build seam.
+      const occurrences = src.match(
+        /const ccMatcher = lifecycleHasToolScope\(lifecycle\) \? state\.toolScope : undefined/g,
+      ) ?? []
+      // Step 3 + Step 6 InlineSubConfigPanel
+      expect(occurrences.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it("matcherClassForToolScope comment is honest about its inputs", () => {
+      // The previous comment promised "saveWizard's matcher-class
+      // guard refuses anything that survives parsing as multi" but
+      // the guard did no such check. The fix replaces the comment
+      // with the truthful narrative.
+      const start = src.indexOf("function matcherClassForToolScope")
+      const body = src.slice(start, start + 1200)
+      expect(body).not.toContain("refuses anything that survives parsing as multi")
+      // The new comment names the state-build seam as the
+      // normalization point and the early-refusal in saveWizard
+      // as defense-in-depth. Allow comment line-wrapping between
+      // "state-build" and "seam" since comment-formatter or future
+      // editor may re-wrap.
+      expect(body).toMatch(/state-build[\s\n/]*seam/)
     })
   })
 })

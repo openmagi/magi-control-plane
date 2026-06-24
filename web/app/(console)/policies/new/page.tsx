@@ -177,9 +177,14 @@ function matcherClassForToolScope(scope: string | undefined): MatcherClassKey {
   const raw = (scope ?? "").trim()
   if (!raw || raw === "*") return "wildcard"
   // D56d single-tool: scope is a single tool name now. Any embedded
-  // comma is a legacy URL or paste artifact and we take the first
-  // entry only. saveWizard's matcher-class guard refuses anything
-  // that survives parsing as multi.
+  // comma is a legacy URL or paste artifact; the canonical state-build
+  // seam in GuidedWizard normalizes incoming `?toolScope=A,B` and IR
+  // alternation matchers to their first entry before this helper sees
+  // it, so the classifier here is honest: `A,B` only reaches us via a
+  // direct caller that bypassed the normalization (e.g. server-action
+  // bodies). saveWizard's early multi-input guard catches that path
+  // explicitly so we still classify on the first parsed entry as a
+  // defensive default.
   const first = parseCsv(raw)[0]?.trim() || raw
   if (first.startsWith("mcp__")) return "mcp_tool"
   return "tool"
@@ -286,6 +291,12 @@ interface WizardState {
   // dropped kind here so Step 3 can surface a "we dropped X" banner.
   // Read-only — not part of URL state.
   _droppedConditionKind?: ConditionKind
+  // D56d follow-up (P1): when the inbound toolScope (from an IR
+  // alternation matcher `A|B|C`, a legacy CSV URL, or a hand-edited
+  // bookmark) carried more than one tool, we collapse to the first
+  // entry and carry the original raw value here so Step 2 can surface
+  // a one-shot "we trimmed your alternation" banner. Read-only.
+  _droppedAlternation?: string
 }
 
 /* ─── IR + summary builders ───────────────────────────────────────── */
@@ -653,9 +664,12 @@ async function advanceWizard(formData: FormData): Promise<void> {
   // Tool scope (Step 2). D56d single-tool: the chip row is a radio
   // group now (one builtin tool) plus an MCP free-text input (one
   // MCP tool). Mode radio (`any` / `specific`) picks which surface
-  // applies; specific takes the radio pick if any, otherwise the
-  // single MCP tool name. Multi-tool URLs collapse to the first
-  // entry on parse (matches matcherClassForToolScope).
+  // applies; specific takes the typed MCP value first, otherwise the
+  // builtin radio pick. MCP-wins matches the helper text on both
+  // locales ("If both are set, the MCP name wins") and treats the
+  // operator's most recent typing as the authoritative intent.
+  // Multi-tool URLs collapse to the first entry on parse (matches
+  // matcherClassForToolScope).
   const scopeMode = String(formData.get("toolScope_mode") ?? "")
   const scopeChip = String(formData.get("toolScope_chip") ?? "").trim()
   const scopeCustom = String(formData.get("toolScope_custom") ?? "").trim()
@@ -664,8 +678,33 @@ async function advanceWizard(formData: FormData): Promise<void> {
     if (scopeMode === "any") {
       params.set("toolScope", "*")
     } else if (scopeMode === "specific") {
-      const single = scopeChip || scopeCustom
-      if (single) params.set("toolScope", single)
+      // P1 follow-up: typed MCP value wins so the helper text and
+      // the runtime stay aligned. An operator who clicked a Bash
+      // chip and then typed `mcp__court__file` lands on Step 3 with
+      // the MCP tool, not Bash.
+      const single = scopeCustom || scopeChip
+      if (single) {
+        params.set("toolScope", single)
+      } else {
+        // P2 follow-up (matrix gate, empty specific): the user
+        // picked "specific" but left both inputs empty. Refuse the
+        // advance and carry over every other URL param so wizard
+        // progress (conditionKind, action, id, description, etc.) is
+        // not dropped on the floor.
+        for (const [k, v] of formData.entries()) {
+          if (typeof v !== "string") continue
+          if (k.startsWith("$ACTION") || k === "_step") continue
+          if (k === "evidence_ref" || k === "evidence_refs") continue
+          if (k === "toolScope_mode" || k === "toolScope_chip" || k === "toolScope_custom") continue
+          if (k === "toolScope") continue
+          if (!v.trim()) continue
+          params.set(k, v.trim())
+        }
+        if (evMerged.length > 0) params.set("evidence_refs", evMerged.join(","))
+        params.set("step", "2")
+        params.set("err", "invalid_input")
+        redirect(`/policies/new?${params.toString()}`); return
+      }
     }
   }
 
@@ -713,7 +752,46 @@ async function saveWizard(formData: FormData): Promise<void> {
   // Step 2 mode submission. Step 2 itself runs through advanceWizard
   // which already wrote the merged value into the URL.
   const toolScopeRaw = String(formData.get("toolScope") ?? "").trim()
-  const toolScope = toolScopeRaw || undefined
+  let toolScope = toolScopeRaw || undefined
+
+  // D56d follow-up (P1): refuse a multi-tool toolScope (`Bash,Edit`,
+  // alternation `Bash|Edit`, etc.) BEFORE we slip into the matcher-
+  // class classifier. The classifier collapses to first-token and
+  // would otherwise silently persist a single-tool matcher under the
+  // multi-tool display string. The GuidedWizard state-build seam
+  // normalizes incoming URLs before render so this guard fires only
+  // on a server-action body that bypassed normalization. Redirect
+  // carries over every other state field so wizard progress is not
+  // dropped.
+  if (toolScope && (parseCsv(toolScope).length > 1 || toolScope.includes("|"))) {
+    const carry = new URLSearchParams()
+    carry.set("mode", "guided")
+    carry.set("step", "2")
+    carry.set("err", "invalid_input")
+    for (const [k, v] of formData.entries()) {
+      if (typeof v !== "string") continue
+      if (k.startsWith("$ACTION") || k === "_step") continue
+      if (k === "toolScope") continue
+      if (k === "evidence_ref") continue
+      if (!v.trim()) continue
+      carry.set(k, v.trim())
+    }
+    redirect(`/policies/new?${carry.toString()}`); return
+  }
+
+  // D56d follow-up (P2): a wildcard-only lifecycle (pre_final,
+  // subagent_stop, user_prompt, pre_compact, session_start,
+  // session_end) does not surface a tool scope. A stale toolScope
+  // param riding along in the URL (bookmark, copied draft prefill,
+  // hand-edited link) would otherwise classify as `tool` / `mcp_tool`,
+  // miss the wildcard-only matrix row, and force the operator back to
+  // Step 2 even though deriveMatcher would have forced matcher='*'
+  // anyway and the save was safe. Normalize toolScope against the
+  // lifecycle before the matcher-class check, matching deriveMatcher's
+  // existing behavior.
+  if (!lifecycleHasToolScope(lifecycle)) {
+    toolScope = undefined
+  }
 
   // D56c+D56d: refuse matrix-illegal action choices before the round-
   // trip to the cloud. The cloud's policy.validate() enforces the same
@@ -875,16 +953,22 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   // D56d (single-tool wizard): the wizard authors one tool per
   // policy, so an inbound alternation matcher (legacy `A|B|C` shape
   // from a hand-authored IR) collapses to its first tool. The
-  // operator can finish authoring on that tool and create additional
-  // policies for the rest. We could also surface a "we dropped the
-  // alternation" banner like _droppedConditionKind, but the trim is
-  // honest and the operator sees the remaining tool name on Step 6.
+  // operator finishes authoring on that tool and creates additional
+  // policies for the rest. The original alternation string rides on
+  // _droppedAlternation so Step 2 can surface a "we trimmed your
+  // alternation" banner (P1 follow-up: silent trim was a data-loss
+  // hazard; banner closes the gap).
   let toolScope: string | undefined
+  let droppedAlternation: string | undefined
   const matcher = ir.trigger?.matcher ?? "*"
   if (lifecycleHasToolScope(lifecycle) && matcher && matcher !== "*") {
-    toolScope = matcher.includes("|")
-      ? (matcher.split("|").map((s) => s.trim()).filter(Boolean)[0] ?? undefined)
-      : matcher
+    if (matcher.includes("|")) {
+      const parts = matcher.split("|").map((s) => s.trim()).filter(Boolean)
+      toolScope = parts[0] ?? undefined
+      if (parts.length > 1) droppedAlternation = matcher
+    } else {
+      toolScope = matcher
+    }
   }
 
   // requires -> conditionKind + per-kind specifics. The wizard
@@ -986,6 +1070,7 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
     id: suggestedId || undefined,
     description: ir.description?.toString() || undefined,
     _droppedConditionKind: conditionKindDroppedFrom,
+    _droppedAlternation: droppedAlternation,
   } as WizardState
 }
 
@@ -1582,9 +1667,34 @@ function GuidedWizard({
   // longer needed.
   const draftState = _irToWizardState(_parseDraftQuery(searchParams.draft))
 
+  // D56d follow-up (P1): normalize toolScope at the state-build seam.
+  // A stale CSV URL (`?toolScope=Bash,Edit`) or alternation matcher
+  // riding through to this point collapses to its first parsed entry
+  // so every downstream consumer (Step 6 display, suggestPolicyId,
+  // payloadAvailableFields, deriveMatcher) sees the canonical single-
+  // tool form. The original raw value is preserved on
+  // _droppedAlternation so Step 2 can surface a "we trimmed your
+  // alternation" banner mirroring _droppedConditionKind.
+  const rawToolScope = searchParams.toolScope || draftState?.toolScope
+  let normalizedToolScope: string | undefined = rawToolScope
+  let droppedAlternationCarry: string | undefined =
+    searchParams._droppedAlternation || draftState?._droppedAlternation
+  if (rawToolScope && rawToolScope !== "*") {
+    const trimmed = rawToolScope.trim()
+    if (trimmed.includes(",") || trimmed.includes("|")) {
+      const parts = trimmed.split(/[,|]/).map((s) => s.trim()).filter(Boolean)
+      if (parts.length > 1) {
+        normalizedToolScope = parts[0]
+        droppedAlternationCarry = droppedAlternationCarry ?? trimmed
+      } else if (parts.length === 1) {
+        normalizedToolScope = parts[0]
+      }
+    }
+  }
+
   const state: WizardState = {
     lifecycle: lifecycle ?? draftState?.lifecycle,
-    toolScope: searchParams.toolScope || draftState?.toolScope,
+    toolScope: normalizedToolScope,
     conditionKind: conditionKind ?? draftState?.conditionKind,
     fetchDomain: searchParams.fetchDomain || draftState?.fetchDomain,
     allowlist: searchParams.allowlist || draftState?.allowlist,
@@ -1603,6 +1713,7 @@ function GuidedWizard({
     _droppedConditionKind:
       !conditionKind && draftState?._droppedConditionKind
         ? draftState._droppedConditionKind : undefined,
+    _droppedAlternation: droppedAlternationCarry,
   }
 
   // D56c: every no-tool-context lifecycle auto-skips Step 2 (tool
@@ -1929,15 +2040,15 @@ function Step2ToolScope({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const ko = locale === "ko"
-  // D56d (single-tool wizard): scope is a single tool name. A legacy
-  // CSV URL collapses to its first entry. Builtin pick = preset chip
-  // string; MCP pick = the free-text input. The two are mutually
-  // exclusive. The form picks the first non-empty value in
-  // advanceWizard so an operator typing into the MCP box without
-  // clearing a chip still sees the MCP value win (intent is "I'm
-  // typing").
+  // D56d (single-tool wizard): scope is a single tool name. The
+  // GuidedWizard state-build seam already collapsed any inbound CSV /
+  // alternation to its first entry, so `state.toolScope` is canonical
+  // here. Builtin pick = preset chip string; MCP pick = the free-text
+  // input. The two are mutually exclusive. The form picks the typed
+  // MCP value first in advanceWizard (matching the helper copy) so an
+  // operator who typed into the MCP box wins over a stale chip.
   const rawScope = (state.toolScope ?? "").trim()
-  const firstPick = parseCsv(rawScope)[0]?.trim() || rawScope
+  const firstPick = rawScope
   const isAny = !rawScope || rawScope === "*"
   const builtinPick = (TOOL_PRESETS as readonly string[]).includes(firstPick)
     ? firstPick : ""
@@ -1949,10 +2060,15 @@ function Step2ToolScope({
   const lifecycle = state.lifecycle ?? "before_tool_use"
   const matrixMatchers = allowedMatcherClassesForLifecycle(lifecycle)
   const wildcardLegal = matrixMatchers.has("wildcard")
-  // The picked-tool helper hint (Step 3 will suggest checks specific
-  // to the chosen tool). Always emit a string so the helper element
-  // is the same DOM shape under either pick.
+  // The picked-tool helper hint reflects the URL-persisted previous
+  // pick (server-rendered, no live form mirroring). Past-tense copy
+  // so the operator understands this is the *current* persisted
+  // value and a re-pick takes effect on submit.
   const helperTool = firstPick && firstPick !== "*" ? firstPick : ""
+  // D56d follow-up (P1): if state-build seam dropped an alternation
+  // matcher (multi-tool URL collapsed to first entry), surface a
+  // one-shot banner so the operator sees the trim instead of guessing.
+  const droppedAlternation = state._droppedAlternation
   return (
     <StepShell
       t={t}
@@ -1965,6 +2081,17 @@ function Step2ToolScope({
       <form action={action} className="space-y-4">
         <input type="hidden" name="_step" value="2" />
         <HiddenState state={{ lifecycle: state.lifecycle }} />
+
+        {droppedAlternation && (
+          <p
+            data-testid="step2-dropped-alternation-banner"
+            className="rounded-xl border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-900"
+          >
+            {ko
+              ? `원래 정책에 있던 멀티-도구 매처(${droppedAlternation})는 단일-도구 위저드에서 첫 번째 도구(${firstPick})로 축소되었습니다. 나머지 도구는 별도 정책으로 만드세요.`
+              : `The original multi-tool matcher (${droppedAlternation}) was trimmed to the first tool (${firstPick}) by the single-tool wizard. Create separate policies for the rest.`}
+          </p>
+        )}
 
         <p
           data-testid="step2-single-tool-note"
@@ -2062,8 +2189,8 @@ function Step2ToolScope({
                 className="rounded-lg border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.04] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
               >
                 {ko
-                  ? `Step 3 는 ${helperTool} 페이로드에 맞춘 검사 옵션을 보여줍니다. 여러 도구를 한 번에 검사하려면 정책을 따로 만드세요.`
-                  : `Step 3 will suggest checks specific to ${helperTool}. For multi-tool coverage, create separate policies.`}
+                  ? `현재 ${helperTool} 로 저장되어 있습니다. Step 3 는 이 도구의 페이로드에 맞춘 검사 옵션을 보여줍니다. 위에서 다른 도구를 고르고 Next 를 누르면 갱신됩니다.`
+                  : `Currently saved as ${helperTool}. Step 3 will suggest checks specific to this tool; pick a different one above and submit to refresh.`}
               </p>
             )}
           </span>
@@ -2575,8 +2702,15 @@ function Step4Action({
 function suggestPolicyId(state: WizardState): string {
   const life = state.lifecycle ?? "before_tool_use"
   const lifeSlug = life.replace(/_/g, "-")
-  const tail = state.toolScope && state.toolScope !== "*"
-    ? state.toolScope.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  // D56d follow-up (P2): slugify the canonical matcher (single tool /
+  // mcp tool / wildcard) instead of the raw state.toolScope so a
+  // stale CSV URL (`Bash,Edit`) does not bake a multi-tool slug into
+  // a single-tool policy id. GuidedWizard already normalizes
+  // state.toolScope at the state-build seam, so deriveMatcher returns
+  // the canonical form here too.
+  const matcher = deriveMatcher(state)
+  const tail = matcher && matcher !== "*"
+    ? matcher.toLowerCase().replace(/[^a-z0-9]+/g, "-")
     : state.fetchDomain
       ? state.fetchDomain.replace(/[^a-z0-9]+/g, "-")
       : state.conditionKind || "any"
