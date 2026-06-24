@@ -5,22 +5,22 @@
  *
  * Two variants share the same chip-row visual:
  *
- *   variant="path"       — chips are <button>s that insert the path
+ *   variant="path"       : chips are <button>s that insert the path
  *                          string at the cursor of `targetTextareaId`.
  *                          Used in the regex / llm_critic forms (the
  *                          author wants the path itself in their
  *                          pattern / NL prompt).
- *   variant="shacl-stub" — chips insert a SHACL `sh:PropertyShape`
+ *   variant="shacl-stub" : chips insert a SHACL `sh:PropertyShape`
  *                          stub (or `sh:NodeShape` for dict / list
  *                          kinds) anchored on the chip's path under
  *                          the canonical `magi:` namespace. Drops the
  *                          stub at the cursor so the author extends a
  *                          shape that is GUARANTEED to find a focus
- *                          node at runtime — closes the vacuous-
+ *                          node at runtime, closes the vacuous-
  *                          satisfaction footgun the inert <select>
  *                          previously promised but didn't deliver.
  *
- * Why a button (not a <span>) — P1 #7 in the review explicitly calls
+ * Why a button (not a <span>): P1 #7 in the review explicitly calls
  * out the keyboard/aria gap. `<button>` is in the tab order, lands
  * with role="button", and the title/aria-label exposes the type +
  * description to screen readers.
@@ -131,7 +131,7 @@ export default function PayloadFieldChipsClient({
           // operator-typed MCP slug still chips honestly.
           //
           // Click-to-insert STAYS the raw path (handled in
-          // `onChipActivate`) — operators authoring regex / shacl need
+          // `onChipActivate`): operators authoring regex / shacl need
           // the literal field path that the runtime materializes, not
           // a label the runtime doesn't know.
           const friendly =
@@ -139,14 +139,22 @@ export default function PayloadFieldChipsClient({
             ?? f.display_label_en
             ?? f.path
           const isFriendly = friendly !== f.path
-          const aria = `${ariaInsertVerb} ${friendly} (${f.path}, ${f.type})${
-            f.description ? " — " + f.description : ""
-          }`
+          // Aria-label leads with the raw path (the actual click-to-insert
+          // target) and trails with the friendly cue, so SR users hear what
+          // will land at the cursor first and the human-readable label after.
+          // No em-dashes per the project no-em-dash hard rule (top AI-tell).
+          const aria = isFriendly
+            ? `${ariaInsertVerb} ${f.path}, ${friendly} (${f.type})${
+                f.description ? ": " + f.description : ""
+              }`
+            : `${ariaInsertVerb} ${f.path} (${f.type})${
+                f.description ? ": " + f.description : ""
+              }`
           const title = isFriendly
-            ? `${friendly}\n${f.path} (${f.type}) — ${f.description}${
+            ? `${friendly}\n${f.path} (${f.type}): ${f.description}${
                 f.example ? "\n\nexample: " + f.example : ""
               }`
-            : `${f.type} — ${f.description}${
+            : `${f.type}: ${f.description}${
                 f.example ? "\n\nexample: " + f.example : ""
               }`
           return (

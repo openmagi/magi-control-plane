@@ -745,44 +745,60 @@ export default function VerifierFormClient({ labels, initial, locale = "en" }: P
                   >
                     {labels.fieldCheckPath}
                   </label>
-                  <input
-                    id={`field-check-path-${fc._id}`}
-                    type="text"
-                    value={fc.path}
-                    maxLength={MAX_FIELD_CHECK_PATH_LEN}
-                    placeholder="tool_input.url"
-                    aria-invalid={showRowError && pathInvalid ? "true" : undefined}
-                    aria-describedby={showRowError && pathInvalid ? rowErrorId : undefined}
-                    onChange={(e) =>
-                      setFieldChecks((rows) =>
-                        rows.map((r) =>
-                          r._id === fc._id ? { ...r, path: e.target.value } : r,
-                        ),
-                      )
-                    }
-                    className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
-                  />
-                  {/* D64: friendly display label for the typed path
-                      (when the runtime registry knows it). UNKNOWN
-                      paths get no helper — the operator already sees
-                      the raw path they typed in the input. The helper
-                      is decorative (the truth source remains the raw
-                      path), so we render it muted and aria-hidden so
-                      SR users hear the input value + label only. */}
                   {(() => {
                     const trimmedPath = fc.path.trim()
-                    if (!trimmedPath) return null
-                    const friendly = getDisplayLabel(trimmedPath, locale)
-                    if (friendly === trimmedPath) return null
+                    const friendly = trimmedPath
+                      ? getDisplayLabel(trimmedPath, locale)
+                      : trimmedPath
+                    const hasFriendly = !!trimmedPath && friendly !== trimmedPath
+                    const friendlyId = `field-check-path-display-label-${fc._id}`
+                    // Compose aria-describedby so SR users hear BOTH the
+                    // friendly resolution (when present) and the row error
+                    // (when the row fails validation). D64 polish: parity
+                    // with the chip / tree-row surfaces that already name
+                    // the friendly label to SR users.
+                    const describedBy = [
+                      hasFriendly ? friendlyId : null,
+                      showRowError && pathInvalid ? rowErrorId : null,
+                    ]
+                      .filter((x): x is string => !!x)
+                      .join(" ") || undefined
                     return (
-                      <p
-                        aria-hidden
-                        data-testid={`field-check-path-display-label-${fc._id}`}
-                        data-field-path={trimmedPath}
-                        className="mt-1 text-[10.5px] text-[var(--color-text-tertiary)]"
-                      >
-                        {friendly}
-                      </p>
+                      <>
+                        <input
+                          id={`field-check-path-${fc._id}`}
+                          type="text"
+                          value={fc.path}
+                          maxLength={MAX_FIELD_CHECK_PATH_LEN}
+                          placeholder="tool_input.url"
+                          aria-invalid={showRowError && pathInvalid ? "true" : undefined}
+                          aria-describedby={describedBy}
+                          onChange={(e) =>
+                            setFieldChecks((rows) =>
+                              rows.map((r) =>
+                                r._id === fc._id ? { ...r, path: e.target.value } : r,
+                              ),
+                            )
+                          }
+                          className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                        />
+                        {hasFriendly && (
+                          // D64 polish: the friendly resolution participates
+                          // in the input's accessible description (wired via
+                          // aria-describedby above) so SR users hear the
+                          // friendly label after the input value, matching
+                          // the chip / tree-row / expander surfaces. Visible
+                          // helper text is decorative for sighted users.
+                          <p
+                            id={friendlyId}
+                            data-testid={`field-check-path-display-label-${fc._id}`}
+                            data-field-path={trimmedPath}
+                            className="mt-1 text-[10.5px] text-[var(--color-text-tertiary)]"
+                          >
+                            {friendly}
+                          </p>
+                        )}
+                      </>
                     )
                   })()}
                 </div>

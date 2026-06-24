@@ -77,4 +77,17 @@ describe("PayloadFieldChipsClient — D64 friendly label invariants", () => {
   it("renders an sr-only span carrying the raw path when friendly differs", () => {
     expect(src).toMatch(/sr-only/)
   })
+
+  it("D64 polish: no em-dash characters in the rendered source", () => {
+    // Project no-em-dash hard rule (top AI-tell). Aria-label and title
+    // strings flow into the DOM, so even a single em-dash in a template
+    // literal is a runtime regression.
+    expect(src).not.toMatch(/—/)
+  })
+
+  it("D64 polish: aria-label leads with the raw path before the friendly label", () => {
+    // SR users authoring regex care about what is about to be inserted at
+    // the caret (the raw path). Friendly label trails as the human cue.
+    expect(src).toMatch(/aria\s*=\s*isFriendly\s*\?[\s\S]*?\$\{f\.path\}[\s\S]*?\$\{friendly\}/)
+  })
 })

@@ -170,7 +170,14 @@ function maybeFriendlyPath(
 ): string | null {
   const raw = item.path
   if (typeof raw !== "string" || !raw.trim()) return null
-  return getDisplayLabel(raw.trim(), ko ? "ko" : "en")
+  // The conversational compiler may stash the path as the namespaced
+  // SHACL predicate (`magi:tool_input.command`) it just emitted to TTL.
+  // The display-label lookup keys on the BARE path, so strip the
+  // leading `magi:` here. Display-only; the underlying IR keeps the
+  // exact `path` it was given.
+  const trimmed = raw.trim()
+  const bare = trimmed.startsWith("magi:") ? trimmed.slice("magi:".length) : trimmed
+  return getDisplayLabel(bare, ko ? "ko" : "en")
 }
 
 function conditionLabel(

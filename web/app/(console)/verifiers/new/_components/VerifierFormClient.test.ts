@@ -259,4 +259,24 @@ describe("VerifierFormClient source invariants", () => {
     // the i18n dict for the server-side error replay surface.
     expect(src).toMatch(/labels\.errCallerAssemblyHint\b/)
   })
+
+  // ── D64 polish: field-check path display label SR parity ─────────
+  it("D64 polish: field-check friendly helper is no longer aria-hidden", () => {
+    // The friendly resolution must reach SR users to match the chip /
+    // tree-row / expander surfaces; the D64 brief surfaces both raw
+    // path and friendly label everywhere else, this row was the outlier.
+    const helperBlock = src.match(
+      /field-check-path-display-label[\s\S]{0,400}/,
+    )?.[0] ?? ""
+    expect(helperBlock).not.toMatch(/aria-hidden/)
+  })
+
+  it("D64 polish: field-check input wires the friendly helper id into aria-describedby", () => {
+    // SR users hear the input value + the friendly label after it, the
+    // same way the chip + expander surfaces announce the friendly cue.
+    expect(src).toMatch(/field-check-path-display-label-\$\{fc\._id\}/)
+    // aria-describedby is composed (helper id + row error id) so the
+    // friendly cue and the row error coexist for SR users.
+    expect(src).toMatch(/aria-describedby=\{describedBy\}/)
+  })
 })

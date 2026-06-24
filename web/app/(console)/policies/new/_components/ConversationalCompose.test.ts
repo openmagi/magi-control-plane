@@ -382,6 +382,17 @@ describe("IrDraftPane source invariants", () => {
     expect(src).toMatch(/mcp__/)
     expect(src).toMatch(/' 또는 '|" 또는 "|' or '|" or "/)
   })
+
+  it("D64 polish: maybeFriendlyPath strips a leading 'magi:' prefix before lookup", () => {
+    // The conversational compiler may stash item.path as the namespaced
+    // SHACL predicate ("magi:tool_input.command") it just emitted. The
+    // display-label lookup keys on the BARE path; without stripping the
+    // prefix the helper silently falls through to raw and the operator
+    // sees `Structured rule (magi:tool_input.command)`, exactly the
+    // unfriendly outcome D64 set out to fix.
+    expect(src).toMatch(/startsWith\("magi:"\)/)
+    expect(src).toMatch(/slice\("magi:"\.length\)/)
+  })
 })
 
 describe("ChatTurn / ChatTurnPill source invariants", () => {

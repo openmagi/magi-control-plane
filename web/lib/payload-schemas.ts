@@ -75,7 +75,7 @@ function withShaclHints(fields: FieldDescriptor[]): FieldDescriptor[] {
 /* ── D64: friendly display labels ─────────────────────────────────────
  *
  * Mirrors `_DISPLAY_LABELS_*` in src/magi_cp/policy/payload_schemas.py.
- * Keep the two tables in lockstep — a path missing from one side falls
+ * Keep the two tables in lockstep: a path missing from one side falls
  * back to the raw path verbatim, which is honest but the operator
  * loses the friendly name.
  *
@@ -83,7 +83,7 @@ function withShaclHints(fields: FieldDescriptor[]): FieldDescriptor[] {
  * Input Paths panel, the wizard /verifiers/new path picker, and the
  * IR draft pane all render display labels for known paths and the raw
  * path verbatim for unknown ones (operator-typed MCP slugs etc).
- * Click-to-insert behaviour STAYS raw path everywhere — operators
+ * Click-to-insert behaviour STAYS raw path everywhere: operators
  * authoring regex / shacl need the actual field path, not a friendly
  * label that the runtime doesn't materialize.
  */
