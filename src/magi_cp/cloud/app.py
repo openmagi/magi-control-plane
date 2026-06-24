@@ -23,6 +23,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FPath
@@ -188,6 +189,33 @@ class CompileReq(BaseModel):
     # Bounded so a runaway NL can't pin LLM tokens or push past the body cap.
     nl: str = Field(..., min_length=1, max_length=20_000)
     prior_turns: list[PriorTurnIn] | None = Field(default=None, max_length=20)
+
+
+# D53b: replay-against-last-24h dry-run authoring affordance.
+class DryRunReq(BaseModel):
+    """POST /policies/dry-run body. Replays a draft IR over recent
+    ledger rows to estimate "if this policy were enabled, how many of
+    the last 24h's tool calls would it have action'd?"
+
+    `ir` is intentionally a loose dict at the pydantic boundary - the
+    archetype-specific shape check happens via
+    `_deserialize_policy_from_api` (which routes through
+    `policy_from_dict` + Policy.__post_init__) inside the route. That
+    keeps the validation surface identical to `/policies` PUT so an
+    operator who can save the policy can also dry-run it.
+
+    `since`: human-readable window selector. Closed enum (24h / 7d)
+    so a typo cannot quietly widen the replay scope. Default 24h.
+
+    `limit`: cap on rows replayed inside the window. The replay is
+    Python-side per row so a 7d window with thousands of rows would
+    pin a worker - the cap (max 10_000) is the safety net.
+    """
+    model_config = {"extra": "forbid"}
+
+    ir: dict
+    since: Literal["24h", "7d"] = "24h"
+    limit: int = Field(default=1000, ge=1, le=10_000)
 
 
 # v2.0-W7: verifier payload cap (regex DoS defense). 20K is plenty for any
@@ -546,6 +574,99 @@ def create_app(
             # compiler parse error — operator's prompt or model produced
             # something non-JSON. 422 because the input could be reformulated.
             raise HTTPException(422, str(e)) from e
+
+    @app.post("/policies/dry-run", dependencies=[Depends(require_admin_key)])
+    def policies_dry_run(req: "DryRunReq", request: Request) -> dict:
+        """D53b: replay a draft IR over the last 24h / 7d of ledger
+        rows and report how many would have triggered the policy
+        action.
+
+        Read-only. POST is used because the IR body is non-trivial
+        (would not fit in a query string), but nothing is persisted -
+        no ledger append, no HITL enqueue, no policy write.
+
+        Validation reuses `_deserialize_policy_from_api` so the same
+        archetype + matrix checks that gate PUT /policies also gate
+        this surface. A draft that fails to validate returns 422 with
+        the validation error message - exactly what the authoring
+        page already knows how to render.
+
+        Sample payloads in the response pass through D50's
+        `redact_payload_preview` (allowlist projection + linear
+        masking) - raw evidence bodies never reach the dashboard.
+        """
+        from ..policy.dry_run import evaluate_dry_run
+        from ..policy.run_redaction import (
+            DEFAULT_PREVIEW_MAX_CHARS, redact_payload_preview,
+        )
+
+        # Gate 1: shape check. Reuse the policies CRUD deserializer
+        # so an authoring-time validation failure here mirrors the
+        # one the operator would have seen on PUT. The Policy
+        # dataclass's __post_init__ raises ValueError on any matrix
+        # / regex / SHACL lint failure.
+        try:
+            policy = _deserialize_policy_from_api(req.ir)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(422, str(e)) from e
+
+        # Gate 2: ledger window. `since` is a closed enum to keep
+        # the replay's blast radius bounded (a typo cannot widen to
+        # 90d). Limit is clamped by pydantic above (1..10_000).
+        window_secs = {"24h": 86_400, "7d": 7 * 86_400}[req.since]
+        cutoff = int(time.time()) - window_secs
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        rows = ledger.list_recent_window(
+            tenant_id, limit=req.limit, since_ts=cutoff,
+        )
+
+        # Gate 3: pure replay. The helper returns row ids; we
+        # hydrate the matched rows + redact their bodies before they
+        # cross the wire.
+        result = evaluate_dry_run(policy, rows, sample_limit=3)
+
+        # Build the redacted sample list. Look the matched rows back
+        # up by id from the already-hydrated `rows` window so we do
+        # not need a second SQL round-trip. The redactor is
+        # fail-closed; an unexpected future body field with a secret
+        # cannot leak through this surface.
+        rows_by_id = {r.id: r for r in rows}
+        sample_matched: list[dict] = []
+        for rid in result.sample_matched_ids:
+            r = rows_by_id.get(rid)
+            if r is None:
+                continue
+            body = r.body if isinstance(r.body, dict) else {}
+            verdict_raw = body.get("verdict")
+            _ALLOWED_VERDICTS = {
+                "pass", "fail", "deny",
+                "review", "needs_review", "not_applicable",
+            }
+            verdict = (
+                verdict_raw
+                if isinstance(verdict_raw, str)
+                and verdict_raw in _ALLOWED_VERDICTS
+                else None
+            )
+            sample_matched.append({
+                "id": r.id,
+                "ts": _iso_ts(r.ts),
+                "verdict": verdict,
+                "redacted_payload_preview": redact_payload_preview(
+                    body, max_chars=DEFAULT_PREVIEW_MAX_CHARS,
+                ),
+            })
+
+        return {
+            "total_records": result.total_records,
+            "matched": result.matched,
+            "by_verdict": result.by_verdict,
+            "by_action": result.by_action,
+            "sample_matched": sample_matched,
+            "skipped_reason": result.skipped_reason,
+            "since": req.since,
+            "limit": req.limit,
+        }
 
     @app.get("/pubkey")
     def get_pubkey() -> dict:

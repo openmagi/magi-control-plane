@@ -411,6 +411,29 @@ export const cloud = {
       body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
     }),
 
+  /** D53b: replay a draft Policy IR against the last 24h / 7d of ledger
+   * rows and report how many would have triggered the action.
+   *
+   * Read-only: the cloud route never writes to the ledger or policy
+   * store. Sample payloads in the response have already passed
+   * through D50's `redact_payload_preview` (allowlist projection +
+   * linear masking) so raw evidence bodies never reach the browser.
+   *
+   * Reuses the same validation surface as PUT /policies; an IR that
+   * would fail to save also fails to dry-run (422). The endpoint is
+   * admin-key gated. The dashboard's same-origin proxy at
+   * /api/policies/dry-run is the only browser-reachable entry. */
+  dryRunPolicy: (
+    ir: Record<string, unknown>,
+    since: "24h" | "7d" = "24h",
+    limit: number = 1000,
+  ): Promise<DryRunResult> =>
+    _fetch<DryRunResult>("/policies/dry-run", {
+      method: "POST", keyType: "admin",
+      timeoutMs: 30_000,
+      body: JSON.stringify({ ir, since, limit }),
+    }),
+
   /** Generic verifier dispatch. produces a signed token on pass/review.
    *
    * PR4: canonical fields only. Legacy `matter` / `doc_id` aliases have
@@ -563,6 +586,55 @@ export type CompileResult = {
   ir: Record<string, unknown>
   review: { ok: boolean; issues: string[] }
   schema_issues: string[]
+}
+
+/** D53b: response from POST /policies/dry-run.
+ *
+ * `sample_matched` rows have already been run through D50's
+ * `redact_payload_preview` server-side (allowlist projection + linear
+ * regex masking + 240-char truncation); raw evidence payloads never
+ * reach the browser. Each sample row mirrors the D53a verifier-samples
+ * shape (id / ts / closed-set verdict / redacted preview) so the
+ * dashboard can reuse the same row component if it wants to.
+ *
+ * `skipped_reason` is non-null when the dry-run could not produce a
+ * meaningful count: today the two reasons surfaced are
+ *   - "archetype-not-dry-runnable" (permission / mcp / subagent /
+ *     context_injection compile to managed-settings, no requires[]
+ *     to replay), and
+ *   - "no-records-in-trigger-frame" (the window had no rows whose
+ *     hook_event + matcher fall under the policy trigger).
+ */
+export type DryRunSampleRow = {
+  id: number
+  ts: string
+  verdict:
+    | "pass"
+    | "fail"
+    | "deny"
+    | "review"
+    | "needs_review"
+    | "not_applicable"
+    | null
+  redacted_payload_preview: string
+}
+
+export type DryRunResult = {
+  total_records: number
+  matched: number
+  by_verdict: Record<
+    "pass" | "fail" | "deny" | "review" | "needs_review"
+      | "not_applicable" | "unknown",
+    number
+  >
+  by_action: Record<"block" | "ask" | "audit" | "strip", number>
+  sample_matched: DryRunSampleRow[]
+  skipped_reason:
+    | "archetype-not-dry-runnable"
+    | "no-records-in-trigger-frame"
+    | null
+  since: "24h" | "7d"
+  limit: number
 }
 
 export type PresetEntry = {

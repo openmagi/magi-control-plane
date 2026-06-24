@@ -366,6 +366,64 @@ describe("cloud client", () => {
     await expect(cloud.compilePolicy("x")).rejects.toThrow("cloud 503")
   })
 
+  // ── D53b: dryRunPolicy ─────────────────────────────────────────────
+  it("dryRunPolicy uses X-Admin-Api-Key + POSTs ir/since/limit", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({
+        total_records: 12, matched: 3,
+        by_verdict: { pass: 9, fail: 0, deny: 3, review: 0,
+                       needs_review: 0, not_applicable: 0, unknown: 0 },
+        by_action: { block: 3, ask: 0, audit: 0, strip: 0 },
+        sample_matched: [],
+        skipped_reason: null,
+        since: "24h", limit: 1000,
+      }), { status: 200 }) as any
+    })
+    const ir = { id: "x/v1", trigger: { event: "PreToolUse", matcher: "Bash" }, action: "block" }
+    const r = await cloud.dryRunPolicy(ir, "24h", 1000)
+    expect(captured.url).toBe("http://test/policies/dry-run")
+    expect(captured.init.method).toBe("POST")
+    expect(captured.init.headers.get("X-Admin-Api-Key")).toBe("admin-test")
+    const body = JSON.parse(captured.init.body)
+    expect(body.ir).toEqual(ir)
+    expect(body.since).toBe("24h")
+    expect(body.limit).toBe(1000)
+    expect(r.matched).toBe(3)
+    expect(r.total_records).toBe(12)
+  })
+
+  it("dryRunPolicy maps 422 to a thrown error the client can render", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    global.fetch = vi.fn(async () => new Response("", { status: 422 }) as any)
+    await expect(
+      cloud.dryRunPolicy({ id: "x/v1" }),
+    ).rejects.toThrow("cloud 422")
+  })
+
+  it("dryRunPolicy defaults to since=24h limit=1000", async () => {
+    process.env.MAGI_CP_ADMIN_API_KEY = "admin-test"
+    let captured: any
+    global.fetch = vi.fn(async (_url: any, init: any) => {
+      captured = init
+      return new Response(JSON.stringify({
+        total_records: 0, matched: 0,
+        by_verdict: { pass: 0, fail: 0, deny: 0, review: 0,
+                       needs_review: 0, not_applicable: 0, unknown: 0 },
+        by_action: { block: 0, ask: 0, audit: 0, strip: 0 },
+        sample_matched: [],
+        skipped_reason: "no-records-in-trigger-frame",
+        since: "24h", limit: 1000,
+      }), { status: 200 }) as any
+    })
+    await cloud.dryRunPolicy({ id: "x/v1" })
+    const body = JSON.parse(captured.body)
+    expect(body.since).toBe("24h")
+    expect(body.limit).toBe(1000)
+  })
+
   // ── v2.2: tenant provisioning (signup queue retired) ─────────────────
   it("createTenant signs body with HMAC and sends x-magi-signature", async () => {
     process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret-xxxx"

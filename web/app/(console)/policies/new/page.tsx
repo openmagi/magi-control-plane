@@ -6,6 +6,7 @@ import SteeringAwareField from "./_components/SteeringAwareField"
 import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import NlAuthoringGuide from "../../_components/NlAuthoringGuide"
+import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -211,6 +212,35 @@ function escapeRegex(s: string): string {
 }
 function parseCsv(raw: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean)
+}
+
+/** D53b: best-effort draft IR builder for the Guided wizard's Step 6
+ *  Dry-run panel. Mirrors the shape `saveWizard` writes (event,
+ *  matcher, requires, action), without re-running the per-kind
+ *  spec validation - we want the panel to surface the same 422 the
+ *  save would, not pre-empt it.
+ *
+ *  Strip action is collapsed to `audit` here too (the backend has
+ *  no payload-mutation channel today; saveWizard does the same).
+ *  Description falls back to a plain summary so the cloud's
+ *  Pydantic model has all the required keys.
+ */
+function buildGuidedDraftForDryRun(s: WizardState): Record<string, unknown> {
+  const event = LIFECYCLE_TO_EVENT[s.lifecycle ?? "before_tool_use"]
+  const matcher = deriveMatcher(s)
+  const requires = deriveRequires(s)
+  const action = s.action === "strip" ? "audit" : (s.action ?? "audit")
+  return {
+    id: s.id ?? "",
+    description: s.description || summaryForBackend(s),
+    version: "0.1",
+    trigger: { host: "claude-code", event, matcher },
+    sentinel_re: null,
+    requires,
+    action,
+    on_signature_invalid: "deny",
+    gate_binary: "/usr/local/bin/magi-gate.sh",
+  }
 }
 
 // Step 4 dynamic header phrasing.
@@ -824,6 +854,14 @@ export default async function NewPolicyPage({
                 placeholderId: "legal-filing/v1",
                 placeholderMatcher: "Bash | mcp__court__file",
               }}
+              dryRunSlot={({ draft, isValid }) => (
+                <DryRunPanel
+                  t={t}
+                  ir={isValid ? (draft as unknown as Record<string, unknown>) : null}
+                  disabled={!isValid}
+                  action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
+                />
+              )}
             />
           </Card>
         </AuthoringShell>
@@ -2129,6 +2167,21 @@ function Step6Review({
         <HiddenState state={state} />
         <NextButton label={t("newPolicy.wizard.savePolicy")} />
       </form>
+
+      {/* D53b: Dry-run replay against the last 24h of ledger rows.
+          The guided wizard's Step 6 surfaces the full draft IR; we
+          re-derive it here from `state` (mirrors the persistDraft
+          path) and feed it to the panel. The button is disabled
+          when the wizard has not produced an id yet (saving would
+          fail validation for the same reason). */}
+      <DryRunPanel
+        t={t}
+        ir={state.id
+          ? buildGuidedDraftForDryRun(state)
+          : null}
+        disabled={!state.id}
+        action={(state.action === "strip" ? "strip" : (state.action ?? "audit"))}
+      />
     </StepShell>
   )
 }
@@ -2227,6 +2280,18 @@ function CompileResultBlock({
           </span>
         )}
       </form>
+
+      {/* D53b: "Dry-run on last 24h" replay. Only enabled when the
+          compile passed cleanly (canSave) - dry-run reuses /policies
+          PUT's validation surface, so a draft that would 422 on save
+          would 422 here too. Loading + error states are inline so a
+          failed dry-run never blocks the Save action above. */}
+      <DryRunPanel
+        t={t}
+        ir={canSave ? (data.ir as Record<string, unknown>) : null}
+        disabled={!canSave}
+        action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
+      />
     </Card>
   )
 }

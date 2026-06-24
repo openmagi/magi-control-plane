@@ -7,6 +7,7 @@ import {
   Badge, Card, Code, CodeBlock, CopyButton, EnforcementBadge,
   ErrorState, PageHeader,
 } from "@/components/ui"
+import { DryRunPanel } from "../_components/DryRunPanel"
 
 export const dynamic = "force-dynamic"
 
@@ -139,6 +140,29 @@ export default async function PolicyDetailPage({
           <CodeBlock maxHeight="60vh">{msJson}</CodeBlock>
         </section>
       </div>
+
+      {/* D53b: Dry-run on last 24h. The stored IR has already been
+          accepted by the cloud (PUT validation passed), so the
+          panel's button is always enabled here - the operator can
+          replay the active policy over recent ledger rows without
+          re-compiling anything. */}
+      <DryRunPanel
+        t={t}
+        ir={detail.policy as unknown as Record<string, unknown>}
+        action={extractAction(detail.policy)}
+      />
     </>
   )
+}
+
+function extractAction(
+  p: PolicyDetail["policy"],
+): "block" | "ask" | "audit" | "strip" {
+  // Only EvidencePolicy carries an `action` field; declarative
+  // archetypes default to audit for the pill color (the panel will
+  // short-circuit to "skipped" anyway because the cloud returns
+  // `skipped_reason: "archetype-not-dry-runnable"` for them).
+  const a = (p as { action?: unknown }).action
+  if (a === "block" || a === "ask" || a === "audit" || a === "strip") return a
+  return "audit"
 }

@@ -110,4 +110,31 @@ describe("policies/new wizard — P9 steering wiring", () => {
       /p\.enforcement === "preview"[\s\S]*?wiredSteps\.push/,
     )
   })
+
+  // D53b: dry-run wiring on every authoring mode.
+  it("D53b: NL CompileResultBlock renders DryRunPanel below the Save CTA", () => {
+    // CompileResultBlock owns the Save form for NL mode; the
+    // Dry-run panel must appear inside the same Card so the
+    // operator's eye doesn't have to leave the result block. The
+    // button is enabled iff the compile passed (`canSave`).
+    expect(src).toContain("DryRunPanel")
+    expect(src).toMatch(
+      /canSave \? \(data\.ir as Record<string, unknown>\) : null/,
+    )
+  })
+
+  it("D53b: Guided Step6Review renders DryRunPanel with the derived draft", () => {
+    expect(src).toContain("buildGuidedDraftForDryRun")
+    // The panel only enables when the wizard has an id (would not
+    // pass save validation otherwise).
+    expect(src).toMatch(/disabled=\{!state\.id\}/)
+  })
+
+  it("D53b: Raw/Advanced mode passes a dryRunSlot to PolicyBuilder", () => {
+    // The slot receives the current draft + `isValid` and renders
+    // the DryRunPanel; the parent disables the button when the
+    // PolicyBuilder reports validation errors.
+    expect(src).toContain("dryRunSlot={")
+    expect(src).toMatch(/DryRunPanel[\s\S]*?ir=\{isValid \?/)
+  })
 })

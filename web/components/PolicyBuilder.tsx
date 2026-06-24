@@ -22,6 +22,14 @@ type Props = {
    * error tells them to enable it under /presets or use the prefix —
    * matches the backend 422 the cloud would return. */
   vendorSteps?: string[]
+  /** D53b: optional slot rendered below the save form, given the
+   * current draft + a "draft is clean enough to dry-run" flag (no
+   * blocking validation errors). The /policies/new Raw mode wires
+   * this to the DryRunPanel; other consumers can leave it unset. */
+  dryRunSlot?: (args: {
+    draft: PolicyDraft
+    isValid: boolean
+  }) => React.ReactNode
   labels: {
     irFields: string
     compiledPreview: string
@@ -49,6 +57,7 @@ type Props = {
 
 export default function PolicyBuilder({
   submitAction, initial, wiredSteps = [], vendorSteps = [], labels,
+  dryRunSlot,
 }: Props) {
   const [draft, setDraft] = useState<PolicyDraft>(initial ?? DEFAULT_DRAFT)
   const [submitted, setSubmitted] = useState(false)
@@ -322,6 +331,12 @@ export default function PolicyBuilder({
             </span>
           )}
         </div>
+
+        {/* D53b: optional Dry-run slot. The /policies/new Raw mode
+            wires this to the DryRunPanel; `isValid` lets the slot
+            disable its button when the draft would 422 on save
+            (which would 422 on dry-run too). */}
+        {dryRunSlot && dryRunSlot({ draft, isValid: errors.length === 0 })}
       </Card>
 
       <Card>

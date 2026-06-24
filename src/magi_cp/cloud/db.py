@@ -531,6 +531,39 @@ class LedgerRepo:
                 s.expunge(r)
             return rows
 
+    def list_recent_window(
+        self,
+        tenant_id: str,
+        *,
+        limit: int,
+        since_ts: int | None = None,
+    ) -> list[LedgerEntry]:
+        """D53b: most-recent N rows for a tenant inside an optional
+        time window. Ordered DESC by id so callers (the policy
+        dry-run replay) see newest first - matching the dashboard's
+        read order and giving deterministic `sample_matched`
+        selection without a post-fetch sort.
+
+        Unlike `list_recent_by_verifier` this method does NOT push a
+        step filter; the dry-run replay re-runs the proposed IR's
+        requires[] in Python against the row body, so a SQL-side
+        filter would prematurely narrow the window. `limit` is
+        clamped server-side at the route layer (cap=10_000) to keep
+        the replay bounded.
+        """
+        limit = max(1, int(limit))
+        with Session(self.engine) as s:
+            stmt = select(LedgerEntry).where(
+                LedgerEntry.tenant_id == tenant_id,
+            )
+            if since_ts is not None:
+                stmt = stmt.where(LedgerEntry.ts >= since_ts)
+            stmt = stmt.order_by(LedgerEntry.id.desc()).limit(limit)
+            rows = list(s.scalars(stmt))
+            for r in rows:
+                s.expunge(r)
+            return rows
+
     def counts_by_step(
         self,
         tenant_id: str,
