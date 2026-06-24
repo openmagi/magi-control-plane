@@ -33,6 +33,7 @@ import { Skeleton } from "@/components/ui/Skeleton"
 import { translate } from "@/lib/i18n/dict"
 import ChatTurn, { type QuestionVM } from "./ChatTurn"
 import ConvAuthoringGuide from "./ConvAuthoringGuide"
+import { decodeSeed } from "./handoff-seed"
 import IrDraftPane from "./IrDraftPane"
 
 type T = (
@@ -109,10 +110,16 @@ export interface ConversationalComposeProps {
    *  `nl=` query param here so the seed actually prefills the input
    *  instead of landing on an empty chat. Empty string = no seed. */
   initialUserMessage?: string
+  /** D57g: handoff seed forwarded from the wizard / raw editor's
+   *  "Continue in conversation" link. Base64-encoded JSON of
+   *  `{wizard_state, draft_ir, origin?}`. When present we POST to
+   *  /api/policies/handoff-context on mount and render the response as
+   *  the first assistant turn instead of the canned intro. */
+  initialSeed?: string
 }
 
 export function ConversationalCompose({
-  locale, saveAction, initialUserMessage,
+  locale, saveAction, initialUserMessage, initialSeed,
 }: ConversationalComposeProps) {
   const t: T = useMemo(
     () => (key, vars) => translate(locale, key, vars),
@@ -156,6 +163,80 @@ export function ConversationalCompose({
       if (abortRef.current) abortRef.current.abort()
     }
   }, [])
+
+  // D57g: seed-handling on mount. When a `?seed=` param is forwarded by
+  // the "Continue in conversation" link, decode it, POST to
+  // /api/policies/handoff-context, and mount the response as the FIRST
+  // assistant turn (replacing the canned intro). The seed-applied ref
+  // is consulted on every render so a remount (HMR, locale switch)
+  // never re-fires the handoff.
+  const seedAppliedRef = useRef(false)
+  useEffect(() => {
+    if (seedAppliedRef.current) return
+    if (!initialSeed) return
+    const decoded = decodeSeed(initialSeed)
+    if (!decoded) {
+      // Bad seed — silently fall through to the canned intro. The
+      // seed payload is opaque to the operator so surfacing a parse
+      // failure would be more confusing than helpful.
+      seedAppliedRef.current = true
+      return
+    }
+    seedAppliedRef.current = true
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    const myId = ++reqIdRef.current
+    setPending(true)
+    void (async () => {
+      try {
+        const res = await fetch("/api/policies/handoff-context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            wizard_state: decoded.wizard_state ?? null,
+            draft_ir: decoded.draft_ir ?? null,
+          }),
+        })
+        if (!mountedRef.current) return
+        if (myId !== reqIdRef.current) return
+        if (!res.ok) {
+          // Soft fall-through: render the canned intro instead so
+          // the operator can still author from scratch.
+          return
+        }
+        const data = await res.json() as {
+          assistant_message?: string
+          draft?: Record<string, unknown> | null
+          questions?: QuestionVM[]
+          ready_to_save?: boolean
+        }
+        if (!mountedRef.current) return
+        if (myId !== reqIdRef.current) return
+        const msg = typeof data.assistant_message === "string"
+          ? data.assistant_message : ""
+        const questions = Array.isArray(data.questions) ? data.questions : []
+        // Functional setter (matches the rest of the component) so an
+        // interleaved write does not clobber the seed turn.
+        setHistory((prev) =>
+          prev.length === 0
+            ? [{ role: "assistant", content: msg, questions }]
+            : prev,
+        )
+        setDraft(data.draft ?? null)
+        setReadyToSave(!!data.ready_to_save)
+      } catch (e) {
+        if ((e as { name?: string } | null)?.name === "AbortError") return
+        // Soft fall-through on any other error.
+      } finally {
+        if (mountedRef.current && myId === reqIdRef.current) {
+          setPending(false)
+        }
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSeed])
 
   // Autoscroll on new turns.
   useEffect(() => {

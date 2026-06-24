@@ -191,6 +191,34 @@ export type PolicyTrigger = {
   matcher: string
 }
 
+/** D57g: shape returned by `/policies/handoff-context`. Mirrors the
+ *  wire response from `/policies/compile-interactive` so the same
+ *  client-side mount path handles both. The `questions` array is the
+ *  canonical (server-rendered) prompt set for whatever is still
+ *  missing; the conversational client renders them as pills under the
+ *  first assistant turn.
+ */
+export type HandoffTurnQuestionOption = {
+  value: string
+  label: string
+  hint?: string
+}
+export type HandoffTurnQuestion = {
+  id: string
+  prompt: string
+  kind: "single_select" | "multi_select" | "text"
+  options: HandoffTurnQuestionOption[] | null
+  targets_field: string
+}
+export type HandoffTurnResponse = {
+  assistant_message: string
+  draft: Record<string, unknown> | null
+  missing_fields: string[]
+  questions: HandoffTurnQuestion[]
+  needs_more: boolean
+  ready_to_save: boolean
+}
+
 export type PolicyEvidenceReq = { step: string; verdict: string }
 
 /** Issue #1 P0 (#12): policies can be any of the 5 archetypes. The
@@ -609,6 +637,35 @@ export const cloud = {
    * calls listVerifiers() directly. */
   listPresets: async (): Promise<PresetEntry[]> => {
     return await cloud.listVerifiers()
+  },
+
+  /** D57g: "Continue in conversation" handoff seam.
+   *
+   * Accepts the wizard's URL state and / or the raw editor's IR draft
+   * and returns the same wire shape `step_compile` emits so the
+   * conversational client can mount it as the first assistant turn.
+   *
+   * Server-side seam; the dashboard's same-origin proxy at
+   * /api/policies/handoff-context is the canonical call site for the
+   * client component. Direct callers (a future server action that
+   * needs to compute a seeded turn before redirecting, for example)
+   * can use this wrapper to keep the admin key on the server.
+   */
+  handoffContext: async (input: {
+    wizard_state: Record<string, unknown> | null
+    draft_ir: Record<string, unknown> | null
+  }): Promise<HandoffTurnResponse> => {
+    return await _fetch<HandoffTurnResponse>(
+      "/policies/handoff-context",
+      {
+        method: "POST", keyType: "admin",
+        body: JSON.stringify({
+          wizard_state: input.wizard_state ?? null,
+          draft_ir: input.draft_ir ?? null,
+        }),
+        timeoutMs: 10_000,
+      },
+    )
   },
 
   /** Evidence-type catalog. Walks built-ins + steps referenced in

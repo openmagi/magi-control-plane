@@ -261,6 +261,12 @@ const KO_RAW = {
   "newPolicy.conv.error.upstream": "잠시 문제가 있었어요. 다시 보내 보세요.",
   "newPolicy.conv.retryLabel": "다시 시도",
 
+  /* ── D57g: handoff to conversational from any authoring screen ──── */
+  "newPolicy.handoff.continueInChat": "대화로 이어서 만들기",
+  "newPolicy.handoff.continueInChat.aria": "지금까지 입력한 내용을 대화형으로 이어서 만들기",
+  "newPolicy.handoff.loading": "지금까지 입력한 내용을 정리하는 중...",
+  "newPolicy.handoff.failed": "대화 모드로 옮기지 못했어요. 잠시 후 다시 시도해 주세요.",
+
   /* ── D57b: 대화형 작성 가이드 (접이식 안내 + 시작 프롬프트) ──── */
   "convGuide.header.title": "어떻게 쓰면 좋을까요?",
   "convGuide.header.subtitle": "예시 한 번 보고 시작하세요",
@@ -915,6 +921,11 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.conv.error.network": "Network hiccup. Try sending again in a moment.",
   "newPolicy.conv.error.upstream": "Something went wrong. Try sending again.",
   "newPolicy.conv.retryLabel": "Try again",
+
+  "newPolicy.handoff.continueInChat": "Continue in conversation",
+  "newPolicy.handoff.continueInChat.aria": "Continue what you have so far in conversational mode",
+  "newPolicy.handoff.loading": "Picking up where you left off...",
+  "newPolicy.handoff.failed": "Could not switch to conversational mode. Try again in a moment.",
 
   "convGuide.header.title": "What can I write?",
   "convGuide.header.subtitle": "Peek a few examples to get started",

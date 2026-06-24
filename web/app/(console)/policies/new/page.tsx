@@ -9,6 +9,7 @@ import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
+import HandoffLink from "./_components/HandoffLink"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -1871,6 +1872,8 @@ export default async function NewPolicyPage({
       {mode === "advanced" && (
         <AuthoringShell
           t={t}
+          locale={locale === "ko" ? "ko" : "en"}
+          handoffOrigin="advanced"
           modeTitle={t("newPolicy.mode.advancedAuthoring")}
           info={{
             tone: "warn",
@@ -1925,6 +1928,8 @@ export default async function NewPolicyPage({
       {mode === "conversational" && (
         <AuthoringShell
           t={t}
+          locale={locale === "ko" ? "ko" : "en"}
+          handoffOrigin="conversational"
           modeTitle={t("newPolicy.mode.conversational")}
           info={{
             tone: "info",
@@ -1946,6 +1951,7 @@ export default async function NewPolicyPage({
             locale={locale === "ko" ? "ko" : "en"}
             saveAction={saveCompiled}
             initialUserMessage={searchParams.nl ?? ""}
+            initialSeed={searchParams.seed ?? ""}
           />
         </AuthoringShell>
       )}
@@ -2178,11 +2184,16 @@ function ChoiceCard({
 /* ─── authoring shell ────────────────────────────────────────────── */
 
 function AuthoringShell({
-  t, modeTitle, info, children,
+  t, modeTitle, info, children, locale, handoffOrigin,
 }: {
   modeTitle: string
   info: { tone: "info" | "warn"; title: string; body: string }
   children: React.ReactNode
+  /** D57g: when set, render the "Continue in conversation" link in
+   *  the header chrome. Set to "conversational" to suppress (we are
+   *  already on the conversational page). */
+  locale?: "ko" | "en"
+  handoffOrigin?: "advanced" | "conversational"
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const infoCls = info.tone === "warn"
@@ -2200,6 +2211,17 @@ function AuthoringShell({
           </h1>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          {/* D57g: handoff to conversational. Suppressed when the
+           *  current mode IS conversational (no point linking to
+           *  ourselves). The link reads URL state on click so any
+           *  prefill that arrived via `?draft=` rides into the seed. */}
+          {handoffOrigin && handoffOrigin !== "conversational" && (
+            <HandoffLink
+              locale={locale ?? "en"}
+              origin={handoffOrigin}
+              testId="handoff-continue-in-chat-advanced"
+            />
+          )}
           <Link href="/policies/new" className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             {t("newPolicy.pickDifferent")}
@@ -2291,9 +2313,12 @@ function HiddenState({ state }: { state: WizardState }) {
 }
 
 function WizardHeader({
-  t, step, total,
+  t, step, total, locale,
 }: {
   step: number; total: number
+  /** D57g: forwarded to the HandoffLink so the chat label renders in
+   *  the operator's preferred language. */
+  locale: "ko" | "en"
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   return (
@@ -2304,28 +2329,39 @@ function WizardHeader({
           {t("newPolicy.pickDifferent")}
         </Link>
       </div>
-      <div className="flex items-center gap-2">
-        {Array.from({ length: total }).map((_, i) => {
-          const n = i + 1
-          const past = n < step
-          const current = n === step
-          return (
-            <span
-              key={n}
-              aria-hidden="true"
-              className={
-                current
-                  ? "h-2 w-6 rounded-full bg-[var(--color-accent)]"
-                  : past
-                    ? "h-2 w-2 rounded-full bg-[var(--color-accent)]/40"
-                    : "h-2 w-2 rounded-full bg-gray-300"
-              }
-            />
-          )
-        })}
-        <span className="ml-2 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] tabular-nums">
-          {step} / {total}
-        </span>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {Array.from({ length: total }).map((_, i) => {
+            const n = i + 1
+            const past = n < step
+            const current = n === step
+            return (
+              <span
+                key={n}
+                aria-hidden="true"
+                className={
+                  current
+                    ? "h-2 w-6 rounded-full bg-[var(--color-accent)]"
+                    : past
+                      ? "h-2 w-2 rounded-full bg-[var(--color-accent)]/40"
+                      : "h-2 w-2 rounded-full bg-gray-300"
+                }
+              />
+            )
+          })}
+          <span className="ml-2 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] tabular-nums">
+            {step} / {total}
+          </span>
+        </div>
+        {/* D57g: handoff link sits to the right of the step pips so it
+         *  is visible from every wizard step (1-6, including Step 6
+         *  review). Reads URL state at click time and forwards to
+         *  ?mode=conversational&seed=<...>. */}
+        <HandoffLink
+          locale={locale}
+          origin={step === 6 ? "review" : "guided"}
+          testId={`handoff-continue-in-chat-step${step}`}
+        />
       </div>
     </div>
   )
@@ -2513,7 +2549,7 @@ function GuidedWizard({
 
   return (
     <div className="max-w-2xl mx-auto">
-      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} />
+      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} locale={locale} />
 
       {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 2 && <Step2ToolScope t={t} locale={locale} state={state} action={advanceAction} />}

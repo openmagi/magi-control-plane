@@ -279,6 +279,25 @@ class InteractiveCompileReq(BaseModel):
         return v
 
 
+# D57g: handoff from wizard / raw editor → conversational. The body
+# is a snapshot of in-progress authoring state; the response is the
+# same wire shape `step_compile` emits so the conversational client
+# mounts it as a first assistant turn.
+class HandoffContextReq(BaseModel):
+    """Body for POST /policies/handoff-context.
+
+    Both fields are loose dicts at this pydantic boundary; the library
+    module's `build_handoff_turn` reuses the same sanitisers /
+    per-field allowlists `step_compile` does so a malicious client
+    cannot smuggle `gate_binary` or other archetype-specific fields
+    past the merge by stuffing them into the draft.
+    """
+    model_config = {"extra": "forbid"}
+
+    wizard_state: dict | None = None
+    draft_ir: dict | None = None
+
+
 # D53b: replay-against-last-24h dry-run authoring affordance.
 class DryRunReq(BaseModel):
     """POST /policies/dry-run body. Replays a draft IR over recent
@@ -778,6 +797,36 @@ def create_app(
             # LLM produced something that didn't parse as JSON — same
             # 422 as /policies/compile so the dashboard renders the same
             # actionable banner.
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/policies/handoff-context",
+              dependencies=[Depends(require_admin_key)])
+    async def policies_handoff_context(
+        req: "HandoffContextReq",
+    ) -> dict:
+        """D57g — handoff to conversational from any authoring screen.
+
+        Takes a snapshot of the wizard's URL state and / or the raw
+        editor's IR draft and returns the same wire shape
+        `step_compile` emits. The conversational client mounts the
+        response as the first assistant turn instead of the canned
+        intro, so the operator picks up where they left off in chat
+        form.
+
+        OFFLINE: no LLM call. The first real conversational turn (the
+        operator's reply to this seeded summary) runs through
+        `step_compile` as usual.
+        """
+        from ..policy.handoff_context import (
+            HandoffContextError, build_handoff_turn,
+        )
+        try:
+            return await asyncio.to_thread(
+                build_handoff_turn,
+                wizard_state=req.wizard_state,
+                draft_ir=req.draft_ir,
+            )
+        except HandoffContextError as e:
             raise HTTPException(422, str(e)) from e
 
     @app.post("/policies/dry-run", dependencies=[Depends(require_admin_key)])
