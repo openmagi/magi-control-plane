@@ -1,6 +1,6 @@
 import Link from "next/link"
 import {
-  cloud, displayPayloadHash, displaySubject, isLegacyHitlRow,
+  cloud,
   type HitlDetail,
 } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
@@ -106,20 +106,14 @@ export default async function HitlDetailPage({
       </p>
       <PageHeader title={t("hitl.detail.title", { id: detail.id })} />
 
-      {/* PR3: prefer canonical subject/payload_hash over legacy matter/doc_id.
-          When the row was written pre-PR3 (subject NULL but matter populated),
-          show "matter / doc" labels; otherwise show "subject / payload".
-          NEVER render empty-string legacy values as "(empty)" — hide them.
-          Column header strings + the "(legacy)" badge route through t() so
-          KO + EN both localise. */}
+      {/* PR4: canonical fields are the only ones on the wire. */}
       <Card className="mb-6">
         <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm m-0">
           {(() => {
-            const subj = displaySubject(detail)
-            const phash = displayPayloadHash(detail)
-            const legacy = isLegacyHitlRow(detail)
-            const subjLabel = t(legacy ? "hitl.col.matter" : "hitl.col.subject")
-            const phashLabel = t(legacy ? "hitl.col.doc" : "hitl.col.payload")
+            const subj = detail.subject
+            const phash = detail.payload_hash
+            const subjLabel = t("hitl.col.subject")
+            const phashLabel = t("hitl.col.payload")
             return <>
               {subj && (
                 <div>
@@ -128,11 +122,6 @@ export default async function HitlDetailPage({
                   </dt>
                   <dd className="inline">
                     <Code>{subj}</Code>
-                    {legacy && (
-                      <span className="ml-2 text-xs text-[var(--color-text-tertiary)]">
-                        {t("hitl.detail.legacyBadge")}
-                      </span>
-                    )}
                   </dd>
                 </div>
               )}
@@ -204,26 +193,16 @@ export default async function HitlDetailPage({
         </Card>
       )}
 
-      {/* PR3: heading + hint pick the canonical-subject variant for PR3+
-          rows ("Ledger context for <subject>") and the legacy variant for
-          pre-PR3 rows ("Ledger context for matter <matter>"). Both branches
-          are hidden when neither key is present — a row with no usable
-          identifier (degenerate orphan, post-PR4 stragglers) would render
-          a trailing-space "Ledger context for matter " otherwise. */}
+      {/* PR4: canonical-subject heading + hint. */}
       {(() => {
-        const subj = displaySubject(detail)
+        const subj = detail.subject
         if (!subj) return null
-        const legacy = isLegacyHitlRow(detail)
         return <>
           <h2 className="text-md font-semibold m-0 mb-2">
-            {legacy
-              ? t("hitl.detail.ledgerContext", { matter: subj })
-              : t("hitl.detail.ledgerContextSubject", { subject: subj })}
+            {t("hitl.detail.ledgerContextSubject", { subject: subj })}
           </h2>
           <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
-            {legacy
-              ? t("hitl.detail.ledgerHint")
-              : t("hitl.detail.ledgerHintSubject")}
+            {t("hitl.detail.ledgerHintSubject")}
           </p>
         </>
       })()}

@@ -98,7 +98,9 @@ describe("validateDraft", () => {
     expect(errs.find(e => e.field === "id")?.message).toMatch(/compiled/)
   })
 
-  it("D43: accepts sentinel without matter/doc_id named groups", () => {
+  it("D43: accepts sentinel without prescribed named groups", () => {
+    // PR1 dropped the matter/doc_id named-group requirement; the
+    // runtime no longer reads specific group names from sentinel_re.
     const errs = validateDraft({ ...DEFAULT_DRAFT, id: "x", sentinel_re: "FILE_\\w+" })
     expect(errs.find(e => e.field === "sentinel_re")).toBeUndefined()
   })

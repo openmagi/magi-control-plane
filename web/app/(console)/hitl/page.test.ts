@@ -3,78 +3,73 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * Source-level invariants for the HITL list page (issue #9 follow-on).
+ * Source-level invariants for the HITL list page.
  * Matches the project convention used by SidebarClient.test.ts +
  * NavItem.test.ts: we grep the rendered JSX/JS for the contract rather
- * than spinning up React Testing Library. The runtime behaviour (label
- * fallback for legacy vs PR3+ rows) is implied by which t() keys + which
- * helper calls appear in the source.
+ * than spinning up React Testing Library.
+ *
+ * PR4: legacy matter/doc display helpers + the "(legacy)" fallback path
+ * are removed (the DB drop migration refuses to run with NULL-subject
+ * rows, so the UI no longer needs a fallback branch).
  */
-describe("HITL list page label fallback (PR3)", () => {
+describe("HITL list page (PR4 canonical-only)", () => {
   const src = readFileSync(
     path.join(__dirname, "page.tsx"),
     "utf-8",
   )
 
-  it("imports the PR3 display helpers from @/lib/cloud", () => {
-    expect(src).toMatch(/displaySubject/)
-    expect(src).toMatch(/displayPayloadHash/)
-    expect(src).toMatch(/isLegacyHitlRow/)
+  it("does not import the retired PR3 display helpers", () => {
+    expect(src).not.toMatch(/displaySubject/)
+    expect(src).not.toMatch(/displayPayloadHash/)
+    expect(src).not.toMatch(/isLegacyHitlRow/)
   })
 
-  it("routes column labels through t() (no hardcoded English literals)", () => {
-    // The legacy-vs-canonical label flip lives in ItemCard. Both branches
-    // must use t() so KO users do not see English column headers mixed
-    // in (issue #6 follow-on, P2 list-page item).
-    expect(src).toMatch(/t\(legacy \? "hitl\.col\.matter" : "hitl\.col\.subject"\)/)
-    expect(src).toMatch(/t\(legacy \? "hitl\.col\.doc" : "hitl\.col\.payload"\)/)
-    // And the raw English literals must not survive in the JSX side —
-    // catches a refactor that re-introduced them.
-    expect(src).not.toMatch(/subjLabel = legacy \? "matter" : "subject"/)
-    expect(src).not.toMatch(/phashLabel = legacy \? "doc" : "payload"/)
+  it("uses canonical i18n keys for column labels", () => {
+    expect(src).toMatch(/hitl\.col\.subject/)
+    expect(src).toMatch(/hitl\.col\.payload/)
+    // Legacy "matter" / "doc" labels are gone — a refactor that
+    // re-introduces them would trip this guard.
+    expect(src).not.toMatch(/hitl\.col\.matter/)
+    expect(src).not.toMatch(/hitl\.col\.doc/)
   })
 
-  it("hides the subject/matter span when both column values are null", () => {
-    // `{subj && <span>…</span>}` — degenerate orphan rows render nothing
-    // rather than "subject: " with an empty Code element.
+  it("hides the subject/payload span when the value is missing", () => {
     expect(src).toMatch(/\{subj && \(/)
     expect(src).toMatch(/\{phash && \(/)
   })
 })
 
-describe("HITL detail page label fallback (PR3)", () => {
+describe("HITL detail page (PR4 canonical-only)", () => {
   const src = readFileSync(
     path.join(__dirname, "[id]", "page.tsx"),
     "utf-8",
   )
 
-  it("imports PR3 display helpers", () => {
-    expect(src).toMatch(/displaySubject/)
-    expect(src).toMatch(/displayPayloadHash/)
-    expect(src).toMatch(/isLegacyHitlRow/)
+  it("does not import the retired PR3 display helpers", () => {
+    expect(src).not.toMatch(/displaySubject/)
+    expect(src).not.toMatch(/displayPayloadHash/)
+    expect(src).not.toMatch(/isLegacyHitlRow/)
   })
 
-  it("uses i18n keys for column labels + legacy badge (issue #6)", () => {
-    expect(src).toMatch(/hitl\.col\.matter/)
+  it("uses canonical i18n keys for column labels", () => {
     expect(src).toMatch(/hitl\.col\.subject/)
-    expect(src).toMatch(/hitl\.col\.doc/)
     expect(src).toMatch(/hitl\.col\.payload/)
-    expect(src).toMatch(/hitl\.detail\.legacyBadge/)
+    expect(src).not.toMatch(/hitl\.col\.matter/)
+    expect(src).not.toMatch(/hitl\.col\.doc/)
+    // The "(legacy)" badge key is retired together with the legacy
+    // branch in the renderer.
+    expect(src).not.toMatch(/hitl\.detail\.legacyBadge/)
   })
 
-  it("picks the canonical-subject ledgerContext variant for PR3+ rows", () => {
-    // Issue #6: ledgerContextSubject + ledgerHintSubject for PR3 rows;
-    // ledgerContext + ledgerHint preserved for legacy rows.
+  it("uses the canonical-subject ledgerContext variant only", () => {
     expect(src).toMatch(/hitl\.detail\.ledgerContextSubject/)
     expect(src).toMatch(/hitl\.detail\.ledgerHintSubject/)
-    expect(src).toMatch(/hitl\.detail\.ledgerContext/)
-    expect(src).toMatch(/hitl\.detail\.ledgerHint/)
+    // Legacy (matter-bound) variants retired.
+    expect(src).not.toMatch(/hitl\.detail\.ledgerContext"/)
+    expect(src).not.toMatch(/hitl\.detail\.ledgerHint"/)
   })
 
-  it("hides the ledger-context heading when subject + matter are both missing", () => {
-    // P2 follow-on: avoid `Ledger context for matter ` with a trailing
-    // space + empty value on degenerate rows. The block guards on `subj`
-    // being truthy.
+  it("hides the ledger-context heading when subject is missing", () => {
     expect(src).toMatch(/if \(!subj\) return null/)
   })
 })

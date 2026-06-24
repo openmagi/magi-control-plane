@@ -73,7 +73,7 @@ def smoke_compile_end_to_end() -> None:
     nl = (
         "법원 filing 시 인용을 결정론으로 검증하고, "
         "검증 미통과 시 차단하라. "
-        "Bash 도구의 FILE_COURT_<matter>_<doc_id> 패턴에만 적용."
+        "Bash 도구의 FILE_COURT_<subject>_<payload_hash> 패턴에만 적용."
     )
     result = compile_with_review(
         compiler=compiler, reviewer=reviewer,

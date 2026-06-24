@@ -156,15 +156,16 @@ class Policy:
     description: str
     trigger: Trigger
     # D43 (issue #1, P1): sentinel_re is now Optional. Pre-D43 policies
-    # carried a sentinel pattern with `(?P<matter>...)_(?P<doc_id>...)`
-    # named groups so the legal-document workflow could extract the case
-    # + document identifiers from the tool payload at runtime. That's a
-    # vertical concern; a general-purpose "block rm -rf" or "audit Bash"
-    # policy has no matter/doc_id. Policies without sentinel_re now load
-    # cleanly; the runtime falls back to context-synthesized labels
-    # (PR2). Legacy policies WITH a sentinel_re still validate — the
-    # matter/doc_id named-group requirement is dropped so customers can
-    # use whatever group names suit their domain.
+    # carried a sentinel pattern with named groups like
+    # `(?P<matter>...)_(?P<doc_id>...)` so the legal-document workflow
+    # could extract the case + document identifiers from the tool payload
+    # at runtime. That's a vertical concern; a general-purpose "block
+    # rm -rf" or "audit Bash" policy has no subject / payload binding to
+    # extract. Policies without sentinel_re now load cleanly; the runtime
+    # falls back to context-synthesized (subject, payload_hash) labels
+    # via `_synth_subject_and_hash` in cloud/app.py. Legacy policies
+    # WITH a sentinel_re still validate — any named groups in the regex
+    # are fine; the runtime no longer reads specific group names.
     sentinel_re: str | None = None
     requires: list[EvidenceReq] = field(default_factory=list)
     action: ActionLiteral = "block"

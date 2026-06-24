@@ -131,10 +131,10 @@ interface WizardState {
 /* ─── IR + summary builders ───────────────────────────────────────── */
 
 // D43 (issue #1, P1): sentinel_re is no longer required in core IR.
-// The wizard previously auto-emitted a fake "GATE_(?P<matter>…)_(?P<doc_id>…)"
-// to satisfy the matter/doc_id named-group requirement that's now gone.
-// New policies are authored without sentinel_re. Raw mode still lets
-// legacy / domain customers carry a sentinel pattern explicitly.
+// The wizard previously auto-emitted a fake "GATE_(?P<subject>…)_(?P<payload_hash>…)"
+// to satisfy a named-group requirement that PR1 removed. New policies
+// are authored without sentinel_re. Raw mode still lets legacy / domain
+// customers carry a sentinel pattern explicitly.
 
 function deriveMatcher(s: WizardState): string {
   // pre_final has no tool scope (fires once on the final answer).
@@ -672,7 +672,7 @@ export default async function NewPolicyPage({
                 onMissing: "action",
                 sentinelRe: "sentinel_re",
                 sentinelReHint:
-                  "Python regex; must contain (?P<matter>…) and (?P<doc_id>…)",
+                  "Python regex; optional. Named groups are illustrative only — the runtime no longer reads specific group names.",
                 requires: "requires (evidence)",
                 addRequirement: "add requirement",
                 removeRequirement: t("policies.disable"),

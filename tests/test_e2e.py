@@ -81,11 +81,13 @@ def _gate(payload, capsys):
     return capsys.readouterr().out, exc.value.code
 
 
-def _emit_locally(client, *, matter, doc_id, citations, corpus):
+def _emit_locally(client, *, subject, payload_hash, citations, corpus):
     """Bypass the emit.py HTTP layer (it would need a real socket) — call
-    /citation_verify directly via TestClient and append result to WAL."""
+    /citation_verify directly via TestClient and append result to WAL.
+
+    PR4: canonical keys only (legacy matter/doc_id aliases removed)."""
     r = client.post("/citation_verify", json={
-        "matter": matter, "doc_id": doc_id, "document": "",
+        "subject": subject, "payload_hash": payload_hash, "document": "",
         "citations": citations, "corpus_override": corpus,
     }, headers=HEADERS).json()
     if r.get("token"):
@@ -98,7 +100,7 @@ def _emit_locally(client, *, matter, doc_id, citations, corpus):
 def test_e2e_fake_citation_denied(cloud, tmp_path, capsys):
     app, client = cloud
     _prime_pubkey_cache(client, tmp_path)
-    r = _emit_locally(client, matter="M1", doc_id="D1",
+    r = _emit_locally(client, subject="M1", payload_hash="D1",
                        citations=[VALID, FAKE], corpus=CORPUS)
     assert r["verdict"] == "deny"
     assert r["token"] is None
@@ -110,7 +112,7 @@ def test_e2e_fake_citation_denied(cloud, tmp_path, capsys):
 def test_e2e_misquote_review_approve_allow(cloud, tmp_path, capsys):
     app, client = cloud
     _prime_pubkey_cache(client, tmp_path)
-    r = _emit_locally(client, matter="M1", doc_id="D2",
+    r = _emit_locally(client, subject="M1", payload_hash="D2",
                        citations=[MISQUOTE], corpus=CORPUS)
     assert r["verdict"] == "review"
     assert r["token"] is None
@@ -137,7 +139,7 @@ def test_e2e_misquote_review_approve_allow(cloud, tmp_path, capsys):
 def test_e2e_doc_swap_blocked(cloud, tmp_path, capsys):
     app, client = cloud
     _prime_pubkey_cache(client, tmp_path)
-    r = _emit_locally(client, matter="M1", doc_id="D3",
+    r = _emit_locally(client, subject="M1", payload_hash="D3",
                        citations=[VALID], corpus=CORPUS)
     assert r["token"]
     out, _ = _gate(_hook_payload("echo FILE_COURT_M1_D4 other"), capsys)
@@ -148,11 +150,11 @@ def test_e2e_doc_swap_blocked(cloud, tmp_path, capsys):
 def test_e2e_ledger_chain_remains_ok_after_full_flow(cloud, tmp_path, capsys):
     app, client = cloud
     _prime_pubkey_cache(client, tmp_path)
-    _emit_locally(client, matter="M1", doc_id="D5", citations=[VALID], corpus=CORPUS)
-    r = _emit_locally(client, matter="M1", doc_id="D6", citations=[MISQUOTE], corpus=CORPUS)
+    _emit_locally(client, subject="M1", payload_hash="D5", citations=[VALID], corpus=CORPUS)
+    r = _emit_locally(client, subject="M1", payload_hash="D6", citations=[MISQUOTE], corpus=CORPUS)
     client.post(f"/hitl/{r['hitl_id']}/approve",
                 json={"approver": "p@x.example"}, headers=HITL_HEADERS)
-    _emit_locally(client, matter="M1", doc_id="D7", citations=[FAKE], corpus=CORPUS)
+    _emit_locally(client, subject="M1", payload_hash="D7", citations=[FAKE], corpus=CORPUS)
     led = client.get("/ledger", headers=HEADERS).json()
     assert led["chain_ok"] is True
     # Expect at least 4 entries: pass(D5) + review(D6) + approve(D6) + deny(D7).
@@ -169,7 +171,7 @@ def test_e2e_nli_advisory_in_hitl_payload(tmp_path, capsys):
     client = TestClient(app)
     _prime_pubkey_cache(client, tmp_path)
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "DN", "document": "",
+        "subject": "M1", "payload_hash": "DN", "document": "",
         "citations": [MISQUOTE], "corpus_override": CORPUS,
     }, headers=HEADERS).json()
     assert r["verdict"] == "review"

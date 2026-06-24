@@ -41,10 +41,10 @@ The on-disk layout is missing `<MAGI_CP_KEY_DIR>/ACTIVE`. Either run
 
 1. Check the sentinel regex actually matches:
    `echo "<your-cmd>" | grep -P "$(jq -r '.policy.sentinel_re' < policy.json)"`
-2. Check the WAL has a fresh token for the right `(matter, doc_id)`:
+2. Check the WAL has a fresh token for the right `(subject, payload_hash)`:
    `ls -la $HOME/.magi-cp/local/tokens/`
 3. Token may be expired (TTL is 600s by default). Re-emit:
-   `magi-cp emit --matter M1 --doc-id D1 …`
+   `magi-cp emit --subject S1 --payload-hash P1 …`
 
 ### Bash command runs without consulting the gate
 

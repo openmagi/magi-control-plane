@@ -113,11 +113,11 @@ The gate runs **out of loop** — Claude Code doesn't know it's being
 governed. Every `Bash` tool call:
 
 1. Claude Code calls the registered PreToolUse hook (`magi-gate.sh`).
-2. The hook reads the command on stdin; sentinel matcher (`FILE_COURT_<matter>_<doc>`)
+2. The hook reads the command on stdin; sentinel matcher (`FILE_COURT_<subject>_<payload_hash>`)
    determines whether policy applies.
 3. If the command is a sentinel, the hook looks at the local WAL
-   (`~/.magi-cp/local/wal.jsonl`) for a verifier token bound to `(matter, doc)`
-   issued by the cloud after `citation_verify=pass`.
+   (`~/.magi-cp/local/wal.jsonl`) for a verifier token bound to
+   `(subject, payload_hash)` issued by the cloud after `citation_verify=pass`.
 4. Token present + signature valid (Ed25519, key cached locally with kid pinning)
    → exit 0 = allow.
 5. Token missing / stale / wrong-kid → JSON deny on stdout = Claude Code

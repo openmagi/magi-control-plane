@@ -77,13 +77,12 @@ async function _fetch<T>(
 
 export type HitlDetail = {
   id: number
-  // PR3: matter/doc_id are nullable on the wire — legacy rows (pre-PR3)
-  // have them populated and subject/payload_hash NULL; PR3+ rows have
-  // both pairs populated to the same value (double-write window).
-  matter: string | null
-  doc_id: string | null
-  subject: string | null
-  payload_hash: string | null
+  // PR4: canonical keying only. Legacy `matter` / `doc_id` columns were
+  // dropped from the DB (see scripts/migrate_pr4_drop_legacy.py) and
+  // removed from the wire. `subject` / `payload_hash` are non-null
+  // because the PR4 cut-over refuses to run with any NULL-subject row.
+  subject: string
+  payload_hash: string
   reason: string
   payload: HitlItem["payload"]
   status: "pending" | "approved" | "rejected"
@@ -99,11 +98,9 @@ export type HitlDetail = {
 
 export type HitlItem = {
   id: number
-  // PR3: see HitlDetail.matter for the nullability rationale.
-  matter: string | null
-  doc_id: string | null
-  subject: string | null
-  payload_hash: string | null
+  // PR4: see HitlDetail.subject — canonical-only.
+  subject: string
+  payload_hash: string
   reason: string
   payload: { citations?: Array<{
     ref: string
@@ -115,35 +112,12 @@ export type HitlItem = {
   ts_created: number
 }
 
-/** PR3: prefer the canonical `subject` column over legacy `matter`.
- * Returns null only when both are NULL (shouldn't happen for live rows). */
-export function displaySubject(
-  row: { subject?: string | null; matter?: string | null },
-): string | null {
-  return row.subject ?? row.matter ?? null
-}
-
-/** PR3: prefer the canonical `payload_hash` column over legacy `doc_id`. */
-export function displayPayloadHash(
-  row: { payload_hash?: string | null; doc_id?: string | null },
-): string | null {
-  return row.payload_hash ?? row.doc_id ?? null
-}
-
-/** PR3: true if the row was written before PR3 (canonical columns NULL,
- * legacy populated). Lets the UI label the row "(legacy)" so reviewers
- * know the subject string is a legal-vertical matter id, not a generic
- * subject identifier. */
-export function isLegacyHitlRow(
-  row: { subject?: string | null; matter?: string | null },
-): boolean {
-  return (row.subject == null) && (row.matter != null)
-}
-
 export type LedgerEntry = {
   id: number
   ts: number
-  matter: string
+  // PR4: canonical wire field. The underlying DB column is still named
+  // `matter` (deeper rename deferred) but the surface is canonical.
+  subject: string
   prev: string
   h: string
   body?: Record<string, unknown>
@@ -256,12 +230,17 @@ export const cloud = {
       body: JSON.stringify({ nl, prior_turns: priorTurns ?? null }),
     }),
 
-  /** Generic verifier dispatch. produces a signed token on pass/review. */
+  /** Generic verifier dispatch. produces a signed token on pass/review.
+   *
+   * PR4: canonical fields only. Legacy `matter` / `doc_id` aliases have
+   * been removed from the cloud's request schema (`extra="forbid"` 422s
+   * unknown keys), so this client sends `subject` / `payload_hash`
+   * directly. */
   verifyDispatch: (
     step: string,
     payload: Record<string, unknown>,
-    matter?: string,
-    docId?: string,
+    subject?: string,
+    payloadHash?: string,
   ): Promise<{
     verdict: "pass" | "review" | "deny" | "error";
     token: string | null;
@@ -275,8 +254,8 @@ export const cloud = {
       method: "POST", keyType: "api",
       body: JSON.stringify({
         payload,
-        matter: matter ?? "dashboard",
-        doc_id: docId ?? "dashboard",
+        subject: subject ?? "dashboard",
+        payload_hash: payloadHash ?? "dashboard",
       }),
     }),
 

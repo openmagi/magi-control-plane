@@ -4,8 +4,8 @@ Two surfaces:
 
   1. structlog JSON logger — `get_logger(name)` returns a structlog logger
      that emits one JSON object per record to stderr. Fields like tenant_id,
-     kid, matter, doc_id are added via bind() at call sites so log aggregators
-     can index them.
+     kid, subject, payload_hash are added via bind() at call sites so log
+     aggregators can index them.
 
   2. Prometheus metrics — counters + histograms exposed at GET /metrics.
      Cheap to emit, no auth (operator-facing only; never exposed publicly).

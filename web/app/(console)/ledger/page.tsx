@@ -63,7 +63,7 @@ export default async function LedgerPage({
                   <tr>
                     <th>{t("ledger.col.id")}</th>
                     <th>{t("ledger.col.ts")}</th>
-                    <th>{t("ledger.col.matter")}</th>
+                    <th>{t("ledger.col.subject")}</th>
                     <th>{t("ledger.col.prev")}</th>
                     <th>{t("ledger.col.h")}</th>
                   </tr>
@@ -75,7 +75,7 @@ export default async function LedgerPage({
                       <td className="text-[var(--color-text-tertiary)]">
                         {fmtUtc(e.ts)}
                       </td>
-                      <td><Code>{e.matter}</Code></td>
+                      <td><Code>{e.subject}</Code></td>
                       <td>
                         <Code title={e.prev}>
                           {e.prev ? e.prev.slice(0, 12) + "…" : "∅"}

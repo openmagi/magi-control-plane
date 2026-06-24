@@ -47,7 +47,7 @@ curl http://127.0.0.1:8787/presets | jq '.presets | length'   # 38+ entries
 curl -s -X POST http://127.0.0.1:8787/policies/compile \
   -H "X-Admin-Api-Key: $MAGI_CP_ADMIN_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"nl": "Block bash commands matching FILE_COURT_<matter>_<doc_id> when citation_verify has not passed."}' \
+  -d '{"nl": "Block bash commands matching FILE_COURT_<subject>_<payload_hash> when citation_verify has not passed."}' \
   | jq '{ir, review, schema_issues}'
 ```
 
@@ -101,8 +101,8 @@ echo FILE_COURT_M1_D1 motion.pdf
 
 Without a token: the gate calls /citation_verify with empty citations →
 deny → CC blocks the command. With a valid token in WAL (`magi-cp emit
---matter M1 --doc-id D1 --citations '[…]' --corpus-override '{…}'`): pass
-→ token cached → gate allows.
+--subject M1 --payload-hash D1 --citations '[…]' --corpus-override '{…}'`):
+pass → token cached → gate allows.
 
 ## 5. Inspect the audit trail
 
@@ -112,8 +112,8 @@ curl -s http://127.0.0.1:8787/ledger \
 ```
 
 The hash chain returns `chain_ok: true` over the full history. Each entry
-records the matter, doc_id, verdict, and a signed token (when one was
-issued).
+records the subject, payload_hash, verdict, and a signed token (when one
+was issued).
 
 ## Next steps
 

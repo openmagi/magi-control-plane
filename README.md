@@ -91,7 +91,7 @@ curl -s -X PUT http://127.0.0.1:8787/policies/legal-filing/v1 \
       "id": "legal-filing/v1", "version": "0.1",
       "description": "Korean legal filing",
       "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
-      "sentinel_re": "FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
+      "sentinel_re": "FILE_COURT_(?P<subject>[A-Za-z0-9]+)_(?P<payload_hash>[A-Za-z0-9]+)",
       "requires": [{"step": "citation_verify", "verdict": "pass"}],
       "on_missing": "deny", "on_signature_invalid": "deny"
     },
@@ -117,7 +117,7 @@ curl -s -X POST http://127.0.0.1:8787/policies/compile \
 ```bash
 curl -s -X POST http://127.0.0.1:8787/verify/privilege_scan \
   -H "X-Api-Key: $MAGI_CP_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"payload": {"text": "[CONFIDENTIAL DRAFT] do not file yet"}, "matter": "M1", "doc_id": "D1"}' \
+  -d '{"payload": {"text": "[CONFIDENTIAL DRAFT] do not file yet"}, "subject": "S1", "payload_hash": "P1"}' \
   | jq '{verdict, reasons, token}'
 ```
 
@@ -137,7 +137,7 @@ Verdicts: `pass` → token issued; `deny` → no token (ledger records); `review
 
 ## CLI surface (after `pip install -e .`)
 - `magi-cp gate` — PreToolUse hook reader (stdin JSON in, exit + JSON out)
-- `magi-cp emit --matter --doc-id …` — request citation_verify, cache in WAL
+- `magi-cp emit --subject --payload-hash …` — request citation_verify, cache in WAL
 - `magi-cp await-approval --hitl-id N` — poll until HITL decides, write token to WAL
 - `magi-cp compile <policy.json> <out.json>` — Policy IR → managed-settings
 - `magi-cp cloud` — run FastAPI cloud server (registry-wired)
@@ -204,10 +204,10 @@ make cloud-dev
 
 # 4. Test the bash-gate pipeline against a fake corpus
 export MAGI_CP_API_KEY=$(uuidgen)
-magi-cp emit --matter M1 --doc-id D1 \
+magi-cp emit --subject S1 --payload-hash P1 \
   --quote "test quote text" --ref "test ref" \
   --corpus-override '{"X":"test quote text body"}'
-# Then trigger a PreToolUse hook with FILE_COURT_M1_D1 in the command —
+# Then trigger a PreToolUse hook with FILE_COURT_S1_P1 in the command —
 # the gate reads the WAL token and ALLOWs. Without it: DENY.
 ```
 

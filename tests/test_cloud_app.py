@@ -3,6 +3,10 @@
 Uses TestClient + in-memory SQLite + temp keystore. Verifies the full
 loop: /pubkey → /citation_verify (pass → token issued, deny → no token,
 review → HITL enqueued → /hitl/approve → token issued) → /ledger.
+
+PR4: legacy `matter` / `doc_id` request aliases removed (cloud rejects
+unknown fields with 422); only `subject` + `payload_hash` accepted on
+the wire; tokens carry the canonical pair only.
 """
 import time
 
@@ -63,7 +67,7 @@ def test_pubkey_returns_pem(client):
 # ── /citation_verify: verdict=pass → 토큰 발행 ───────────────────────
 def test_citation_verify_pass_issues_signed_token(app, client):
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D1", "document": "",
+        "subject": "S1", "payload_hash": "P1", "document": "",
         "citations": [VALID_CITE],
         "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
@@ -75,15 +79,18 @@ def test_citation_verify_pass_issues_signed_token(app, client):
     pub = KeyStore(dir=app.state.keystore.dir).load_public()
     body = verify_token(data["token"], pub)
     assert body is not None
-    assert body["matter"] == "M1"
-    assert body["doc_hash"] == "D1"
+    assert body["subject"] == "S1"
+    assert body["payload_hash"] == "P1"
     assert body["verdict"] == "pass"
+    # PR4: legacy mirror fields removed from token body.
+    assert "matter" not in body
+    assert "doc_hash" not in body
 
 
 # ── /citation_verify: verdict=deny → 토큰 미발행 ─────────────────────
 def test_citation_verify_deny_no_token(client):
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D2", "document": "",
+        "subject": "S1", "payload_hash": "P2", "document": "",
         "citations": [FAKE_CITE],
         "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
@@ -95,7 +102,7 @@ def test_citation_verify_deny_no_token(client):
 # ── /citation_verify: review → HITL 등록, 토큰 미발행 ────────────────
 def test_citation_verify_review_enqueues_hitl(client):
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D3", "document": "",
+        "subject": "S1", "payload_hash": "P3", "document": "",
         "citations": [MISQUOTE_CITE],
         "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
@@ -108,7 +115,7 @@ def test_citation_verify_review_enqueues_hitl(client):
 # ── HITL approve → 토큰 발행 ─────────────────────────────────────────
 def test_hitl_approve_issues_token(app, client):
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D4", "document": "",
+        "subject": "S1", "payload_hash": "P4", "document": "",
         "citations": [MISQUOTE_CITE],
         "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
@@ -119,7 +126,7 @@ def test_hitl_approve_issues_token(app, client):
     assert data["token"]
     pub = KeyStore(dir=app.state.keystore.dir).load_public()
     body = verify_token(data["token"], pub)
-    assert body and body["matter"] == "M1" and body["doc_hash"] == "D4"
+    assert body and body["subject"] == "S1" and body["payload_hash"] == "P4"
     # ledger에 2 entries (1 review log + 1 approved)
     led = client.get("/ledger", headers=HEADERS).json()
     assert len(led["entries"]) == 2
@@ -127,7 +134,7 @@ def test_hitl_approve_issues_token(app, client):
 
 def test_hitl_reject_no_token(client):
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D5", "document": "",
+        "subject": "S1", "payload_hash": "P5", "document": "",
         "citations": [MISQUOTE_CITE],
         "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
@@ -140,11 +147,11 @@ def test_hitl_reject_no_token(client):
 # ── ledger: hash-chain + tamper detection ────────────────────────────
 def test_ledger_chain_verifies(client):
     client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D6", "document": "",
+        "subject": "S1", "payload_hash": "P6", "document": "",
         "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
     client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "D7", "document": "",
+        "subject": "S1", "payload_hash": "P7", "document": "",
         "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
     led = client.get("/ledger", headers=HEADERS).json()
@@ -155,7 +162,7 @@ def test_ledger_chain_verifies(client):
 def test_token_has_short_expiry(app, client):
     """라이선스 만료 = 토큰 만료 = fail-closed. exp는 짧아야 함(<= 1h)."""
     r = client.post("/citation_verify", json={
-        "matter": "M1", "doc_id": "DX", "document": "",
+        "subject": "S1", "payload_hash": "PX", "document": "",
         "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
     }, headers=HEADERS)
     pub = KeyStore(dir=app.state.keystore.dir).load_public()
@@ -164,9 +171,60 @@ def test_token_has_short_expiry(app, client):
 
 
 # ── invalid input ────────────────────────────────────────────────────
-def test_citation_verify_rejects_missing_matter(client):
-    r = client.post("/citation_verify", json={"doc_id": "D", "citations": []}, headers=HEADERS)
+def test_citation_verify_rejects_missing_subject(client):
+    r = client.post("/citation_verify", json={"payload_hash": "P",
+                                                "citations": []}, headers=HEADERS)
     assert r.status_code == 422
+
+
+# ── PR4: legacy fields now rejected at the boundary ─────────────────
+class TestPr4LegacyFieldsRejected:
+    """PR4 dropped the legacy `matter` / `doc_id` aliases. Requests that
+    still carry the old field names must surface as a clean 422 (via
+    pydantic's `extra="forbid"`) rather than a silent accept."""
+
+    def test_citation_verify_rejects_legacy_matter(self, client):
+        r = client.post("/citation_verify", json={
+            "matter": "M1", "doc_id": "D1", "document": "",
+            "citations": [VALID_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        assert r.status_code == 422
+
+    def test_citation_verify_rejects_legacy_only_matter(self, client):
+        r = client.post("/citation_verify", json={
+            "subject": "S1", "payload_hash": "P", "matter": "M1",
+            "document": "", "citations": [VALID_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        assert r.status_code == 422
+
+    def test_verify_dispatch_rejects_legacy(self, tmp_path):
+        from magi_cp.verifier.builtins import register_builtins
+        from magi_cp.verifier.protocol import VerifierRegistry
+        ks = KeyStore(dir=str(tmp_path / "keys"))
+        reg = VerifierRegistry()
+        register_builtins(reg)
+        app = create_app(keystore=ks, dsn="sqlite:///:memory:",
+                         verifier_registry=reg)
+        c = TestClient(app)
+        r = c.post(
+            "/verify/privilege_scan",
+            headers=HEADERS,
+            json={"payload": {"text": "x"},
+                  "matter": "M", "doc_id": "D"},
+        )
+        assert r.status_code == 422
+
+    def test_verify_inline_rejects_legacy(self, client):
+        r = client.post(
+            "/verify_inline",
+            headers=HEADERS,
+            json={"kind": "regex", "pattern": "x",
+                  "payload": {"text": "x"},
+                  "matter": "M", "doc_id": "D"},
+        )
+        assert r.status_code == 422
 
 
 def test_hitl_decide_unknown_id_404(client):
@@ -180,7 +238,7 @@ class TestAuthRequired:
 
     def test_citation_verify_without_api_key_401(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D", "citations": []})
+            "subject": "S1", "payload_hash": "P", "citations": []})
         assert r.status_code == 401
 
     def test_ledger_without_api_key_401(self, client):
@@ -201,13 +259,14 @@ class TestAuthRequired:
         """
         monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
         c = TestClient(app)
-        r = c.post("/citation_verify", json={"matter": "M", "doc_id": "D", "citations": []},
+        r = c.post("/citation_verify",
+                   json={"subject": "S", "payload_hash": "P", "citations": []},
                    headers={"X-Api-Key": "anything"})
         assert r.status_code == 401
 
     def test_wrong_key_401(self, client):
         r = client.post("/citation_verify",
-                        json={"matter": "M1", "doc_id": "D", "citations": []},
+                        json={"subject": "S1", "payload_hash": "P", "citations": []},
                         headers={"X-Api-Key": "WRONG"})
         assert r.status_code == 401
 
@@ -217,21 +276,21 @@ class TestRequestSize:
 
     def test_too_many_citations_422(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D",
+            "subject": "S1", "payload_hash": "P",
             "citations": [{"quote": "x", "ref": "y"}] * 51,
         }, headers=HEADERS)
         assert r.status_code == 422
 
     def test_quote_too_long_422(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D",
+            "subject": "S1", "payload_hash": "P",
             "citations": [{"quote": "x" * 10000, "ref": "y"}],
         }, headers=HEADERS)
         assert r.status_code == 422
 
-    def test_matter_disallows_path_chars(self, client):
+    def test_subject_disallows_path_chars(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "../etc/passwd", "doc_id": "D",
+            "subject": "../etc/passwd", "payload_hash": "P",
             "citations": []}, headers=HEADERS)
         assert r.status_code == 422
 
@@ -249,7 +308,7 @@ class TestLedgerHardening:
     def _seed(self, client, n=3):
         for i in range(n):
             client.post("/citation_verify", json={
-                "matter": "M1", "doc_id": f"D{i}", "citations": [VALID_CITE],
+                "subject": "S1", "payload_hash": f"P{i}", "citations": [VALID_CITE],
                 "corpus_override": {"2018도13694": SRC_307},
             }, headers=HEADERS)
 
@@ -258,8 +317,8 @@ class TestLedgerHardening:
         r = client.get("/ledger", headers=HEADERS).json()
         assert "body" not in r["entries"][0]
         assert "token" not in r["entries"][0]
-        # Identifying fields still present
-        assert "h" in r["entries"][0] and "matter" in r["entries"][0]
+        # Identifying fields still present (PR4 wire: `subject`).
+        assert "h" in r["entries"][0] and "subject" in r["entries"][0]
 
     def test_ledger_include_body_flag(self, client):
         self._seed(client, 1)
@@ -284,7 +343,7 @@ class TestTokenKid:
 
     def test_issued_token_has_kid(self, app, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D", "citations": [VALID_CITE],
+            "subject": "S1", "payload_hash": "P", "citations": [VALID_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS).json()
         pub = KeyStore(dir=app.state.keystore.dir).load_public()
@@ -304,29 +363,30 @@ class TestChainRace:
     def test_serial_appends_keep_chain_ok(self, client):
         for i in range(10):
             client.post("/citation_verify", json={
-                "matter": "M1", "doc_id": f"R{i}", "citations": [VALID_CITE],
+                "subject": "S1", "payload_hash": f"R{i}", "citations": [VALID_CITE],
                 "corpus_override": {"2018도13694": SRC_307},
             }, headers=HEADERS)
         led = client.get("/ledger", headers=HEADERS).json()
         assert led["chain_ok"] is True
 
 
-class TestDocHashBinding:
-    """Round-2 review: document supplied → doc_id must equal sha256(document)[:32]."""
+class TestPayloadHashBinding:
+    """Round-2 review: document supplied → payload_hash must equal
+    sha256(document)[:32]."""
 
-    def test_document_with_wrong_doc_id_400(self, client):
+    def test_document_with_wrong_payload_hash_400(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "WRONG_HASH", "document": "real content",
+            "subject": "S1", "payload_hash": "WRONG_HASH", "document": "real content",
             "citations": [], "corpus_override": {}}, headers=HEADERS)
         assert r.status_code == 400
-        assert "doc_id" in r.json()["detail"]
+        assert "payload_hash" in r.json()["detail"]
 
-    def test_document_with_correct_doc_id_passes(self, client):
+    def test_document_with_correct_payload_hash_passes(self, client):
         import hashlib
         text = "actual document content"
         correct_id = hashlib.sha256(text.encode()).hexdigest()[:32]
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": correct_id, "document": text,
+            "subject": "S1", "payload_hash": correct_id, "document": text,
             "citations": [VALID_CITE], "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
         assert r.status_code == 200
@@ -341,7 +401,8 @@ class Test503Redact:
         enumeration would let a probe map the configuration surface."""
         monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
         c = TestClient(app)
-        r = c.post("/citation_verify", json={"matter": "M", "doc_id": "D", "citations": []},
+        r = c.post("/citation_verify",
+                   json={"subject": "S", "payload_hash": "P", "citations": []},
                    headers={"X-Api-Key": "x"})
         assert r.status_code in (401, 503)   # fail-closed; either is correct
         assert "MAGI_CP" not in r.text
@@ -356,7 +417,7 @@ class TestRateLimit:
         got_429 = False
         for _ in range(200):
             r = client.post("/citation_verify", json={
-                "matter": "M1", "doc_id": "D", "citations": []}, headers=HEADERS)
+                "subject": "S1", "payload_hash": "P", "citations": []}, headers=HEADERS)
             if r.status_code == 429:
                 got_429 = True; break
         assert got_429, "rate limiter must engage under burst"
@@ -371,11 +432,11 @@ class TestUniquePrev:
         from sqlalchemy.orm import Session
         from sqlalchemy.exc import IntegrityError
         led = LedgerRepo(app.state.engine)
-        e1 = led.append(matter="M1", body={"x": 1}, token="t1")
+        e1 = led.append(subject="S1", body={"x": 1}, token="t1")
         # Try inserting another entry with the same prev as e1 (="") — should fail.
         with Session(app.state.engine) as s:
             forced = LedgerEntry(
-                ts=1, matter="M1", prev="", body={"x": 2}, token="t2",
+                ts=1, matter="S1", prev="", body={"x": 2}, token="t2",
                 h=_chain_hash("", {"x": 2}, "t2"),
             )
             s.add(forced)
@@ -397,15 +458,18 @@ class TestHitlDetail:
 
     def test_detail_returns_payload_and_ledger_context(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D9", "document": "",
+            "subject": "S1", "payload_hash": "P9", "document": "",
             "citations": [MISQUOTE_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
         hitl_id = r.json()["hitl_id"]
         d = client.get(f"/hitl/{hitl_id}/detail", headers=HITL_HEADERS).json()
         assert d["id"] == hitl_id
-        assert d["matter"] == "M1"
-        assert d["doc_id"] == "D9"
+        assert d["subject"] == "S1"
+        assert d["payload_hash"] == "P9"
+        # PR4: legacy fields are no longer surfaced.
+        assert "matter" not in d
+        assert "doc_id" not in d
         assert d["status"] == "pending"
         assert d["payload"]["citations"][0]["ref"] == MISQUOTE_CITE["ref"]
         ctx = d["ledger_context"]
@@ -424,7 +488,7 @@ class TestNliIntegration:
         app = create_app(keystore=ks, dsn="sqlite:///:memory:", nli_classifier=_Stub())
         client = TestClient(app)
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D", "document": "",
+            "subject": "S1", "payload_hash": "P", "document": "",
             "citations": [MISQUOTE_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
@@ -439,7 +503,7 @@ class TestNliIntegration:
 
     def test_review_payload_no_nli_when_classifier_absent(self, client):
         r = client.post("/citation_verify", json={
-            "matter": "M1", "doc_id": "D", "document": "",
+            "subject": "S1", "payload_hash": "P", "document": "",
             "citations": [MISQUOTE_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
@@ -449,170 +513,80 @@ class TestNliIntegration:
         assert "nli_label" not in target["payload"]["citations"][0]
 
 
-class TestPr3HitlKeyingSurface:
-    """PR3: HITL endpoints surface both canonical (subject/payload_hash)
-    and legacy (matter/doc_id) names. The schema PR3 adds canonical
-    columns to the table — the API previously echoed `matter` into
-    `subject` (PR2 alias); now each pair comes from its own column.
-    """
+class TestPr4HitlSurface:
+    """PR4: HITL list / detail endpoints expose ONLY canonical names
+    (subject + payload_hash). The legacy `matter` / `doc_id` keys are
+    gone from the wire and from the DB columns."""
 
-    def test_list_returns_subject_and_matter_for_pr3_row(self, client):
-        # New row goes via /citation_verify which calls hitl.enqueue with
-        # subject + payload_hash (post-PR3). Both columns get the same value.
+    def test_list_returns_canonical_keys_only(self, client):
         r = client.post("/citation_verify", json={
-            "subject": "session_pr3", "payload_hash": "a" * 32, "document": "",
+            "subject": "session_pr4", "payload_hash": "a" * 32, "document": "",
             "citations": [MISQUOTE_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
         hitl_id = r.json()["hitl_id"]
         items = client.get("/hitl", headers=HITL_HEADERS).json()["items"]
         target = next(i for i in items if i["id"] == hitl_id)
-        assert target["subject"] == "session_pr3"
+        assert target["subject"] == "session_pr4"
         assert target["payload_hash"] == "a" * 32
-        # Legacy fields mirror the same value (double-write).
-        assert target["matter"] == "session_pr3"
-        assert target["doc_id"] == "a" * 32
+        # Legacy keys are NOT surfaced.
+        assert "matter" not in target
+        assert "doc_id" not in target
 
-    def test_detail_returns_subject_and_matter_for_pr3_row(self, client):
+    def test_detail_returns_canonical_keys_only(self, client):
         r = client.post("/citation_verify", json={
-            "subject": "session_detail", "payload_hash": "b" * 32, "document": "",
+            "subject": "session_detail_pr4", "payload_hash": "b" * 32, "document": "",
             "citations": [MISQUOTE_CITE],
             "corpus_override": {"2018도13694": SRC_307},
         }, headers=HEADERS)
         hitl_id = r.json()["hitl_id"]
         d = client.get(f"/hitl/{hitl_id}/detail", headers=HITL_HEADERS).json()
-        assert d["subject"] == "session_detail"
+        assert d["subject"] == "session_detail_pr4"
         assert d["payload_hash"] == "b" * 32
-        assert d["matter"] == "session_detail"
-        assert d["doc_id"] == "b" * 32
+        assert "matter" not in d
+        assert "doc_id" not in d
 
-    def test_detail_falls_back_to_legacy_when_subject_null(self, app, client):
-        """A row written before PR3 has subject NULL but matter populated.
-        The detail endpoint surfaces the legacy values verbatim under
-        matter/doc_id (subject/payload_hash are NULL — dashboards detect
-        this and label "(legacy)").
-        """
-        from magi_cp.cloud.db import HitlItem
-        from sqlalchemy.orm import Session
-        with Session(app.state.engine) as s:
-            legacy = HitlItem(
-                ts_created=0, tenant_id="default",
-                matter="LEG_M", doc_id="LEG_D",
-                subject=None, payload_hash=None,
-                reason="legacy_test", payload={"citations": []},
-            )
-            s.add(legacy); s.commit(); s.refresh(legacy)
-            row_id = legacy.id
-        d = client.get(f"/hitl/{row_id}/detail", headers=HITL_HEADERS).json()
-        assert d["matter"] == "LEG_M"
-        assert d["doc_id"] == "LEG_D"
-        assert d["subject"] is None
-        assert d["payload_hash"] is None
-
-    def test_approve_resolves_keying_for_legacy_row(self, app, client):
-        """Approve of a legacy row issues a token bound to the legacy
-        matter/doc_id values (since subject is NULL, fall back kicks in)."""
-        from magi_cp.cloud.db import HitlItem
-        from sqlalchemy.orm import Session
-        with Session(app.state.engine) as s:
-            legacy = HitlItem(
-                ts_created=0, tenant_id="default",
-                matter="LEG_APPROVE", doc_id="LEG_DOC",
-                subject=None, payload_hash=None,
-                reason="legacy", payload={"citations": []},
-            )
-            s.add(legacy); s.commit(); s.refresh(legacy)
-            row_id = legacy.id
-        a = client.post(f"/hitl/{row_id}/approve",
-                         json={"approver": "partner@firm.example", "note": "OK"},
+    def test_reject_writes_ledger_entry_canonical_only(self, app, client):
+        """Reject route's ledger entry carries only canonical keys."""
+        r = client.post("/citation_verify", json={
+            "subject": "S_REJ", "payload_hash": "P_REJ", "document": "",
+            "citations": [MISQUOTE_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        hitl_id = r.json()["hitl_id"]
+        a = client.post(f"/hitl/{hitl_id}/reject",
+                         json={"approver": "p@x.example", "note": "no"},
                          headers=HITL_HEADERS)
         assert a.status_code == 200
-        # Token issued with the legacy keying values.
-        body = verify_token(
-            a.json()["token"],
-            KeyStore(dir=app.state.keystore.dir).load_public(),
-        )
-        assert body["matter"] == "LEG_APPROVE"
-        assert body["doc_hash"] == "LEG_DOC"
-        # And PR2 canonical mirror.
-        assert body["subject"] == "LEG_APPROVE"
-        assert body["payload_hash"] == "LEG_DOC"
-
-    def test_list_falls_back_to_legacy_when_subject_null(self, app, client):
-        """Regression for issue #10: the GET /hitl list endpoint is what
-        the dashboard hits first. A pre-PR3 row (subject NULL, matter set)
-        must surface as `{subject: null, matter: <leg>, payload_hash: null,
-        doc_id: <leg>}` so the dashboard's `displaySubject` helper falls
-        through to the legacy column. Detail endpoint already has this
-        coverage; the list endpoint did not."""
-        from magi_cp.cloud.db import HitlItem
-        from sqlalchemy.orm import Session
-        with Session(app.state.engine) as s:
-            legacy = HitlItem(
-                ts_created=0, tenant_id="default",
-                matter="LEG_LIST", doc_id="LEG_LIST_DOC",
-                subject=None, payload_hash=None,
-                reason="legacy_list", payload={"citations": []},
-            )
-            s.add(legacy); s.commit(); s.refresh(legacy)
-            row_id = legacy.id
-        items = client.get("/hitl", headers=HITL_HEADERS).json()["items"]
-        target = next(i for i in items if i["id"] == row_id)
-        assert target["matter"] == "LEG_LIST"
-        assert target["doc_id"] == "LEG_LIST_DOC"
-        assert target["subject"] is None
-        assert target["payload_hash"] is None
-
-    def test_reject_resolves_keying_for_legacy_row(self, app, client):
-        """Regression for issue #11: reject() also calls
-        hitl_display_subject / hitl_display_payload_hash and writes a
-        ledger entry. If anyone drops the fallback on the reject branch
-        the silent regression slips through — pin it with a test.
-        """
-        from magi_cp.cloud.db import HitlItem, LedgerRepo
-        from sqlalchemy.orm import Session
-        with Session(app.state.engine) as s:
-            legacy = HitlItem(
-                ts_created=0, tenant_id="default",
-                matter="LEG_REJECT", doc_id="LEG_REJECT_DOC",
-                subject=None, payload_hash=None,
-                reason="legacy", payload={"citations": []},
-            )
-            s.add(legacy); s.commit(); s.refresh(legacy)
-            row_id = legacy.id
-        r = client.post(f"/hitl/{row_id}/reject",
-                         json={"approver": "partner@firm.example",
-                               "note": "no good"},
-                         headers=HITL_HEADERS)
-        assert r.status_code == 200
-        assert r.json()["verdict"] == "rejected"
-        # Ledger entry carries the legacy keying via the display fallback.
+        from magi_cp.cloud.db import LedgerRepo
         led = LedgerRepo(app.state.engine)
         entries = [e for e in led.list_all()
                    if e.body.get("step") == "hitl_decision"
-                       and e.body.get("hitl_id") == row_id]
+                       and e.body.get("hitl_id") == hitl_id]
         assert len(entries) == 1
         body = entries[0].body
-        # Legacy columns echoed verbatim, canonical fields resolved from
-        # the legacy values via `hitl_display_subject`.
-        assert body["matter"] == "LEG_REJECT"
-        assert body["doc_id"] == "LEG_REJECT_DOC"
-        assert body["subject"] == "LEG_REJECT"
-        assert body["payload_hash"] == "LEG_REJECT_DOC"
+        assert body["subject"] == "S_REJ"
+        assert body["payload_hash"] == "P_REJ"
+        # Legacy fields not present in the ledger body either.
+        assert "matter" not in body
+        assert "doc_id" not in body
 
 
 class TestExtraDisjoint:
     """L2: HITL extra cannot clobber protected token fields."""
 
     def test_protected_field_clash_500(self, app, client, monkeypatch):
-        """Verify the guard via internal call — TestClient cannot send extra dict."""
+        """Verify the guard via internal call — TestClient cannot send extra dict.
+
+        PR4: legacy `matter` / `doc_hash` are no longer in
+        PROTECTED_TOKEN_FIELDS. The clash check now exercises the new
+        canonical `subject`."""
         from magi_cp.cloud.app import _issue_token
         from magi_cp.cloud.db import LedgerRepo
-        from magi_cp.cloud.keys import KeyStore as KS
         import pytest as _pt
         ks = app.state.keystore
         led = LedgerRepo(app.state.engine)
         with _pt.raises(Exception):  # HTTPException 500
-            _issue_token("M1", "D1", "pass",
+            _issue_token("S1", "P1", "pass",
                          ledger=led, keystore=ks, kid="dead",
-                         extra={"matter": "ATTACKER"})
+                         extra={"subject": "ATTACKER"})

@@ -215,8 +215,8 @@ const KO_RAW = {
   "newPolicy.wizard.step4.sentinel.modeCustom": "Custom regex",
   "newPolicy.wizard.step4.sentinel.tagPreviewIntro": "다음으로 생성됩니다:",
   "newPolicy.wizard.step4.sentinel.customFieldLabel": "Custom sentinel regex (Python re)",
-  "newPolicy.wizard.step4.sentinel.customFieldHint": "?P<matter> 와 ?P<doc_id> 네임드 그룹은 백엔드가 요구합니다, 두 그룹을 정규식 어딘가에 포함시키세요.",
-  "newPolicy.wizard.step4.sentinel.customGroupsMissing": "정규식에 ?P<matter> 와 ?P<doc_id> 가 모두 있어야 합니다.",
+  "newPolicy.wizard.step4.sentinel.customFieldHint": "임의의 Python 정규식. 런타임은 특정 네임드 그룹을 요구하지 않습니다.",
+  "newPolicy.wizard.step4.sentinel.customGroupsMissing": "정규식을 입력하세요.",
   "newPolicy.wizard.step4.deny.label": "차단 (deny)",
   "newPolicy.wizard.step4.deny.sub": "도구 호출을 막고 사용자에게 거부 메시지 표시, 가장 안전.",
   "newPolicy.wizard.step4.ask.label": "허락 요청 (ask)",
@@ -250,8 +250,8 @@ const KO_RAW = {
   "verify.title": "검증 실행",
   "verify.description": "선택한 verifier에 페이로드를 보냅니다. {pass}는 Ed25519 토큰을 발급하고 감사 원장에 기록하며, {deny}는 사유를 함께 반환합니다, citation_verify는 NLI advisory가 포함된 특수 경로를 사용하므로 컴파일/정책 폼에서 사용하세요.",
   "verify.field.step": "검증 단계",
-  "verify.field.matter": "matter (감사 라벨)",
-  "verify.field.docId": "doc_id (감사 라벨)",
+  "verify.field.subject": "subject (감사 라벨)",
+  "verify.field.payloadHash": "payload_hash (감사 라벨)",
   "verify.field.payload": "payload (verifier.run에 전달되는 JSON)",
   "verify.submit": "검증 실행",
   "verify.submit.pending": "실행 중",
@@ -343,23 +343,13 @@ const KO_RAW = {
   "hitl.detail.back": "← 리뷰 대기열",
   "hitl.detail.title": "HITL #{id}",
   "hitl.detail.why": "리뷰가 필요한 이유",
-  "hitl.detail.ledgerContext": "matter {matter}의 감사 컨텍스트",
-  "hitl.detail.ledgerHint": "이 matter의 감사 원장 항목 (오래된 → 최신). 본 HITL 항목을 만든 리뷰 항목이 강조됩니다.",
-  /* PR3: canonical-subject variants of ledgerContext/Hint. The detail page
-     picks these for PR3+ rows (subject populated); the legacy variants
-     above stay in use for pre-PR3 rows so reviewers still see "matter". */
+  /* PR4: legacy matter/doc_id rows + "(legacy)" badge retired together
+     with the DB-column drop. The dashboard now renders only the canonical
+     subject + payload labels. */
   "hitl.detail.ledgerContextSubject": "{subject}의 감사 컨텍스트",
   "hitl.detail.ledgerHintSubject": "이 subject의 감사 원장 항목 (오래된 → 최신). 본 HITL 항목을 만든 리뷰 항목이 강조됩니다.",
-  /* PR3: column labels — `subject`/`payload` for PR3+ rows, `matter`/`doc`
-     for legacy rows. Inline elsewhere they read as English code identifiers
-     ("subject:", "matter:") — these keys exist so the wider UI shell stays
-     localisable without forcing every column-header to flip to natural-
-     language phrasing. */
   "hitl.col.subject": "subject",
-  "hitl.col.matter": "matter",
   "hitl.col.payload": "payload",
-  "hitl.col.doc": "doc",
-  "hitl.detail.legacyBadge": "(legacy)",
   "hitl.invalidId": "유효하지 않은 ID",
   "hitl.notFound": "리뷰 항목을 찾을 수 없습니다",
   "hitl.recorded": "기록됨: {what}",
@@ -373,7 +363,7 @@ const KO_RAW = {
   "ledger.cursor": "UTC · cursor: {n}",
   "ledger.col.id": "id",
   "ledger.col.ts": "시각 (UTC)",
-  "ledger.col.matter": "matter",
+  "ledger.col.subject": "subject",
   "ledger.col.prev": "prev",
   "ledger.col.h": "h",
   "ledger.first": "← 처음",
@@ -631,8 +621,8 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.wizard.step4.sentinel.modeCustom": "Custom regex",
   "newPolicy.wizard.step4.sentinel.tagPreviewIntro": "Builds to:",
   "newPolicy.wizard.step4.sentinel.customFieldLabel": "Custom sentinel regex (Python re)",
-  "newPolicy.wizard.step4.sentinel.customFieldHint": "Backend requires both ?P<matter> and ?P<doc_id> named groups, include them anywhere in your regex.",
-  "newPolicy.wizard.step4.sentinel.customGroupsMissing": "Regex must include both ?P<matter> and ?P<doc_id>.",
+  "newPolicy.wizard.step4.sentinel.customFieldHint": "Any Python regex. The runtime no longer requires specific named groups.",
+  "newPolicy.wizard.step4.sentinel.customGroupsMissing": "Enter a regex.",
   "newPolicy.wizard.step4.deny.label": "Deny",
   "newPolicy.wizard.step4.deny.sub": "Block the tool call and show a deny message, safest.",
   "newPolicy.wizard.step4.ask.label": "Ask",
@@ -665,8 +655,8 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "verify.title": "Run a verifier",
   "verify.description": "Dispatches the chosen verifier. On {pass} an Ed25519 token is issued and appended to the audit ledger; on {deny} the reasons explain why, citation_verify uses a specialised path with NLI advisory: use the compile / policy forms for it.",
   "verify.field.step": "Verifier step",
-  "verify.field.matter": "matter (audit label)",
-  "verify.field.docId": "doc_id (audit label)",
+  "verify.field.subject": "subject (audit label)",
+  "verify.field.payloadHash": "payload_hash (audit label)",
   "verify.field.payload": "payload (JSON object passed to verifier.run)",
   "verify.submit": "Run verifier",
   "verify.submit.pending": "Running",
@@ -755,16 +745,13 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "hitl.detail.back": "← Review queue",
   "hitl.detail.title": "HITL #{id}",
   "hitl.detail.why": "Why this is in review",
-  "hitl.detail.ledgerContext": "Ledger context for matter {matter}",
-  "hitl.detail.ledgerHint": "All ledger entries for this matter, oldest → newest. The review entry that produced this HITL item is highlighted.",
-  /* PR3: canonical-subject variants. See KO comment for selection rule. */
+  /* PR4: legacy matter/doc rows + "(legacy)" badge retired together
+     with the DB-column drop. The dashboard now renders only the canonical
+     subject + payload labels. */
   "hitl.detail.ledgerContextSubject": "Ledger context for {subject}",
   "hitl.detail.ledgerHintSubject": "All ledger entries for this subject, oldest → newest. The review entry that produced this HITL item is highlighted.",
   "hitl.col.subject": "subject",
-  "hitl.col.matter": "matter",
   "hitl.col.payload": "payload",
-  "hitl.col.doc": "doc",
-  "hitl.detail.legacyBadge": "(legacy)",
   "hitl.invalidId": "Invalid id",
   "hitl.notFound": "Review item not found",
   "hitl.recorded": "Recorded: {what}",
@@ -777,7 +764,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "ledger.cursor": "UTC · cursor: {n}",
   "ledger.col.id": "id",
   "ledger.col.ts": "ts (UTC)",
-  "ledger.col.matter": "matter",
+  "ledger.col.subject": "subject",
   "ledger.col.prev": "prev",
   "ledger.col.h": "h",
   "ledger.first": "← First",

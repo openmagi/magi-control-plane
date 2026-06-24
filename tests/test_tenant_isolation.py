@@ -76,25 +76,25 @@ class TestLedgerTenantIsolation:
             r = c.post("/verify/privilege_scan",
                        headers={"X-Api-Key": key_a},
                        json={"payload": {"text": "clean"},
-                             "matter": "A", "doc_id": "X"})
+                             "subject": "A", "payload_hash": "X"})
             assert r.status_code == 200
         r = c.post("/verify/privilege_scan",
                    headers={"X-Api-Key": key_b},
                    json={"payload": {"text": "clean"},
-                         "matter": "B", "doc_id": "Y"})
+                         "subject": "B", "payload_hash": "Y"})
         assert r.status_code == 200
 
-        # tenant_a's ledger only shows its 2 entries
+        # tenant_a's ledger only shows its 2 entries (PR4 wire: `subject`).
         page_a = c.get("/ledger?limit=100&include_body=true",
                        headers={"X-Api-Key": key_a}).json()
-        matters_a = {e["matter"] for e in page_a["entries"]}
-        assert matters_a == {"A"}, page_a
+        subjects_a = {e["subject"] for e in page_a["entries"]}
+        assert subjects_a == {"A"}, page_a
 
         # tenant_b sees only its 1 entry
         page_b = c.get("/ledger?limit=100&include_body=true",
                        headers={"X-Api-Key": key_b}).json()
-        matters_b = {e["matter"] for e in page_b["entries"]}
-        assert matters_b == {"B"}, page_b
+        subjects_b = {e["subject"] for e in page_b["entries"]}
+        assert subjects_b == {"B"}, page_b
 
     def test_tenant_cannot_see_default_tenant_entries_via_db_key(
         self, monkeypatch,
@@ -109,21 +109,21 @@ class TestLedgerTenantIsolation:
         r = c.post("/verify/privilege_scan",
                    headers={"X-Api-Key": "env-key"},
                    json={"payload": {"text": "clean"},
-                         "matter": "ENV", "doc_id": "X"})
+                         "subject": "ENV", "payload_hash": "X"})
         assert r.status_code == 200
         # db-key tenant verifies once
         r = c.post("/verify/privilege_scan",
                    headers={"X-Api-Key": key_db},
                    json={"payload": {"text": "clean"},
-                         "matter": "DB", "doc_id": "Y"})
+                         "subject": "DB", "payload_hash": "Y"})
         assert r.status_code == 200
         # each side only sees its own
         env_page = c.get("/ledger?limit=100&include_body=true",
                           headers={"X-Api-Key": "env-key"}).json()
         db_page = c.get("/ledger?limit=100&include_body=true",
                           headers={"X-Api-Key": key_db}).json()
-        assert {e["matter"] for e in env_page["entries"]} == {"ENV"}
-        assert {e["matter"] for e in db_page["entries"]} == {"DB"}
+        assert {e["subject"] for e in env_page["entries"]} == {"ENV"}
+        assert {e["subject"] for e in db_page["entries"]} == {"DB"}
 
 
 # ── hitl isolation (via /citation_verify review path) ───────────────
@@ -140,11 +140,11 @@ class TestHitlTenantIsolation:
         # Provide a corpus_override with a quote that doesn't verbatim match
         # to force review.
         misquote_a = {
-            "matter": "A", "doc_id": "DOCA",
+            "subject": "A", "payload_hash": "DOCA",
             "citations": [{"quote": "exact mismatch", "ref": "2018도13694"}],
             "corpus_override": {"2018도13694": "some legal text"},
         }
-        misquote_b = {**misquote_a, "matter": "B", "doc_id": "DOCB"}
+        misquote_b = {**misquote_a, "subject": "B", "payload_hash": "DOCB"}
         c.post("/citation_verify", headers={"X-Api-Key": key_a},
                json=misquote_a)
         c.post("/citation_verify", headers={"X-Api-Key": key_b},
@@ -188,5 +188,5 @@ class TestSuspendedTenant:
         r = c.post("/verify/privilege_scan",
                    headers={"X-Api-Key": key_a},
                    json={"payload": {"text": "clean"},
-                         "matter": "A", "doc_id": "X"})
+                         "subject": "A", "payload_hash": "X"})
         assert r.status_code == 200

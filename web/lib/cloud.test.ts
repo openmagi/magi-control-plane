@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import {
-  cloud, displayPayloadHash, displaySubject, isLegacyHitlRow,
-} from "./cloud"
+import { cloud } from "./cloud"
 
 describe("cloud client", () => {
   beforeEach(() => {
@@ -295,41 +293,24 @@ describe("cloud client", () => {
     expect(out.api_key).toBe("mcp_secret-once")
   })
 
-  // ── PR3: HITL display helpers ────────────────────────────────────
-  describe("PR3 HITL display helpers", () => {
-    it("displaySubject prefers subject over matter", () => {
-      expect(displaySubject({ subject: "S1", matter: "M1" })).toBe("S1")
+  // ── PR4: verifyDispatch sends canonical fields ─────────────────
+  it("verifyDispatch sends subject/payload_hash (no legacy mirror)", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({
+        verdict: "pass", token: "tok", reasons: [],
+      }), { status: 200 }) as any
     })
-
-    it("displaySubject falls back to matter when subject is null", () => {
-      expect(displaySubject({ subject: null, matter: "M_LEGACY" })).toBe("M_LEGACY")
-    })
-
-    it("displaySubject returns null when both are null", () => {
-      expect(displaySubject({ subject: null, matter: null })).toBe(null)
-    })
-
-    it("displayPayloadHash prefers payload_hash over doc_id", () => {
-      expect(displayPayloadHash({ payload_hash: "P1", doc_id: "D1" })).toBe("P1")
-    })
-
-    it("displayPayloadHash falls back to doc_id when payload_hash is null", () => {
-      expect(displayPayloadHash({ payload_hash: null, doc_id: "D_LEGACY" })).toBe("D_LEGACY")
-    })
-
-    it("isLegacyHitlRow detects pre-PR3 row (subject null, matter set)", () => {
-      expect(isLegacyHitlRow({ subject: null, matter: "M_LEGACY" })).toBe(true)
-    })
-
-    it("isLegacyHitlRow returns false for PR3+ row", () => {
-      expect(isLegacyHitlRow({ subject: "S1", matter: "S1" })).toBe(false)
-    })
-
-    it("isLegacyHitlRow returns false when both are null", () => {
-      // Empty row — not "legacy", just degenerate. UI hides instead of
-      // labeling as legacy.
-      expect(isLegacyHitlRow({ subject: null, matter: null })).toBe(false)
-    })
+    await cloud.verifyDispatch("privilege_scan",
+                               { text: "x" }, "MY_SUBJ", "MY_HASH")
+    const body = JSON.parse(captured.init.body)
+    expect(body.subject).toBe("MY_SUBJ")
+    expect(body.payload_hash).toBe("MY_HASH")
+    // PR4: legacy alias keys MUST NOT be present on the wire — the
+    // cloud's `extra="forbid"` validator would 422 them.
+    expect(body.matter).toBeUndefined()
+    expect(body.doc_id).toBeUndefined()
   })
 
   it("provisionTenant chains createTenant + issueKey", async () => {

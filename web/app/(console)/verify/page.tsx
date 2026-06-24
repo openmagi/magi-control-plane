@@ -13,8 +13,9 @@ export const dynamic = "force-dynamic"
 type VerifyResult = {
   step: string
   payload: string
-  matter: string
-  docId: string
+  // PR4: canonical fields. Legacy `matter` / `docId` removed.
+  subject: string
+  payloadHash: string
   verdict: "pass" | "review" | "deny" | "error"
   token: string | null
   reasons: string[]
@@ -55,8 +56,9 @@ async function runVerify(formData: FormData): Promise<void> {
   "use server"
   const step = String(formData.get("step") ?? "").trim()
   const payloadRaw = String(formData.get("payload") ?? "").trim()
-  const matter = String(formData.get("matter") ?? "dashboard").trim() || "dashboard"
-  const docId = String(formData.get("doc_id") ?? "dashboard").trim() || "dashboard"
+  // PR4: canonical fields only. Legacy form names dropped.
+  const subject = String(formData.get("subject") ?? "dashboard").trim() || "dashboard"
+  const payloadHash = String(formData.get("payload_hash") ?? "dashboard").trim() || "dashboard"
 
   if (!step) redirect("/verify?err=invalid_input&missing=step")
   if (!payloadRaw) redirect("/verify?err=invalid_input&missing=payload")
@@ -73,13 +75,13 @@ async function runVerify(formData: FormData): Promise<void> {
 
   let result: Awaited<ReturnType<typeof cloud.verifyDispatch>>
   try {
-    result = await cloud.verifyDispatch(step, parsed!, matter, docId)
+    result = await cloud.verifyDispatch(step, parsed!, subject, payloadHash)
   } catch (e: unknown) {
     redirect(`/verify?err=${codeForError(e)}&step=${encodeURIComponent(step)}`)
   }
 
   const display: VerifyResult = {
-    step, payload: payloadRaw, matter, docId,
+    step, payload: payloadRaw, subject, payloadHash,
     verdict: result!.verdict,
     token: result!.token,
     reasons: result!.reasons ?? [],
@@ -211,17 +213,17 @@ export default async function VerifyPage({
           />
           <Input
             type="text"
-            name="matter"
-            label={t("verify.field.matter")}
-            defaultValue={prior?.matter ?? "dashboard"}
+            name="subject"
+            label={t("verify.field.subject")}
+            defaultValue={prior?.subject ?? "dashboard"}
             autoComplete="off"
             spellCheck={false}
           />
           <Input
             type="text"
-            name="doc_id"
-            label={t("verify.field.docId")}
-            defaultValue={prior?.docId ?? "dashboard"}
+            name="payload_hash"
+            label={t("verify.field.payloadHash")}
+            defaultValue={prior?.payloadHash ?? "dashboard"}
             autoComplete="off"
             spellCheck={false}
           />

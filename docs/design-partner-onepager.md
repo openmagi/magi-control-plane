@@ -22,9 +22,9 @@ deterministically don't happen until a partner signs off:
    filing.
 
 When all four pass: a signed Ed25519 token gates the actual `Bash`
-command (`FILE_COURT_<matter>_<doc_id>`). The token plus the verdict +
-matter/doc_id is appended to a hash-chained ledger — proof for the bar
-association, the client, or a future audit.
+command (`FILE_COURT_<subject>_<payload_hash>`). The token plus the
+verdict + subject/payload_hash is appended to a hash-chained ledger —
+proof for the bar association, the client, or a future audit.
 
 ## How it works (3 layers)
 

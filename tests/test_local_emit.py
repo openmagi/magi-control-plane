@@ -1,9 +1,8 @@
-"""PR2: emit.py CLI accepts both legacy (--matter/--doc-id) and canonical
-(--subject/--payload-hash) flags. Legacy ones print a deprecation note to
-stderr but still work end-to-end.
+"""PR4: emit.py CLI accepts ONLY canonical (--subject/--payload-hash).
+The legacy `--matter`/`--doc-id` flags are now a hard exit-2 with a
+clear "deprecated, use ..." message — no silent acceptance.
 """
 import json
-import os
 import sys
 
 import pytest
@@ -39,42 +38,40 @@ def test_emit_accepts_canonical_subject_and_payload_hash(monkeypatch, capsys,
     body = json.loads(captured.out)
     assert body["_called_with"]["subject"] == "S1"
     assert body["_called_with"]["payload_hash"] == "P1"
-    # no deprecation noise on the canonical path
+    # No deprecation noise on the canonical path
     assert "deprecated" not in captured.err.lower()
 
 
-def test_emit_accepts_legacy_matter_and_doc_id_with_warning(monkeypatch,
-                                                              capsys,
-                                                              tmp_path):
+def test_emit_legacy_matter_is_hard_error(monkeypatch, capsys, tmp_path):
+    """PR4: --matter is a clean exit-2, not a warn-and-proceed."""
     monkeypatch.setenv("MAGI_CP_API_KEY", "x")
     monkeypatch.setenv("MAGI_CP_LOCAL_DIR", str(tmp_path))
-    rc = _run_cli(
-        ["--matter", "M1", "--doc-id", "D1"],
-        monkeypatch, fake_response={"verdict": "pass", "token": "tok"},
-    )
-    assert rc == 0
-    captured = capsys.readouterr()
-    body = json.loads(captured.out)
-    # Internal call still uses canonical names — populated from legacy aliases.
-    assert body["_called_with"]["subject"] == "M1"
-    assert body["_called_with"]["payload_hash"] == "D1"
-    # Deprecation warning to stderr
-    assert "deprecated" in captured.err.lower()
+    monkeypatch.setattr(sys, "argv",
+                        ["magi-cp-emit", "--matter", "M1",
+                         "--payload-hash", "P1"])
+    from magi_cp.local import emit
+    rc = emit.cli()
+    assert rc == 2
+    err = capsys.readouterr().err.lower()
+    assert "matter" in err
+    assert "deprecated" in err
+    assert "--subject" in err
 
 
-def test_emit_canonical_wins_when_both_supplied(monkeypatch, capsys, tmp_path):
+def test_emit_legacy_doc_id_is_hard_error(monkeypatch, capsys, tmp_path):
+    """PR4: --doc-id is a clean exit-2, not a warn-and-proceed."""
     monkeypatch.setenv("MAGI_CP_API_KEY", "x")
     monkeypatch.setenv("MAGI_CP_LOCAL_DIR", str(tmp_path))
-    rc = _run_cli(
-        ["--subject", "S1", "--matter", "MX",
-         "--payload-hash", "P1", "--doc-id", "DX"],
-        monkeypatch, fake_response={"verdict": "pass", "token": "tok"},
-    )
-    assert rc == 0
-    body = json.loads(capsys.readouterr().out)
-    # subject/payload_hash win; legacy flags don't smuggle through
-    assert body["_called_with"]["subject"] == "S1"
-    assert body["_called_with"]["payload_hash"] == "P1"
+    monkeypatch.setattr(sys, "argv",
+                        ["magi-cp-emit", "--subject", "S1",
+                         "--doc-id", "D1"])
+    from magi_cp.local import emit
+    rc = emit.cli()
+    assert rc == 2
+    err = capsys.readouterr().err.lower()
+    assert "doc-id" in err or "doc_id" in err
+    assert "deprecated" in err
+    assert "--payload-hash" in err
 
 
 def test_emit_missing_subject_is_error(monkeypatch, capsys, tmp_path):
@@ -94,13 +91,14 @@ def test_emit_missing_payload_hash_is_error(monkeypatch, capsys, tmp_path):
     from magi_cp.local import emit
     rc = emit.cli()
     assert rc == 2
-    assert "payload-hash" in capsys.readouterr().err.lower() or \
-           "payload_hash" in capsys.readouterr().err.lower()
+    err = capsys.readouterr().err.lower()
+    assert "payload-hash" in err or "payload_hash" in err
 
 
-def test_request_citation_evidence_helper_sends_both_naming_pairs(monkeypatch):
-    """The underlying helper must send BOTH naming pairs in the JSON body
-    so the cloud can roll forward / back across the transition."""
+def test_request_citation_evidence_helper_sends_canonical_only(monkeypatch):
+    """PR4: the underlying helper sends ONLY subject + payload_hash in
+    the JSON body. Legacy mirror keys are not present (cloud's
+    extra="forbid" would 422 if they were)."""
     captured_body: dict = {}
 
     class _FakeResponse:
@@ -123,8 +121,21 @@ def test_request_citation_evidence_helper_sends_both_naming_pairs(monkeypatch):
         cloud_url="http://x", api_key="k",
     )
     assert out["verdict"] == "pass"
-    # Both pairs present, both equal to the supplied values
     assert captured_body["subject"] == "S"
     assert captured_body["payload_hash"] == "P"
-    assert captured_body["matter"] == "S"
-    assert captured_body["doc_id"] == "P"
+    # PR4: legacy mirror keys are gone — body must NOT carry them, or
+    # the cloud's `extra="forbid"` validator would reject the request.
+    assert "matter" not in captured_body
+    assert "doc_id" not in captured_body
+
+
+def test_request_citation_evidence_helper_rejects_legacy_kwargs():
+    """PR4: passing `matter=` or `doc_id=` as kwargs is a clean
+    TypeError at the Python boundary."""
+    from magi_cp.local import emit
+    with pytest.raises(TypeError):
+        emit.request_citation_evidence(
+            matter="M",  # type: ignore[call-arg]
+            subject="S", payload_hash="P",
+            cloud_url="http://x", api_key="k",
+        )

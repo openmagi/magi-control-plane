@@ -26,7 +26,7 @@ def keypair():
 # ── 토큰 sign/verify ────────────────────────────────────────────────
 def test_sign_then_verify_round_trip(keypair):
     priv, pub = keypair
-    body = {"step": "citation_verify", "matter": "M1", "doc_hash": "D1",
+    body = {"step": "citation_verify", "subject": "M1", "payload_hash": "D1",
             "verdict": "pass", "iat": 1000, "exp": 2000}
     token = sign_token(body, priv)
     parsed = verify_token(token, pub, now=1500)
@@ -78,8 +78,8 @@ def test_verify_fails_with_wrong_pubkey(keypair):
 # ── Ledger: append-only + hash-chain ─────────────────────────────────
 def test_ledger_appends_and_chains(tmp_path):
     led = Ledger(path=str(tmp_path / "ledger.jsonl"))
-    e1 = led.append({"step": "x", "matter": "M1"}, token="t1")
-    e2 = led.append({"step": "y", "matter": "M1"}, token="t2")
+    e1 = led.append({"step": "x", "subject": "S1"}, token="t1")
+    e2 = led.append({"step": "y", "subject": "S1"}, token="t2")
     assert e1["prev"] == ""
     assert e2["prev"] == e1["h"]
     assert e1["h"] != e2["h"]

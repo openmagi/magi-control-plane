@@ -1,8 +1,8 @@
 """Local PreToolUse hook entry point.
 
 CC pipes the hook event JSON on stdin. We parse `tool_input.command` for the
-sentinel `FILE_COURT_<subject>_<payload_hash>` (legacy: `<matter>_<doc_id>`),
-then ask the cloud for a verdict.
+sentinel `FILE_COURT_<subject>_<payload_hash>`, then ask the cloud for a
+verdict.
 
 PR2 NOTE — sentinel-less policies (`sentinel_re=None`):
   As of D43/D44, `Policy.sentinel_re` is Optional and the wizard no longer
@@ -16,6 +16,19 @@ PR2 NOTE — sentinel-less policies (`sentinel_re=None`):
   tracking-issue #1 and is intended for a future surface (out of scope for
   PR2/PR3). Until then, authors who need local CC enforcement MUST keep a
   `sentinel_re` on the policy.
+
+PR4 NOTE — transitional legacy-token acceptance:
+  PR4 drops cloud-side `matter` / `doc_hash` mirrors from token bodies. A
+  WAL token signed by a pre-PR2 cloud carries ONLY the legacy fields and
+  no longer matches by default. For the deploy window where some PR4 gates
+  may still see legacy tokens that were cached pre-roll, the operator can
+  set `MAGI_CP_ACCEPT_LEGACY_TOKEN_SHAPE_UNTIL=<unix_ts>`: tokens whose
+  body has `matter == <subject>` and `doc_hash == <payload_hash>` will
+  match through that epoch. Default-OFF (env unset → strict canonical).
+  After the epoch elapses the env flips fail-closed automatically; this
+  avoids a forgotten always-on bypass. The whole window is bounded by
+  TOKEN_TTL_SECONDS=600 because expired tokens still get rejected by
+  `verify_token`.
 
 Output protocol:
   - Allow → exit 0 silently (CC continues normal permission flow).
@@ -45,8 +58,9 @@ def _local_dir() -> str:
                           os.path.expanduser("~/.magi-cp/local"))
 
 
-# Anchored sentinel: forbid trailing `_<more>` (e.g. FILE_COURT_M_D_v2) so the
-# matter / doc_id capture cannot silently drop tail bytes that change identity.
+# Anchored sentinel: forbid trailing `_<more>` (e.g. FILE_COURT_S_P_v2) so the
+# subject / payload_hash capture cannot silently drop tail bytes that change
+# identity.
 SENTINEL_RE = re.compile(r"\bFILE_COURT_([A-Za-z0-9]+)_([A-Za-z0-9]+)(?!_)\b")
 
 
@@ -114,42 +128,82 @@ def _load_pubkey() -> Ed25519PublicKey:
     return _load_pubkey_for_kid(None)
 
 
+def _legacy_token_window_active(now: int | None = None) -> bool:
+    """True iff `MAGI_CP_ACCEPT_LEGACY_TOKEN_SHAPE_UNTIL` is set and the
+    deadline hasn't passed.
+
+    The env var holds a unix epoch (seconds). An unset / blank / malformed
+    value → False (default-OFF fail-closed). Past-deadline → False (the
+    window naturally expires; an operator who forgets to remove the env
+    after the deploy still gets the canonical behaviour). This bounds the
+    blast radius of a transitional bypass to the operator's chosen window.
+    """
+    raw = os.environ.get("MAGI_CP_ACCEPT_LEGACY_TOKEN_SHAPE_UNTIL", "")
+    if not raw.strip():
+        return False
+    try:
+        deadline = int(raw)
+    except ValueError:
+        return False
+    import time as _time
+    return (now if now is not None else int(_time.time())) < deadline
+
+
+def _token_matches_keys(body: dict, *, subject: str, payload_hash: str) -> bool:
+    """Match a token body against the canonical (subject, payload_hash) pair.
+
+    Strict-canonical match is the default. When the legacy-shape window
+    is active (see `_legacy_token_window_active`) we additionally accept
+    bodies whose pre-PR2 `matter == subject` AND `doc_hash == payload_hash`
+    — exactly mirroring how PR2 would have written the same logical token
+    under the legacy schema. The legacy alias is OFF when:
+
+      - the env knob is unset or expired (see helper), OR
+      - either canonical field is already populated on the body (we never
+        let a body that opts into canonical fields fall back to legacy
+        comparison — that's the only way an attacker who controls a
+        partial mix could otherwise trick a match).
+    """
+    if (body.get("subject") == subject
+            and body.get("payload_hash") == payload_hash):
+        return True
+    if not _legacy_token_window_active():
+        return False
+    if body.get("subject") is not None or body.get("payload_hash") is not None:
+        # The token opted into canonical fields but mismatched above —
+        # do not silently fall back to legacy comparison.
+        return False
+    return (body.get("matter") == subject
+            and body.get("doc_hash") == payload_hash)
+
+
 def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *,
                        subject: str, payload_hash: str) -> dict | None:
     """Scan WAL for the *latest* citation_verify token bound to
     (subject, payload_hash) whose signature verifies under `pub` and which
     is not expired.
 
-    PR2: keying renamed from (matter, doc_id/doc_hash) → (subject, payload_hash).
-    For back-compat the lookup accepts EITHER set of token-body fields: a
-    token written by a pre-PR2 cloud carries `matter`/`doc_hash` only; a
-    post-PR2 cloud carries both legacy mirror fields AND `subject`/
-    `payload_hash`. We accept a hit if EITHER pair matches the requested
-    keys. This lets a gate cross the upgrade boundary without flushing its
-    WAL.
+    PR4: only the canonical token shape is recognised by default. Tokens
+    signed by a pre-PR2 cloud (legacy `matter`/`doc_hash` body fields) no
+    longer match — operators upgrading past PR4 must roll forward gate +
+    cloud together so the WAL flushes to the new shape. The brief PR2
+    transition window where both pairs were mirrored on the same token
+    is over.
+
+    Transitional escape hatch: setting
+    `MAGI_CP_ACCEPT_LEGACY_TOKEN_SHAPE_UNTIL=<unix_ts>` accepts legacy
+    `matter`/`doc_hash` bodies until the given epoch. Default-OFF; see
+    `_legacy_token_window_active`. TOKEN_TTL_SECONDS=600 still caps
+    individual token lifetime regardless of the knob.
 
     Why latest, not first: a later `verdict=fail|review|deny` token for the
     same key MUST invalidate an earlier `pass` — otherwise a stale success
     could authorize a re-edited document. The latest decision wins.
 
-    PR2 review fix (issue #1 follow-up):
-      Kid-pinning is decided from the NEWEST verifying token (by iat),
-      not the oldest-encountered one. Pre-PR2 the loop visited WAL entries
-      in append (oldest-first) order, pinned `expected_kid` to the first
-      match, and dropped every later entry whose `kid` differed. PR2's
-      dual-shape lookup expanded the pool of matched entries, so a gate
-      crossing the upgrade boundary could end up pinning to a stale,
-      older-kid pass token and discarding the newer, rotated-kid pass
-      token for the same logical key — letting a stale pass win.
-
-      Two-pass approach: first collect ALL verifying tokens that match by
-      either shape, then pick the highest-iat entry, then drop any sibling
-      whose kid disagrees with that newest entry's kid. This matches the
-      "latest decision wins" intent. Each token's signature is still
-      independently verified inside `verify_token`, and
-      `_load_pubkey_for_kid` already fail-closes on a kid-vs-cloud
-      mismatch — so dropping the older-kid sibling here is purely a
-      defense-in-depth pin, not the load-bearing trust check.
+    Kid-pinning is decided from the NEWEST verifying token (by iat). Each
+    token's signature is independently verified inside `verify_token`, and
+    `_load_pubkey_for_kid` already fail-closes on a kid-vs-cloud mismatch
+    — dropping older-kid siblings is purely a defense-in-depth pin.
     """
     candidates: list[dict] = []
     for entry in wal.entries():
@@ -158,11 +212,8 @@ def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *,
         body = verify_token(entry.get("token", ""), pub)
         if not body:
             continue
-        new_match = (body.get("subject") == subject
-                     and body.get("payload_hash") == payload_hash)
-        legacy_match = (body.get("matter") == subject
-                        and body.get("doc_hash") == payload_hash)
-        if not (new_match or legacy_match):
+        if not _token_matches_keys(body, subject=subject,
+                                   payload_hash=payload_hash):
             continue
         candidates.append(body)
 
@@ -210,10 +261,10 @@ def evaluate(payload: dict) -> None:
     # `FILE_COURT_A_X; FILE_COURT_B_Y` would otherwise allow Y to ride on X's
     # token (or vice versa).
     #
-    # PR2: the sentinel's two captured groups are now treated as
-    # (subject, payload_hash). For legal-vertical sentinels that's still
-    # (matter, doc_id) semantically — the token-body match handles both
-    # naming schemes so legacy and new tokens both find a match.
+    # PR4: the sentinel's two captured groups are (subject, payload_hash).
+    # For legal-vertical sentinels that's still (matter, doc_id) semantically
+    # at the policy level, but the WAL lookup matches only on the canonical
+    # token-body fields.
     for m in matches:
         subject, payload_hash = m.group(1), m.group(2)
         body = _find_signed_token(wal, pub, subject=subject,

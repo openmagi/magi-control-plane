@@ -160,8 +160,8 @@ kubectl exec -n magi-cp deploy/magi-cp -- magi-cp keys retire <old_kid> \
   --after "2026-10-01T00:00Z"
 ```
 
-Local gates re-fetch `/pubkey?kid=…` on demand and pin per-`(matter,
-doc_id)`, so rotation is non-disruptive for clients already in flight.
+Local gates re-fetch `/pubkey?kid=…` on demand and pin per-`(subject,
+payload_hash)`, so rotation is non-disruptive for clients already in flight.
 
 ## 5. Incident response
 
@@ -175,6 +175,49 @@ doc_id)`, so rotation is non-disruptive for clients already in flight.
 Rollback paths:
 - K8s: `helm rollback magi-cp` (one revision back)
 - Vercel: `vercel rollback <previous-deployment-url>`
+- PR4 schema migration (`scripts/migrate_pr4_drop_legacy.py`):
+  `helm rollback` ALONE is NOT sufficient. The script DROPs `matter` /
+  `doc_id` columns from `hitl_item`; reverting the application code
+  re-introduces the ORM columns but `Base.metadata.create_all` is
+  `CREATE TABLE IF NOT EXISTS` and will NOT re-add the dropped columns
+  — every `/hitl` read crashes with `no such column: matter`. The only
+  safe rollback is a DB restore from a backup taken BEFORE the script
+  ran. Take the backup as the first step of cut-over:
+
+  ```bash
+  # Postgres
+  pg_dump --no-owner --no-acl "$MAGI_CP_DSN_PG" > pr4-pre-drop.sql
+
+  # SQLite
+  cp magi-cp.sqlite magi-cp.sqlite.pr4-pre-drop.bak
+  ```
+
+## 5a. PR2 → PR4 deploy ordering (one-time, post-D45 cut-over)
+
+PR2 changed the cloud's `_issue_token` body shape from legacy
+`(matter, doc_hash)` to canonical `(subject, payload_hash)`. PR4
+removes the legacy mirror entirely. The local gate (`magi_cp.local.gate`)
+matches ONLY on the canonical fields, so any PR4-era cloud paired with
+a pre-PR2 gate binary will fail-closed silently on every PreToolUse
+sentinel.
+
+Cut-over checklist:
+
+1. Roll gate binaries forward to the PR4 release on every user
+   workstation BEFORE flipping the cloud to PR4. The install script
+   (`docs/install.md`) handles this for fresh installs; existing
+   installs need `magi-cp install --upgrade`.
+2. If a workstation may still have legacy tokens cached in
+   `~/.magi-cp/local/wal.jsonl`, set
+   `MAGI_CP_ACCEPT_LEGACY_TOKEN_SHAPE_UNTIL=<unix_ts>` to the end of
+   the deploy window. Tokens carrying only legacy `matter`/`doc_hash`
+   body fields will match for the window, after which the gate flips
+   back to strict canonical without operator action. Default-OFF.
+3. Run `scripts/migrate_pr4_drop_legacy.py --dry-run` against prod
+   DB to confirm `subject IS NULL` count == 0. If non-zero, re-run
+   `scripts/migrate_pr3_backfill.py` first.
+4. Take a DB backup (see Rollback paths above), then run the
+   migration with `--yes`.
 
 ## 6. Off-boarding (future GA migration)
 

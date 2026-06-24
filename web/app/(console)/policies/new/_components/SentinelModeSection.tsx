@@ -34,8 +34,10 @@ export default function SentinelModeSection({
   const [mode, setMode] = useState<"tag" | "custom">(initialMode)
   const [tag, setTag] = useState(initialTag || SENTINEL_TAG_DEFAULT)
   const [custom, setCustom] = useState(initialCustom)
-  const customOk =
-    custom.length > 0 && custom.includes("?P<matter>") && custom.includes("?P<doc_id>")
+  // PR4: the matter/doc_id named-group requirement is gone (PR1 dropped
+  // it at the cloud layer). Any non-empty custom regex is allowed; the
+  // dashboard no longer asserts a specific named-group shape.
+  const customOk = custom.length > 0
 
   return (
     <div className="space-y-3">
@@ -95,7 +97,7 @@ export default function SentinelModeSection({
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
             {labels.tagPreviewIntro}{" "}
             <code className="font-mono">
-              {(tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;matter&gt;…)_(?P&lt;doc_id&gt;…)
+              {(tag || SENTINEL_TAG_DEFAULT)}_(?P&lt;subject&gt;…)_(?P&lt;payload_hash&gt;…)
             </code>
           </p>
         </div>
@@ -113,7 +115,7 @@ export default function SentinelModeSection({
             rows={3}
             spellCheck={false}
             autoComplete="off"
-            placeholder={`AKIA(?P<matter>[A-Z0-9]{16})(?P<doc_id>.*)`}
+            placeholder={`AKIA(?P<subject>[A-Z0-9]{16})(?P<payload_hash>.*)`}
             className="w-full rounded-xl border border-black/[0.08] bg-white px-4 py-3 text-sm leading-5 text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/20 font-mono"
           />
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">

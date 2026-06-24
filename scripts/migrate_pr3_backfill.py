@@ -30,8 +30,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -43,7 +42,7 @@ _SRC = os.path.join(_REPO_ROOT, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from magi_cp.cloud.db import HitlItem, make_engine  # noqa: E402
+from magi_cp.cloud.db import make_engine  # noqa: E402
 
 
 log = logging.getLogger("magi_cp.migrate_pr3")
@@ -58,11 +57,36 @@ def backfill_hitl(engine: "Engine", *,
     `subject` is already populated are skipped, so re-running on a
     fully-migrated table is a no-op (returns 0).
 
+    PR4 note: the ORM no longer declares `matter` / `doc_id` (they're
+    dropped from the schema by `scripts/migrate_pr4_drop_legacy.py`).
+    This script therefore uses raw SQL throughout so it can target the
+    PR3-shape table that still has both legacy and canonical columns.
+    Running against a PR4 (already-dropped) schema is a clean no-op
+    because the `matter`/`doc_id` columns aren't there to read from —
+    we detect that case upfront and return 0.
+
     Chunking: scan + update in `chunk_size` row batches so we don't
     hold a long-running transaction on big tables. SQLite serialises
     writes anyway; Postgres takes row-locks for the duration of each
     UPDATE, which is fine at this size.
     """
+    insp = inspect(engine)
+    if "hitl_item" not in insp.get_table_names():
+        log.info("hitl_item table not present — nothing to backfill")
+        return 0
+    cols = {c["name"] for c in insp.get_columns("hitl_item")}
+    if "subject" not in cols:
+        # Pre-PR3 schema — operator must run init_schema first to add
+        # the canonical columns before the backfill can populate them.
+        raise RuntimeError(
+            "hitl_item is missing the `subject` column — "
+            "run init_schema first to apply the PR3 ADD COLUMN step."
+        )
+    if "matter" not in cols or "doc_id" not in cols:
+        # PR4 schema — legacy columns already dropped, nothing to copy.
+        log.info("legacy columns already dropped — nothing to backfill")
+        return 0
+
     total = 0
     # Cursor-style watermark: advance past every row we observe (whether we
     # update it or skip it). Without this, a row where both legacy keys are
@@ -70,30 +94,32 @@ def backfill_hitl(engine: "Engine", *,
     # re-fetches the same page, looping forever. Tracking `last_id` makes
     # the scan strictly forward-progressing and bounded by the table size.
     last_id = 0
-    with Session(engine) as s:
-        while True:
+    while True:
+        # Each chunk runs in its own `engine.begin()` block so the
+        # SELECT scan + chunk of UPDATEs share a transaction without
+        # holding one open across the whole table.
+        with engine.begin() as conn:
             # Grab a page of rows that still need subject populated.
             # Using id-ordered scan + LIMIT is portable across SQLite +
             # Postgres without locking gymnastics. `id > :last_id` is the
             # safety latch against the skip-row loop described above.
-            stmt = (
-                select(HitlItem.id, HitlItem.matter, HitlItem.doc_id)
-                .where(HitlItem.subject.is_(None), HitlItem.id > last_id)
-                .order_by(HitlItem.id)
-                .limit(chunk_size)
-            )
-            rows = list(s.execute(stmt))
+            rows = list(conn.execute(text(
+                "SELECT id, matter, doc_id FROM hitl_item "
+                "WHERE subject IS NULL AND id > :last_id "
+                "ORDER BY id LIMIT :n"
+            ), {"last_id": last_id, "n": chunk_size}))
             if not rows:
                 break
-            for row_id, matter, doc_id in rows:
-                # Always advance the watermark, even when we skip — that is
-                # the cure for the infinite-loop case (issues #2 / #8).
+            for row in rows:
+                row_id = int(row.id)
+                matter = row.matter
+                doc_id = row.doc_id
+                # Always advance the watermark, even when we skip — that
+                # is the cure for the infinite-loop case (issues #2 / #8).
                 last_id = row_id
-                # Treat empty strings as missing too. A legacy row written
-                # under the old NOT NULL + empty-default schema can carry
-                # `matter == ''`; the truthy-falsy display helpers in
-                # `hitl_display_subject` treat '' as 'no subject' and fall
-                # through to the next column. If we copied '' into the
+                # Treat empty strings as missing too. A legacy row
+                # written under the old NOT NULL + empty-default schema
+                # can carry `matter == ''`; if we copied '' into the
                 # canonical column we would silently strand the row with
                 # no usable identifier on either side (issue #4).
                 if not matter and not doc_id:
@@ -103,22 +129,17 @@ def backfill_hitl(engine: "Engine", *,
                         row_id,
                     )
                     continue
-                # Mirror only the non-empty side(s). If one column is empty
-                # we leave it empty on the canonical side too — better to
-                # carry the single usable key than to mask emptiness with
-                # a duplicate.
-                s.execute(
-                    update(HitlItem)
-                    .where(HitlItem.id == row_id)
-                    .values(
-                        subject=matter or None,
-                        payload_hash=doc_id or None,
-                    )
-                )
+                conn.execute(text(
+                    "UPDATE hitl_item SET subject = :s, "
+                    "payload_hash = :p WHERE id = :id"
+                ), {
+                    "s": matter or None,
+                    "p": doc_id or None,
+                    "id": row_id,
+                })
                 total += 1
                 if total % log_every == 0:
                     log.info("backfilled %d hitl rows…", total)
-            s.commit()
     log.info("backfill complete — %d hitl rows updated", total)
     return total
 
