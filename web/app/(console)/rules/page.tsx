@@ -62,7 +62,7 @@ export default async function RulesPage({
     <>
       <PageHeader
         title={t("rules.title")}
-        description={t("rules.description")}
+        description={<RulesDescription t={t} />}
         actions={
           <Link href="/policies/new">
             <Button variant="primary" size="md">
@@ -112,6 +112,28 @@ export default async function RulesPage({
 }
 
 type TFunc = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+
+// Sentinel used to splice the inline /ledger link into the translated
+// description. We pass the marker as the {ledger} var, then split on it.
+const LEDGER_MARKER = "__LEDGER__"
+
+function RulesDescription({ t }: { t: TFunc }) {
+  const parts = t("rules.description", { ledger: LEDGER_MARKER }).split(LEDGER_MARKER)
+  const before = parts[0] ?? ""
+  const after = parts[1] ?? ""
+  return (
+    <>
+      {before}
+      <Link
+        href="/ledger"
+        className="font-medium text-[var(--color-accent-light)] hover:underline"
+      >
+        {t("rules.description.ledgerLink")}
+      </Link>
+      {after}
+    </>
+  )
+}
 
 function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
   return (
