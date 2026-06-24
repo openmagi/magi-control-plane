@@ -320,6 +320,43 @@ def test_run_command_policy_save_blocked_when_env_disabled(
     assert r.status_code == 403
 
 
+def test_run_command_policy_save_rejects_unknown_script_path(
+    client: TestClient,
+):
+    """D65 P2 — IR-validator only checks the SHAPE of script_path; the
+    PUT handler must additionally reject a 64-hex id that does not
+    resolve in the script store (stale paste / never-uploaded). The
+    policy would otherwise save cleanly and fail at runtime with
+    "script not found".
+    """
+    bogus_id = "f" * 64
+    r = client.put(
+        "/policies/p.unknown-script",
+        json={
+            "policy": {
+                "type": "run_command",
+                "id": "p.unknown-script",
+                "description": "stale id",
+                "trigger": {"host": "claude-code", "event": "PreToolUse",
+                            "matcher": "Bash"},
+                "runtime": "bash",
+                "command": "",
+                "script_path": bogus_id,
+                "args": [],
+                "timeout_ms": 2000,
+                "fail_closed": False,
+                "version": "0.1",
+            },
+            "source": "bot",
+            "enabled": True,
+        },
+        headers=ADMIN_KEY_HEADER,
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"].lower()
+    assert "script" in detail and "/scripts" in detail
+
+
 def test_run_command_policy_save_succeeds_by_default(client: TestClient):
     r = client.put(
         "/policies/p.run-command",

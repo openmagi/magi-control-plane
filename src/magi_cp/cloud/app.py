@@ -1840,7 +1840,8 @@ def create_app(
                           verifier_registry=verifier_registry,
                           keystore=ks,
                           kid=kid,
-                          script_store=script_store)
+                          script_store=script_store,
+                          script_store_lock=script_store_lock)
 
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     _attach_admin_tenant_routes(app, engine)
@@ -2254,6 +2255,7 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                            keystore: "KeyStore | None" = None,
                            kid: str | None = None,
                            script_store: "ScriptStore | None" = None,
+                           script_store_lock: asyncio.Lock | None = None,
                            ) -> None:
 
     def _assert_policy_lifecycle_endorsed(policy: AnyPolicy) -> None:
@@ -2978,6 +2980,34 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 "(MAGI_CP_ALLOW_RUN_COMMAND=0). Self-host docker compose "
                 "ships with run_command enabled by default.",
             )
+        # D65 P2 — store-resolvability for run_command/script_path. The
+        # IR validator only checks the 64-hex SHAPE of `script_path`;
+        # an operator (or a buggy client) can pre-fill a stale or
+        # never-existed id and the policy saves cleanly even though the
+        # runtime hook will fail with "script not found". Cross-check
+        # against the script store under the same lock the DELETE
+        # handler holds so a race (script removed mid-save) cannot
+        # silently land an unresolvable reference.
+        if (
+            isinstance(policy, RunCommandPolicy)
+            and policy.script_path
+            and script_store is not None
+        ):
+            # When the caller wired a lock through, use it for race
+            # safety with /scripts DELETE; otherwise read directly
+            # (back-compat for test rigs that pass `script_store` but
+            # no lock).
+            if script_store_lock is not None:
+                async with script_store_lock:
+                    resolved = script_store.get(policy.script_path)
+            else:
+                resolved = script_store.get(policy.script_path)
+            if resolved is None:
+                raise HTTPException(
+                    422,
+                    f"script_path {policy.script_path!r} is not in "
+                    "the script store; upload it at /scripts first",
+                )
         # P8: fail-closed on unknown / inactive verifier steps. This is
         # the primary authoring-time gate — the runtime gate cannot
         # retroactively reject a policy that was already PUT, so an

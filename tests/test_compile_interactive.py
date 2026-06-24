@@ -1109,3 +1109,358 @@ def test_llm_cannot_smuggle_unsupported_type_discriminator():
     assert r.status_code == 200, r.text
     draft = r.json()["draft"]
     assert "type" not in draft or draft["type"] == "run_command", draft
+
+
+# ── D65 follow-up regression tests ────────────────────────────────────
+
+
+def test_mixed_archetype_payload_drops_verifier_fields_on_run_command():
+    """Issue 1 P1 — when the LLM emits a mixed-archetype payload
+    (type=run_command + requires + action), the verifier-only fields
+    MUST NOT land on the draft. Iteration order of dict keys must not
+    affect the outcome.
+    """
+    canned = _llm_response(
+        message="This rule will run: pytest -q at the final answer.",
+        updates={
+            # Iteration order in CPython 3.7+ preserves insertion;
+            # verifier-shaped keys come AFTER `type` here so the
+            # pre-pop in step_compile is the only defense.
+            "type": "run_command",
+            "command": "pytest -q",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "requires": [{"kind": "regex", "pattern": r"\bhttps?://\S+"}],
+            "action": "block",
+            "on_missing": "block",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user", "content": "run pytest -q at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "pytest -q"
+    assert "requires" not in draft, draft
+    assert "action" not in draft, draft
+    assert "on_missing" not in draft, draft
+
+
+def test_verifier_intent_with_runnable_tool_name_stays_evidence():
+    """Issue 2 P1 — "ensure pytest passes at the final answer" is a
+    VERIFIER intent even though it names a tool ("pytest"). The
+    server-side heuristic refuses `type=run_command` when the user
+    turn matches a verifier verb without a runnable verb.
+    """
+    canned = _llm_response(
+        message="I'll add a check at the final answer.",
+        updates={
+            # The LLM mis-classifies the request as a run_command. The
+            # server-side heuristic must reject the discriminator.
+            "type": "run_command",
+            "command": "pytest",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "ensure pytest passes at the final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"] or {}
+    # The discriminator must NOT land.
+    assert draft.get("type") != "run_command", draft
+    # And the body fields the LLM tried to smuggle must not appear.
+    for forbidden in ("command", "script_path", "runtime", "args",
+                       "timeout_ms", "fail_closed"):
+        assert forbidden not in draft, (forbidden, draft)
+
+
+def test_mixed_runnable_and_verifier_verb_admits_run_command():
+    """The verifier-intent heuristic must NOT swallow phrasings that
+    explicitly contain a runnable verb. "Run pytest to verify the
+    tests passed" IS a run_command — the user said "run".
+    """
+    canned = _llm_response(
+        message="This rule will run: pytest at the final answer.",
+        updates={
+            "type": "run_command",
+            "command": "pytest",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run pytest to verify the tests passed"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "pytest"
+
+
+def test_llm_key_order_command_before_type_lands_command():
+    """Issue 8 P1 — the run_command merge MUST NOT depend on LLM dict
+    key order. With `command` emitted BEFORE `type`, the inline
+    command must still land on the draft.
+    """
+    canned = _llm_response(
+        message="This rule will run: pytest -q at the final answer.",
+        updates={
+            # Deliberately emit body fields BEFORE the discriminator;
+            # the pre-pass in step_compile must commit `type` first.
+            "command": "pytest -q",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "type": "run_command",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user", "content": "run pytest -q at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "pytest -q", draft
+    assert draft["runtime"] == "bash"
+
+
+def test_continuation_turn_no_retype_drops_late_verifier_fields():
+    """Issue 1 P1 — on a continuation turn the draft already carries
+    type=run_command and the LLM sends only `requires` + `action`
+    without re-stating `type`. The verifier-only fields MUST be
+    rejected and the draft stays a run_command.
+    """
+    canned = _llm_response(
+        message="Got it.",
+        updates={
+            "requires": [{"kind": "regex", "pattern": r"\bhttps?://\S+"}],
+            "action": "block",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior = {
+        "type": "run_command",
+        "id": "rerun-pytest",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "command": "pytest -q",
+        "runtime": "bash",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": prior, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "pytest -q"
+    assert "requires" not in draft, draft
+    assert "action" not in draft, draft
+
+
+def test_script_id_alias_round_trips_through_sanitizer():
+    """Issue 3 P2 — a friendly client may echo `script_id` (the wire
+    vocabulary) back to the server in `draft_so_far`. The sanitizer
+    must alias it onto the IR field `script_path` so the value
+    survives one wizard round-trip.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    sid = "a" * 64
+    poisoned = {
+        "type": "run_command",
+        "id": "run-our-script",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "runtime": "bash",
+        # Wire vocab — the IR uses `script_path` internally.
+        "script_id": sid,
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": poisoned, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft.get("script_path") == sid, draft
+
+
+def test_script_id_and_command_in_same_update_deterministic_winner():
+    """Issue 6 P2 — when the LLM emits BOTH a valid script_id and an
+    inline command in one payload, the winner must be deterministic
+    regardless of dict iteration order. Policy: the uploaded script
+    wins; the inline command is dropped.
+    """
+    sid = "b" * 64
+    # Emit script_id BEFORE command.
+    canned_a = _llm_response(
+        message="ok",
+        updates={
+            "type": "run_command",
+            "script_id": sid,
+            "command": "pytest -q",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    # Emit command BEFORE script_id.
+    canned_b = _llm_response(
+        message="ok",
+        updates={
+            "type": "run_command",
+            "command": "pytest -q",
+            "script_id": sid,
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    for canned in (canned_a, canned_b):
+        c = _client(llm_compiler=FakeLlmProvider([canned]))
+        r = c.post(
+            "/policies/compile-interactive",
+            headers=HEADERS,
+            json={
+                "history": [
+                    {"role": "user",
+                     "content": "run our script at final answer"},
+                ],
+                "draft_so_far": None,
+                "answers": None,
+            },
+        )
+        assert r.status_code == 200, r.text
+        draft = r.json()["draft"]
+        # Deterministic winner: script_id beats command.
+        assert draft.get("script_path") == sid, draft
+        assert "command" not in draft, draft
+
+
+def test_script_id_missing_drops_requires_body_question():
+    """Issue 7 P1 — when the assistant_message points at /scripts, the
+    wizard MUST NOT also ask "Which command should we run?". The
+    requires_body question is suppressed so the operator's only call
+    to action is the /scripts link.
+    """
+    canned = _llm_response(
+        message=(
+            "I'd run your fact-check script, but it isn't uploaded yet. "
+            "Upload it at /scripts and come back to enable this rule."
+        ),
+        updates={
+            "type": "run_command",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "script_id": "",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run our fact-check.py at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "/scripts" in body["assistant_message"], body
+    question_ids = {q["id"] for q in body["questions"]}
+    assert "q_requires_body" not in question_ids, body
+
+
+def test_scripts_substring_in_source_path_still_synthesizes_fallback():
+    """Issue 10 P2 — the /scripts fallback gate is a whole-word match.
+    An LLM message that mentions a source path like `/scripts/foo.py`
+    in unrelated prose does NOT suppress the fallback; the wizard
+    must still synthesise the upload-first guidance.
+    """
+    canned = _llm_response(
+        # Mentions /scripts/foo.py as a source path, NOT as the route.
+        message="I saw your reference to /scripts/foo.py in the spec.",
+        updates={
+            "type": "run_command",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run our deploy script at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The synthesised guidance mentions the /scripts route.
+    msg = body["assistant_message"]
+    # Server-synthesised fallback must have run — message contains
+    # the canonical "Upload it at /scripts" phrasing (en) OR the
+    # Korean equivalent.
+    assert ("/scripts and come back" in msg
+            or "/scripts에 업로드한 뒤" in msg), msg
