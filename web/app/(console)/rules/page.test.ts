@@ -176,4 +176,56 @@ describe("rules page source invariants (D56e)", () => {
     expect(src).toMatch(/tab === "checks"/)
     expect(src).toContain('href="/verifiers/new"')
   })
+
+  // ── D67: lock prebuilt-row dedup with regression tests ────────
+  it("D67: items.filter(prebuilt/) precedes the user-policies .map call site", () => {
+    // Regression for the D60 follow-up: the filter must run BEFORE
+    // the .map that renders the user-policies grid, otherwise the
+    // grid silently re-renders every materialized prebuilt row.
+    const filterMatch = src.match(
+      /\.filter\(\s*\(\s*p\s*\)\s*=>\s*!\s*p\.id\.startsWith\(['"]prebuilt\/['"]\)\s*\)/,
+    )
+    expect(filterMatch).not.toBeNull()
+    const filterIdx = filterMatch ? src.indexOf(filterMatch[0]) : -1
+    expect(filterIdx).toBeGreaterThan(-1)
+    // The user-policies grid maps over `userPolicies`, the variable
+    // the filter assigns to. Any rendered `userPolicies.map` must
+    // appear AFTER the filter call site.
+    const mapIdx = src.indexOf("userPolicies.map(")
+    expect(mapIdx).toBeGreaterThan(-1)
+    expect(filterIdx).toBeLessThan(mapIdx)
+  })
+
+  it("D67: count badge uses the filtered userPolicies length, not raw items", () => {
+    // Without this the summary badge claims a higher policy count
+    // than the grid actually renders, and the operator sees a stale
+    // number for every enabled prebuilt.
+    expect(src).toMatch(
+      /rules\.summary\.policies[^}]*nfFormat\(userPolicies\.length\)/,
+    )
+    // Empty-state branch must also key off userPolicies.length so
+    // a tenant with only prebuilt rows still sees the empty state.
+    expect(src).toMatch(/userPolicies\.length\s*===\s*0/)
+  })
+
+  it("D67: a prebuilt/ id never renders inside the user-policies grid", () => {
+    // Concrete-id regression: if someone reintroduces an unfiltered
+    // items.map in the PoliciesTab grid the source no longer
+    // guarantees the filter — assert that the only place a literal
+    // `prebuilt/` id token can appear in the PoliciesTab grid path
+    // is via the filter predicate itself.
+    //
+    // We grep the rendered <Card key={item.id}> body and confirm
+    // it iterates `userPolicies`, never the raw `items` collection.
+    const cardKeyMatch = src.match(
+      /\{userPolicies\.map\(\(item\)\s*=>\s*\(\s*<Card key=\{item\.id\}/,
+    )
+    expect(cardKeyMatch).not.toBeNull()
+    // Negative form: there must NOT be an `items.map((item)` that
+    // renders a `<Card key={item.id}>` directly (which would bypass
+    // the filter and double-render an enabled prebuilt row).
+    expect(src).not.toMatch(
+      /\{items\.map\(\(item\)\s*=>\s*\(\s*<Card key=\{item\.id\}/,
+    )
+  })
 })
