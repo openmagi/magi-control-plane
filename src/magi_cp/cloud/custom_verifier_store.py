@@ -49,12 +49,35 @@ _MAX_NAME_LEN = 64
 _MAX_DESCRIPTION_LEN = 500
 _ALLOWED_VERDICTS: set[VerdictStatus] = {"pass", "fail", "needs_review", "not_applicable"}
 _ALLOWED_BODY_TYPES: set[BodyType] = {"preview"}
+# Upper bound on triggers per verifier. Mirrors the spirit of
+# MAX_CITATIONS_PER_REQUEST in app.py: keep the persisted row bounded so
+# list / serialize stay cheap and a misuse (e.g. 10k duplicated triggers
+# under the 256KB body cap) cannot silently inflate disk reads.
+_MAX_TRIGGERS = 32
+
+
+def _allowed_events() -> set[str]:
+    """Canonical CC hook event vocabulary, sourced from D47 payload
+    schema registry.
+
+    Imported lazily so this module stays free of a top-level import
+    cycle (policy/payload_schemas already imports from policy/*; the
+    cloud layer drags in the cloud package which depends on policy).
+    """
+    from ..policy.payload_schemas import PAYLOAD_SCHEMAS_BY_EVENT
+    return set(PAYLOAD_SCHEMAS_BY_EVENT.keys())
 
 
 class CustomVerifierError(ValueError):
     """Raised when a verifier definition fails validation. The REST
     layer maps this to 422; lib callers see a typed exception they can
     catch on a per-field basis if they want to."""
+
+
+class CustomVerifierConflict(ValueError):
+    """Raised when a verifier name collides with an existing row for the
+    same tenant. The REST layer maps this to 409 Conflict (mirroring the
+    HITL one-shot 409 convention)."""
 
 
 @dataclass(frozen=True)
@@ -117,6 +140,12 @@ def validate_triggers(triggers: list[dict]) -> tuple[CustomVerifierTrigger, ...]
         raise CustomVerifierError("triggers must be a list")
     if len(triggers) == 0:
         raise CustomVerifierError("at least one trigger is required")
+    if len(triggers) > _MAX_TRIGGERS:
+        raise CustomVerifierError(
+            f"at most {_MAX_TRIGGERS} triggers per verifier"
+        )
+    allowed_events = _allowed_events()
+    seen: set[tuple[str, str]] = set()
     out: list[CustomVerifierTrigger] = []
     for i, raw in enumerate(triggers):
         if not isinstance(raw, dict):
@@ -125,11 +154,23 @@ def validate_triggers(triggers: list[dict]) -> tuple[CustomVerifierTrigger, ...]
         matcher_class = raw.get("matcher_class")
         if not isinstance(event, str) or not event.strip():
             raise CustomVerifierError(f"triggers[{i}].event: required string")
+        event_clean = event.strip()
+        if event_clean not in allowed_events:
+            raise CustomVerifierError(
+                f"triggers[{i}].event: unknown event {event_clean!r}; "
+                f"pick one of: {sorted(allowed_events)}"
+            )
         if matcher_class not in ("tool", "no_tool", "final"):
             raise CustomVerifierError(
                 f"triggers[{i}].matcher_class: must be tool|no_tool|final",
             )
-        out.append(CustomVerifierTrigger(event=event.strip(), matcher_class=matcher_class))
+        key = (event_clean, matcher_class)
+        if key in seen:
+            # Silently dedupe — author intent of "same trigger twice"
+            # is ambiguous but never useful. Keep first occurrence.
+            continue
+        seen.add(key)
+        out.append(CustomVerifierTrigger(event=event_clean, matcher_class=matcher_class))
     return tuple(out)
 
 
@@ -210,20 +251,53 @@ def serialize(v: CustomVerifier) -> dict:
 
 
 def deserialize(raw: dict) -> CustomVerifier:
-    triggers = tuple(
-        CustomVerifierTrigger(event=t["event"], matcher_class=t["matcher_class"])
-        for t in raw.get("triggers", [])
-    )
+    """Build a CustomVerifier from one persisted row.
+
+    Defensive against partial writes / hand-edits of the on-disk JSON:
+    missing or wrong-shape required keys raise CustomVerifierError so
+    callers (list_for_tenant / get) can choose to skip the row rather
+    than crash the entire route with KeyError → uncaught 500.
+    """
+    if not isinstance(raw, dict):
+        raise CustomVerifierError("verifier row must be a JSON object")
+    try:
+        rid = raw["id"]
+        rname = raw["name"]
+        rdesc = raw["description"]
+    except KeyError as e:
+        raise CustomVerifierError(f"verifier row missing required key: {e}") from e
+    if not isinstance(rid, str) or not isinstance(rname, str) or not isinstance(rdesc, str):
+        raise CustomVerifierError(
+            "verifier row id/name/description must be strings"
+        )
+    try:
+        triggers = tuple(
+            CustomVerifierTrigger(event=t["event"], matcher_class=t["matcher_class"])
+            for t in raw.get("triggers", [])
+        )
+    except (KeyError, TypeError) as e:
+        raise CustomVerifierError(f"verifier row has malformed trigger: {e}") from e
     return CustomVerifier(
-        id=raw["id"],
-        name=raw["name"],
-        description=raw["description"],
+        id=rid,
+        name=rname,
+        description=rdesc,
         triggers=triggers,
         verdict_set=tuple(raw.get("verdict_set", [])),
         body_type=raw.get("body_type", "preview"),
         created_at=int(raw.get("created_at", 0)),
         tenant_id=raw.get("tenant_id", ""),
     )
+
+
+def _safe_deserialize(raw: dict) -> CustomVerifier | None:
+    """deserialize() wrapper that returns None instead of raising for
+    malformed rows. Used by the list/get paths so one bad row never
+    causes the entire route to 500 — the dashboard stays useful while
+    the operator inspects the on-disk file."""
+    try:
+        return deserialize(raw)
+    except CustomVerifierError:
+        return None
 
 
 class CustomVerifierStore:
@@ -253,8 +327,21 @@ class CustomVerifierStore:
             f.write("\n")
 
     def add(self, tenant_id: str, verifier: CustomVerifier) -> CustomVerifier:
+        """Persist a new verifier under `tenant_id`.
+
+        Treat (tenant_id, name) as the natural key: re-POSTing the same
+        name for the same tenant raises CustomVerifierConflict so the
+        REST layer can return 409 instead of silently accumulating
+        duplicate rows the operator has no PUT/DELETE route to clean up.
+        Server-generated id stays opaque.
+        """
         raw = self._load_raw()
         bucket = raw.setdefault(tenant_id, {"verifiers": []})
+        for existing in bucket.get("verifiers", []):
+            if existing.get("name") == verifier.name:
+                raise CustomVerifierConflict(
+                    f"a verifier named {verifier.name!r} already exists for this tenant"
+                )
         # Persist the tenant_id binding so cross-tenant audits / migrations
         # do not lose it if the bucket key is the only place it lives.
         stamped = CustomVerifier(
@@ -278,7 +365,7 @@ class CustomVerifierStore:
             return None
         for row in bucket.get("verifiers", []):
             if row.get("id") == verifier_id:
-                return deserialize(row)
+                return _safe_deserialize(row)
         return None
 
     def list_for_tenant(self, tenant_id: str) -> list[CustomVerifier]:
@@ -286,11 +373,17 @@ class CustomVerifierStore:
         bucket = raw.get(tenant_id)
         if bucket is None:
             return []
-        return [deserialize(row) for row in bucket.get("verifiers", [])]
+        out: list[CustomVerifier] = []
+        for row in bucket.get("verifiers", []):
+            v = _safe_deserialize(row)
+            if v is not None:
+                out.append(v)
+        return out
 
 
 __all__ = [
     "CustomVerifier",
+    "CustomVerifierConflict",
     "CustomVerifierError",
     "CustomVerifierStore",
     "CustomVerifierTrigger",

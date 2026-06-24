@@ -452,16 +452,19 @@ export type PresetEntry = {
 }
 
 /** Pure-derivation catalog row: an evidence-type step the runtime can
- * fire. Either provided by a built-in verifier or referenced by a
- * stored policy (in which case `enforcement = "missing"` until an
- * operator wires a verifier for that step). */
+ * fire. Provided by:
+ *   - a built-in verifier (`source: "builtin"`),
+ *   - a tenant-scoped custom verifier authored via /verifiers/new
+ *     (`source: "custom"`, `enforcement: "preview"`),
+ *   - or referenced by a stored policy with no matching verifier
+ *     (`source: "policy-derived"`, `enforcement: "missing"`). */
 export type EvidenceTypeEntry = {
   step: string
   category: PresetEntry["category"] | null
   description: string
   enforcement: "enforcing" | "always-on" | "preview" | "missing"
   name: string | null
-  source: "builtin" | "policy-derived"
+  source: "builtin" | "custom" | "policy-derived"
   used_by_policies: string[]
 }
 

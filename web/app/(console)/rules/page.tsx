@@ -304,10 +304,12 @@ function EvidenceTab({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-baseline gap-2">
                       <Code className="text-sm">{row.step}</Code>
-                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700">
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
                         {row.source === "builtin"
                           ? t("rules.evidence.source.builtin")
-                          : t("rules.evidence.source.derived")}
+                          : row.source === "custom"
+                            ? t("rules.evidence.source.custom")
+                            : t("rules.evidence.source.derived")}
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">

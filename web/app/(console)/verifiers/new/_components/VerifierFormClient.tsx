@@ -20,6 +20,20 @@
 
 import { useMemo, useState } from "react"
 
+/**
+ * Stable id generator for trigger rows. crypto.randomUUID is in the
+ * standard DOM lib but server snapshots from Next 14 do not run this
+ * file (it is "use client"); we still guard with a fallback so an
+ * unusually old runtime / a vitest jsdom environment that lacks the
+ * API never throws when adding a row.
+ */
+function _genRowId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `row-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
+}
+
 export type T = (k: string) => string
 
 const EVENTS: ReadonlyArray<string> = [
@@ -49,6 +63,11 @@ const ALLOWED_VERDICTS: ReadonlyArray<"pass" | "fail" | "needs_review" | "not_ap
 const NAME_RE = /^[a-z][a-z0-9_]*$/
 
 export type TriggerRow = { event: string; matcher_class: "tool" | "no_tool" | "final" }
+
+/** Internal row carries a stable id so React identity + DOM ids are
+ * tied to the row content, not its position in the array. Stripped
+ * before serializing into the payload (`event` + `matcher_class` only). */
+type InternalTriggerRow = TriggerRow & { _id: string }
 
 interface Props {
   labels: {
@@ -85,16 +104,36 @@ interface Props {
 export default function VerifierFormClient({ labels, initial }: Props) {
   const [name, setName] = useState(initial?.name ?? "")
   const [description, setDescription] = useState(initial?.description ?? "")
-  const [triggers, setTriggers] = useState<TriggerRow[]>(
-    initial?.triggers && initial.triggers.length > 0
-      ? initial.triggers
-      : [{ event: "PreToolUse", matcher_class: "tool" }],
-  )
+  const [triggers, setTriggers] = useState<InternalTriggerRow[]>(() => {
+    const seed: TriggerRow[] =
+      initial?.triggers && initial.triggers.length > 0
+        ? [...initial.triggers]
+        : [{ event: "PreToolUse", matcher_class: "tool" }]
+    return seed.map((r) => ({ ...r, _id: _genRowId() }))
+  })
   const initialVerdicts = useMemo(() => {
     const seed = initial?.verdict_set ?? ["pass", "fail"]
     return new Set(seed.filter((v) => (ALLOWED_VERDICTS as ReadonlyArray<string>).includes(v)))
   }, [initial?.verdict_set])
   const [verdicts, setVerdicts] = useState<Set<string>>(initialVerdicts)
+
+  // Touched state: only show "X is required" once the operator has
+  // engaged with the field (focus → blur OR first edit) or has
+  // attempted to submit. Prevents screen readers from announcing
+  // "name is required" the moment the page mounts (WCAG 3.3.1).
+  const [touched, setTouched] = useState({
+    name: false,
+    description: false,
+  })
+  const [submitAttempted, setSubmitAttempted] = useState(false)
+  const showNameError = touched.name || submitAttempted
+  const showDescriptionError = touched.description || submitAttempted
+  // Triggers + verdicts seed to non-empty defaults so their error never
+  // shows on initial mount. We still gate the trigger error visibility
+  // behind submitAttempted as well, to align with the explicit-engage
+  // model the name + description follow.
+  const showTriggersError = submitAttempted
+  const showVerdictsError = submitAttempted
 
   // Live validation. The server action re-runs these; surfacing them in
   // the client keeps the operator from round-tripping a doomed POST.
@@ -132,7 +171,10 @@ export default function VerifierFormClient({ labels, initial }: Props) {
   const payload = JSON.stringify({
     name,
     description: description.trim(),
-    triggers,
+    // Strip the client-only _id before serializing — the cloud only
+    // accepts {event, matcher_class} (extra='forbid' on the Pydantic
+    // model rejects anything else).
+    triggers: triggers.map(({ event, matcher_class }) => ({ event, matcher_class })),
     verdict_set: ALLOWED_VERDICTS.filter((v) => verdicts.has(v)),
     body_type: "preview",
   })
@@ -156,16 +198,23 @@ export default function VerifierFormClient({ labels, initial }: Props) {
           type="text"
           value={name}
           maxLength={64}
-          onChange={(e) => setName(e.target.value)}
-          aria-invalid={nameError ? "true" : undefined}
-          aria-describedby={nameError ? "custom-verifier-name-error" : "custom-verifier-name-helper"}
+          onChange={(e) => {
+            setName(e.target.value)
+            if (!touched.name) setTouched((t) => ({ ...t, name: true }))
+          }}
+          onBlur={() => setTouched((t) => ({ ...t, name: true }))}
+          aria-invalid={showNameError && nameError ? "true" : undefined}
+          aria-describedby={[
+            showNameError && nameError ? "custom-verifier-name-error" : null,
+            "custom-verifier-name-helper",
+          ].filter(Boolean).join(" ")}
           className="block w-full rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-input)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
           placeholder="my_custom_check"
         />
         <p id="custom-verifier-name-helper" className="text-[11px] text-[var(--color-text-tertiary)]">
           {labels.nameHelper}
         </p>
-        {nameError && (
+        {showNameError && nameError && (
           <p
             id="custom-verifier-name-error"
             role="alert"
@@ -191,9 +240,21 @@ export default function VerifierFormClient({ labels, initial }: Props) {
           value={description}
           maxLength={500}
           rows={3}
-          onChange={(e) => setDescription(e.target.value)}
-          aria-invalid={descriptionError ? "true" : undefined}
-          aria-describedby={descriptionError ? "custom-verifier-description-error" : "custom-verifier-description-helper"}
+          onChange={(e) => {
+            setDescription(e.target.value)
+            if (!touched.description) setTouched((t) => ({ ...t, description: true }))
+          }}
+          onBlur={() => setTouched((t) => ({ ...t, description: true }))}
+          aria-invalid={showDescriptionError && descriptionError ? "true" : undefined}
+          // Keep the helper id in aria-describedby even when an error is
+          // present so screen readers continue to announce the live
+          // character counter ({n}/500) as the operator approaches the
+          // 500-char cap. Otherwise the counter would silently vanish
+          // from the SR experience the moment validation fired.
+          aria-describedby={[
+            showDescriptionError && descriptionError ? "custom-verifier-description-error" : null,
+            "custom-verifier-description-helper",
+          ].filter(Boolean).join(" ")}
           className="block w-full rounded-md border border-[var(--color-border-strong)] bg-[var(--color-surface-input)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
           placeholder="..."
         />
@@ -203,7 +264,7 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         >
           {labels.descriptionHelper} ({description.length}/500)
         </p>
-        {descriptionError && (
+        {showDescriptionError && descriptionError && (
           <p
             id="custom-verifier-description-error"
             role="alert"
@@ -215,46 +276,63 @@ export default function VerifierFormClient({ labels, initial }: Props) {
       </div>
 
       {/* triggers */}
-      <div className="space-y-1.5" data-testid="triggers-section">
+      <div
+        className="space-y-1.5"
+        data-testid="triggers-section"
+        role="group"
+        aria-labelledby="triggers-label"
+        aria-describedby={[
+          "triggers-helper",
+          showTriggersError && triggersError ? "triggers-error" : null,
+        ].filter(Boolean).join(" ")}
+      >
         <div className="flex items-baseline justify-between gap-2">
-          <span className="block text-xs font-semibold text-[var(--color-text-secondary)]">
+          <span
+            id="triggers-label"
+            className="block text-xs font-semibold text-[var(--color-text-secondary)]"
+          >
             {labels.triggers}
             <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
           </span>
           <button
             type="button"
             onClick={() =>
-              setTriggers((rows) => [...rows, { event: "PreToolUse", matcher_class: "tool" }])
+              setTriggers((rows) => [
+                ...rows,
+                { event: "PreToolUse", matcher_class: "tool", _id: _genRowId() },
+              ])
             }
-            className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+            className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
           >
             {labels.triggerAdd}
           </button>
         </div>
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">{labels.triggersHelper}</p>
+        <p id="triggers-helper" className="text-[11px] text-[var(--color-text-tertiary)]">
+          {labels.triggersHelper}
+        </p>
         <div className="space-y-2">
           {triggers.map((tr, idx) => (
             <div
-              key={idx}
+              key={tr._id}
               data-testid="trigger-row"
               className="flex flex-wrap items-end gap-2 rounded-md border border-black/[0.06] bg-[var(--color-surface-1,#fafafa)]/40 p-2"
             >
               <div className="flex-1 min-w-[140px]">
                 <label
-                  htmlFor={`trigger-event-${idx}`}
+                  htmlFor={`trigger-event-${tr._id}`}
                   className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
                 >
                   {labels.triggerEvent}
                 </label>
                 <select
-                  id={`trigger-event-${idx}`}
+                  id={`trigger-event-${tr._id}`}
                   value={tr.event}
                   onChange={(e) =>
                     setTriggers((rows) =>
-                      rows.map((r, i) => (i === idx ? { ...r, event: e.target.value } : r)),
+                      rows.map((r) => (r._id === tr._id ? { ...r, event: e.target.value } : r)),
                     )
                   }
-                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs"
+                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
                 >
                   {EVENTS.map((ev) => (
                     <option key={ev} value={ev}>{ev}</option>
@@ -263,24 +341,24 @@ export default function VerifierFormClient({ labels, initial }: Props) {
               </div>
               <div className="flex-1 min-w-[120px]">
                 <label
-                  htmlFor={`trigger-matcher-${idx}`}
+                  htmlFor={`trigger-matcher-${tr._id}`}
                   className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
                 >
                   {labels.triggerMatcher}
                 </label>
                 <select
-                  id={`trigger-matcher-${idx}`}
+                  id={`trigger-matcher-${tr._id}`}
                   value={tr.matcher_class}
                   onChange={(e) =>
                     setTriggers((rows) =>
-                      rows.map((r, i) =>
-                        i === idx
+                      rows.map((r) =>
+                        r._id === tr._id
                           ? { ...r, matcher_class: e.target.value as TriggerRow["matcher_class"] }
                           : r,
                       ),
                     )
                   }
-                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs"
+                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
                 >
                   {MATCHER_CLASSES.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
@@ -291,36 +369,55 @@ export default function VerifierFormClient({ labels, initial }: Props) {
                 <button
                   type="button"
                   aria-label={labels.triggerRemove}
-                  onClick={() => setTriggers((rows) => rows.filter((_, i) => i !== idx))}
-                  className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02]"
+                  onClick={() => setTriggers((rows) => rows.filter((r) => r._id !== tr._id))}
+                  className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
                 >
-                  ×
+                  {/* aria-hidden so SR keys on the aria-label only; the
+                      visible glyph stays for sighted users. */}
+                  <span aria-hidden="true">×</span>
                 </button>
               )}
             </div>
           ))}
         </div>
-        {triggersError && (
-          <p role="alert" className="text-[11px] text-[var(--color-deny-fg)]">
+        {showTriggersError && triggersError && (
+          <p
+            id="triggers-error"
+            role="alert"
+            className="text-[11px] text-[var(--color-deny-fg)]"
+          >
             {triggersError}
           </p>
         )}
       </div>
 
       {/* verdict set */}
-      <div className="space-y-1.5">
-        <span className="block text-xs font-semibold text-[var(--color-text-secondary)]">
+      <div
+        className="space-y-1.5"
+        role="group"
+        aria-labelledby="verdict-set-label"
+        aria-describedby={[
+          "verdict-set-helper",
+          showVerdictsError && verdictError ? "verdict-set-error" : null,
+        ].filter(Boolean).join(" ")}
+      >
+        <span
+          id="verdict-set-label"
+          className="block text-xs font-semibold text-[var(--color-text-secondary)]"
+        >
           {labels.verdictSet}
           <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
         </span>
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">{labels.verdictSetHelper}</p>
+        <p id="verdict-set-helper" className="text-[11px] text-[var(--color-text-tertiary)]">
+          {labels.verdictSetHelper}
+        </p>
         <div className="flex flex-wrap gap-2">
           {ALLOWED_VERDICTS.map((v) => {
             const selected = verdicts.has(v)
             return (
               <label
                 key={v}
-                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs focus-within:ring-2 focus-within:ring-[var(--color-border-focus)] focus-within:ring-offset-1 ${
                   selected
                     ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.06] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-strong)] bg-white text-[var(--color-text-secondary)]"
@@ -344,8 +441,12 @@ export default function VerifierFormClient({ labels, initial }: Props) {
             )
           })}
         </div>
-        {verdictError && (
-          <p role="alert" className="text-[11px] text-[var(--color-deny-fg)]">
+        {showVerdictsError && verdictError && (
+          <p
+            id="verdict-set-error"
+            role="alert"
+            className="text-[11px] text-[var(--color-deny-fg)]"
+          >
             {verdictError}
           </p>
         )}
@@ -357,7 +458,7 @@ export default function VerifierFormClient({ labels, initial }: Props) {
           {labels.bodyType}
         </span>
         <div className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-xs text-[var(--color-text-secondary)]">
-          <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">
+          <span className="inline-flex items-center rounded-full bg-[var(--color-review-bg,#fffbeb)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-review-fg,#b45309)]">
             preview
           </span>
           <span>{labels.bodyTypePreview}</span>
@@ -368,7 +469,14 @@ export default function VerifierFormClient({ labels, initial }: Props) {
         <button
           type="submit"
           disabled={!canSubmit}
-          className="rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--color-accent)]/90 disabled:cursor-not-allowed disabled:opacity-55"
+          onClick={() => {
+            // Force-show every field's error once the user attempts to
+            // submit, even if they have not visited each individual
+            // field. Mirrors the WCAG 3.3.1 "error visible on submit"
+            // expectation while keeping the initial-render silent.
+            if (!submitAttempted) setSubmitAttempted(true)
+          }}
+          className="rounded-md bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--color-accent)]/90 disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
         >
           {labels.submit}
         </button>

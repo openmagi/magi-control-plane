@@ -38,8 +38,35 @@ describe("VerifierExpander source invariants", () => {
     expect(src).toContain("rules.verifier.expander.noDescriptor")
   })
 
-  it("looks up payload-schema field descriptions for chip hover", () => {
+  it("looks up payload-schema field descriptions as secondary fallback", () => {
+    // Primary lookup is the descriptor's own input_fields (verifier
+    // input_schema). availableFields() stays available as a secondary
+    // fallback for paths that happen to overlap CC stdin fields.
     expect(src).toContain("availableFields(")
+  })
+
+  it("renders example payload inline (not as mouse-only title attr)", () => {
+    // P1 a11y: the prior `title={titleParts.join("\\n\\n")}` was mouse-
+    // only and invisible to keyboard / SR users. Examples now render
+    // in a sibling <p> reachable by focus order.
+    expect(src).toContain("rules.verifier.expander.inputExample")
+    expect(src).not.toMatch(/\btitle=\{titleParts/)
+  })
+
+  it("summary surfaces the verifier step name (not just generic 'Details')", () => {
+    // Distinct accessible name per row so a SR user scanning the list
+    // hears "citation_verify details" instead of five "details"s.
+    expect(src).toContain("rules.verifier.expander.toggleWithStep")
+  })
+
+  it("verdict + matcher chips use theme-aware CSS variable tokens", () => {
+    // P2 a11y / dark-mode hardening: bg-emerald-50 / bg-rose-50 etc
+    // burn in for the light theme. The new tokens degrade through a
+    // var(--color-*) fallback.
+    expect(src).toMatch(/var\(--color-pass-bg/)
+    expect(src).toMatch(/var\(--color-deny-bg/)
+    expect(src).not.toMatch(/bg-emerald-50/)
+    expect(src).not.toMatch(/bg-rose-50/)
   })
 
   it("animates the chevron via CSS group-open transform (no JS lib)", () => {

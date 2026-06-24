@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest"
+import { readFileSync } from "node:fs"
+import path from "node:path"
 import {
   allVerifierDescriptors,
   getVerifierDescriptor,
@@ -49,5 +51,123 @@ describe("verifier descriptors mirror", () => {
     const steps = allVerifierDescriptors().map((d) => d.step)
     const sorted = [...steps].sort()
     expect(steps).toEqual(sorted)
+  })
+
+  it("every input_payload_paths entry has a matching input_fields row", () => {
+    // The dashboard expander renders type + description chips from
+    // input_fields, falling back to a CC payload-schema cross-ref. A
+    // path without a matching input_fields entry would render as a
+    // bare chip with no type signal.
+    for (const d of allVerifierDescriptors()) {
+      const fieldPaths = new Set((d.input_fields ?? []).map((f) => f.path))
+      for (const p of d.input_payload_paths) {
+        expect(fieldPaths.has(p)).toBe(true)
+      }
+    }
+  })
+})
+
+
+/**
+ * Parity check vs the Python source-of-truth (descriptors.py).
+ *
+ * The brief flagged that the TS mirror was ~150 lines of byte-stable
+ * duplicated structural data with no drift gate. This test parses the
+ * Python file as raw text and asserts the headline structural
+ * invariants line up: same set of step names, same trigger event/class
+ * pairs, same input_payload_paths, same verdict_set members. It is
+ * intentionally NOT a deep JSON-equality check — the Python literals
+ * use different string-escaping conventions and the per-field
+ * descriptions are short prose that doesn't gain anything from
+ * char-level pinning. Catching shape drift is enough; the cloud
+ * /verifier-descriptors endpoint is the runtime source of truth for
+ * any third-party consumer that wants exact JSON.
+ */
+describe("verifier descriptors parity with descriptors.py", () => {
+  const pyPath = path.resolve(
+    __dirname, "..", "..", "src", "magi_cp", "verifier", "descriptors.py",
+  )
+  const pySrc = readFileSync(pyPath, "utf-8")
+
+  function extractPythonStepKeys(src: string): string[] {
+    // Match lines like `    "citation_verify": {` inside _DESCRIPTORS.
+    const out: string[] = []
+    const re = /^\s{4}"([a-z_]+)":\s*\{/gm
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src)) !== null) {
+      out.push(m[1])
+    }
+    return out.sort()
+  }
+
+  function extractPythonInputPaths(src: string, step: string): string[] {
+    // Per-step grab: `    "<step>": { ... "input_payload_paths": [ ... ], ...`.
+    // Naive `\\[(...)\\]` would stop at the first `]` it sees — which is
+    // inside path literals like `citations[].quote`. We instead walk
+    // bracket depth manually from the `[` after `input_payload_paths`.
+    const headRe = new RegExp(
+      `"${step}":\\s*\\{[\\s\\S]*?"input_payload_paths":\\s*\\[`,
+      "m",
+    )
+    const m = src.match(headRe)
+    if (!m) return []
+    const startIdx = (m.index ?? 0) + m[0].length
+    // Walk forward, ignoring `[` / `]` inside string literals, until
+    // we balance the opening bracket. This handles the embedded `[]`
+    // sequences in path strings like `"citations[].quote"`.
+    let depth = 1
+    let i = startIdx
+    let inString = false
+    while (i < src.length && depth > 0) {
+      const ch = src[i]
+      if (inString) {
+        if (ch === "\\") {
+          i += 2
+          continue
+        }
+        if (ch === '"') inString = false
+      } else {
+        if (ch === '"') inString = true
+        else if (ch === "[") depth += 1
+        else if (ch === "]") depth -= 1
+      }
+      i += 1
+      if (depth === 0) break
+    }
+    const body = src.slice(startIdx, i - 1)
+    return Array.from(body.matchAll(/"([^"]+)"/g)).map((mm) => mm[1])
+  }
+
+  it("step set matches", () => {
+    const pySteps = extractPythonStepKeys(pySrc)
+    const tsSteps = allVerifierDescriptors().map((d) => d.step).sort()
+    expect(pySteps).toEqual(tsSteps)
+  })
+
+  it("input_payload_paths matches per step", () => {
+    for (const d of allVerifierDescriptors()) {
+      const pyPaths = extractPythonInputPaths(pySrc, d.step)
+      expect(
+        pyPaths,
+        `input_payload_paths drift on ${d.step}`,
+      ).toEqual(d.input_payload_paths)
+    }
+  })
+
+  it("trigger event names match per step", () => {
+    for (const d of allVerifierDescriptors()) {
+      // Pull the `"<step>": { triggers: [ {event: "..."} ... ] }` block.
+      const stepRe = new RegExp(
+        `"${d.step}":\\s*\\{[\\s\\S]*?"triggers":\\s*\\[([\\s\\S]*?)\\][\\s\\S]*?"input_payload_paths"`,
+        "m",
+      )
+      const m = pySrc.match(stepRe)
+      expect(m, `triggers block not found for ${d.step}`).not.toBeNull()
+      const eventsInPy = Array.from(
+        m![1].matchAll(/"event":\s*"([^"]+)"/g),
+      ).map((mm) => mm[1])
+      const eventsInTs = d.triggers.map((tr) => tr.event)
+      expect(eventsInPy.sort()).toEqual(eventsInTs.sort())
+    }
   })
 })

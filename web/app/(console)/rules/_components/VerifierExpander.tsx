@@ -1,5 +1,10 @@
 import { availableFields, type FieldDescriptor as PayloadFieldDescriptor } from "@/lib/payload-schemas"
-import { getVerifierDescriptor, type EvidenceField, type TriggerSpec } from "@/lib/verifier-descriptors"
+import {
+  getVerifierDescriptor,
+  type EvidenceField,
+  type InputField,
+  type TriggerSpec,
+} from "@/lib/verifier-descriptors"
 import { Code } from "@/components/ui"
 
 /**
@@ -26,13 +31,22 @@ type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>
 
 export function VerifierExpander({ step, t }: { step: string; t: T }) {
   const descriptor = getVerifierDescriptor(step)
+  // Distinct accessible name per row so a SR user scanning the list
+  // hears "details, citation_verify" instead of five "details"s in a row.
+  const summaryLabel = t("rules.verifier.expander.toggleWithStep", { step })
 
   return (
     <details className="group mt-2 rounded-lg border border-black/[0.05] bg-[var(--color-surface-1,#f9fafb)]/40">
       <summary
-        className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+        aria-label={summaryLabel}
+        className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
       >
-        <span>{t("rules.verifier.expander.toggle")}</span>
+        <span>
+          {t("rules.verifier.expander.toggle")}
+          <span className="ml-1.5 font-mono normal-case tracking-normal text-[var(--color-text-secondary)]">
+            {step}
+          </span>
+        </span>
         <span
           aria-hidden
           className="inline-block transition-transform duration-150 group-open:rotate-180"
@@ -52,6 +66,7 @@ export function VerifierExpander({ step, t }: { step: string; t: T }) {
             <InputPathsPanel
               step={step}
               paths={descriptor.input_payload_paths}
+              inputFields={descriptor.input_fields ?? []}
               triggers={descriptor.triggers}
               t={t}
             />
@@ -81,7 +96,7 @@ function TriggersPanel({ triggers, t }: { triggers: TriggerSpec[]; t: T }) {
           <li key={`${tr.event}:${tr.matcher_class}:${i}`} className="text-xs">
             <div className="flex flex-wrap items-baseline gap-2">
               <Code className="text-[12px]">{tr.event}</Code>
-              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-700">
+              <span className="inline-flex items-center rounded-full bg-[var(--color-muted-bg,#f3f4f6)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
                 {tr.matcher_class}
               </span>
             </div>
@@ -98,58 +113,87 @@ function TriggersPanel({ triggers, t }: { triggers: TriggerSpec[]; t: T }) {
 function InputPathsPanel({
   step,
   paths,
+  inputFields,
   triggers,
   t,
 }: {
   step: string
   paths: string[]
+  inputFields: InputField[]
   triggers: TriggerSpec[]
   t: T
 }) {
-  // Resolve descriptions from the canonical CC hook payload schema where
-  // possible (chip hover gives the operator the runtime type + example).
-  // Paths the verifier reads from its OWN input dict (e.g. `text` for
-  // privilege_scan, `citations[].quote` for citation_verify) are not in
-  // the CC stdin envelope and fall through to a neutral chip.
-  const lookup: Record<string, PayloadFieldDescriptor> = {}
+  // Primary lookup: descriptor's own input_fields (sourced from the
+  // verifier's input_schema). These describe the verifier's OWN input
+  // dict — `text` for privilege_scan, `citations[].quote` for
+  // citation_verify, etc. They are NOT the CC stdin envelope.
+  const inputLookup: Record<string, InputField> = {}
+  for (const f of inputFields) {
+    if (f.path) inputLookup[f.path] = f
+  }
+  // Secondary fallback: CC hook payload schema cross-reference. When
+  // an author lists a path that overlaps a CC stdin field (e.g.
+  // `tool_input.command`), we surface the schema's description / type
+  // for free.
+  const ccLookup: Record<string, PayloadFieldDescriptor> = {}
   for (const tr of triggers) {
     const fields = availableFields(
       tr.event,
       tr.matcher_class === "tool" ? "*" : undefined,
     )
     for (const f of fields) {
-      // First match wins so authors see the most specific trigger's
-      // example first. The chip set across triggers is union-like.
-      if (!lookup[f.path]) lookup[f.path] = f
+      if (!ccLookup[f.path]) ccLookup[f.path] = f
     }
   }
 
   return (
     <div data-testid="verifier-expander-input">
       <PanelHeader>{t("rules.verifier.expander.input")}</PanelHeader>
-      <div className="flex flex-wrap gap-1.5" role="list" data-step={step}>
+      <ul className="space-y-1.5" role="list" data-step={step}>
         {paths.map((p) => {
-          const field = lookup[p]
-          const description = field?.description ?? t("rules.verifier.expander.inputFallback")
-          const example = field?.example
-          const type = field?.type ?? "json"
-          const titleParts = [`${type}: ${description}`]
-          if (example) titleParts.push(`example: ${example}`)
+          const inputField = inputLookup[p]
+          const ccField = ccLookup[p]
+          const description =
+            inputField?.description
+            ?? ccField?.description
+            ?? t("rules.verifier.expander.inputFallback")
+          const example = inputField?.example ?? ccField?.example
+          const type = inputField?.type ?? ccField?.type ?? "json"
+          // Stable id so aria-describedby resolves; one path per row.
+          const descId = `verifier-${step}-input-${p.replace(/[^a-zA-Z0-9_-]/g, "_")}`
           return (
-            <span
+            <li
               key={p}
               role="listitem"
-              title={titleParts.join("\n\n")}
-              className="inline-flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 py-0.5 text-[11px] font-mono text-[var(--color-text-secondary)]"
+              className="rounded-md border border-black/[0.08] bg-white p-2"
             >
-              <span>{p}</span>
-              <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                :{type}
-              </span>
-            </span>
+              <div className="flex flex-wrap items-baseline gap-1.5">
+                <Code className="text-[11.5px]">{p}</Code>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  {type}
+                </span>
+              </div>
+              {/* Description + example rendered inline so they are reachable
+                  by keyboard / screen reader. The prior `title` attribute
+                  was mouse-only and invisible to AT (WCAG 2.1.1 / 1.3.1). */}
+              <p
+                id={descId}
+                className="mt-1 text-[11px] text-[var(--color-text-secondary)] leading-relaxed"
+              >
+                {description}
+              </p>
+              {example && (
+                <p className="mt-0.5 text-[10.5px] text-[var(--color-text-tertiary)] font-mono break-all">
+                  <span className="not-italic uppercase tracking-wider text-[9.5px] mr-1.5">
+                    {t("rules.verifier.expander.inputExample")}
+                  </span>
+                  {example}
+                </p>
+              )}
+            </li>
           )
         })}
-      </div>
+      </ul>
     </div>
   )
 }
@@ -180,19 +224,23 @@ function VerdictPanel({
 }
 
 function verdictTone(verdict: string): string {
+  // Theme-aware CSS variable pairs so a future dark-mode flip does not
+  // strand the chips on a near-white bg + light-tinted fg (WCAG 1.4.3).
+  // Fallback values match the prior emerald/rose/amber/gray palette so
+  // the chip render is byte-identical until tokens are themed.
   switch (verdict) {
     case "pass":
-      return "bg-emerald-50 text-emerald-700"
+      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
     case "deny":
     case "fail":
-      return "bg-rose-50 text-rose-700"
+      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
     case "review":
     case "needs_review":
-      return "bg-amber-50 text-amber-700"
+      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
     case "not_applicable":
-      return "bg-gray-100 text-gray-700"
+      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
     default:
-      return "bg-gray-100 text-gray-700"
+      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
   }
 }
 

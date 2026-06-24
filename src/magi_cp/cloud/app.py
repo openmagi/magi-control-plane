@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Path as FPath
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -41,7 +42,8 @@ from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
 from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
 from .custom_verifier_store import (
-    CustomVerifierError, CustomVerifierStore, build_from_dict as build_custom_verifier_from_dict,
+    CustomVerifierConflict, CustomVerifierError, CustomVerifierStore,
+    build_from_dict as build_custom_verifier_from_dict,
     serialize as serialize_custom_verifier,
 )
 from .policy_store import PolicyStore, _evidence_req_to_dict
@@ -408,6 +410,36 @@ def require_tenant_auth(
     request.state.api_key_id = auth.api_key_id
 
 
+def _resolve_tenant_id_from_request(request: Request) -> str | None:
+    """Best-effort tenant resolution for routes where auth is OPTIONAL.
+
+    Used by /verifiers + /catalog/evidence-types so that an unauthenticated
+    caller gets the global view (legacy behaviour) while an authenticated
+    caller transparently sees their tenant's custom verifiers merged in.
+    Mirrors the shape of require_tenant_auth but returns None instead of
+    raising on missing / invalid auth.
+    """
+    from .tenants import authenticate_request
+    # If require_tenant_auth has already run on this request, reuse its
+    # decision. Saves a DB round-trip on the common authed case.
+    cached = getattr(request.state, "tenant_id", None)
+    if cached is not None:
+        return cached
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        return None
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return None
+    try:
+        auth = authenticate_request(engine, api_key)
+    except Exception:
+        return None
+    if auth is None:
+        return None
+    return auth.tenant_id
+
+
 # ── factory ──────────────────────────────────────────────────────────
 def create_app(
     *,
@@ -461,6 +493,11 @@ def create_app(
     chain_lock = asyncio.Lock()
     # v1: policy mutation serialization — prevents lost-update race on /policies PUT|PATCH.
     policy_lock = asyncio.Lock()
+    # D52b fix-cycle: same lost-update defense for /custom-verifiers POST.
+    # Two concurrent POSTs on the same tenant would otherwise both read
+    # the same on-disk state and the second save would overwrite the
+    # first's row.
+    custom_verifier_lock = asyncio.Lock()
 
     app = FastAPI(title="magi-control-plane cloud", version="0.0.1")
     # Order matters: outer → inner. Body cap first, then rate limit, then CORS.
@@ -546,16 +583,16 @@ def create_app(
     @app.get("/verifiers")
     @app.get("/presets")  # alias kept for the existing /presets dashboard route
     def get_verifiers(request: Request) -> dict:
-        """Merge built-in VerifierRegistry + vendored magi-agent catalog
-        (preview) + tenant-scoped custom verifiers. Read-only.
+        """Merge built-in VerifierRegistry + tenant-scoped custom verifiers
+        + vendored magi-agent catalog (preview). Read-only.
 
         Sort: wired built-ins first, then custom (per-tenant), then vendor
         preview entries (no implementation behind them).
 
-        Auth: optional. If the request has a valid tenant key, custom
-        verifiers for that tenant are merged in. Without auth we return
-        the global view only — same behaviour as before custom verifiers
-        existed.
+        Auth: optional. If the request carries a valid tenant key, custom
+        verifiers for that tenant are merged in (via require_tenant_auth's
+        side effect of setting request.state.tenant_id). Without auth we
+        return the global view only.
         """
         wired: list[dict] = []
         seen_ids: set[str] = set()
@@ -573,6 +610,29 @@ def create_app(
                 })
                 seen_ids.add(pid)
 
+        # Tenant-scoped custom verifiers. Auth on this route is optional —
+        # require_tenant_auth has NOT run, so we read the api key header
+        # directly and resolve the tenant ourselves; missing / invalid
+        # falls through to "no custom rows" (consistent with the prior
+        # pre-D52b global view).
+        custom: list[dict] = []
+        try:
+            tenant_id = _resolve_tenant_id_from_request(request)
+        except Exception:
+            tenant_id = None
+        if tenant_id is not None:
+            for cv in custom_verifier_store.list_for_tenant(tenant_id):
+                custom.append({
+                    "id": cv.id,
+                    "category": None,
+                    "description": cv.description,
+                    "enforcement": "preview",
+                    "step": cv.name,
+                    "input_schema": None,
+                    "name": cv.name,
+                    "source": "custom",
+                })
+
         vendor = sorted(
             (
                 {
@@ -589,7 +649,7 @@ def create_app(
             ),
             key=lambda p: p["id"],
         )
-        return {"presets": wired + vendor}
+        return {"presets": wired + custom + vendor}
 
     @app.post("/verify/{step}", dependencies=[Depends(require_tenant_auth)])
     async def verify_dispatch(step: str, req: VerifyDispatchReq, request: Request) -> dict:
@@ -1087,7 +1147,10 @@ def create_app(
     _attach_admin_tenant_routes(app, engine)
 
     # ── /catalog/* — derived (read-only) evidence-type + condition view ──
-    _attach_catalog_routes(app, policy_store, verifier_registry)
+    _attach_catalog_routes(
+        app, policy_store, verifier_registry,
+        custom_verifier_store=custom_verifier_store,
+    )
 
     # ── /payload-schemas — P7 CC hook payload field menu (read-only) ──
     _attach_payload_schema_routes(app)
@@ -1096,7 +1159,9 @@ def create_app(
     _attach_verifier_descriptor_routes(app)
 
     # ── /custom-verifiers: D52b step-only authoring (tenant-scoped) ──
-    _attach_custom_verifier_routes(app, custom_verifier_store)
+    _attach_custom_verifier_routes(
+        app, custom_verifier_store, custom_verifier_lock,
+    )
 
     # ── /endpoints — P10 endpoint attestation ─────────────────────────
     _attach_endpoint_routes(app, engine, policy_store=policy_store)
@@ -1720,6 +1785,7 @@ def _attach_catalog_routes(
     app: FastAPI,
     policy_store: PolicyStore,
     verifier_registry: VerifierRegistry | None,
+    custom_verifier_store: "CustomVerifierStore | None" = None,
 ) -> None:
     """Derived (read-only) catalog: evidence types + conditions.
 
@@ -1727,19 +1793,25 @@ def _attach_catalog_routes(
     walks the live state every request:
 
       Evidence types  = (built-in verifier registry steps) ∪
+                        (tenant-scoped custom verifier rows) ∪
                         (step referenced in any policy's requires[])
       Conditions      = (sentinel_re pattern of every policy) ∪
                         (tool matchers from every policy's trigger)
 
-    Both are tenant-scoped because the policy list is. Users cannot
-    write to either tab; entries appear/disappear as the policies that
-    reference them are saved/deleted (mirrors the magi-agent customize
-    refactor — Policy is the only first-class entity).
+    Both are tenant-scoped because the policy list is. Custom verifier
+    rows are merged in per-tenant so the operator who POSTs a row to
+    /custom-verifiers and is redirected to /rules?tab=evidence sees their
+    new entry on landing (instead of a "green flash but no row" gap).
+    Users cannot write to either tab; entries appear/disappear as the
+    policies / custom rows that reference them are saved/deleted
+    (mirrors the magi-agent customize refactor — Policy is the only
+    first-class entity).
     """
 
     @app.get("/catalog/evidence-types", dependencies=[Depends(require_tenant_auth)])
-    def list_evidence_types() -> dict:
+    def list_evidence_types(request: Request) -> dict:
         builtin: list[dict] = []
+        builtin_steps: set[str] = set()
         if verifier_registry is not None:
             for v in verifier_registry.all():
                 builtin.append({
@@ -1751,12 +1823,33 @@ def _attach_catalog_routes(
                     "source": "builtin",
                     "used_by_policies": [],
                 })
+                builtin_steps.add(v.step)
         used_by: dict[str, list[str]] = {}
         for entry in policy_store.load():
             for req in entry.policy.requires:
                 used_by.setdefault(req.step, []).append(entry.policy.id)
         for row in builtin:
             row["used_by_policies"] = used_by.pop(row["step"], [])
+
+        custom: list[dict] = []
+        if custom_verifier_store is not None:
+            tenant_id = getattr(request.state, "tenant_id", "default")
+            for cv in custom_verifier_store.list_for_tenant(tenant_id):
+                # Custom rows shadow nothing — they live in a separate
+                # `source` bucket so the operator can tell at a glance
+                # which entries came from their own /verifiers/new
+                # authoring vs the cloud's built-in registry.
+                used_by_this = used_by.pop(cv.name, [])
+                custom.append({
+                    "step": cv.name,
+                    "category": None,
+                    "description": cv.description,
+                    "enforcement": "preview",
+                    "name": cv.name,
+                    "source": "custom",
+                    "used_by_policies": used_by_this,
+                })
+
         derived: list[dict] = []
         for step, policies in sorted(used_by.items()):
             derived.append({
@@ -1770,7 +1863,7 @@ def _attach_catalog_routes(
                 "source": "policy-derived",
                 "used_by_policies": policies,
             })
-        return {"items": builtin + derived}
+        return {"items": builtin + custom + derived}
 
     @app.get("/catalog/conditions", dependencies=[Depends(require_tenant_auth)])
     def list_conditions() -> dict:
@@ -1894,8 +1987,42 @@ def _attach_verifier_descriptor_routes(app: FastAPI) -> None:
         return d
 
 
+class CustomVerifierTriggerIn(BaseModel):
+    """One trigger row on a /custom-verifiers POST body. Mirrors the
+    validators in custom_verifier_store: event whitelist + matcher_class
+    enum are still enforced at the store layer (single source of truth);
+    this model adds Pydantic's standard 422 shape so the dashboard's
+    error renderer can key off `detail[].loc` like it does for
+    /policies."""
+    model_config = {"extra": "forbid"}
+
+    event: str = Field(..., min_length=1, max_length=64)
+    matcher_class: str = Field(..., pattern=r"^(tool|no_tool|final)$")
+
+
+class CreateCustomVerifierReq(BaseModel):
+    """Request body for POST /custom-verifiers.
+
+    `extra='forbid'` so a hand-rolled body that includes legacy keys
+    (`kind`, `pattern`, `criterion`, `shape_ttl`) is rejected with a
+    clear field-level 422 instead of silently honouring the step-shape
+    keys and dropping the rest — surfaces the design lock at the wire
+    boundary. regex / llm_critic / shacl checks belong inline in a
+    policy's `requires[]`, not in a registerable verifier row.
+    """
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(..., min_length=1, max_length=64,
+                       pattern=r"^[a-z][a-z0-9_]*$")
+    description: str = Field(..., min_length=1, max_length=500)
+    triggers: list[CustomVerifierTriggerIn] = Field(..., min_length=1, max_length=32)
+    verdict_set: list[str] = Field(..., min_length=1, max_length=8)
+    body_type: str = Field(..., pattern=r"^preview$")
+
+
 def _attach_custom_verifier_routes(
     app: FastAPI, store: "CustomVerifierStore",
+    custom_verifier_lock: asyncio.Lock,
 ) -> None:
     """D52b: step-only authoring of custom verifiers.
 
@@ -1914,23 +2041,36 @@ def _attach_custom_verifier_routes(
     only resolve rows the caller owns. Real-code bodies (LLM critic / SHACL
     / regex) stay inline in the policy IR per the design lock, so this
     endpoint accepts step-shape only.
+
+    Concurrency: store mutation runs under `custom_verifier_lock` so two
+    concurrent POSTs on the same tenant cannot race the load → mutate →
+    save sequence and lose a row to overwrite. Mirrors the policy_lock
+    pattern in _attach_policy_routes.
     """
 
     @app.post(
         "/custom-verifiers",
         dependencies=[Depends(require_tenant_auth)],
     )
-    async def create_custom_verifier(request: Request) -> dict:
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(422, "invalid JSON body")
+    async def create_custom_verifier(
+        req: CreateCustomVerifierReq, request: Request,
+    ) -> dict:
         tenant_id = getattr(request.state, "tenant_id", "default")
+        # Hand the Pydantic-validated body to build_from_dict so the
+        # store-layer validators (allowed-event vocab from D47, trigger
+        # cap + dedupe, verdict allowlist) stay the single source of
+        # truth. The model_dump matches build_from_dict's dict shape.
         try:
-            verifier = build_custom_verifier_from_dict(body, tenant_id=tenant_id)
+            verifier = build_custom_verifier_from_dict(
+                req.model_dump(), tenant_id=tenant_id,
+            )
         except CustomVerifierError as e:
             raise HTTPException(422, str(e))
-        stored = store.add(tenant_id, verifier)
+        async with custom_verifier_lock:
+            try:
+                stored = store.add(tenant_id, verifier)
+            except CustomVerifierConflict as e:
+                raise HTTPException(409, str(e))
         return serialize_custom_verifier(stored)
 
     @app.get(
@@ -1946,7 +2086,10 @@ def _attach_custom_verifier_routes(
         "/custom-verifiers/{verifier_id}",
         dependencies=[Depends(require_tenant_auth)],
     )
-    def get_custom_verifier(verifier_id: str, request: Request) -> dict:
+    def get_custom_verifier(
+        request: Request,
+        verifier_id: str = FPath(..., pattern=r"^[a-f0-9]{16}$"),
+    ) -> dict:
         tenant_id = getattr(request.state, "tenant_id", "default")
         v = store.get(tenant_id, verifier_id)
         if v is None:

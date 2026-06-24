@@ -329,3 +329,194 @@ class TestVerifierDescriptors:
     def test_get_unknown_returns_404(self, client):
         r = client.get("/verifier-descriptors/does_not_exist")
         assert r.status_code == 404
+
+    def test_input_fields_cover_paths(self, client):
+        """Every input_payload_paths entry has a matching input_fields row
+        with type + description. The module-level invariant catches drift
+        at import; the route surfaces the same guarantee for third-party
+        UIs reading the cloud's authoritative copy."""
+        r = client.get("/verifier-descriptors")
+        for d in r.json()["descriptors"]:
+            field_paths = {f["path"] for f in d.get("input_fields", [])}
+            for p in d["input_payload_paths"]:
+                assert p in field_paths, (d["step"], p, field_paths)
+
+
+# ── fix-cycle: catalog / verifiers merge tenant-scoped customs ─────
+class TestCatalogMergesCustomVerifiers:
+    """The /verifiers/new flow redirects to /rules?tab=evidence on success.
+    Prior to the fix, /catalog/evidence-types did NOT include tenant-scoped
+    custom rows so the operator saw a green flash but no row. Same hole
+    on /verifiers (the docstring lied about merging customs in)."""
+
+    def test_evidence_types_includes_authored_row(self, client):
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="my_authored_check"),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 200, r.text
+        ev = client.get(
+            "/catalog/evidence-types",
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert ev.status_code == 200
+        steps = [i["step"] for i in ev.json()["items"]]
+        assert "my_authored_check" in steps
+        custom_row = next(i for i in ev.json()["items"]
+                          if i["step"] == "my_authored_check")
+        assert custom_row["source"] == "custom"
+        assert custom_row["enforcement"] == "preview"
+
+    def test_verifiers_route_merges_custom(self, client):
+        client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="my_other_check"),
+            headers={"X-Api-Key": API_KEY},
+        )
+        v = client.get("/verifiers", headers={"X-Api-Key": API_KEY})
+        assert v.status_code == 200
+        names = [p.get("name") for p in v.json()["presets"]]
+        assert "my_other_check" in names
+
+    def test_verifiers_route_unauthed_excludes_custom(self, client):
+        client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="tenant_only_check"),
+            headers={"X-Api-Key": API_KEY},
+        )
+        # No X-Api-Key — anonymous global view, no tenant resolution.
+        v = client.get("/verifiers")
+        assert v.status_code == 200
+        names = [p.get("name") for p in v.json()["presets"]]
+        assert "tenant_only_check" not in names
+
+
+# ── fix-cycle: extra='forbid' on Pydantic body ─────────────────────
+class TestCreateBodyForbidsExtras:
+    """The brief explicitly calls out that hand-rolled bodies including
+    `kind`/`pattern`/`criterion`/`shape_ttl` (the regex/llm_critic/shacl
+    knobs) should fail loudly. Prior to the fix they were silently
+    dropped by the raw-dict reader."""
+
+    @pytest.mark.parametrize(
+        "extras",
+        [
+            {"kind": "regex"},
+            {"pattern": ".*"},
+            {"criterion": "is_helpful"},
+            {"shape_ttl": "@prefix sh: <...> ."},
+            {"random_typo_key": True},
+        ],
+    )
+    def test_extras_rejected_as_422(self, client, extras):
+        body = _valid_body(**extras)
+        r = client.post(
+            "/custom-verifiers",
+            json=body,
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422, (extras, r.text)
+
+
+# ── fix-cycle: name uniqueness 409 ─────────────────────────────────
+class TestNameUniqueness:
+    def test_duplicate_name_returns_409(self, client):
+        r1 = client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="dup_check"),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r1.status_code == 200
+        r2 = client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="dup_check"),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r2.status_code == 409
+
+
+# ── fix-cycle: trigger event vocab + cap ───────────────────────────
+class TestTriggerVocabAndCap:
+    def test_unknown_event_rejected(self, client):
+        bad = _valid_body(triggers=[{"event": "PreToolUSE", "matcher_class": "tool"}])
+        r = client.post(
+            "/custom-verifiers",
+            json=bad,
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_over_cap_rejected(self, client):
+        too_many = [{"event": "PreToolUse", "matcher_class": "tool"}] * 33
+        bad = _valid_body(triggers=too_many)
+        r = client.post(
+            "/custom-verifiers",
+            json=bad,
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_duplicate_triggers_deduped(self, client):
+        # Two identical triggers -> store dedupes silently. Persisted
+        # row has one trigger.
+        dup = [
+            {"event": "PreToolUse", "matcher_class": "tool"},
+            {"event": "PreToolUse", "matcher_class": "tool"},
+        ]
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(name="dedup_check", triggers=dup),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["triggers"]) == 1
+
+
+# ── fix-cycle: GET path pattern ─────────────────────────────────────
+class TestGetPathPattern:
+    def test_non_hex_id_returns_422(self, client):
+        r = client.get(
+            "/custom-verifiers/not--an--id",
+            headers={"X-Api-Key": API_KEY},
+        )
+        # FastAPI returns 422 for pattern mismatch (validation error)
+        # vs 404 for "valid id, no row" — distinct signals for the caller.
+        assert r.status_code == 422
+
+
+# ── fix-cycle: store deserialize tolerates malformed rows ─────────
+class TestStoreDeserializeTolerance:
+    def test_list_skips_malformed_row(self, tmp_path):
+        import json as _json
+        from magi_cp.cloud.custom_verifier_store import CustomVerifierStore
+
+        store_path = tmp_path / "cv.json"
+        bucket = {
+            "tenant-a": {
+                "verifiers": [
+                    # malformed (missing required "name")
+                    {"id": "0123456789abcdef", "description": "x"},
+                    # well-formed
+                    {
+                        "id": "fedcba9876543210",
+                        "name": "good_check",
+                        "description": "y",
+                        "triggers": [
+                            {"event": "Stop", "matcher_class": "final"},
+                        ],
+                        "verdict_set": ["pass"],
+                        "body_type": "preview",
+                        "created_at": 1700000000,
+                        "tenant_id": "tenant-a",
+                    },
+                ],
+            },
+        }
+        store_path.write_text(_json.dumps(bucket))
+        store = CustomVerifierStore(path=str(store_path))
+        items = store.list_for_tenant("tenant-a")
+        # malformed row is silently skipped; good row survives
+        assert len(items) == 1
+        assert items[0].name == "good_check"
