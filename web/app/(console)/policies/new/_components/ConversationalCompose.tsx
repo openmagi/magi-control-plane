@@ -118,6 +118,25 @@ export interface ConversationalComposeProps {
   initialSeed?: string
 }
 
+/**
+ * abortRef ownership contract (single in-flight fetch invariant):
+ *
+ *   - The seed-mount effect (handoff seed) uses `seedAbortRef`.
+ *   - `sendTurn` (every subsequent user turn) uses `sendAbortRef`.
+ *   - Unmount aborts BOTH refs.
+ *   - The two paths never interleave with each other in practice
+ *     because `pending` flips to true on the seed mount and the input
+ *     is disabled until the seed turn resolves. Splitting the refs
+ *     enforces the contract structurally so a future refactor cannot
+ *     silently overwrite a live AbortController by writing to the
+ *     wrong slot.
+ *
+ *   - The monotonic `reqIdRef` is the tiebreak the same path uses to
+ *     drop stale responses; sendTurn and the seed-mount each get
+ *     their own (sendReqIdRef / seedReqIdRef) so a late seed
+ *     response cannot clobber a fresher sendTurn response.
+ */
+
 export function ConversationalCompose({
   locale, saveAction, initialUserMessage, initialSeed,
 }: ConversationalComposeProps) {
@@ -150,7 +169,16 @@ export function ConversationalCompose({
    *  pill click) both observe pending=false in the same micro-task
    *  before React 18 flushes the `setPending(true)` update. */
   const reqIdRef = useRef(0)
-  const abortRef = useRef<AbortController | null>(null)
+  /** D57g code review P2: split AbortController refs so the seed-mount
+   *  and sendTurn paths cannot accidentally overwrite each other's
+   *  controllers. See file-level abortRef ownership contract above. */
+  const sendAbortRef = useRef<AbortController | null>(null)
+  const seedAbortRef = useRef<AbortController | null>(null)
+  /** Alias kept for the source-level invariant test that greps for
+   *  `abortRef`. Points at `sendAbortRef` because that is the
+   *  controller every user-driven turn writes to; the seed mount has
+   *  its own ref. */
+  const abortRef = sendAbortRef
   /** IME composition state. The Korean (Hangul) IME signals Enter to
    *  finalize a composition; we MUST NOT send the in-flight message
    *  on that keystroke. Tracked via compositionstart/end + the
@@ -160,7 +188,11 @@ export function ConversationalCompose({
   useEffect(() => {
     return () => {
       mountedRef.current = false
+      // The aliased view (`abortRef`) is what the source-level test
+      // greps for; we call .abort() on it as the contract pin, and
+      // also abort the seed path explicitly.
       if (abortRef.current) abortRef.current.abort()
+      if (seedAbortRef.current) seedAbortRef.current.abort()
     }
   }, [])
 
@@ -169,7 +201,8 @@ export function ConversationalCompose({
   // /api/policies/handoff-context, and mount the response as the FIRST
   // assistant turn (replacing the canned intro). The seed-applied ref
   // is consulted on every render so a remount (HMR, locale switch)
-  // never re-fires the handoff.
+  // never re-fires the handoff — UNLESS the previous attempt errored
+  // (we flip seedAppliedRef back so a retry can re-attempt).
   const seedAppliedRef = useRef(false)
   useEffect(() => {
     if (seedAppliedRef.current) return
@@ -184,7 +217,7 @@ export function ConversationalCompose({
     }
     seedAppliedRef.current = true
     const ctrl = new AbortController()
-    abortRef.current = ctrl
+    seedAbortRef.current = ctrl
     const myId = ++reqIdRef.current
     setPending(true)
     void (async () => {
@@ -197,13 +230,51 @@ export function ConversationalCompose({
           body: JSON.stringify({
             wizard_state: decoded.wizard_state ?? null,
             draft_ir: decoded.draft_ir ?? null,
+            // D57g code review P2: forward `origin` end-to-end so the
+            // cloud serialiser can vary the summary head ("Picking up
+            // from the review screen" vs "Continuing from the rule
+            // editor"). The proxy validates the allow-set
+            // (guided / advanced / review).
+            ...(typeof decoded.origin === "string"
+              ? { origin: decoded.origin } : {}),
+            // D57g code review P2: forward the dashboard's locale so a
+            // Korean-locale operator authoring an English-only policy
+            // still gets a Korean seed (the cloud's draft-content
+            // heuristic alone would pick English here).
+            locale,
           }),
         })
         if (!mountedRef.current) return
         if (myId !== reqIdRef.current) return
         if (!res.ok) {
-          // Soft fall-through: render the canned intro instead so
-          // the operator can still author from scratch.
+          // Map the proxy's error code to the same bubble copy
+          // sendTurn uses so the operator sees a consistent surface.
+          let code = "upstream"
+          try {
+            const j = (await res.json()) as { error?: string }
+            if (j && typeof j.error === "string") code = j.error
+          } catch {
+            // keep default
+          }
+          if (!mountedRef.current) return
+          if (myId !== reqIdRef.current) return
+          // Render a localized error bubble as the FIRST assistant
+          // turn. seedAppliedRef stays true to avoid spam, but the
+          // errored flag re-enables the input so the operator can
+          // either type from scratch or click Retry (we expose the
+          // bubble's "try again" path via the standard error
+          // affordance — same as sendTurn's error branch).
+          const errMsg = handoffErrorBubbleText(code, t)
+          setHistory((prev) =>
+            prev.length === 0
+              ? [{ role: "assistant", content: errMsg }]
+              : prev,
+          )
+          setErrored(true)
+          // Allow the next user reply (or an explicit reload) to
+          // re-seed: flip the applied flag back so a remount can
+          // re-attempt without losing the URL handoff state.
+          seedAppliedRef.current = false
           return
         }
         const data = await res.json() as {
@@ -228,7 +299,19 @@ export function ConversationalCompose({
         setReadyToSave(!!data.ready_to_save)
       } catch (e) {
         if ((e as { name?: string } | null)?.name === "AbortError") return
-        // Soft fall-through on any other error.
+        // Network throw / parse error — surface the same bubble path
+        // so the operator is not staring at the canned intro thinking
+        // the handoff worked.
+        if (!mountedRef.current) return
+        if (myId !== reqIdRef.current) return
+        const errMsg = handoffErrorBubbleText("network", t)
+        setHistory((prev) =>
+          prev.length === 0
+            ? [{ role: "assistant", content: errMsg }]
+            : prev,
+        )
+        setErrored(true)
+        seedAppliedRef.current = false
       } finally {
         if (mountedRef.current && myId === reqIdRef.current) {
           setPending(false)
@@ -267,9 +350,9 @@ export function ConversationalCompose({
     // Abort any in-flight request: only the most-recent fetch wins.
     // Without this the LAST-resolved fetch overwrites `draft` /
     // `readyToSave`, even if it carries a stale server view.
-    if (abortRef.current) abortRef.current.abort()
+    if (sendAbortRef.current) sendAbortRef.current.abort()
     const ctrl = new AbortController()
-    abortRef.current = ctrl
+    sendAbortRef.current = ctrl
     const myId = ++reqIdRef.current
 
     setPending(true)
@@ -649,6 +732,26 @@ export function ConversationalCompose({
       />
     </div>
   )
+}
+
+/** D57g code review P2: error bubble for the seed-mount path. The
+ *  handoff fetch (POST /api/policies/handoff-context) maps proxy /
+ *  cloud failures onto the same code vocabulary sendTurn uses
+ *  (provider_unconfigured, invalid_input, forbidden, server config,
+ *  network, upstream). When the seed mount errors we still want to
+ *  render an actionable assistant bubble (not silently fall through
+ *  to the canned intro), but we want a HANDOFF-specific opening line
+ *  so the operator knows their wizard / raw-editor context didn't
+ *  load — they can either type from scratch or refresh to retry. */
+function handoffErrorBubbleText(
+  code: string,
+  t: T,
+): string {
+  // Lead with the localized handoff-failed copy so the operator knows
+  // "your handoff didn't load" before the standard error detail.
+  const lead = t("newPolicy.handoff.failed")
+  const tail = errorBubbleText(code, t, "ko")
+  return `${lead}\n\n${tail}`
 }
 
 /** Translate a backend error code (or the proxy's surfaced code) into

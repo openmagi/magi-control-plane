@@ -30,6 +30,14 @@ type Props = {
     draft: PolicyDraft
     isValid: boolean
   }) => React.ReactNode
+  /** D57g hotfix: read-only observer of the live draft state. The
+   * advanced-mode "Continue in conversation" link uses this to
+   * capture the in-memory draft at click time (the raw editor does
+   * NOT round-trip its draft through the URL, so without this the
+   * HandoffLink would see `null` and the seeded summary would be
+   * empty). Passed by the AdvancedAuthoring wrapper; other consumers
+   * may leave it unset. */
+  onDraftChange?: (draft: PolicyDraft) => void
   labels: {
     irFields: string
     compiledPreview: string
@@ -57,11 +65,20 @@ type Props = {
 
 export default function PolicyBuilder({
   submitAction, initial, wiredSteps = [], vendorSteps = [], labels,
-  dryRunSlot,
+  dryRunSlot, onDraftChange,
 }: Props) {
   const [draft, setDraft] = useState<PolicyDraft>(initial ?? DEFAULT_DRAFT)
   const [submitted, setSubmitted] = useState(false)
   const [pending, startTransition] = useTransition()
+
+  // D57g hotfix: report every draft change to the parent so the
+  // sibling HandoffLink can snapshot the live in-memory state. The
+  // raw editor draft does NOT round-trip through the URL, so without
+  // this the "Continue in conversation" link would see `null` and the
+  // seeded summary would be empty.
+  useEffect(() => {
+    if (onDraftChange) onDraftChange(draft)
+  }, [draft, onDraftChange])
 
   const errors = useMemo(
     () => validateDraft(draft, {

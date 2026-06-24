@@ -140,4 +140,60 @@ describe("/api/policies/handoff-context proxy", () => {
     const body = await r.json()
     expect(body.error).toBe("upstream")
   })
+
+  it("forwards origin and locale fields to the cloud", async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(
+        JSON.stringify({}), { status: 200 },
+      ),
+    )
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const r = await callRoute({
+      wizard_state: { lifecycle: "before_tool_use" },
+      draft_ir: null,
+      origin: "advanced",
+      locale: "ko",
+    })
+    expect(r.status).toBe(200)
+    const [, init] = fetchSpy.mock.calls[0]!
+    const sentBody = JSON.parse(init.body as string)
+    expect(sentBody.origin).toBe("advanced")
+    expect(sentBody.locale).toBe("ko")
+  })
+
+  it("silently drops unknown origin / locale values (cloud has extra=forbid)", async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(
+        JSON.stringify({}), { status: 200 },
+      ),
+    )
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    await callRoute({
+      wizard_state: {},
+      draft_ir: null,
+      origin: "junk",
+      locale: "ja",
+    })
+    const [, init] = fetchSpy.mock.calls[0]!
+    const sentBody = JSON.parse(init.body as string)
+    expect(sentBody.origin).toBeUndefined()
+    expect(sentBody.locale).toBeUndefined()
+  })
+
+  it("byte cap counts UTF-8 bytes, not JS code units (Hangul does not slip past)", async () => {
+    // 6000 Hangul chars = 18000 UTF-8 bytes — exceeds the 16k cap but
+    // would have passed a char-count check (6000 < 16000). The fix
+    // catches it at the proxy boundary so the cloud round-trip is
+    // skipped.
+    globalThis.fetch = vi.fn() as unknown as typeof fetch
+    const hangul = "한".repeat(6000)
+    const r = await callRoute({
+      wizard_state: { description: hangul },
+      draft_ir: null,
+    })
+    expect(r.status).toBe(413)
+    // The cloud must NOT have been contacted.
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls.length).toBe(0)
+  })
 })

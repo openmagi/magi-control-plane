@@ -291,11 +291,22 @@ class HandoffContextReq(BaseModel):
     per-field allowlists `step_compile` does so a malicious client
     cannot smuggle `gate_binary` or other archetype-specific fields
     past the merge by stuffing them into the draft.
+
+    `origin` is the authoring surface the user just left
+    ("guided" / "advanced" / "review"). Used by the cloud serialiser
+    to vary the summary headline. Optional.
+
+    `locale` is an explicit "ko" / "en" override forwarded from the
+    dashboard so a Korean-locale operator authoring an English-only
+    policy still receives a Korean seed (the draft-content heuristic
+    is too weak to detect that case on its own). Optional.
     """
     model_config = {"extra": "forbid"}
 
     wizard_state: dict | None = None
     draft_ir: dict | None = None
+    origin: Literal["guided", "advanced", "review"] | None = None
+    locale: Literal["ko", "en"] | None = None
 
 
 # D53b: replay-against-last-24h dry-run authoring affordance.
@@ -825,6 +836,8 @@ def create_app(
                 build_handoff_turn,
                 wizard_state=req.wizard_state,
                 draft_ir=req.draft_ir,
+                origin=req.origin,
+                locale_hint=req.locale,
             )
         except HandoffContextError as e:
             raise HTTPException(422, str(e)) from e

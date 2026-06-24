@@ -10,6 +10,7 @@ import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
+import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -1873,7 +1874,11 @@ export default async function NewPolicyPage({
         <AuthoringShell
           t={t}
           locale={locale === "ko" ? "ko" : "en"}
-          handoffOrigin="advanced"
+          // D57g hotfix: AdvancedAuthoring owns the HandoffLink so it
+          // can read the live PolicyBuilder draft at click time.
+          // Suppress AuthoringShell's own copy by passing the
+          // "conversational" sentinel (the shell renders no link).
+          handoffOrigin="conversational"
           modeTitle={t("newPolicy.mode.advancedAuthoring")}
           info={{
             tone: "warn",
@@ -1882,8 +1887,9 @@ export default async function NewPolicyPage({
           }}
         >
           <Card>
-            <PolicyBuilder
-              submitAction={saveAdvanced}
+            <AdvancedAuthoring
+              locale={locale === "ko" ? "ko" : "en"}
+              saveAction={saveAdvanced}
               initial={initialDraft}
               wiredSteps={wiredSteps.map((w) => w.step)}
               vendorSteps={vendorSteps}
@@ -2184,14 +2190,17 @@ function ChoiceCard({
 /* ─── authoring shell ────────────────────────────────────────────── */
 
 function AuthoringShell({
-  t, modeTitle, info, children, locale, handoffOrigin,
+  t, modeTitle, info, children, locale: _locale, handoffOrigin: _handoffOrigin,
 }: {
   modeTitle: string
   info: { tone: "info" | "warn"; title: string; body: string }
   children: React.ReactNode
-  /** D57g: when set, render the "Continue in conversation" link in
-   *  the header chrome. Set to "conversational" to suppress (we are
-   *  already on the conversational page). */
+  /** D57g: previously controlled the "Continue in conversation" link
+   *  in the header chrome. Now a no-op pin (see comment in the
+   *  render block) — the AdvancedAuthoring wrapper owns the
+   *  HandoffLink so it can read the live PolicyBuilder draft via a
+   *  ref. Prop preserved so call sites do not silently lose the
+   *  "we deliberately do NOT render a handoff link here" signal. */
   locale?: "ko" | "en"
   handoffOrigin?: "advanced" | "conversational"
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
@@ -2211,17 +2220,18 @@ function AuthoringShell({
           </h1>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          {/* D57g: handoff to conversational. Suppressed when the
-           *  current mode IS conversational (no point linking to
-           *  ourselves). The link reads URL state on click so any
-           *  prefill that arrived via `?draft=` rides into the seed. */}
-          {handoffOrigin && handoffOrigin !== "conversational" && (
-            <HandoffLink
-              locale={locale ?? "en"}
-              origin={handoffOrigin}
-              testId="handoff-continue-in-chat-advanced"
-            />
-          )}
+          {/* D57g hotfix: the AuthoringShell HandoffLink was rendered
+           *  WITHOUT `getDraft`, so clicking it from the advanced (raw
+           *  editor) mode silently dropped the operator's entire
+           *  authored draft (the draft IR lives in PolicyBuilder
+           *  client state, not on the URL). The fix moves the
+           *  HandoffLink into AdvancedAuthoring, which holds a live
+           *  draft ref and forwards `getDraft` at click time. We
+           *  intentionally keep the `handoffOrigin` prop on this
+           *  shell as the deprecation pin: every call site now
+           *  passes "conversational" so no link renders here, but
+           *  surfacing the gap loudly via the prop name makes a
+           *  future re-introduction obvious. */}
           <Link href="/policies/new" className="inline-flex items-center gap-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             {t("newPolicy.pickDifferent")}
