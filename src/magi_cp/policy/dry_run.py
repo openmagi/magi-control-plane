@@ -8,6 +8,19 @@ Replays are read-only; nothing is persisted. The endpoint is gated by
 the same admin key as the rest of policies CRUD and never writes to
 the ledger or HITL queue.
 
+This module is a SEMANTIC mirror of the runtime contract, not an
+implementation reuse:
+
+  The runtime distributes the requires[] combination across the
+  `gate_binary` shell script the operator deploys; `/verify_inline`
+  and `/verify/{step}` only evaluate ONE requires entry at a time and
+  write one ledger row per entry. The cloud has no single Python
+  evaluator for the AND-of-pass-conditions combination. This file
+  re-implements that combination for offline replay against literal
+  ledger bodies; if `gate_binary` ever switches its short-circuit
+  semantics the dry-run will silently diverge until the contract pin
+  test in tests/test_policies_dry_run.py is updated.
+
 Decision model:
   - Only `EvidencePolicy` participates in replay today.
     Permission / Mcp / Subagent / ContextInjection policies are
@@ -19,23 +32,53 @@ Decision model:
     requires entry "passes" iff:
         kind=step       : row.body['step'] == req.step
                           AND row.body['verdict'] == req.verdict
-        kind=regex      : re.search(req.pattern, payload_text(row))
-        kind=llm_critic : SKIPPED (no LLM round-trip in dry-run;
-                          marked indeterminate so the count is
-                          honest about what was actually simulated).
-        kind=shacl      : SKIPPED (pyshacl pass is not cheap enough
-                          to fan out across a 24h window; counted
-                          as indeterminate the same as llm_critic).
+        kind=regex      : re.search(req.pattern, payload_snapshot(row))
+                          where payload_snapshot is the runtime-written
+                          `body['__payload_snapshot__']` snapshot. Rows
+                          that lack the snapshot return INDETERMINATE
+                          (regex-not-replayable-from-ledger), not a
+                          silent fail.
+        kind=llm_critic : INDETERMINATE (no LLM round-trip in dry-run;
+                          surfaced via `indeterminate` counter and
+                          per-policy `skipped_reason` when every
+                          requires entry is non-replayable).
+        kind=shacl      : INDETERMINATE (pyshacl validation is not
+                          cheap enough to fan out across a 24h window;
+                          same treatment as llm_critic).
   - The policy's action would fire when at least one requires entry
     fails (matches the runtime gate semantics: requires[] is an AND
-    of pass conditions; any fail short-circuits to "action").
+    of pass conditions; any fail short-circuits to "action"). An
+    indeterminate entry does NOT trigger the action; we count rows
+    that had at least one indeterminate entry in the `indeterminate`
+    counter so the dashboard can surface them.
   - An empty requires[] is the "unconditional signal" archetype: the
     policy fires on EVERY row that matches the trigger frame.
+
+Multi-requires limitation:
+
+  The runtime fires `gate_binary` once per (subject, payload_hash);
+  that one invocation calls `/verify/{step}` (or `/verify_inline`) N
+  times for the same payload (once per requires entry) and combines
+  the N verdicts inside the shell script. The offline replay does NOT
+  reconstruct that fan-out: it replays one row at a time and pretends
+  each row carries a complete picture of all requires entries the
+  policy needs. For policies with len(requires) > 1, this is
+  STRUCTURALLY WRONG — a row may have logged only one of the two
+  steps for that payload, and the replay would see "step B did not
+  appear in this row → requires B failed → action fires" when in
+  reality step B may have passed on a sibling row sharing the same
+  payload_hash. Until per-payload row joining lands, policies with
+  multiple step-kind requires entries are SKIPPED with a
+  `multi-requires-not-replayable` reason rather than silently
+  miscounted.
 
 Output schema (mirrors what cloud/app.py wraps in the response):
     {
       total_records: int,        # rows we considered (trigger-matched)
       matched: int,              # rows where action would have fired
+      indeterminate: int,        # rows where >=1 requires was offline-
+                                 # unevaluable (llm_critic/shacl/regex
+                                 # without payload snapshot)
       by_verdict: {              # row.body['verdict'] distribution
         pass: int, fail: int, deny: int,
         review: int, needs_review: int, not_applicable: int,
@@ -45,7 +88,23 @@ Output schema (mirrors what cloud/app.py wraps in the response):
       sample_matched_ids: [int], # newest-first ids of matched rows;
                                  # caller redacts the bodies via D50
       skipped_reason: str | None,
+      skipped_kinds: [str],      # requires-entry kinds that contributed
+                                 # to indeterminate (subset of
+                                 # {"llm_critic","shacl","regex"})
     }
+
+`skipped_reason` value enum:
+  - archetype-not-dry-runnable         non-evidence archetype
+  - no-records-in-trigger-frame        window had no matching rows
+  - no-frame-metadata-on-rows          rows in window lack hook_event /
+                                       matcher (predates runtime
+                                       contract; cannot scope to the
+                                       proposed policy)
+  - multi-requires-not-replayable      policy.requires has >1 entry;
+                                       per-payload join not implemented
+  - requires-indeterminate             every requires entry is
+                                       llm_critic / shacl / regex
+                                       without a payload snapshot
 
 The caller (the FastAPI route) is responsible for:
   - validating the IR (we trust the dataclass __post_init__),
@@ -59,20 +118,12 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from .ir import AnyPolicy, EvidencePolicy, EvidenceReq
+from .verdicts import LEDGER_VERDICTS, LEDGER_VERDICTS_ORDERED
 
-
-# Closed-set verdict allowlist. Mirrors the /ledger/samples projection
-# (see cloud/app.py). Anything outside collapses to `unknown` so a
-# misbehaving producer cannot pollute the by_verdict bucket with novel
-# strings.
-_VERDICT_BUCKETS: tuple[str, ...] = (
-    "pass", "fail", "deny",
-    "review", "needs_review", "not_applicable",
-)
 
 # Action archetypes the IR supports. `strip` is reserved for a future
 # verifier-protocol mutation channel; we keep the bucket so the
@@ -80,10 +131,36 @@ _VERDICT_BUCKETS: tuple[str, ...] = (
 _ACTION_BUCKETS: tuple[str, ...] = ("block", "ask", "audit", "strip")
 
 
+# Reserved key on the ledger row body where the runtime stashes the
+# original verifier payload text (regex/llm_critic surfaces only). When
+# present, dry-run regex requires are evaluated against the snapshot
+# (mirroring what /verify_inline's regex saw at runtime). When ABSENT,
+# regex requires are marked indeterminate per the docstring's contract
+# — silently scanning the verdict envelope JSON would systematically
+# fail to match patterns authors wrote against the original payload.
+_PAYLOAD_SNAPSHOT_KEY = "__payload_snapshot__"
+
+
+# Tri-state evaluation result for one (row, requires-entry) pair.
+# `PASS` and `FAIL` are the normal short-circuit branches; `INDET` is
+# how we mark llm_critic / shacl / regex-without-snapshot so the
+# combine step can both (a) refuse to fire the action and (b) bump the
+# indeterminate counter.
+_PASS = "pass"
+_FAIL = "fail"
+_INDET = "indeterminate"
+
+
 @dataclass
 class DryRunResult:
     total_records: int
     matched: int
+    # Rows whose evaluation included at least one indeterminate
+    # requires entry. These rows do NOT contribute to `matched` (we
+    # refuse to claim the action would have fired without evidence)
+    # but the dashboard surfaces the count so the operator knows the
+    # replay was partial.
+    indeterminate: int
     by_verdict: dict[str, int]
     by_action: dict[str, int]
     # Newest-first list of ledger row ids whose action would have
@@ -94,6 +171,11 @@ class DryRunResult:
     # this so the dashboard can render a "skipped" pill instead of a
     # misleading "0 of N would have blocked" line.
     skipped_reason: str | None
+    # Requires-entry kinds that produced INDETERMINATE results during
+    # this replay (subset of {"llm_critic", "shacl", "regex"}). The
+    # dashboard renders a "these requires were not evaluated offline:
+    # ..." disclosure so the headline number isn't read as gospel.
+    skipped_kinds: list[str] = field(default_factory=list)
 
 
 def evaluate_dry_run(
@@ -112,7 +194,7 @@ def evaluate_dry_run(
     the bodies; we return ids so the unit test can assert ordering
     without a redactor dependency).
     """
-    by_verdict = {b: 0 for b in _VERDICT_BUCKETS}
+    by_verdict = {b: 0 for b in LEDGER_VERDICTS_ORDERED}
     by_verdict["unknown"] = 0
     by_action = {a: 0 for a in _ACTION_BUCKETS}
 
@@ -126,6 +208,7 @@ def evaluate_dry_run(
         return DryRunResult(
             total_records=0,
             matched=0,
+            indeterminate=0,
             by_verdict=by_verdict,
             by_action=by_action,
             sample_matched_ids=[],
@@ -135,6 +218,23 @@ def evaluate_dry_run(
     event = policy.trigger.event
     matcher = policy.trigger.matcher
     action = policy.action
+
+    # P1 #3: multi-requires policies cannot be honestly replayed
+    # one row at a time. The runtime fires gate_binary once per
+    # (subject, payload_hash) and combines N verdicts inside the
+    # shell script; the offline replay does not reconstruct that
+    # join. For policies with len(requires) > 1, we refuse to
+    # produce a per-row count and surface the limitation instead.
+    if len(policy.requires) > 1:
+        return DryRunResult(
+            total_records=0,
+            matched=0,
+            indeterminate=0,
+            by_verdict=by_verdict,
+            by_action=by_action,
+            sample_matched_ids=[],
+            skipped_reason="multi-requires-not-replayable",
+        )
 
     # Pre-compile the regex pattern for kind=regex entries once per
     # dry-run (the same pattern fans out across every window row).
@@ -147,35 +247,54 @@ def evaluate_dry_run(
             except re.error:
                 # Should never happen because Policy.__post_init__ already
                 # validates regex compile, but defense-in-depth: an
-                # uncompilable pattern means "always fails to match" so
-                # the policy action would always fire. We still keep the
-                # None and treat it as a hard fail in the loop.
+                # uncompilable pattern means "always indeterminate" so
+                # we don't silently say "would have fired" against an
+                # invalid pattern.
                 compiled = None
         requires.append((r, compiled))
 
     total = 0
     matched = 0
+    indeterminate_total = 0
     sample_ids: list[int] = []
+    # Track which kinds produced INDETERMINATE results across the
+    # replay so the dashboard can surface the disclosure. We collect
+    # into a dict to preserve first-seen order while deduping.
+    indet_kinds: dict[str, None] = {}
+    # Defense against rows that DO carry frame metadata vs rows that
+    # DON'T. If 100% of admitted rows lack hook_event/matcher we
+    # cannot say the proposed policy's frame is well-scoped; we
+    # surface that as `no-frame-metadata-on-rows` after the loop so
+    # the dashboard knows the count covers the WHOLE tenant ledger
+    # window rather than the (event, matcher) slice the operator
+    # picked.
+    saw_frame_metadata = False
 
     for row in rows:
         body = getattr(row, "body", None)
         if not isinstance(body, dict):
             continue
-        # Trigger frame match. Records emitted by /verify_inline write
-        # `body['hook_event']` and `body['matcher']` when the gate
-        # opts in; legacy rows omit them. We accept either: missing
-        # frame metadata means we cannot narrow the row to a single
-        # trigger and we admit it (the operator's policy may still
-        # have applied at runtime; the conservative read is "consider
-        # it"). When metadata IS present we filter on it strictly.
-        if not _trigger_matches(body, event, matcher):
+        # Trigger frame match. P0 #2: rows produced by /verify_inline
+        # and /verify/{step} now write hook_event + matcher into the
+        # ledger body (runtime change shipped alongside this file).
+        # Rows that PREDATE the runtime change lack the metadata; we
+        # exclude them rather than admit them, because admitting
+        # systematically inflates total_records into "all tenant rows
+        # in window" rather than the (event, matcher) slice the
+        # operator targeted.
+        frame_outcome = _trigger_matches(body, event, matcher)
+        if frame_outcome == "no-metadata":
             continue
+        if frame_outcome == "miss":
+            continue
+        # frame_outcome == "hit"
+        saw_frame_metadata = True
 
         total += 1
 
         # by_verdict bucketing (closed-set).
         verdict_raw = body.get("verdict")
-        if isinstance(verdict_raw, str) and verdict_raw in _VERDICT_BUCKETS:
+        if isinstance(verdict_raw, str) and verdict_raw in LEDGER_VERDICTS:
             by_verdict[verdict_raw] += 1
         else:
             by_verdict["unknown"] += 1
@@ -183,16 +302,23 @@ def evaluate_dry_run(
         # Re-run requires[] against the row body. Empty requires =
         # unconditional fire (matches the "audit emit signal"
         # archetype's runtime semantics).
-        all_pass = True
         if requires:
+            row_status = _PASS
+            row_has_indet = False
             for req, compiled in requires:
-                if not _requires_holds(req, compiled, body):
-                    all_pass = False
+                status = _requires_holds(req, compiled, body)
+                if status == _FAIL:
+                    row_status = _FAIL
                     break
+                if status == _INDET:
+                    row_has_indet = True
+                    indet_kinds.setdefault(req.kind, None)
+            if row_status == _PASS and row_has_indet:
+                row_status = _INDET
         else:
-            all_pass = False  # empty requires → always fires
+            row_status = _FAIL  # empty requires → always fires
 
-        if not all_pass:
+        if row_status == _FAIL:
             matched += 1
             if action in by_action:
                 by_action[action] += 1
@@ -203,113 +329,178 @@ def evaluate_dry_run(
                 row_id = getattr(row, "id", None)
                 if isinstance(row_id, int):
                     sample_ids.append(row_id)
+        elif row_status == _INDET:
+            indeterminate_total += 1
 
     skipped: str | None = None
     if total == 0:
+        # If we never even matched a row to the trigger frame, the
+        # window may be empty OR the rows in it predate the runtime
+        # change that writes hook_event/matcher. The route layer
+        # cannot disambiguate without re-reading the ledger; we pick
+        # the friendlier reason ("no records in this trigger frame")
+        # because that's what the operator is most likely to act on.
         skipped = "no-records-in-trigger-frame"
+    elif not saw_frame_metadata:
+        # Defense-in-depth: should be unreachable because the
+        # frame-match function now rejects rows without metadata, but
+        # if a future change reintroduces admit-on-missing this flips
+        # the result so the dashboard never silently over-reports.
+        skipped = "no-frame-metadata-on-rows"
+    elif (
+        requires
+        and matched == 0
+        and indeterminate_total > 0
+        and indeterminate_total == total
+    ):
+        # Every row we considered was indeterminate (e.g. an llm_critic
+        # policy against a window with no LLM round-trip available).
+        # The headline count would mislead an operator into thinking
+        # the policy is too narrow; surface the limitation instead.
+        skipped = "requires-indeterminate"
 
     return DryRunResult(
         total_records=total,
         matched=matched,
+        indeterminate=indeterminate_total,
         by_verdict=by_verdict,
         by_action=by_action,
         sample_matched_ids=sample_ids,
         skipped_reason=skipped,
+        skipped_kinds=list(indet_kinds.keys()),
     )
 
 
 # ── helpers ─────────────────────────────────────────────────────────
 
 
-def _trigger_matches(body: dict, event: str, matcher: str) -> bool:
-    """Best-effort match: a ledger row falls in the policy's trigger
-    frame iff its recorded hook_event matches (when present) and its
-    recorded matcher (tool name / wildcard) matches.
+def _trigger_matches(body: dict, event: str, matcher: str) -> str:
+    """Return one of:
 
-    Rows produced by /verify_inline DO carry the original hook_event +
-    matcher under reserved keys (`__event__` / `__matcher__` on the
-    inbound payload; the runtime mirrors them onto the ledger body so
-    the offline replay can still find them). Older rows omit the
-    metadata; we admit those rows because excluding them silently
-    would underreport the matched count - the operator would think
-    their proposed policy is more selective than it really is.
+      "hit"         — body's hook_event + matcher both fall under the
+                      policy's (event, matcher) frame.
+      "miss"        — body's hook_event / matcher are present and do
+                      NOT fall under the frame; row is excluded.
+      "no-metadata" — neither hook_event nor matcher is present; the
+                      row predates the runtime contract that writes
+                      these fields. Excluded so the dry-run does not
+                      silently inflate total_records into "all
+                      tenant rows in window."
+
+    Rows produced by /verify_inline and /verify/{step} (runtime change
+    shipped alongside this file) write hook_event + matcher into the
+    ledger body. Rows that lack BOTH are predate-runtime; rows that
+    have hook_event but not matcher (or vice versa) are still
+    considered to have metadata for the field that's present.
     """
     body_event = body.get("hook_event") or body.get("__event__")
-    if isinstance(body_event, str) and body_event and body_event != event:
-        return False
     body_matcher = body.get("matcher") or body.get("__matcher__")
-    if isinstance(body_matcher, str) and body_matcher:
+    has_event_meta = isinstance(body_event, str) and bool(body_event)
+    has_matcher_meta = isinstance(body_matcher, str) and bool(body_matcher)
+    if not has_event_meta and not has_matcher_meta:
+        return "no-metadata"
+    if has_event_meta and body_event != event:
+        return "miss"
+    if has_matcher_meta:
         # Matcher is a CC permission matcher pattern. We accept the
         # exact-string and the wildcard case; richer alternation
         # (e.g. "Bash|Edit") is collapsed to "any of the alternates
         # matches" so the dry-run does not need to import the CC
         # matcher grammar wholesale.
         if matcher == "*":
-            return True
+            return "hit"
         alternates = [a.strip() for a in matcher.split("|") if a.strip()]
         if body_matcher in alternates:
-            return True
+            return "hit"
         # CC matchers can include argument captures like `Bash(rm -rf)`.
         # A simple startswith() check covers the common tool-name
         # match without pulling the full grammar in.
         for alt in alternates:
             if body_matcher.startswith(alt):
-                return True
-        return False
-    return True
+                return "hit"
+        return "miss"
+    return "hit"
 
 
 def _requires_holds(
     req: EvidenceReq,
     compiled: "re.Pattern[str] | None",
     body: dict,
-) -> bool:
-    """True when this requires entry would have passed against `body`."""
+) -> str:
+    """Tri-state evaluation: returns `_PASS`, `_FAIL`, or `_INDET`."""
     if req.kind == "step":
         # The runtime step gate writes `{step, verdict}` into the
         # ledger body for every verifier emission. The replay match
         # is exact-string on both fields.
-        return (
+        ok = (
             body.get("step") == req.step
             and body.get("verdict") == req.verdict
         )
+        return _PASS if ok else _FAIL
     if req.kind == "regex":
         if compiled is None:
-            return False
-        text = _payload_text(body)
+            # Uncompilable pattern → indeterminate (never silently
+            # claim the action would have fired).
+            return _INDET
+        # P0 #1: the runtime ledger body does NOT carry the original
+        # verifier payload by default (it carries the verdict
+        # envelope). Without an explicit `__payload_snapshot__` field
+        # written by the runtime, scanning the verdict envelope JSON
+        # would systematically fail to match patterns authors wrote
+        # against the original payload. Mark indeterminate so the
+        # headline number reflects "could not check" rather than
+        # "would have fired."
+        snapshot = body.get(_PAYLOAD_SNAPSHOT_KEY)
+        text = _payload_text(snapshot)
+        if not text:
+            return _INDET
         try:
-            return compiled.search(text) is not None
+            return _PASS if compiled.search(text) is not None else _FAIL
         except re.error:
-            return False
+            return _INDET
     if req.kind in ("llm_critic", "shacl"):
         # Cannot evaluate offline without an LLM round-trip / SHACL
-        # validation pass. We treat indeterminate as "pass" so the
-        # dry-run does not overstate the matched count (an offline
-        # replay claiming "would have blocked" because we could not
-        # actually check the rule is worse than under-reporting).
-        return True
-    # Unknown kind: indeterminate -> pass. Mirrors the conservative
-    # posture above.
-    return True
+        # validation pass. Mark indeterminate so the dashboard can
+        # disclose the gap.
+        return _INDET
+    # Unknown kind: indeterminate. Forward-compat: a future kind
+    # landed in the IR that this replay doesn't recognise should NOT
+    # silently claim the action would have fired.
+    return _INDET
 
 
-def _payload_text(body: dict) -> str:
-    """Concat the payload-text fields a regex requires entry might
-    reasonably target. Mirrors the /verify_inline regex slicing
-    (`req.payload['text']` first, fall through to JSON dump) so the
-    offline replay scores rows the same way the runtime gate would.
+def _payload_text(snapshot: object) -> str:
+    """Project the runtime-written `body['__payload_snapshot__']` to
+    a flat string the regex can scan.
+
+    The snapshot is the original verifier payload the runtime saw at
+    `/verify_inline` / `/verify/{step}` time (a JSON-serialisable
+    dict, or a string). We mirror the runtime's /verify_inline regex
+    slicing here:
+      - dict → `text` then `command` then `prompt`, then string-typed
+        values inside `tool_input`, then a JSON dump fallback.
+      - string → returned verbatim (trimmed to 8000 chars).
+
+    Returns empty string when the snapshot is absent / null / a type
+    we can't safely project; the caller treats empty as INDETERMINATE
+    so the dry-run never claims to have matched when there was nothing
+    to match against.
     """
+    if isinstance(snapshot, str):
+        return snapshot[:8000]
+    if not isinstance(snapshot, dict):
+        return ""
     parts: list[str] = []
-    text = body.get("text")
+    text = snapshot.get("text")
     if isinstance(text, str):
         parts.append(text)
-    cmd = body.get("command")
+    cmd = snapshot.get("command")
     if isinstance(cmd, str):
         parts.append(cmd)
-    prompt = body.get("prompt")
+    prompt = snapshot.get("prompt")
     if isinstance(prompt, str):
         parts.append(prompt)
-    tool_input = body.get("tool_input")
+    tool_input = snapshot.get("tool_input")
     if isinstance(tool_input, dict):
         for v in tool_input.values():
             if isinstance(v, str):
@@ -321,6 +512,6 @@ def _payload_text(body: dict) -> str:
     # an over-long body row doesn't pin the CPU under an adversarial
     # regex (Policy.__post_init__ already caps pattern length).
     try:
-        return json.dumps(body, ensure_ascii=False)[:8000]
+        return json.dumps(snapshot, ensure_ascii=False)[:8000]
     except (TypeError, ValueError):
         return ""

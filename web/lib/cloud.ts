@@ -55,16 +55,39 @@ async function _hmacPost<T>(path: string, body: Record<string, unknown>, timeout
 
 async function _fetch<T>(
   path: string,
-  init: RequestInit & { keyType: "api" | "hitl" | "admin"; timeoutMs?: number },
+  init: RequestInit & {
+    keyType: "api" | "hitl" | "admin"
+    timeoutMs?: number
+    /** D53b follow-up: when present, the fetch is aborted on EITHER
+     *  the configured timeout OR this signal firing. Used by the
+     *  dry-run proxy so a client-side navigation-abort actually
+     *  cancels the upstream cloud request (without this, _fetch's
+     *  hard `AbortSignal.timeout` overrode every external signal
+     *  and the request kept running on the cloud until the 30s
+     *  deadline). Backwards compatible: existing callers leave it
+     *  undefined and get the timeout-only behaviour. */
+    externalSignal?: AbortSignal
+  },
 ): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.keyType === "hitl") headers.set("X-Hitl-Api-Key", _hitlKey())
   else if (init.keyType === "admin") headers.set("X-Admin-Api-Key", _adminKey())
   else headers.set("X-Api-Key", _apiKey())
   headers.set("Content-Type", "application/json")
+  // Combine the timeout signal with the optional external signal.
+  // `AbortSignal.any` short-circuits on either firing; Node 20+ /
+  // modern browsers both ship it. When externalSignal is undefined
+  // we keep the original timeout-only path so behaviour is byte-
+  // identical for non-dry-run callers.
+  const timeoutSignal = AbortSignal.timeout(
+    init.timeoutMs ?? FETCH_TIMEOUT_MS,
+  )
+  const combinedSignal: AbortSignal = init.externalSignal
+    ? AbortSignal.any([timeoutSignal, init.externalSignal])
+    : timeoutSignal
   const r = await fetch(`${_cloudUrl()}${path}`, {
     ...init, headers, cache: "no-store",
-    signal: AbortSignal.timeout(init.timeoutMs ?? FETCH_TIMEOUT_MS),
+    signal: combinedSignal,
   })
   if (!r.ok) {
     // Do not echo cloud response body to callers. could include details
@@ -427,11 +450,26 @@ export const cloud = {
     ir: Record<string, unknown>,
     since: "24h" | "7d" = "24h",
     limit: number = 1000,
+    /** D53b follow-up: optional client-side abort signal. When the
+     *  panel's AbortController.signal is passed through here, a
+     *  navigation-abort actually cancels the upstream cloud fetch
+     *  instead of letting it run to the 30s deadline. */
+    externalSignal?: AbortSignal,
+    /** D53b follow-up: explicit tenant scoping. The cloud's
+     *  /policies/dry-run is admin-key gated (no per-request tenant
+     *  resolution), so without this field the replay runs against
+     *  the synthetic "default" tenant — wrong-tenant count on every
+     *  multi-tenant deployment. */
+    tenantId?: string,
   ): Promise<DryRunResult> =>
     _fetch<DryRunResult>("/policies/dry-run", {
       method: "POST", keyType: "admin",
       timeoutMs: 30_000,
-      body: JSON.stringify({ ir, since, limit }),
+      externalSignal,
+      body: JSON.stringify({
+        ir, since, limit,
+        ...(tenantId ? { tenant_id: tenantId } : {}),
+      }),
     }),
 
   /** Generic verifier dispatch. produces a signed token on pass/review.
@@ -622,6 +660,9 @@ export type DryRunSampleRow = {
 export type DryRunResult = {
   total_records: number
   matched: number
+  /** Follow-up: rows where >=1 requires entry was offline-unevaluable.
+   *  Optional so older cloud versions deserialize cleanly. */
+  indeterminate?: number
   by_verdict: Record<
     "pass" | "fail" | "deny" | "review" | "needs_review"
       | "not_applicable" | "unknown",
@@ -632,9 +673,18 @@ export type DryRunResult = {
   skipped_reason:
     | "archetype-not-dry-runnable"
     | "no-records-in-trigger-frame"
+    | "multi-requires-not-replayable"
+    | "requires-indeterminate"
+    | "no-frame-metadata-on-rows"
     | null
+  /** Follow-up: requires-entry kinds that produced indeterminate
+   *  results during the replay (subset of
+   *  {"llm_critic","shacl","regex"}). */
+  skipped_kinds?: string[]
   since: "24h" | "7d"
   limit: number
+  /** Follow-up: tenant the replay was scoped to. Echoed for audit. */
+  tenant_id?: string
 }
 
 export type PresetEntry = {

@@ -312,3 +312,64 @@ def test_unknown_kind_422(client):
         json={"kind": "quantum", "payload": {}},
     )
     assert r.status_code == 422
+
+
+# ── D53b follow-up: frame metadata + payload snapshot on ledger ──
+def test_regex_verify_inline_writes_frame_meta_and_snapshot_to_ledger(client):
+    """The runtime now writes `hook_event`, `matcher` (when supplied
+    by the caller) and a bounded `__payload_snapshot__` (regex only)
+    into the ledger row body, so the offline /policies/dry-run
+    replay can scope rows by (event, matcher) AND scan the original
+    payload text — not the verdict envelope JSON."""
+    HDR_LEDGER = {"X-Api-Key": API_KEY}
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": r"\bsecret\b",
+            "hook_event": "PreToolUse",
+            "matcher": "Bash",
+            "payload": {"text": "this is the secret value"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Pull the most-recent ledger row and check the new fields.
+    page = client.get(
+        "/ledger?limit=5&include_body=true", headers=HDR_LEDGER,
+    ).json()
+    assert len(page["entries"]) >= 1
+    body = page["entries"][0]["body"]
+    assert body["hook_event"] == "PreToolUse"
+    assert body["matcher"] == "Bash"
+    # Snapshot is bounded; the regex pattern would actually match it.
+    assert "__payload_snapshot__" in body
+    snap = body["__payload_snapshot__"]
+    assert "secret" in snap
+
+
+def test_llm_critic_verify_inline_skips_payload_snapshot(client):
+    """Payload snapshot is regex-only — llm_critic (and shacl) bodies
+    should NOT carry it. The dry-run replay treats llm_critic rows as
+    indeterminate regardless of snapshot presence; writing one would
+    waste ledger storage on a field nothing reads."""
+    HDR_LEDGER = {"X-Api-Key": API_KEY}
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "llm_critic",
+            "criterion": "is this safe?",
+            "hook_event": "PreToolUse",
+            "matcher": "Bash",
+            "payload": {"text": "ls -la"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    page = client.get(
+        "/ledger?limit=5&include_body=true", headers=HDR_LEDGER,
+    ).json()
+    body = page["entries"][0]["body"]
+    # Frame metadata still lands…
+    assert body.get("hook_event") == "PreToolUse"
+    assert body.get("matcher") == "Bash"
+    # …but no payload snapshot.
+    assert "__payload_snapshot__" not in body

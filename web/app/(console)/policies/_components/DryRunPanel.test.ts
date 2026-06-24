@@ -120,4 +120,55 @@ describe("DryRunPanel source invariants", () => {
   it("payload sent to the proxy carries ir + since (default 24h)", () => {
     expect(src).toContain('JSON.stringify({ ir, since: "24h" })')
   })
+
+  it("aborts in-flight fetch on unmount + on a fresh click (P1 #1)", () => {
+    // Brief follow-up: holding an AbortController in a ref + tearing
+    // it down via useEffect cleanup is the only honest way to cancel
+    // the ~30s cloud replay when the operator navigates away. The
+    // panel must use both controller.abort() in cleanup AND pass
+    // controller.signal into the fetch init so the network layer
+    // actually drops the request.
+    expect(src).toContain("AbortController")
+    expect(src).toContain("abortRef")
+    expect(src).toContain("controller.signal")
+    expect(src).toContain("signal: controller.signal")
+    // Cleanup hook fires on unmount.
+    expect(src).toContain("abortRef.current?.abort()")
+  })
+
+  it("renders a dedicated headline when matched=0 but total_records>0 (P1 #2)", () => {
+    // The fallthrough "would have ...'d 0 of N" line looked like a
+    // successful match summary at a glance. The dedicated branch
+    // makes the "policy did not fire" case explicitly visible.
+    expect(src).toContain("dry-run-no-match")
+    expect(src).toContain("newPolicy.dryRun.noMatch")
+    expect(src).toMatch(/result\.matched === 0/)
+  })
+
+  it("surfaces multi-requires and indeterminate skipped reasons (P1 #3/#4)", () => {
+    expect(src).toContain("multi-requires-not-replayable")
+    expect(src).toContain("requires-indeterminate")
+    expect(src).toContain("no-frame-metadata-on-rows")
+    expect(src).toContain("newPolicy.dryRun.empty.multiRequires")
+    expect(src).toContain("newPolicy.dryRun.empty.requiresIndeterminate")
+    expect(src).toContain("newPolicy.dryRun.empty.noFrameMetadata")
+  })
+
+  it("renders the indeterminate-note disclosure when result.indeterminate>0 (P2 honesty)", () => {
+    // The dashboard must NEVER render the headline alone when the
+    // replay skipped llm_critic / shacl / regex-without-snapshot
+    // entries — the operator would mis-read "0 of N would have
+    // blocked" as "policy too narrow" instead of "could not check."
+    expect(src).toContain("dry-run-indeterminate-note")
+    expect(src).toContain("newPolicy.dryRun.indeterminateNote")
+    expect(src).toMatch(/result\.indeterminate/)
+  })
+
+  it("uses the long-replay loading copy in the live-region paragraph (P2 ux-load)", () => {
+    // Brief follow-up: the duplicate "Replaying last 24h..." line
+    // on the button AND in the paragraph read as a copy/paste bug.
+    // The paragraph now uses a separate, longer key with the
+    // up-to-30s expectation so the two surfaces don't duplicate.
+    expect(src).toContain("newPolicy.dryRun.loadingLong")
+  })
 })

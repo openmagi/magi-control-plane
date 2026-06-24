@@ -181,22 +181,27 @@ def test_dry_run_step_requires_counts_failed_records(app, client):
     assert r["by_verdict"]["deny"] == 2
 
 
-def test_dry_run_regex_requires_uses_payload_text(app, client):
-    # A regex requires entry should match against the recorded body's
-    # `text` field, mirroring /verify_inline's payload_text slicing.
+def test_dry_run_regex_requires_uses_payload_snapshot(app, client):
+    # Follow-up: the dry-run regex evaluator reads the runtime-written
+    # `body['__payload_snapshot__']` field (the bounded snapshot
+    # /verify_inline writes for kind=regex calls). The ledger row body
+    # itself carries the verdict envelope, NOT the original payload —
+    # scanning verdict JSON for `\bfoo\b` would systematically fail
+    # to match patterns authors wrote against the original payload.
+    #
     # We seed two rows:
-    #   row A text="bar baz"     → regex 'foo' does NOT match → requires
-    #                              fails → action fires → counted as
-    #                              matched.
-    #   row B text="foo bar baz" → regex 'foo' matches → requires
-    #                              passes → action does NOT fire →
-    #                              not counted.
+    #   row A snapshot="bar baz"     → regex 'foo' does NOT match →
+    #                                  requires fails → action fires
+    #                                  → counted as matched.
+    #   row B snapshot="foo bar baz" → regex 'foo' matches → requires
+    #                                  passes → action does NOT fire
+    #                                  → not counted.
     _seed_ledger_rows(app, [
         {"step": "inline_regex", "verdict": "deny",
-         "text": "bar baz",
+         "__payload_snapshot__": "bar baz",
          "hook_event": "PreToolUse", "matcher": "Bash"},
         {"step": "inline_regex", "verdict": "pass",
-         "text": "foo bar baz",
+         "__payload_snapshot__": "foo bar baz",
          "hook_event": "PreToolUse", "matcher": "Bash"},
     ])
     ir = _evidence_ir(
@@ -209,6 +214,105 @@ def test_dry_run_regex_requires_uses_payload_text(app, client):
     assert r["total_records"] == 2
     assert r["matched"] == 1
     assert r["by_action"]["audit"] == 1
+    # Both rows had a snapshot, so neither was indeterminate.
+    assert r["indeterminate"] == 0
+    assert r["skipped_kinds"] == []
+
+
+def test_dry_run_regex_requires_without_snapshot_is_indeterminate(app, client):
+    # P0 #1: rows that LACK __payload_snapshot__ (predate the runtime
+    # write contract, or step-kind rows) must NOT silently fire the
+    # action under a regex requires. The replay returns indeterminate
+    # for those rows and surfaces the limitation via skipped_kinds.
+    _seed_ledger_rows(app, [
+        {"step": "inline_regex", "verdict": "deny",
+         "hook_event": "PreToolUse", "matcher": "Bash"},
+    ])
+    ir = _evidence_ir(
+        action="audit",
+        requires=[{"kind": "regex", "pattern": "rm -rf"}],
+    )
+    r = client.post(
+        "/policies/dry-run", json={"ir": ir}, headers=HEADERS_ADMIN,
+    ).json()
+    # The row WAS in the trigger frame, so total_records counts it.
+    assert r["total_records"] == 1
+    # ...but the regex couldn't be checked, so matched stays 0.
+    assert r["matched"] == 0
+    assert r["indeterminate"] == 1
+    assert "regex" in r["skipped_kinds"]
+    # Whole-policy skip: every requires entry was indeterminate.
+    assert r["skipped_reason"] == "requires-indeterminate"
+
+
+def test_dry_run_llm_critic_requires_is_indeterminate(app, client):
+    # P1 #4: llm_critic requires cannot be evaluated offline. The
+    # replay must not silently treat them as "pass" — every row gets
+    # counted as indeterminate and the policy-level skipped_reason
+    # surfaces requires-indeterminate so the dashboard can disclose
+    # the gap instead of rendering "0 of N would have blocked".
+    _seed_ledger_rows(app, [
+        {"step": "inline_llm_critic", "verdict": "deny",
+         "hook_event": "PreToolUse", "matcher": "Bash"},
+    ])
+    ir = _evidence_ir(
+        action="block",
+        requires=[{"kind": "llm_critic",
+                   "criterion": "is this a privileged command?"}],
+    )
+    r = client.post(
+        "/policies/dry-run", json={"ir": ir}, headers=HEADERS_ADMIN,
+    ).json()
+    assert r["total_records"] == 1
+    assert r["matched"] == 0
+    assert r["indeterminate"] == 1
+    assert "llm_critic" in r["skipped_kinds"]
+    assert r["skipped_reason"] == "requires-indeterminate"
+
+
+def test_dry_run_multi_requires_is_skipped(app, client):
+    # P1 #3: a policy with len(requires) > 1 cannot be honestly
+    # replayed per-row because the runtime joins verdicts across
+    # multiple (subject, payload_hash)-sibling rows. We refuse to
+    # produce a misleading number and surface
+    # multi-requires-not-replayable instead.
+    _seed_ledger_rows(app, [
+        {"step": "citation_verify", "verdict": "pass",
+         "hook_event": "PreToolUse", "matcher": "Bash"},
+    ])
+    ir = _evidence_ir(
+        action="block",
+        requires=[
+            {"step": "citation_verify", "verdict": "pass"},
+            {"step": "privilege_scan", "verdict": "pass"},
+        ],
+    )
+    r = client.post(
+        "/policies/dry-run", json={"ir": ir}, headers=HEADERS_ADMIN,
+    ).json()
+    assert r["total_records"] == 0
+    assert r["matched"] == 0
+    assert r["skipped_reason"] == "multi-requires-not-replayable"
+
+
+def test_dry_run_excludes_rows_without_frame_metadata(app, client):
+    # P0 #2: rows that lack hook_event AND matcher predate the runtime
+    # write contract; admitting them would inflate total_records into
+    # "every tenant row in window" instead of the (event, matcher)
+    # slice the operator targeted. The replay excludes such rows and
+    # surfaces `no-records-in-trigger-frame` when the entire window
+    # lacks metadata.
+    _seed_ledger_rows(app, [
+        {"step": "x", "verdict": "deny"},  # no hook_event / matcher
+        {"step": "y", "verdict": "deny"},
+    ])
+    ir = _evidence_ir(event="PreToolUse", matcher="Bash", action="audit", requires=[])
+    r = client.post(
+        "/policies/dry-run", json={"ir": ir}, headers=HEADERS_ADMIN,
+    ).json()
+    assert r["total_records"] == 0
+    assert r["matched"] == 0
+    assert r["skipped_reason"] == "no-records-in-trigger-frame"
 
 
 def test_dry_run_empty_requires_fires_on_every_trigger_match(app, client):
@@ -420,6 +524,85 @@ def test_dry_run_does_not_write_to_ledger(app, client):
     )
     post = client.get("/ledger", headers=HEADERS_API).json()
     assert len(post["entries"]) == pre_count
+
+
+def test_dry_run_requires_explicit_tenant_on_multi_tenant_deployment(
+    app, client,
+):
+    # P1 #5: the dry-run route is admin-key gated (no per-request
+    # tenant resolution from an api key), so without an explicit
+    # tenant_id it used to silently target the synthetic `default`
+    # tenant — wrong-tenant count on every multi-tenant deployment.
+    # When the tenants table is non-empty, the route now 422s on
+    # an omitted tenant_id.
+    from magi_cp.cloud.tenants import TenantRepo
+    TenantRepo(app.state.engine).create(tenant_id="acme", plan="free")
+    ir = _evidence_ir(action="audit", requires=[])
+    r = client.post(
+        "/policies/dry-run", json={"ir": ir}, headers=HEADERS_ADMIN,
+    )
+    assert r.status_code == 422, r.text
+    assert "tenant_id" in r.text.lower()
+
+
+def test_dry_run_accepts_explicit_tenant_id(app, client):
+    # P1 #5 happy path: with an explicit tenant_id the replay scopes
+    # to that tenant's ledger rows.
+    from magi_cp.cloud.tenants import TenantRepo
+    TenantRepo(app.state.engine).create(tenant_id="acme", plan="free")
+    _seed_ledger_rows(app, [
+        {"step": "x", "verdict": "deny",
+         "hook_event": "PreToolUse", "matcher": "Bash"},
+    ], tenant_id="acme")
+    ir = _evidence_ir(action="audit", requires=[])
+    r = client.post(
+        "/policies/dry-run",
+        json={"ir": ir, "tenant_id": "acme"},
+        headers=HEADERS_ADMIN,
+    ).json()
+    assert r["total_records"] == 1
+    assert r["matched"] == 1
+    assert r["tenant_id"] == "acme"
+
+
+def test_dry_run_rejects_unknown_tenant_id(app, client):
+    # P1 #5: unknown tenant_id surfaces as 422 (not silent fallback).
+    from magi_cp.cloud.tenants import TenantRepo
+    TenantRepo(app.state.engine).create(tenant_id="acme", plan="free")
+    ir = _evidence_ir(action="audit", requires=[])
+    r = client.post(
+        "/policies/dry-run",
+        json={"ir": ir, "tenant_id": "does-not-exist"},
+        headers=HEADERS_ADMIN,
+    )
+    assert r.status_code == 422
+
+
+def test_dry_run_module_docstring_pins_requires_combination_contract():
+    # P1 #3: dry_run.py is a SEMANTIC mirror of the runtime gate_binary
+    # requires-combination contract, not an implementation reuse. If a
+    # future change to gate_binary drifts the short-circuit semantics
+    # (e.g. switches to OR), the dry-run will silently diverge until
+    # someone updates this pin. The contract is anchored in the
+    # module docstring so a maintainer who edits it is forced to look
+    # at this test.
+    from magi_cp.policy import dry_run
+    # Normalize whitespace so a docstring reflow doesn't break the pin.
+    doc = " ".join((dry_run.__doc__ or "").split())
+    # The four invariants the per-row replay encodes.
+    assert "AND of pass conditions" in doc, (
+        "requires[] combination invariant drifted out of docstring"
+    )
+    assert "short-circuit" in doc, (
+        "short-circuit invariant drifted out of docstring"
+    )
+    assert "empty requires" in doc.lower(), (
+        "empty-requires-fires-on-every-trigger invariant drifted"
+    )
+    assert "multi-requires-not-replayable" in doc, (
+        "multi-requires limitation must be documented in the module "
+        "docstring so an operator reading the source sees it"
+    )
 
 
 def test_dry_run_does_not_persist_policy(client):

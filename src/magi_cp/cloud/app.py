@@ -208,12 +208,24 @@ class DryRunReq(BaseModel):
     `limit`: cap on rows replayed inside the window. The replay is
     Python-side per row so a 7d window with thousands of rows would
     pin a worker - the cap (max 10_000) is the safety net.
+
+    `tenant_id`: which tenant's ledger to replay against. The route
+    is admin-key gated (no per-request tenant resolution from the
+    api key), so without this field the replay used to silently
+    target the synthetic `default` tenant - producing a wrong-tenant
+    count on every multi-tenant deployment. The route validates the
+    value against the tenants table and 422s on an unknown id.
+    Defaults to None; the route accepts None on single-tenant
+    deployments (empty tenants table) for back-compat with the
+    `default`-tenant single-tenant flow.
     """
     model_config = {"extra": "forbid"}
 
     ir: dict
     since: Literal["24h", "7d"] = "24h"
     limit: int = Field(default=1000, ge=1, le=10_000)
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                   pattern=r"^[A-Za-z0-9_\-\.]+$")
 
 
 # v2.0-W7: verifier payload cap (regex DoS defense). 20K is plenty for any
@@ -246,6 +258,14 @@ class VerifyDispatchReq(BaseModel):
                                 pattern=_KEY_PATTERN)
     payload_hash: str | None = Field(default=None, min_length=1, max_length=64,
                                       pattern=_KEY_PATTERN)
+    # D53b follow-up: frame metadata. The gate writes the hook event +
+    # matcher pattern it fired on so the offline dry-run replay can
+    # scope ledger rows to a specific (event, matcher) frame instead
+    # of admitting every tenant row. Both are bounded short strings
+    # because the cloud projects them onto the ledger body verbatim.
+    hook_event: str | None = Field(default=None, min_length=1, max_length=64,
+                                    pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    matcher: str | None = Field(default=None, min_length=1, max_length=256)
 
     def model_post_init(self, _ctx) -> None:
         # Pydantic v2: enforce payload's serialized size after construction.
@@ -297,6 +317,15 @@ class VerifyInlineReq(BaseModel):
                                 pattern=_KEY_PATTERN)
     payload_hash: str | None = Field(default=None, min_length=1, max_length=64,
                                       pattern=_KEY_PATTERN)
+    # D53b follow-up: frame metadata. Same shape + semantics as the
+    # one on VerifyDispatchReq above. Gates that haven't rolled forward
+    # past the runtime-write contract simply omit these fields; the
+    # ledger row will be excluded from offline regex/llm_critic/shacl
+    # dry-run replays (the replay refuses to admit rows whose frame
+    # cannot be reconstructed).
+    hook_event: str | None = Field(default=None, min_length=1, max_length=64,
+                                    pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    matcher: str | None = Field(default=None, min_length=1, max_length=256)
     # kind-specific
     pattern: str | None = Field(default=None, max_length=2000)
     criterion: str | None = Field(default=None, max_length=4000)
@@ -577,7 +606,7 @@ def create_app(
             raise HTTPException(422, str(e)) from e
 
     @app.post("/policies/dry-run", dependencies=[Depends(require_admin_key)])
-    def policies_dry_run(req: "DryRunReq", request: Request) -> dict:
+    async def policies_dry_run(req: "DryRunReq", request: Request) -> dict:
         """D53b: replay a draft IR over the last 24h / 7d of ledger
         rows and report how many would have triggered the policy
         action.
@@ -595,11 +624,18 @@ def create_app(
         Sample payloads in the response pass through D50's
         `redact_payload_preview` (allowlist projection + linear
         masking) - raw evidence bodies never reach the dashboard.
+
+        P1 follow-up: async + asyncio.to_thread so the threadpool
+        does not pin on a 10_000-row Python replay (mirrors the
+        `policies_compile` route above which already does this for
+        the same long-blocking-call reason).
         """
         from ..policy.dry_run import evaluate_dry_run
         from ..policy.run_redaction import (
             DEFAULT_PREVIEW_MAX_CHARS, redact_payload_preview,
         )
+        from ..policy.verdicts import LEDGER_VERDICTS
+        from .tenants import Tenant
 
         # Gate 1: shape check. Reuse the policies CRUD deserializer
         # so an authoring-time validation failure here mirrors the
@@ -611,26 +647,67 @@ def create_app(
         except (ValueError, KeyError) as e:
             raise HTTPException(422, str(e)) from e
 
-        # Gate 2: ledger window. `since` is a closed enum to keep
+        # Gate 2: tenancy resolution. The route is admin-key gated
+        # (require_tenant_auth has NOT run), so request.state.tenant_id
+        # is never set; falling back to "default" produces a
+        # silently-wrong count on every multi-tenant deployment.
+        # Accept an explicit `tenant_id` field on the request and
+        # validate it. When the tenants table is empty (single-tenant
+        # deployment) we accept the "default" synthetic; when the
+        # table has rows we 422 on an omitted or unknown id.
+        engine = request.app.state.engine
+        from sqlalchemy import select as _select
+        from sqlalchemy.orm import Session as _Session
+        with _Session(engine) as _s:
+            has_tenants = _s.scalars(
+                _select(Tenant.id).limit(1)
+            ).first() is not None
+        if req.tenant_id is not None:
+            with _Session(engine) as _s:
+                exists = _s.scalars(
+                    _select(Tenant.id).where(Tenant.id == req.tenant_id)
+                ).first() is not None
+            if not exists:
+                raise HTTPException(
+                    422, f"unknown tenant_id: {req.tenant_id!r}",
+                )
+            tenant_id = req.tenant_id
+        elif has_tenants:
+            raise HTTPException(
+                422,
+                "tenant_id is required on multi-tenant deployments "
+                "(POST /policies/dry-run is admin-key gated and has "
+                "no per-request tenant resolution)",
+            )
+        else:
+            tenant_id = "default"
+
+        # Gate 3: ledger window. `since` is a closed enum to keep
         # the replay's blast radius bounded (a typo cannot widen to
         # 90d). Limit is clamped by pydantic above (1..10_000).
         window_secs = {"24h": 86_400, "7d": 7 * 86_400}[req.since]
         cutoff = int(time.time()) - window_secs
-        tenant_id = getattr(request.state, "tenant_id", "default")
-        rows = ledger.list_recent_window(
+        rows = await asyncio.to_thread(
+            ledger.list_recent_window,
             tenant_id, limit=req.limit, since_ts=cutoff,
         )
 
-        # Gate 3: pure replay. The helper returns row ids; we
-        # hydrate the matched rows + redact their bodies before they
-        # cross the wire.
-        result = evaluate_dry_run(policy, rows, sample_limit=3)
+        # Gate 4: pure replay. Push the per-row Python loop onto the
+        # threadpool too - regex compile + payload-text projection
+        # across 10_000 rows can run >100ms which would still wedge
+        # the event loop.
+        result = await asyncio.to_thread(
+            evaluate_dry_run, policy, rows, sample_limit=3,
+        )
 
         # Build the redacted sample list. Look the matched rows back
         # up by id from the already-hydrated `rows` window so we do
         # not need a second SQL round-trip. The redactor is
         # fail-closed; an unexpected future body field with a secret
-        # cannot leak through this surface.
+        # cannot leak through this surface. The verdict allowlist is
+        # the single-source-of-truth constant in
+        # magi_cp.policy.verdicts; widening the closed set is a
+        # one-line change there.
         rows_by_id = {r.id: r for r in rows}
         sample_matched: list[dict] = []
         for rid in result.sample_matched_ids:
@@ -639,14 +716,10 @@ def create_app(
                 continue
             body = r.body if isinstance(r.body, dict) else {}
             verdict_raw = body.get("verdict")
-            _ALLOWED_VERDICTS = {
-                "pass", "fail", "deny",
-                "review", "needs_review", "not_applicable",
-            }
             verdict = (
                 verdict_raw
                 if isinstance(verdict_raw, str)
-                and verdict_raw in _ALLOWED_VERDICTS
+                and verdict_raw in LEDGER_VERDICTS
                 else None
             )
             sample_matched.append({
@@ -661,12 +734,15 @@ def create_app(
         return {
             "total_records": result.total_records,
             "matched": result.matched,
+            "indeterminate": result.indeterminate,
             "by_verdict": result.by_verdict,
             "by_action": result.by_action,
             "sample_matched": sample_matched,
             "skipped_reason": result.skipped_reason,
+            "skipped_kinds": result.skipped_kinds,
             "since": req.since,
             "limit": req.limit,
+            "tenant_id": tenant_id,
         }
 
     @app.get("/pubkey")
@@ -821,13 +897,22 @@ def create_app(
         # fields removed from request validator (extra="forbid") and from
         # ledger bodies below.
         subj, phash = req.subject, req.payload_hash
+        # D53b follow-up: frame metadata written to the ledger row body
+        # so the offline dry-run replay can scope rows to the proposed
+        # policy's (event, matcher) frame. Gates that haven't rolled
+        # forward past the runtime-write contract simply omit these
+        # fields; the dry-run will exclude such rows so total_records
+        # reflects rows the replay COULD scope, not "every tenant row
+        # in window."
+        frame_meta = _frame_meta_for_ledger(req.hook_event, req.matcher)
         try:
             verdict = v.run(req.payload)
         except Exception as e:
             # Verifier blew up on a malformed payload → treat as deny, record.
             async with chain_lock:
                 ledger.append(subject=subj,
-                              body={"step": step, "verdict": "deny",
+                              body={**frame_meta,
+                                    "step": step, "verdict": "deny",
                                     "subject": subj, "payload_hash": phash,
                                     "error": str(e)[:200]},
                               token="", tenant_id=tenant_id)
@@ -839,6 +924,7 @@ def create_app(
                     subj, phash, "pass",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
                     tenant_id=tenant_id,
+                    ledger_extra=frame_meta or None,
                 )
             result["reasons"] = list(verdict.reasons)
             return result
@@ -848,13 +934,15 @@ def create_app(
                     subj, phash, "review",
                     ledger=ledger, keystore=ks, kid=kid, step=step,
                     tenant_id=tenant_id,
+                    ledger_extra=frame_meta or None,
                 )
             result["reasons"] = list(verdict.reasons)
             return result
         # deny
         async with chain_lock:
             ledger.append(subject=subj,
-                          body={"step": step, "verdict": "deny",
+                          body={**frame_meta,
+                                "step": step, "verdict": "deny",
                                 "subject": subj, "payload_hash": phash,
                                 "reasons": list(verdict.reasons)},
                           token="", tenant_id=tenant_id)
@@ -1067,18 +1155,37 @@ def create_app(
         # PR4: subject/payload_hash are the only keys (legacy aliases
         # rejected by the pydantic validator with extra="forbid").
         subj, phash = req.subject, req.payload_hash
+        # D53b follow-up: frame metadata on the ledger row body so the
+        # offline dry-run replay can scope rows to (event, matcher).
+        frame_meta = _frame_meta_for_ledger(req.hook_event, req.matcher)
+        # D53b follow-up (regex only): write a bounded payload snapshot
+        # under a reserved key so the dry-run regex replay can scan the
+        # SAME text the runtime regex saw. We only do this for kind=
+        # regex because (a) llm_critic and shacl can't be replayed
+        # offline anyway, and (b) for regex the runtime ledger body
+        # otherwise carries only the verdict envelope - the operator's
+        # `\brm -rf\b` pattern would never match `{"verdict":"deny"}`.
+        # The snapshot is bounded to 4000 chars (matches the
+        # llm_critic prompt slice above) and lives under a reserved
+        # `__payload_snapshot__` key so the redactor's projection
+        # treats it as opaque payload-data on egress.
+        ledger_extra: dict = dict(frame_meta)
+        if kind == "regex" and payload_text:
+            ledger_extra["__payload_snapshot__"] = payload_text[:4000]
         if verdict_status in ("pass", "review"):
             async with chain_lock:
                 result = _issue_token(
                     subj, phash, verdict_status,
                     ledger=ledger, keystore=ks, kid=kid, step=step_label,
                     tenant_id=tenant_id,
+                    ledger_extra=ledger_extra or None,
                 )
             result["reasons"] = reasons
             return result
         async with chain_lock:
             ledger.append(subject=subj,
-                          body={"step": step_label, "verdict": "deny",
+                          body={**ledger_extra,
+                                "step": step_label, "verdict": "deny",
                                 "subject": subj, "payload_hash": phash,
                                 "reasons": reasons},
                           token="", tenant_id=tenant_id)
@@ -1394,14 +1501,12 @@ def create_app(
             limit=limit,
             since_ts=cutoff,
         )
-        # Closed-set verdict allowlist. Mirrors the frontend's
-        # `verdictLabel` map; any string outside this set is collapsed
-        # to None at the cloud boundary so a misbehaving producer
-        # cannot leak a novel string through this surface.
-        _ALLOWED_VERDICTS = {
-            "pass", "fail", "deny",
-            "review", "needs_review", "not_applicable",
-        }
+        # Closed-set verdict allowlist. Single source of truth in
+        # magi_cp.policy.verdicts; widening the closed set is a
+        # one-line change there. Anything outside collapses to None
+        # at the cloud boundary so a misbehaving producer cannot leak
+        # a novel string through this surface.
+        from ..policy.verdicts import LEDGER_VERDICTS
         samples: list[dict] = []
         for r in rows:
             # Intentionally drop r.subject / r.matter / r.digest /
@@ -1417,7 +1522,7 @@ def create_app(
             verdict = (
                 verdict_raw
                 if isinstance(verdict_raw, str)
-                and verdict_raw in _ALLOWED_VERDICTS
+                and verdict_raw in LEDGER_VERDICTS
                 else None
             )
             # Defense in depth: every body MUST pass through the
@@ -1501,6 +1606,33 @@ def create_app(
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+def _frame_meta_for_ledger(
+    hook_event: str | None, matcher: str | None,
+) -> dict[str, str]:
+    """D53b follow-up: project optional frame metadata onto the
+    ledger-body subset the offline dry-run replay reads.
+
+    The replay needs `body['hook_event']` and `body['matcher']` to
+    scope ledger rows to the proposed policy's (event, matcher)
+    frame; without them, the replay would admit every tenant row in
+    the window and over-report the matched count. We accept None for
+    each field (gates that haven't rolled forward past this contract
+    just omit them) and project only the values that are present, so
+    a gate that supplies only `hook_event` still gets partial frame
+    metadata in its rows.
+
+    Returns an empty dict when both inputs are None. The caller folds
+    the result into the ledger body via dict spread; protected ledger
+    fields written by the route override on key clash.
+    """
+    out: dict[str, str] = {}
+    if isinstance(hook_event, str) and hook_event:
+        out["hook_event"] = hook_event
+    if isinstance(matcher, str) and matcher:
+        out["matcher"] = matcher
+    return out
+
+
 def _iso_ts(ts: int) -> str:
     """Format a ledger row's epoch-second `ts` as ISO-8601 UTC.
 
@@ -1528,13 +1660,21 @@ def _issue_token(subject: str, payload_hash: str, verdict: str, *,
                  ledger: LedgerRepo, keystore: KeyStore, kid: str,
                  step: str = "citation_verify",
                  tenant_id: str = "default",
-                 extra: dict | None = None) -> dict:
+                 extra: dict | None = None,
+                 ledger_extra: dict | None = None) -> dict:
     """Issue a cloud-signed verdict token.
 
     PR4: legacy `matter`/`doc_hash` mirror fields removed from the signed
     body. Gates that haven't rolled forward past PR2 will no longer find
     a verifying token — operators must upgrade gate binaries before
     flipping to a PR4 cloud.
+
+    `extra` is folded into the signed token body (and therefore into
+    the ledger row body too). `ledger_extra` is written ONLY to the
+    ledger row body and is NOT signed; use it for frame metadata
+    (hook_event / matcher) and the runtime payload snapshot the
+    offline dry-run replay reads, which the gate has no reason to
+    re-verify cryptographically.
     """
     now = int(time.time())
     # L2: extras are *base*; protected fields go LAST so they always win.
@@ -1557,7 +1697,16 @@ def _issue_token(subject: str, payload_hash: str, verdict: str, *,
     # PR4: `ledger.append` accepts `subject=` as the canonical kwarg. The
     # underlying DB column is still named `matter` until the deeper ledger
     # rename ships — see LedgerRepo.append for that compatibility shim.
-    entry = ledger.append(subject=subject, body=body, token=token,
+    # D53b follow-up: ledger_extra fields land in the ledger row body
+    # only (not in the signed token), so frame metadata and the
+    # payload snapshot can travel with the row without inflating the
+    # token (which gates re-verify cryptographically on every call).
+    ledger_body = body
+    if ledger_extra:
+        # Protected fields still win — the cryptographic identity of
+        # the row is anchored on the signed body.
+        ledger_body = {**ledger_extra, **body}
+    entry = ledger.append(subject=subject, body=ledger_body, token=token,
                            tenant_id=tenant_id)
     return {"verdict": verdict, "token": token, "exp": body["exp"],
             "kid": kid, "ledger_h": entry.h}
