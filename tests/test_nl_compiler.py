@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from magi_cp.llm.provider import LlmProvider, LlmMessage, FakeLlmProvider
+from magi_cp.llm.provider import FakeLlmProvider
 from magi_cp.cloud.nl_compiler import (
     PrecheckError, compile_nl_to_ir, review_ir, compile_with_review,
 )

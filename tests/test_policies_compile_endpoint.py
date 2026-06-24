@@ -8,7 +8,6 @@ Verifies:
   - 422 on precheck failure
 """
 import json
-import os
 import tempfile
 
 import pytest

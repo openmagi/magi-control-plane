@@ -93,7 +93,8 @@ def test_get_unknown_id_returns_none():
 
 
 def test_all_returns_in_precedence_order():
-    pa = _make("A"); pb = _make("B")
+    pa = _make("A")
+    pb = _make("B")
     resolved = ResolvedPolicySet.from_overrides([
         PolicyOverride(policy=pb, source="user", enabled=True),
         PolicyOverride(policy=pa, source="platform", enabled=True),
@@ -107,7 +108,7 @@ def test_all_returns_in_precedence_order():
 import logging  # noqa: E402
 
 from magi_cp.policy import (  # noqa: E402
-    EvidencePolicy, EvidenceReq, McpGatingPolicy, PermissionPolicy, Trigger,
+    EvidencePolicy, McpGatingPolicy, PermissionPolicy,
 )
 from magi_cp.policy.resolved import resolve_with_tightening  # noqa: E402
 

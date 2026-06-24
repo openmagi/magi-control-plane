@@ -6,7 +6,6 @@ F1 보안 모델 검증:
   - exp 지나면 fail-closed
   - ledger entry의 hash chain이 prev에 정확히 의존
 """
-import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

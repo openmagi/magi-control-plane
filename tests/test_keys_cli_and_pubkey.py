@@ -1,5 +1,4 @@
 """v2.0-W7b — `magi-cp keys` CLI + /pubkey returns multi-key map."""
-import os
 import tempfile
 
 import pytest
@@ -11,7 +10,8 @@ def test_pubkey_returns_active_and_keys_map(tmp_path, monkeypatch):
     monkeypatch.setenv("MAGI_CP_KEY_DIR", str(tmp_path / "kd"))
     from magi_cp.cloud.app import create_app
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     app = create_app(dsn="sqlite:///:memory:", policy_store_path=f.name)
     c = TestClient(app)
     r = c.get("/pubkey")
@@ -30,7 +30,8 @@ def test_pubkey_after_rotation_returns_two_keys(tmp_path, monkeypatch):
     from magi_cp.cloud.app import create_app
     from magi_cp.cloud.keys import KeyStore
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     # build app once → ensure_keypair() runs
     app = create_app(dsn="sqlite:///:memory:", policy_store_path=f.name)
     # rotate via KeyStore directly (cron would do this out-of-band)
@@ -58,10 +59,10 @@ class TestKeysCli:
         assert cli(["list"]) == 0
         out_list = capsys.readouterr().out
         # two lines, one "active" one "verifying"
-        lines = [l for l in out_list.strip().splitlines() if l]
+        lines = [line for line in out_list.strip().splitlines() if line]
         assert len(lines) == 2
-        assert any("active" in l for l in lines)
-        assert any("verifying" in l for l in lines)
+        assert any("active" in line for line in lines)
+        assert any("verifying" in line for line in lines)
 
     def test_revoke_old_kid_succeeds(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("MAGI_CP_KEY_DIR", str(tmp_path / "kd"))

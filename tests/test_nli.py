@@ -9,7 +9,7 @@ import pytest
 
 from magi_cp.verifier import Citation, DictResolver, verify_document
 from magi_cp.verifier.nli import (
-    AdvisoryNli, score_review_citations, EntailmentClassifier,
+    AdvisoryNli, score_review_citations,
 )
 
 

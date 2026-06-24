@@ -20,7 +20,6 @@ Why kid = sha256(pubkey_pem)[:16]:
 from __future__ import annotations
 import hashlib
 import os
-import secrets
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -231,7 +230,11 @@ class KeyStore:
         if not kd.exists():
             return
         for p in (self.private_path_for(kid), self.public_path_for(kid)):
-            try: p.unlink()
-            except FileNotFoundError: pass
-        try: kd.rmdir()
-        except OSError: pass
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            kd.rmdir()
+        except OSError:
+            pass

@@ -19,7 +19,7 @@ import time
 
 import httpx
 
-from .provider import LlmMessage, LlmProvider, LlmProviderError
+from .provider import LlmMessage, LlmProviderError
 
 
 _DEFAULT_MODEL = "gpt-5.5"

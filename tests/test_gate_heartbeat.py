@@ -6,10 +6,7 @@ no-op paths (missing endpoint id, missing api key) and the digest hashing
 without touching the network."""
 from __future__ import annotations
 import hashlib
-import os
-from pathlib import Path
 
-import pytest
 
 from magi_cp.local import gate
 

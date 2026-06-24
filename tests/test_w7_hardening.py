@@ -5,8 +5,6 @@
   - ReDoS regression: every wired verifier's regexes complete in O(n) on
     pathological input (no catastrophic backtracking)
 """
-import json
-import re
 import time
 import tempfile
 
@@ -16,7 +14,8 @@ from fastapi.testclient import TestClient
 
 def _tmp_store():
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     return f.name
 
 

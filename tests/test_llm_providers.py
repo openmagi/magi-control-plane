@@ -4,8 +4,6 @@ We don't take an SDK dependency. Each provider hits the HTTP API directly via
 httpx so the binary stays small and the wire is auditable. Tests use a
 mock httpx Client; no real network, no real keys.
 """
-import json
-import os
 
 import pytest
 

@@ -13,7 +13,7 @@ model (e.g. xlm-roberta-large-xnli) gated behind the optional `nli` extra so
 the core wheel has no torch/transformers dependency.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 from .citations import CitationVerdict, DocumentVerdict

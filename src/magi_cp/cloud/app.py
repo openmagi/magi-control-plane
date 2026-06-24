@@ -33,10 +33,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
 from ..policy import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, EvidenceReq,
-    McpGatingPolicy, PermissionPolicy, Policy, PolicyOverride,
-    ResolvedPolicySet, SubagentPolicy, Trigger,
-    compile_to_managed_settings,
+    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, McpGatingPolicy, PermissionPolicy, PolicyOverride,
+    SubagentPolicy, compile_to_managed_settings,
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
@@ -49,7 +47,7 @@ from .custom_verifier_store import (
 )
 from .policy_store import PolicyStore, _evidence_req_to_dict
 from .db import (
-    EndpointHeartbeatRepo, HitlRepo, HitlStatus, LedgerRepo,
+    EndpointHeartbeatRepo, HitlRepo, LedgerRepo,
     init_schema, is_stale, make_engine,
 )
 from .keys import KeyStore
@@ -333,7 +331,8 @@ class MaxBodyMiddleware(BaseHTTPMiddleware):
     """413 on Content-Length OR by accumulating a streamed/chunked body."""
 
     def __init__(self, app, limit: int):
-        super().__init__(app); self.limit = limit
+        super().__init__(app)
+        self.limit = limit
 
     async def dispatch(self, request: Request, call_next):
         cl = request.headers.get("content-length")
@@ -370,7 +369,9 @@ class TokenBucketLimiter(BaseHTTPMiddleware):
     for v0 single-pod. Swap for slowapi/Redis in P5.
     """
     def __init__(self, app, *, capacity: int = 60, refill_per_sec: float = 10.0):
-        super().__init__(app); self.cap = capacity; self.refill = refill_per_sec
+        super().__init__(app)
+        self.cap = capacity
+        self.refill = refill_per_sec
         self._buckets: dict[str, tuple[float, float]] = {}   # key → (tokens, last_ts)
 
     async def dispatch(self, request: Request, call_next):
@@ -948,7 +949,8 @@ def create_app(
             if not req.shape_ttl:
                 raise HTTPException(422, "kind=shacl requires shape_ttl")
             try:
-                import pyshacl, rdflib  # type: ignore[import-not-found]
+                import pyshacl
+                import rdflib  # type: ignore[import-not-found]
             except ImportError:
                 verdict_status = "review"
                 reasons = [
@@ -1031,11 +1033,13 @@ def create_app(
                             present = False
                             for ln in targets["targetNode"]:
                                 if (ns[ln], None, None) in data or (None, None, ns[ln]) in data:
-                                    present = True; break
+                                    present = True
+                                    break
                             if not present:
                                 for ln in targets["targetClass"]:
                                     if (None, rdflib.RDF.type, ns[ln]) in data:
-                                        present = True; break
+                                        present = True
+                                        break
                             if not present:
                                 verdict_status = "deny"
                                 reasons = [
@@ -1670,7 +1674,7 @@ def _compile_set_with_sha(policies: list[AnyPolicy]) -> tuple[dict, str]:
 
 
 # Derive the source regex from SOURCE_PRECEDENCE so the two cannot drift.
-from ..policy.precedence import SOURCE_PRECEDENCE as _SP
+from ..policy.precedence import SOURCE_PRECEDENCE as _SP  # noqa: E402  paired-with-regex-below
 _SOURCE_REGEX = "^(" + "|".join(_SP) + ")$"
 
 
@@ -1994,7 +1998,8 @@ def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
     from .tenants import ApiKeyRepo, TenantRepo
 
     async def require_hmac(request: Request) -> bytes:
-        import hmac as _hmac, hashlib as _hashlib
+        import hmac as _hmac
+        import hashlib as _hashlib
         secret = os.environ.get("MAGI_CP_ADMIN_HMAC_SECRET")
         if not secret:
             raise HTTPException(503, "admin hmac not configured")

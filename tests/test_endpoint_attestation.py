@@ -4,7 +4,6 @@ Cover the heartbeat REST round-trip, stale detection, and tenant
 scoping. Hardware-side gate helpers live in `local/gate.py`; the
 tests here exercise the cloud schema + REST surface."""
 from __future__ import annotations
-import os
 import time
 
 import pytest

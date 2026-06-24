@@ -8,7 +8,7 @@ when both define the same policy id.
 import pytest
 
 from magi_cp.policy.precedence import (
-    PolicySource, SOURCE_PRECEDENCE, source_rank, more_authoritative,
+    SOURCE_PRECEDENCE, source_rank, more_authoritative,
     resolve_by_id,
 )
 

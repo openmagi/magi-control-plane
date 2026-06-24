@@ -43,9 +43,8 @@ path stays a deliberate opt-in, not a silent default).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 
-from .ir import EvidenceReq, Policy
+from .ir import Policy
 
 
 PREVIEW_PREFIX = "preview:"

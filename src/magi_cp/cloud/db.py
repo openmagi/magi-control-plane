@@ -34,6 +34,7 @@ from sqlalchemy import (
     UniqueConstraint, create_engine, event, select, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 # v2.0-W8a: prefer PostgreSQL's JSONB (binary, indexable) over generic JSON
 # when running on PG. JSON variant fallback covers SQLite + MySQL dev paths.
@@ -46,7 +47,6 @@ JsonCol = JSON().with_variant(JSONB, "postgresql")
 # SQLite needs INTEGER (its ROWID alias) for autoincrement; Postgres needs BIGINT.
 # This variant covers both: BIGINT on Postgres/MySQL, INTEGER on SQLite.
 BigInt = BigInteger().with_variant(Integer, "sqlite")
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
 # ── ORM base + tables ────────────────────────────────────────────────
@@ -389,7 +389,8 @@ class LedgerRepo:
                 select(LedgerEntry).where(LedgerEntry.tenant_id == tenant_id)
                 .order_by(LedgerEntry.id)
             ))
-            for r in rows: s.expunge(r)
+            for r in rows:
+                s.expunge(r)
             return rows
 
     def list_by_tenant_page(
@@ -425,7 +426,8 @@ class LedgerRepo:
                 stmt = self._apply_step_filter(stmt, wanted, dialect)
             stmt = stmt.order_by(LedgerEntry.id).limit(limit)
             rows = list(s.scalars(stmt))
-            for r in rows: s.expunge(r)
+            for r in rows:
+                s.expunge(r)
             if wanted and dialect not in ("postgresql", "sqlite"):
                 # Fallback: filter in Python when dialect lacks a JSON
                 # path operator. Correctness > index efficiency here.
@@ -589,10 +591,8 @@ class LedgerRepo:
         dialect = self.engine.dialect.name
         with Session(self.engine) as sess:
             if dialect == "postgresql":
-                from sqlalchemy import literal_column
                 step_expr = LedgerEntry.body["step"].astext  # type: ignore[index]
             elif dialect == "sqlite":
-                from sqlalchemy import literal_column
                 step_expr = func.json_extract(LedgerEntry.body, "$.step")
             else:
                 # Fallback: hydrate + python aggregate. Single pass.
@@ -653,7 +653,8 @@ class LedgerRepo:
                 select(LedgerEntry).where(LedgerEntry.matter == subject)
                 .order_by(LedgerEntry.id)
             ))
-            for r in rows: s.expunge(r)
+            for r in rows:
+                s.expunge(r)
             return rows
 
     def verify_chain(self) -> bool:
@@ -712,13 +713,17 @@ class HitlRepo:
                 reason=reason, payload=scoped_payload,
                 status=HitlStatus.pending,
             )
-            s.add(item); s.commit(); s.refresh(item); s.expunge(item)
+            s.add(item)
+            s.commit()
+            s.refresh(item)
+            s.expunge(item)
             return item
 
     def get(self, item_id: int) -> HitlItem | None:
         with Session(self.engine) as s:
             item = s.get(HitlItem, item_id)
-            if item: s.expunge(item)
+            if item:
+                s.expunge(item)
             return item
 
     def list_pending(self) -> list[HitlItem]:
@@ -727,7 +732,8 @@ class HitlRepo:
                 select(HitlItem).where(HitlItem.status == HitlStatus.pending)
                 .order_by(HitlItem.id)
             ))
-            for r in rows: s.expunge(r)
+            for r in rows:
+                s.expunge(r)
             return rows
 
     def list_pending_by_tenant(self, tenant_id: str) -> list[HitlItem]:
@@ -738,7 +744,8 @@ class HitlRepo:
                         HitlItem.tenant_id == tenant_id)
                 .order_by(HitlItem.id)
             ))
-            for r in rows: s.expunge(r)
+            for r in rows:
+                s.expunge(r)
             return rows
 
     def _decide(self, item_id: int, *, new_status: HitlStatus, approver: str,

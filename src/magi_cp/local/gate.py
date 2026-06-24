@@ -305,7 +305,7 @@ def evaluate(payload: dict) -> None:
         _allow()   # not a sentinel; CC continues
     cloud = _cloud_url()
     if not cloud.startswith(("http://", "https://")):
-        _deny(f"invalid MAGI_CP_CLOUD_URL scheme")
+        _deny("invalid MAGI_CP_CLOUD_URL scheme")
     try:
         pub = _load_pubkey()
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:

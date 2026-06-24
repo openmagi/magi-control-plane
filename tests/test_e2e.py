@@ -19,7 +19,6 @@ system, not just on isolated unit tests:
 """
 import json
 import os
-import time
 
 import pytest
 from fastapi.testclient import TestClient

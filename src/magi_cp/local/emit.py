@@ -102,14 +102,16 @@ def cli() -> int:
     citations = []
     for c in args.cite:
         if "||" not in c:
-            print("error: --cite must be 'quote||ref'", file=sys.stderr); return 2
+            print("error: --cite must be 'quote||ref'", file=sys.stderr)
+            return 2
         q, r = c.split("||", 1)
         citations.append({"quote": q, "ref": r})
 
     corpus = {}
     for c in args.corpus:
         if "=" not in c:
-            print(f"error: --corpus must be 'case_no=text': {c!r}", file=sys.stderr); return 2
+            print(f"error: --corpus must be 'case_no=text': {c!r}", file=sys.stderr)
+            return 2
         k, v = c.split("=", 1)
         corpus[k] = v
 
@@ -122,9 +124,11 @@ def cli() -> int:
             cloud_url=args.cloud_url, api_key=args.api_key,
         )
     except urllib.error.HTTPError as e:
-        print(f"cloud refused: HTTP {e.code} {e.reason}", file=sys.stderr); return 1
+        print(f"cloud refused: HTTP {e.code} {e.reason}", file=sys.stderr)
+        return 1
     except urllib.error.URLError as e:
-        print(f"cloud unreachable: {e.reason}", file=sys.stderr); return 1
+        print(f"cloud unreachable: {e.reason}", file=sys.stderr)
+        return 1
     if res.get("token") and res.get("verdict") == "pass":
         wal = Wal(path=os.path.join(args.local_dir, "wal.jsonl"))
         wal.append({"step": "citation_verify", "token": res["token"],
@@ -170,7 +174,8 @@ def await_approval_cli() -> int:
             with urllib.request.urlopen(req, timeout=10) as r:
                 items = json.loads(r.read()).get("items", [])
         except urllib.error.URLError as e:
-            print(f"cloud unreachable: {e.reason}", file=sys.stderr); return 1
+            print(f"cloud unreachable: {e.reason}", file=sys.stderr)
+            return 1
         still_pending = any(i["id"] == args.hitl_id for i in items)
         if not still_pending:
             # Decision was made; pull the most recent ledger entry for this hitl
@@ -182,7 +187,8 @@ def await_approval_cli() -> int:
                 with urllib.request.urlopen(led_req, timeout=10) as r:
                     entries = json.loads(r.read()).get("entries", [])
             except urllib.error.HTTPError as e:
-                print(f"need MAGI_CP_API_KEY to fetch ledger: {e.code}", file=sys.stderr); return 1
+                print(f"need MAGI_CP_API_KEY to fetch ledger: {e.code}", file=sys.stderr)
+                return 1
             for e in reversed(entries):
                 body = e.get("body", {})
                 if body.get("hitl_id") == args.hitl_id and body.get("verdict") == "pass":

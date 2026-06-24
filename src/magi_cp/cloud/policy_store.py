@@ -13,10 +13,10 @@ Multi-tenant comes later (SECURITY.md §multi-tenant).
 from __future__ import annotations
 import json
 import os
-import re
 from typing import Iterable
 
-from ..policy.ir import EvidenceReq, Policy, Trigger, _coerce_evidence_req
+from ..policy.ir import EvidenceReq
+from ..policy.resolved import PolicyOverride
 
 
 def _evidence_req_to_dict(r: EvidenceReq) -> dict:
@@ -32,8 +32,6 @@ def _evidence_req_to_dict(r: EvidenceReq) -> dict:
     if r.kind == "shacl":
         return {"kind": "shacl", "shape_ttl": r.shape_ttl}
     raise ValueError(f"unsupported evidence kind on serialize: {r.kind!r}")
-from ..policy.precedence import PolicySource
-from ..policy.resolved import PolicyOverride
 
 
 def _serialize_policy(p) -> dict:

@@ -16,7 +16,6 @@ Rotation flow:
     kid no longer verify (call AFTER the token TTL has passed in production)
 """
 import os
-from pathlib import Path
 
 import pytest
 
@@ -63,8 +62,10 @@ class TestBackwardCompat:
         os.umask(0o077)
         fd = os.open(legacy_dir / "ed25519_private.pem",
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try: os.write(fd, priv_pem)
-        finally: os.close(fd)
+        try:
+            os.write(fd, priv_pem)
+        finally:
+            os.close(fd)
         (legacy_dir / "ed25519_public.pem").write_bytes(pub_pem)
 
         # ensure_keypair() should adopt this — NOT generate a new one.
@@ -115,7 +116,7 @@ class TestRotation:
         ks = _ks(tmp_path)
         ks.ensure_keypair()
         old_kid = ks.active_kid()
-        new_kid = ks.rotate()
+        ks.rotate()
         # revoke old kid
         ks.revoke(old_kid)
         assert old_kid not in ks.list_kids()
