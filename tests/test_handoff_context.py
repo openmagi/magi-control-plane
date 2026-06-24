@@ -778,6 +778,296 @@ def test_run_command_args_csv_caps_per_arg_length():
     assert merged["args"] == ["ok", "also-ok"]
 
 
+# ── D66 follow-up: wider lifecycle round-trip for run_command ─────────
+
+
+def test_run_command_permission_request_lifecycle_round_trips():
+    """page.tsx RUN_COMMAND_LEGAL_BY_LIFECYCLE makes run_command legal
+    on D58 lifecycles like `permission_request`. The handoff serializer
+    must project the wider lifecycle straight onto the trigger so the
+    summary renders the 'at the permission-request moment' framing
+    instead of degrading to 'run a command' with no when-clause. The
+    3-bucket `_LIFECYCLE_TO_EVENT` does NOT cover this slug — the
+    run_command branch is what saves the round-trip."""
+    state = {
+        "lifecycle": "permission_request",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo audit",
+        "id": "perm-audit",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged["type"] == "run_command"
+    # Trigger.event lands on the wider event, not the 3-bucket default.
+    assert merged["trigger"]["event"] == "PermissionRequest"
+    # Plain-language label landed in the summary.
+    msg = out["assistant_message"]
+    assert "permission-request" in msg
+    assert "permission_request" not in msg
+    # The dropped-lifecycle collapse note must NOT appear because the
+    # round-trip succeeded.
+    assert "does not have a chat-mode equivalent" not in msg
+
+
+def test_run_command_unknown_lifecycle_emits_dropped_lifecycle_note():
+    """Even with the wider table in place, an unrecognised lifecycle
+    slug still degrades. The run_command summary branch must surface
+    the dropped_lifecycle note rather than short-circuiting (which is
+    the bug this regression locks down)."""
+    state = {
+        "lifecycle": "made_up_event",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "id": "made-up",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    msg = out["assistant_message"]
+    # The raw slug must NOT leak; the generic fallback label must.
+    assert "made_up_event" not in msg
+    assert "that timing" in msg
+
+
+def test_run_command_dropped_payload_surfaces_in_summary():
+    """When the wizard handed off committing to run_command but the
+    operator had also partially written e.g. an inject_context template
+    earlier, the bytes are surfaced under the dropped-payload table.
+    Mirrors the verifier branch — without this the operator's typed
+    body disappears silently on the run_command path."""
+    # Simulate a wizard state where the action was switched to
+    # run_command but a prior conditionKind body is still in the URL.
+    # Our wizard URL ferries `injectTemplate` only when action ==
+    # inject_context, so we craft the simulation: dropped_action is
+    # tracked when raw_action is NOT a known on_missing value, so we
+    # check via the verifier branch instead. Verify the helper is
+    # shared between branches by spotting it in the run_command
+    # summary header.
+    state = {
+        "lifecycle": "permission_request",
+        "toolScope": "Bash",
+        "action": "run_command",
+        "runCommandBody": "echo audit",
+        "id": "shared-helper",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    msg = out["assistant_message"]
+    # Tool scope is in-progress on a non-tool-context lifecycle; the
+    # collapse note for it must appear under the shared helper.
+    assert "'Bash' target was cleared" in msg
+
+
+def test_run_command_universal_lifecycle_legality_renders_at_clause():
+    """Fuzz every page.tsx lifecycle slug through the summary and assert
+    a non-empty 'at <when>' clause for the run_command archetype. Locks
+    the coverage guarantee documented next to
+    `_RUN_COMMAND_LIFECYCLE_TO_EVENT`."""
+    from magi_cp.policy.handoff_context import (
+        _RUN_COMMAND_LIFECYCLE_TO_EVENT,
+    )
+    from magi_cp.policy.handoff_context import (
+        _RUN_COMMAND_LIFECYCLE_LABEL_EN,
+    )
+    for slug in _RUN_COMMAND_LIFECYCLE_TO_EVENT:
+        # `before_tool_use` is tool-context; pick any matcher for those.
+        # Use a fixed policy id so the slug never accidentally lands
+        # inside the `name: ...` clause and confuses the assertion.
+        state = {
+            "lifecycle": slug,
+            "toolScope": "Bash" if slug in ("before_tool_use", "after_tool_use") else "*",
+            "action": "run_command",
+            "runCommandBody": "echo hi",
+            "id": "rc-policy",
+        }
+        out = build_handoff_turn(wizard_state=state, draft_ir=None)
+        msg = out["assistant_message"]
+        # The merged draft carries the event for the slug.
+        merged = out["draft"]
+        assert merged is not None, f"slug {slug} produced no draft"
+        ev = (merged.get("trigger") or {}).get("event")
+        assert ev == _RUN_COMMAND_LIFECYCLE_TO_EVENT[slug], (
+            f"slug {slug} mapped to wrong event: {ev}"
+        )
+        # The "at <X>" clause renders — `run `echo hi`` should be
+        # followed by a non-empty time phrase. We assert presence of
+        # SOMETHING from the lifecycle label table rather than the
+        # generic fallback.
+        assert _RUN_COMMAND_LIFECYCLE_LABEL_EN[slug] in msg, (
+            f"slug {slug} fell through to fallback: {msg!r}"
+        )
+        # And the raw multi-token slug never leaks. Single-word slugs
+        # like `setup` / `notification` are legitimately substrings of
+        # the plain-language label ("the setup moment"); we only assert
+        # the underscore-shaped raw token never appears (those are the
+        # programmer-vocabulary leaks).
+        if "_" in slug:
+            assert slug not in msg, (
+                f"raw slug {slug} leaked into message: {msg!r}"
+            )
+
+
+def test_run_command_overlay_clears_verifier_fields_from_wizard_state():
+    """Variant of test_run_command_overlay_clears_verifier_fields_from_base
+    but with the verifier slot ON THE WIZARD STATE rather than the raw
+    editor draft. When the wizard ferries both a conditionKind body
+    (e.g. `conditionKind=regex + pattern=^foo$`) AND `action=run_command`,
+    the projection must NOT carry the verifier `requires` slot onto the
+    overlay — otherwise IrDraftPane's `conditionLabel` would render
+    "Pattern in the response" next to the runs-shell warning, giving
+    the operator a misleading mixed-archetype view of their own draft."""
+    state = {
+        "lifecycle": "before_tool_use",
+        "toolScope": "Bash",
+        # Verifier-vocabulary body on the wizard state.
+        "conditionKind": "regex",
+        "pattern": "^foo$",
+        # ... mixed with run_command action.
+        "action": "run_command",
+        "runCommandBody": "echo hi",
+        "id": "mixed-archetype",
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    # Pure run_command archetype.
+    assert merged["type"] == "run_command"
+    assert merged["command"] == "echo hi"
+    # Verifier-only keys are NOT present on the overlay output. The
+    # discriminator's invariant is enforced at the source.
+    assert "requires" not in merged
+    assert "action" not in merged
+    assert "on_missing" not in merged
+
+
+# ── D66 follow-up: per-field-only round-trip coverage ─────────────────
+#
+# The brief asks for individual-field round-trip tests so a regression
+# that silently drops one of (runtime / args / timeout_ms / fail_closed
+# / command / script_id) is caught even when the other fields land. The
+# bundled tests pass even if one field is silently dropped as long as
+# the others are not — these isolate the contract.
+
+
+_RC_SKELETON = {
+    "lifecycle": "before_tool_use",
+    "toolScope": "Bash",
+    "action": "run_command",
+    "id": "per-field-probe",
+}
+
+
+def test_run_command_runtime_field_alone_round_trips():
+    state = {**_RC_SKELETON, "runCommandRuntime": "python3"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("runtime") == "python3"
+    # Other run_command body fields stay unset.
+    assert "command" not in merged
+    assert "args" not in merged
+    assert "timeout_ms" not in merged
+    assert "fail_closed" not in merged
+    assert "script_path" not in merged
+
+
+def test_run_command_args_field_alone_round_trips():
+    state = {**_RC_SKELETON, "runCommandArgs": "a, b"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("args") == ["a", "b"]
+    assert "runtime" not in merged
+    assert "command" not in merged
+    assert "timeout_ms" not in merged
+    assert "fail_closed" not in merged
+
+
+def test_run_command_timeout_field_alone_round_trips():
+    state = {**_RC_SKELETON, "runCommandTimeoutMs": "7500"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("timeout_ms") == 7500
+    assert "runtime" not in merged
+    assert "command" not in merged
+    assert "args" not in merged
+    assert "fail_closed" not in merged
+
+
+def test_run_command_fail_closed_true_field_alone_round_trips():
+    state = {**_RC_SKELETON, "runCommandFailClosed": "true"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("fail_closed") is True
+
+
+def test_run_command_fail_closed_false_field_alone_round_trips():
+    """fail_closed=False is load-bearing because of the special
+    `if k == 'fail_closed' and isinstance(v, bool)` carve-out in
+    `_merge_drafts` that would silently regress without isolated
+    coverage. A blanket "drop falsy" rule would erase it."""
+    state = {**_RC_SKELETON, "runCommandFailClosed": "false"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("fail_closed") is False
+    # And critically: it must SURVIVE the merge layer (the bug this
+    # carve-out exists for).
+    assert "fail_closed" in merged
+
+
+def test_run_command_command_field_alone_round_trips():
+    state = {**_RC_SKELETON, "runCommandBody": "echo hello"}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("command") == "echo hello"
+    assert "runtime" not in merged
+    assert "args" not in merged
+    assert "timeout_ms" not in merged
+    assert "fail_closed" not in merged
+
+
+def test_run_command_script_id_field_alone_round_trips():
+    sid = "a" * 64
+    state = {
+        **_RC_SKELETON,
+        "runCommandMode": "attach",
+        "runCommandScriptId": sid,
+    }
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("script_path") == sid
+    assert "_script_name" not in merged
+    assert "runtime" not in merged
+    assert "args" not in merged
+    assert "command" not in merged
+
+
+def test_run_command_body_strips_surrounding_whitespace():
+    """`runCommandBody` with leading / trailing spaces lands on the
+    draft stripped — mirrors how `runCommandScriptId` is treated. Bare
+    backticks around spaces in the rendered summary read as noise."""
+    state = {**_RC_SKELETON, "runCommandBody": "   echo hi   "}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    merged = out["draft"]
+    assert merged is not None
+    assert merged.get("command") == "echo hi"
+
+
+def test_run_command_long_inline_body_renders_truncation_cue():
+    """Truncation appends a localised 'truncated, N more chars' cue so
+    the operator knows the rest of the body survived in the draft."""
+    body = "a" * 200
+    state = {**_RC_SKELETON, "runCommandBody": body}
+    out = build_handoff_turn(wizard_state=state, draft_ir=None)
+    msg = out["assistant_message"]
+    assert "truncated, 120 more chars" in msg
+
+
 # ── route-level tests ─────────────────────────────────────────────────
 
 

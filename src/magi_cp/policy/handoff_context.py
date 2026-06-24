@@ -49,6 +49,8 @@ runs through `step_compile` as usual, which then drives the chat.
 from __future__ import annotations
 
 import copy
+import inspect
+import re as _re_check
 from typing import Any
 
 from .nl_compiler_interactive import (
@@ -73,6 +75,48 @@ from .nl_compiler_interactive import (
     MAX_QUESTIONS_PER_TURN,
     Question,
 )
+
+
+# D66 follow-up: the FULL wider lifecycle → event table that page.tsx
+# LIFECYCLE_TO_EVENT exposes via RUN_COMMAND_LEGAL_BY_LIFECYCLE. The
+# run_command archetype is uniformly legal across the D58 surface,
+# so the handoff serializer must round-trip every slug that page.tsx
+# legalises for run_command. Mirrors web/app/(console)/policies/new/
+# page.tsx LIFECYCLE_TO_EVENT 1:1 — adding a new event there MUST add
+# a row here.
+_RUN_COMMAND_LIFECYCLE_TO_EVENT: dict[str, str] = {
+    "before_tool_use":      "PreToolUse",
+    "after_tool_use":       "PostToolUse",
+    "pre_final":            "Stop",
+    "subagent_stop":        "SubagentStop",
+    "user_prompt":          "UserPromptSubmit",
+    "pre_compact":          "PreCompact",
+    "session_start":        "SessionStart",
+    "session_end":          "SessionEnd",
+    # D58
+    "post_tool_use_failure": "PostToolUseFailure",
+    "post_tool_batch":       "PostToolBatch",
+    "permission_request":    "PermissionRequest",
+    "permission_denied":     "PermissionDenied",
+    "user_prompt_expansion": "UserPromptExpansion",
+    "post_compact":          "PostCompact",
+    "elicitation":           "Elicitation",
+    "elicitation_result":    "ElicitationResult",
+    "subagent_start":        "SubagentStart",
+    "stop_failure":          "StopFailure",
+    "setup":                 "Setup",
+    "notification":          "Notification",
+    "teammate_idle":         "TeammateIdle",
+    "task_created":          "TaskCreated",
+    "task_completed":        "TaskCompleted",
+    "config_change":         "ConfigChange",
+    "worktree_create":       "WorktreeCreate",
+    "worktree_remove":       "WorktreeRemove",
+    "instructions_loaded":   "InstructionsLoaded",
+    "cwd_changed":           "CwdChanged",
+    "file_changed":          "FileChanged",
+    "message_display":       "MessageDisplay",
+}
 
 
 # Lifecycle slug → human label for the assistant summary line. Mirrors
@@ -174,7 +218,12 @@ _LIFECYCLE_DROPPED_LABEL_KO: dict[str, str] = {
     "subagent_stop":      "서브에이전트 종료 시점",
     "worktree_create":    "워크트리 생성 시점",
     "worktree_remove":    "워크트리 제거 시점",
-    "user_prompt_submit": "사용자 입력 제출 시점",
+    # The wizard lifecycle slug for the prompt-submit hook is
+    # `user_prompt` (see page.tsx LIFECYCLE_TO_EVENT). The old
+    # `user_prompt_submit` key was unreachable — it was the synthetic
+    # reverse-map slug, not a real wizard lifecycle id. Match the
+    # page.tsx slug set 1:1 here so this table can be reached.
+    "user_prompt":        "사용자 입력 제출 시점",
     "pre_compact":        "메모리 정리 직전",
     "stop":               "에이전트 종료 시점",
     "notification":       "알림 시점",
@@ -188,7 +237,9 @@ _LIFECYCLE_DROPPED_LABEL_EN: dict[str, str] = {
     "subagent_stop":      "the subagent-stop moment",
     "worktree_create":    "the worktree-create moment",
     "worktree_remove":    "the worktree-remove moment",
-    "user_prompt_submit": "the prompt-submit moment",
+    # See KO note above: `user_prompt` is the real wizard slug;
+    # `user_prompt_submit` was synthetic and unreachable here.
+    "user_prompt":        "the prompt-submit moment",
     "pre_compact":        "the pre-compact moment",
     "stop":               "the agent-stop moment",
     "notification":       "the notification moment",
@@ -269,9 +320,14 @@ def _project_run_command_state(
     The operator-facing `runCommandScriptName` label is stashed on a
     dedicated `_script_name` key. The IR does NOT persist it (only the
     hash id matters at gate time) but the IrDraftPane can render it as
-    a friendly affordance next to the bare hash. The key is prefixed
-    with `_` so `_sanitize_draft_so_far`'s passthrough drops it on a
-    save round-trip — it never crosses the persistence boundary.
+    a friendly affordance next to the bare hash. `_script_name` is not
+    part of `_sanitize_draft_so_far`'s run_command allowlist
+    (`_DRAFT_TOP_KEYS | _RUN_COMMAND_TOP_KEYS`), so the save round-trip
+    drops it — it never crosses the persistence boundary. The leading
+    underscore is a HUMAN-READABLE marker for "internal-only"; Python
+    has no language-level passthrough semantics tied to the prefix, so
+    do NOT rely on it to drop other internal-only keys without adding
+    them to the matching allowlist too.
     """
     # Discriminator. Always set so the conversational dispatcher takes
     # the run_command path.
@@ -292,7 +348,13 @@ def _project_run_command_state(
             and body.strip()
             and len(body) <= _MAX_RUN_COMMAND_INLINE_LEN
         ):
-            draft["command"] = body
+            # Strip surrounding whitespace at the SOURCE so the rendered
+            # summary does not show backticks around leading / trailing
+            # spaces. Mirrors the script_id branch below which already
+            # writes `.strip()`. Without this the IR validator accepts
+            # the value (`command` is just a non-empty string) but the
+            # summary line reads as noise.
+            draft["command"] = body.strip()
 
     # Attached-script lane. Only land the path when the id matches the
     # canonical 64-hex shape; a half-typed id stays unwritten and the
@@ -367,42 +429,88 @@ def _project_run_command_state(
 # run_command archetype is uniformly legal across the matrix per
 # RUN_COMMAND_LEGAL_BY_LIFECYCLE in page.tsx, so the summary must
 # describe ALL of them in plain language.
+#
+# COVERAGE GUARANTEE: every key in `_RUN_COMMAND_LIFECYCLE_TO_EVENT` is
+# also a key in BOTH tables below. A module-load assertion at the
+# bottom of the file enforces this so a future contributor who adds a
+# row to the canonical event map without widening the label tables
+# trips an import-time failure rather than silently dropping the
+# "at <event>" clause from the summary.
 _RUN_COMMAND_LIFECYCLE_LABEL_KO: dict[str, str] = {
-    "before_tool_use":     "도구 실행 전",
-    "after_tool_use":      "도구 실행 후",
-    "pre_final":           "최종 응답 직전",
-    "subagent_stop":       "서브에이전트 종료 시점",
-    "user_prompt":         "사용자 입력 직전",
-    "user_prompt_submit":  "사용자 입력 제출 시점",
-    "pre_compact":         "메모리 정리 직전",
-    "session_start":       "세션 시작 시점",
-    "session_end":         "세션 종료 시점",
-    "stop":                "에이전트 종료 시점",
-    "permission_request":  "권한 요청 시점",
-    "subagent_start":      "서브에이전트 시작 시점",
-    "worktree_create":     "워크트리 생성 시점",
-    "worktree_remove":     "워크트리 제거 시점",
-    "notification":        "알림 시점",
-    "hook_call":           "후크 호출 시점",
+    "before_tool_use":       "도구 실행 전",
+    "after_tool_use":        "도구 실행 후",
+    "pre_final":             "최종 응답 직전",
+    "subagent_stop":         "서브에이전트 종료 시점",
+    "user_prompt":           "사용자 입력 제출 시점",
+    "pre_compact":           "메모리 정리 직전",
+    "session_start":         "세션 시작 시점",
+    "session_end":           "세션 종료 시점",
+    # D58
+    "post_tool_use_failure": "도구 실행 실패 직후",
+    "post_tool_batch":       "도구 배치 실행 직후",
+    "permission_request":    "권한 요청 시점",
+    "permission_denied":     "권한 거부 시점",
+    "user_prompt_expansion": "사용자 입력 확장 시점",
+    "post_compact":          "메모리 정리 직후",
+    "elicitation":           "추가 입력 요청 시점",
+    "elicitation_result":    "추가 입력 결과 시점",
+    "subagent_start":        "서브에이전트 시작 시점",
+    "stop_failure":          "에이전트 종료 실패 시점",
+    "setup":                 "초기화 시점",
+    "notification":          "알림 시점",
+    "teammate_idle":         "팀메이트 대기 시점",
+    "task_created":          "작업 생성 시점",
+    "task_completed":        "작업 완료 시점",
+    "config_change":         "설정 변경 시점",
+    "worktree_create":       "워크트리 생성 시점",
+    "worktree_remove":       "워크트리 제거 시점",
+    "instructions_loaded":   "지시문 로드 시점",
+    "cwd_changed":           "작업 디렉터리 변경 시점",
+    "file_changed":          "파일 변경 시점",
+    "message_display":       "메시지 표시 시점",
 }
 _RUN_COMMAND_LIFECYCLE_LABEL_EN: dict[str, str] = {
-    "before_tool_use":     "before a tool runs",
-    "after_tool_use":      "after a tool runs",
-    "pre_final":           "just before the final answer",
-    "subagent_stop":       "when a subagent stops",
-    "user_prompt":         "before a user prompt reaches the LLM",
-    "user_prompt_submit":  "at the prompt-submit moment",
-    "pre_compact":         "before context compaction",
-    "session_start":       "when the session opens",
-    "session_end":         "when the session closes",
-    "stop":                "when the agent stops",
-    "permission_request":  "at the permission-request moment",
-    "subagent_start":      "when a subagent starts",
-    "worktree_create":     "when a worktree is created",
-    "worktree_remove":     "when a worktree is removed",
-    "notification":        "at the notification moment",
-    "hook_call":           "at the hook-call moment",
+    "before_tool_use":       "before a tool runs",
+    "after_tool_use":        "after a tool runs",
+    "pre_final":             "just before the final answer",
+    "subagent_stop":         "when a subagent stops",
+    # Plain-language at source: the string does not depend on the
+    # `_to_plain_language` scrubber to translate `LLM` into `AI`.
+    "user_prompt":           "before a user prompt reaches the AI",
+    "pre_compact":           "before context compaction",
+    "session_start":         "when the session opens",
+    "session_end":           "when the session closes",
+    # D58
+    "post_tool_use_failure": "right after a tool failed",
+    "post_tool_batch":       "right after a tool batch ran",
+    "permission_request":    "at the permission-request moment",
+    "permission_denied":     "right after a permission was denied",
+    "user_prompt_expansion": "while the user prompt is being expanded",
+    "post_compact":          "right after context compaction",
+    "elicitation":           "at the follow-up-prompt moment",
+    "elicitation_result":    "right after the follow-up prompt resolves",
+    "subagent_start":        "when a subagent starts",
+    "stop_failure":          "when the agent failed to stop",
+    "setup":                 "at the setup moment",
+    "notification":          "at the notification moment",
+    "teammate_idle":         "when a teammate goes idle",
+    "task_created":          "when a task is created",
+    "task_completed":        "when a task is completed",
+    "config_change":         "when configuration changes",
+    "worktree_create":       "when a worktree is created",
+    "worktree_remove":       "when a worktree is removed",
+    "instructions_loaded":   "when instructions load",
+    "cwd_changed":           "when the working directory changes",
+    "file_changed":          "when a file changes",
+    "message_display":       "at the message-display moment",
 }
+
+# Generic fallback for a slug the table does not cover (defensive — the
+# module-load assertion should make this unreachable in practice, but
+# a future page.tsx row added before the constant is widened lands
+# here instead of leaking the raw slug).
+_RUN_COMMAND_LIFECYCLE_FALLBACK_KO: str = "그 발동 시점"
+_RUN_COMMAND_LIFECYCLE_FALLBACK_EN: str = "at that moment"
 
 
 def _first_requires_body(draft: dict[str, Any]) -> str | None:
@@ -485,10 +593,35 @@ def _draft_from_wizard_state(state: dict[str, Any]) -> dict[str, Any]:
 
     # Lifecycle. The conversational vocab supports the 3-bucket
     # mapping in `_LIFECYCLE_TO_EVENT`. Anything else degrades to
-    # "still missing" so the assistant re-asks.
+    # "still missing" so the assistant re-asks — UNLESS the wizard is
+    # mid-flight on a run_command policy, in which case we project the
+    # wider D58 lifecycle directly onto the trigger (see the
+    # `action == "run_command"` branch further down). The state-coverage
+    # gap that motivated this widening is that page.tsx legalises
+    # run_command across ALL ~30 lifecycles via
+    # RUN_COMMAND_LEGAL_BY_LIFECYCLE, so the handoff seam must honor
+    # those picks; the 3-bucket `_apply_answer_to_draft("lifecycle", ...)`
+    # only handles verifier-vocabulary lifecycles.
     lifecycle = state.get("lifecycle")
+    action_value = state.get("action")
+    is_run_command_action = (
+        isinstance(action_value, str) and action_value == "run_command"
+    )
     if isinstance(lifecycle, str) and lifecycle in _LIFECYCLE_TO_EVENT:
         _apply_answer_to_draft(draft, "lifecycle", lifecycle)
+    elif (
+        is_run_command_action
+        and isinstance(lifecycle, str)
+        and lifecycle in _RUN_COMMAND_LIFECYCLE_TO_EVENT
+    ):
+        # Wider lifecycle for a run_command policy. Write the trigger
+        # directly so the round-trip survives the 3-bucket bottleneck.
+        wider_event = _RUN_COMMAND_LIFECYCLE_TO_EVENT[lifecycle]
+        trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
+        trig = dict(trig) if isinstance(trig, dict) else {}
+        trig["host"] = "claude-code"
+        trig["event"] = wider_event
+        draft["trigger"] = trig
 
     # Tool scope. Only meaningful for tool-context lifecycles; the
     # wizard's URL already collapsed multi-tool to first-token, so
@@ -614,6 +747,22 @@ def _draft_from_wizard_state(state: dict[str, Any]) -> dict[str, Any]:
             # the `requires_body` question slot (see
             # `_run_command_missing_fields`). The `requires` slot stays
             # absent — it is verifier vocabulary.
+            #
+            # `conditionKind` could have written a `requires` slot
+            # earlier in this function (e.g. wizard state carries
+            # conditionKind=regex + pattern=^foo$ AND action=run_command
+            # — the dashboard surfaces both legally). The run_command
+            # archetype's discriminator is mutually exclusive with the
+            # verifier `requires` slot; leaving both on the overlay
+            # makes `_merge_drafts` write `requires` straight onto the
+            # merged draft, and IrDraftPane.conditionLabel reads it
+            # back as "Pattern in the response" next to the runs-shell
+            # banner. Drop the verifier-only keys here so the overlay
+            # is a pure run_command archetype at the SOURCE rather
+            # than relying on `_merge_drafts` to scrub the base only.
+            draft.pop("requires", None)
+            draft.pop("action", None)
+            draft.pop("on_missing", None)
         elif action in _ON_MISSING_VALUES:
             _apply_answer_to_draft(draft, "on_missing", action)
 
@@ -742,7 +891,10 @@ def _summarize_run_command_line(
     event = trig.get("event") if isinstance(trig, dict) else None
     # Map back through both LIFECYCLE_TO_EVENT (conversational vocab)
     # and the wider D58 table so the line still names the timing for a
-    # wizard-built run_command policy on permission_request etc.
+    # wizard-built run_command policy on permission_request etc. We use
+    # the canonical `_RUN_COMMAND_LIFECYCLE_TO_EVENT` table (derived
+    # 1:1 from page.tsx LIFECYCLE_TO_EVENT) so every D58 slug renders
+    # a real label rather than falling through to an empty clause.
     lifecycle_slug: str | None = None
     if isinstance(event, str):
         for slug, ev in _LIFECYCLE_TO_EVENT.items():
@@ -750,25 +902,10 @@ def _summarize_run_command_line(
                 lifecycle_slug = slug
                 break
         if lifecycle_slug is None:
-            # Conservative reverse map for the D58 wider surface.
-            # Mirrors the LIFECYCLE labels in
-            # web/app/(console)/policies/new/page.tsx LIFECYCLE_TO_EVENT.
-            _EVENT_TO_WIDER_SLUG: dict[str, str] = {
-                "PreToolUse":         "before_tool_use",
-                "PostToolUse":        "after_tool_use",
-                "Stop":               "pre_final",
-                "SubagentStop":       "subagent_stop",
-                "UserPromptSubmit":   "user_prompt_submit",
-                "PreCompact":         "pre_compact",
-                "SessionStart":       "session_start",
-                "SessionEnd":         "session_end",
-                "PermissionRequest":  "permission_request",
-                "SubagentStart":      "subagent_start",
-                "WorktreeCreate":     "worktree_create",
-                "WorktreeRemove":     "worktree_remove",
-                "Notification":       "notification",
-            }
-            lifecycle_slug = _EVENT_TO_WIDER_SLUG.get(event)
+            for slug, ev in _RUN_COMMAND_LIFECYCLE_TO_EVENT.items():
+                if ev == event:
+                    lifecycle_slug = slug
+                    break
     lifecycle_label: str | None = None
     if lifecycle_slug:
         table = (
@@ -776,6 +913,14 @@ def _summarize_run_command_line(
             else _RUN_COMMAND_LIFECYCLE_LABEL_EN
         )
         lifecycle_label = table.get(lifecycle_slug)
+        if lifecycle_label is None:
+            # Defensive fallback — should be unreachable because the
+            # module-load assertion at the bottom of the file guarantees
+            # the label tables cover every key in the canonical map.
+            lifecycle_label = (
+                _RUN_COMMAND_LIFECYCLE_FALLBACK_KO if ko
+                else _RUN_COMMAND_LIFECYCLE_FALLBACK_EN
+            )
 
     command = draft.get("command")
     script_path = draft.get("script_path")
@@ -788,11 +933,24 @@ def _summarize_run_command_line(
     # not blow the summary). For an attached script, show the
     # operator-typed name when present, else the bare id (operators
     # need SOMETHING to recognise their policy by).
+    #
+    # When truncation kicks in we append a localised "(truncated, N more
+    # chars)" cue so the operator knows the rest of the body survived
+    # in the draft and is not silently dropped. The bare "..." suffix
+    # without a length signal looked indistinguishable from a verbatim
+    # ellipsis the operator might have typed themselves.
     what: str | None = None
     if isinstance(command, str) and command.strip():
         body = command.strip()
-        truncated = body if len(body) <= 80 else (body[:80] + "...")
-        what = f"`{truncated}`"
+        if len(body) <= 80:
+            what = f"`{body}`"
+        else:
+            head_chars = body[:80]
+            remaining = len(body) - 80
+            if ko:
+                what = f"`{head_chars}` (일부 생략, {remaining}자 더 있음)"
+            else:
+                what = f"`{head_chars}` (truncated, {remaining} more chars)"
     elif isinstance(script_path, str) and script_path.strip():
         if isinstance(script_name, str) and script_name.strip():
             what = script_name.strip()
@@ -855,6 +1013,110 @@ def _summarize_run_command_line(
             )
 
     return base
+
+
+def _build_collapse_note(
+    *,
+    ko: bool,
+    dropped_action: str | None,
+    dropped_kind: str | None,
+    dropped_lifecycle: str | None,
+    dropped_tool_scope: str | None,
+    dropped_payload: dict[str, str] | None,
+) -> str:
+    """Render the "Note:" block surfacing any axis that degraded on the
+    handoff. Pulled out of `_summarize_so_far` so the run_command branch
+    can reuse the same renderer — without this both branches would have
+    to repeat the dropped_lifecycle / dropped_tool_scope / dropped_payload
+    wiring and a slip in one branch would silently swallow the operator's
+    pick on the other.
+    """
+    note_lines: list[str] = []
+    if dropped_lifecycle:
+        label = _dropped_lifecycle_label(dropped_lifecycle, ko)
+        if ko:
+            note_lines.append(
+                f"{label} 은(는) 대화형에서 다루지 못해서 가까운 발동 시점으로 정리해 주세요."
+            )
+        else:
+            note_lines.append(
+                f"{label} does not have a chat-mode equivalent yet, so please re-pick when in tool-runs / after tool-runs / final answer."
+            )
+    if dropped_tool_scope:
+        if ko:
+            note_lines.append(
+                f"'{dropped_tool_scope}' 적용 대상은 그 발동 시점에는 의미가 없어서 함께 비웠어요. 새 발동 시점을 고른 뒤 다시 골라주세요."
+            )
+        else:
+            note_lines.append(
+                f"the '{dropped_tool_scope}' target was cleared because that timing has no tool scope; please re-pick after choosing a new timing."
+            )
+    if dropped_action:
+        label = _dropped_action_label(dropped_action, ko)
+        if ko:
+            note_lines.append(
+                f"{label} 동작은 대화형에서 다루지 못해서 가까운 기본값으로 정리했어요."
+            )
+        else:
+            note_lines.append(
+                f"{label} does not map cleanly to the chat surface, so it was collapsed to the closest default."
+            )
+    if dropped_kind:
+        label = _dropped_kind_label(dropped_kind, ko)
+        if ko:
+            note_lines.append(
+                f"{label} 은(는) 대화형에서 다루지 못해서 가까운 기본값으로 정리했어요."
+            )
+        else:
+            note_lines.append(
+                f"{label} does not map cleanly to the chat surface, so it was collapsed to the closest default."
+            )
+
+    note: str = ""
+    if note_lines:
+        if ko:
+            note = "\n\n참고:\n" + "\n".join(f"  - {ln}" for ln in note_lines)
+        else:
+            note = "\n\nNote:\n" + "\n".join(f"  - {ln}" for ln in note_lines)
+
+    if dropped_payload:
+        if ko:
+            note += "\n\n작성하셨던 내용은 그대로 적어 둘게요:\n"
+        else:
+            note += "\n\nYou had written this; keep it handy in case you want to reuse it:\n"
+        for k, v in dropped_payload.items():
+            snippet = v if len(v) <= 500 else (v[:500] + ("..." if len(v) > 500 else ""))
+            label_ko = {
+                "injectTemplate":      "맥락 주입 텍스트",
+                "rewriterPrefix":      "앞에 붙일 텍스트",
+                "rewriterFrom":        "찾을 텍스트",
+                "rewriterTo":          "바꿀 텍스트",
+                "rewriterPattern":     "찾을 패턴",
+                "rewriterReplacement": "치환 텍스트",
+                "rewriterField":       "대상 필드",
+                "rewriterStripRepeat": "반복 제거",
+                "rewriterKind":        "다시 쓰기 방식",
+                "rewriterCount":       "치환 횟수",
+                "injectLabelKo":       "한국어 라벨",
+                "injectLabelEn":       "영어 라벨",
+            }
+            label_en = {
+                "injectTemplate":      "the reminder text",
+                "rewriterPrefix":      "the prefix text",
+                "rewriterFrom":        "the find text",
+                "rewriterTo":          "the replace text",
+                "rewriterPattern":     "the pattern",
+                "rewriterReplacement": "the replacement text",
+                "rewriterField":       "the target field",
+                "rewriterStripRepeat": "the strip-repeat setting",
+                "rewriterKind":        "the rewrite kind",
+                "rewriterCount":       "the replacement count",
+                "injectLabelKo":       "the Korean label",
+                "injectLabelEn":       "the English label",
+            }
+            label = label_ko.get(k, k) if ko else label_en.get(k, k)
+            note += f"  - {label}: {snippet}\n"
+    return note
 
 
 def _summarize_so_far(
@@ -927,6 +1189,20 @@ def _summarize_so_far(
             body_lines.append(f"  - {matcher_line}")
         if id_line:
             body_lines.append(f"  - {id_line}")
+        # Surface dropped axes so a run_command wizard that handed off
+        # mid-flight with, e.g., a verifier-vocabulary kind picked or
+        # an unrecognised lifecycle, still emits the collapse note.
+        # Mirrors the verifier branch — without this the operator's
+        # pick disappears silently when the wider lifecycle table is
+        # the only thing that saved the round-trip.
+        rc_note = _build_collapse_note(
+            ko=ko,
+            dropped_action=dropped_action,
+            dropped_kind=dropped_kind,
+            dropped_lifecycle=dropped_lifecycle,
+            dropped_tool_scope=dropped_tool_scope,
+            dropped_payload=dropped_payload,
+        )
         tail_q = (
             "\n\n남은 부분을 같이 채워볼까요?"
             if ko else
@@ -935,7 +1211,7 @@ def _summarize_so_far(
         rendered = head
         if body_lines:
             rendered += "\n" + "\n".join(body_lines)
-        rendered += tail_q
+        rendered += rc_note + tail_q
         return _to_plain_language(rendered)
 
     pieces: list[str] = []
@@ -1038,96 +1314,17 @@ def _summarize_so_far(
     # Build collapse notes. We emit ONE note bullet per dropped axis so
     # the user knows exactly which surface degraded. Each rendered label
     # passes through the plain-language tables above; we never
-    # interpolate the raw slug.
-    note_lines: list[str] = []
-    if dropped_lifecycle:
-        label = _dropped_lifecycle_label(dropped_lifecycle, ko)
-        if ko:
-            note_lines.append(
-                f"{label} 은(는) 대화형에서 다루지 못해서 가까운 발동 시점으로 정리해 주세요."
-            )
-        else:
-            note_lines.append(
-                f"{label} does not have a chat-mode equivalent yet, so please re-pick when in tool-runs / after tool-runs / final answer."
-            )
-    if dropped_tool_scope:
-        if ko:
-            note_lines.append(
-                f"'{dropped_tool_scope}' 적용 대상은 그 발동 시점에는 의미가 없어서 함께 비웠어요. 새 발동 시점을 고른 뒤 다시 골라주세요."
-            )
-        else:
-            note_lines.append(
-                f"the '{dropped_tool_scope}' target was cleared because that timing has no tool scope; please re-pick after choosing a new timing."
-            )
-    if dropped_action:
-        label = _dropped_action_label(dropped_action, ko)
-        if ko:
-            note_lines.append(
-                f"{label} 동작은 대화형에서 다루지 못해서 가까운 기본값으로 정리했어요."
-            )
-        else:
-            note_lines.append(
-                f"{label} does not map cleanly to the chat surface, so it was collapsed to the closest default."
-            )
-    if dropped_kind:
-        label = _dropped_kind_label(dropped_kind, ko)
-        if ko:
-            note_lines.append(
-                f"{label} 은(는) 대화형에서 다루지 못해서 가까운 기본값으로 정리했어요."
-            )
-        else:
-            note_lines.append(
-                f"{label} does not map cleanly to the chat surface, so it was collapsed to the closest default."
-            )
-
-    note: str = ""
-    if note_lines:
-        if ko:
-            note = "\n\n참고:\n" + "\n".join(f"  - {ln}" for ln in note_lines)
-        else:
-            note = "\n\nNote:\n" + "\n".join(f"  - {ln}" for ln in note_lines)
-
-    # Surface any per-archetype body field the wizard collected but the
-    # conversational vocabulary cannot store. The operator's bytes do
-    # not get persisted on the draft, but at least the chat shows them
-    # so they can copy-paste back into the next reply.
-    if dropped_payload:
-        if ko:
-            note += "\n\n작성하셨던 내용은 그대로 적어 둘게요:\n"
-        else:
-            note += "\n\nYou had written this; keep it handy in case you want to reuse it:\n"
-        for k, v in dropped_payload.items():
-            snippet = v if len(v) <= 500 else (v[:500] + ("..." if len(v) > 500 else ""))
-            label_ko = {
-                "injectTemplate":      "맥락 주입 텍스트",
-                "rewriterPrefix":      "앞에 붙일 텍스트",
-                "rewriterFrom":        "찾을 텍스트",
-                "rewriterTo":          "바꿀 텍스트",
-                "rewriterPattern":     "찾을 패턴",
-                "rewriterReplacement": "치환 텍스트",
-                "rewriterField":       "대상 필드",
-                "rewriterStripRepeat": "반복 제거",
-                "rewriterKind":        "다시 쓰기 방식",
-                "rewriterCount":       "치환 횟수",
-                "injectLabelKo":       "한국어 라벨",
-                "injectLabelEn":       "영어 라벨",
-            }
-            label_en = {
-                "injectTemplate":      "the reminder text",
-                "rewriterPrefix":      "the prefix text",
-                "rewriterFrom":        "the find text",
-                "rewriterTo":          "the replace text",
-                "rewriterPattern":     "the pattern",
-                "rewriterReplacement": "the replacement text",
-                "rewriterField":       "the target field",
-                "rewriterStripRepeat": "the strip-repeat setting",
-                "rewriterKind":        "the rewrite kind",
-                "rewriterCount":       "the replacement count",
-                "injectLabelKo":       "the Korean label",
-                "injectLabelEn":       "the English label",
-            }
-            label = label_ko.get(k, k) if ko else label_en.get(k, k)
-            note += f"  - {label}: {snippet}\n"
+    # interpolate the raw slug. The same renderer is reused by the
+    # run_command branch above so the wiring stays consistent across
+    # archetypes.
+    note = _build_collapse_note(
+        ko=ko,
+        dropped_action=dropped_action,
+        dropped_kind=dropped_kind,
+        dropped_lifecycle=dropped_lifecycle,
+        dropped_tool_scope=dropped_tool_scope,
+        dropped_payload=dropped_payload,
+    )
 
     tail_q = (
         "\n\n남은 부분을 같이 채워볼까요?"
@@ -1268,24 +1465,47 @@ def build_handoff_turn(
     # / subagent_* / worktree_*). Without this the summary would say
     # "haven't filled much in yet" when the user actually filled in a
     # complete D58 lifecycle slot.
+    #
+    # When the wizard handed off committing to action=run_command AND
+    # the lifecycle is in the wider `_RUN_COMMAND_LIFECYCLE_TO_EVENT`
+    # table, the lifecycle is NOT dropped — the run_command branch in
+    # `_draft_from_wizard_state` projects it directly onto the trigger
+    # so the round-trip survives. Only an unrecognised slug (or a
+    # non-run_command action with a D58-only slug) counts as dropped.
     raw_lifecycle = ws.get("lifecycle")
     dropped_lifecycle: str | None = None
+    lifecycle_landed_via_run_command = (
+        isinstance(raw_action, str)
+        and raw_action == "run_command"
+        and isinstance(raw_lifecycle, str)
+        and raw_lifecycle in _RUN_COMMAND_LIFECYCLE_TO_EVENT
+    )
     if (
         isinstance(raw_lifecycle, str)
         and raw_lifecycle
         and raw_lifecycle not in _LIFECYCLE_TO_EVENT
+        and not lifecycle_landed_via_run_command
     ):
         dropped_lifecycle = raw_lifecycle
 
     # If the lifecycle was dropped, an in-progress toolScope would also
     # disappear from the merged draft (no place to land it). Report
-    # that too so the user knows their tool pick was cleared.
+    # that too so the user knows their tool pick was cleared. We also
+    # report a tool scope drop when the lifecycle landed via the
+    # run_command wider table but is not a tool-context lifecycle (the
+    # toolScope still cannot land in that case).
     raw_tool_scope = ws.get("toolScope")
     dropped_tool_scope: str | None = None
-    if dropped_lifecycle and isinstance(raw_tool_scope, str):
+    if isinstance(raw_tool_scope, str):
         v = raw_tool_scope.strip()
         if v and v != "*":
-            dropped_tool_scope = v
+            if dropped_lifecycle:
+                dropped_tool_scope = v
+            elif (
+                lifecycle_landed_via_run_command
+                and raw_lifecycle not in _TOOL_CONTEXT_LIFECYCLES
+            ):
+                dropped_tool_scope = v
 
     # Collect the operator's per-archetype body fields when their
     # parent action was dropped. The conversational vocabulary cannot
@@ -1361,3 +1581,88 @@ __all__ = [
     "HandoffContextError",
     "build_handoff_turn",
 ]
+
+
+def _assert_run_command_allowlists_match() -> None:
+    """Module-load assertion: keep the `_RUN_COMMAND_WIZARD_KEYS`
+    allowlist, the per-field branches in `_project_run_command_state`,
+    the canonical lifecycle map, and the KO/EN label tables honest.
+
+    Drift risk this catches:
+
+    1. `_RUN_COMMAND_WIZARD_KEYS` is a documented allowlist. The
+       per-field branches in `_project_run_command_state` read
+       `state.get("runCommandFoo")` directly. A future contributor who
+       widens one without widening the other could break the
+       allowlist's "anything outside this set is silently ignored"
+       contract. We walk the source of the projection function and
+       assert every `state.get("runCommandFoo")` literal it reads is
+       in the constant — mirrors `_assert_sanitizer_matches_allowlists`
+       in nl_compiler_interactive.py.
+
+    2. `_RUN_COMMAND_LIFECYCLE_TO_EVENT` is the canonical source of
+       truth for wider-lifecycle handling. Both KO and EN label tables
+       must cover every slug there so the summary line never falls
+       back to the generic "at that moment" phrasing on a slug the
+       canonical map names. A future page.tsx row added without
+       widening the label tables trips here.
+
+    3. `_script_name` MUST be dropped by `_sanitize_draft_so_far` on
+       the save round-trip. The docstring promised the leading
+       underscore would handle that; the actual mechanism is that
+       `_script_name` is not on the run_command allowlist. We probe
+       the sanitizer to make sure that contract still holds.
+    """
+    # Probe 1: walk the projection function's source.
+    src = inspect.getsource(_project_run_command_state)
+    literals = set(_re_check.findall(r"state\.get\(\s*[\"'](runCommand[A-Za-z0-9_]+)[\"']", src))
+    extra = literals - _RUN_COMMAND_WIZARD_KEYS
+    if extra:
+        raise AssertionError(
+            "_project_run_command_state reads run_command state keys "
+            f"outside _RUN_COMMAND_WIZARD_KEYS: {sorted(extra)}"
+        )
+    missing = _RUN_COMMAND_WIZARD_KEYS - literals
+    if missing:
+        raise AssertionError(
+            "_RUN_COMMAND_WIZARD_KEYS declares run_command state keys "
+            "the projection function does not read: "
+            f"{sorted(missing)}"
+        )
+    # Probe 2: KO/EN label table coverage for the canonical event map.
+    canonical = set(_RUN_COMMAND_LIFECYCLE_TO_EVENT.keys())
+    missing_ko = canonical - set(_RUN_COMMAND_LIFECYCLE_LABEL_KO.keys())
+    missing_en = canonical - set(_RUN_COMMAND_LIFECYCLE_LABEL_EN.keys())
+    if missing_ko:
+        raise AssertionError(
+            "_RUN_COMMAND_LIFECYCLE_LABEL_KO missing rows: "
+            f"{sorted(missing_ko)}"
+        )
+    if missing_en:
+        raise AssertionError(
+            "_RUN_COMMAND_LIFECYCLE_LABEL_EN missing rows: "
+            f"{sorted(missing_en)}"
+        )
+    # Probe 3: `_script_name` is dropped by the sanitizer on the save
+    # round-trip. The docstring on `_project_run_command_state`
+    # historically claimed the underscore prefix was the mechanism; the
+    # ACTUAL mechanism is that `_script_name` is not on the
+    # run_command allowlist. Probe both directions.
+    probe = {
+        "id": "probe-id",
+        "version": "0.1",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "type": "run_command",
+        "command": "echo hi",
+        "_script_name": "should-be-dropped",
+    }
+    cleaned = _sanitize_draft_so_far(probe)
+    if "_script_name" in cleaned:
+        raise AssertionError(
+            "_sanitize_draft_so_far must drop `_script_name` from the "
+            "save round-trip; the leading underscore is a marker only, "
+            "not a language-level passthrough mechanism."
+        )
+
+
+_assert_run_command_allowlists_match()
