@@ -45,13 +45,20 @@ def client_with_registry(tmp_path):
 
 
 def _valid_policy(**override):
+    # D57e P1: the (PreToolUse, citation_verify) combination this
+    # fixture used to ship is exactly the lifecycle-drift case the
+    # new gate refuses (citation_verify only fires on Stop). Swap to
+    # privilege_scan (declares a PreToolUse field_checks group) so
+    # the baseline policies-API tests exercise an endorsed
+    # combination and the lifecycle gate only fires for tests that
+    # explicitly opt in to the drift case.
     base = {
         "id": "legal-filing/v1",
         "description": "t",
         "version": "0.1",
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
-        "requires": [{"step": "citation_verify", "verdict": "pass"}],
+        "requires": [{"step": "privilege_scan", "verdict": "pass"}],
         "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
@@ -292,9 +299,13 @@ def test_put_mixed_preview_and_enforcing_resolves_to_preview(client_with_registr
     """If ANY req is preview, the policy-level label is preview — a
     single unwired condition blocks the gate from claiming the policy
     as a whole is enforcing."""
+    # D57e P1: privilege_scan declares a PreToolUse field_checks
+    # group, so the (PreToolUse, privilege_scan) combination passes
+    # the lifecycle gate. The earlier fixture's citation_verify pair
+    # was the lifecycle-drift case the new gate refuses.
     body = _valid_policy(
         requires=[
-            {"step": "citation_verify", "verdict": "pass"},
+            {"step": "privilege_scan", "verdict": "pass"},
             {"step": "preview:future_check", "verdict": "pass"},
         ],
     )

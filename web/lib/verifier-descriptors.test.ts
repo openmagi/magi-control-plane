@@ -174,6 +174,114 @@ describe("verifier descriptors mirror", () => {
     expect(verifierFiresOnLifecycle("custom_unknown_step", "Stop")).toBe(true)
   })
 
+  // D57e P2: 8 x 5 lifecycle x built-in truth-table test. A future
+  // descriptor edit that adds a spurious lifecycle group (or drops
+  // a real one) would land silently without this floor — the
+  // pre-existing test only spot-checks 4 combinations across 5
+  // built-ins. The expected truth values are derived directly from
+  // the brief's per-built-in narrowings (citation_verify Stop-only,
+  // source_allowlist PreToolUse-only, structured_output Stop-only,
+  // privilege_scan four-lifecycle, prompt_injection_screen no
+  // PreToolUse).
+  it("verifierFiresOnLifecycle 8-lifecycle x 5-builtin truth table (D57e P2)", () => {
+    const LIFECYCLES = [
+      "PreToolUse",
+      "PostToolUse",
+      "Stop",
+      "UserPromptSubmit",
+      "SubagentStop",
+      "PreCompact",
+      "SessionStart",
+      "SessionEnd",
+    ] as const
+    const BUILTIN_STEPS = [
+      "citation_verify",
+      "privilege_scan",
+      "source_allowlist",
+      "structured_output",
+      "prompt_injection_screen",
+    ] as const
+    // Expected fires-on truth table derived from descriptors.py per
+    // built-in. Order of keys mirrors BUILTIN_STEPS so the layout
+    // reads as a matrix in source.
+    const expected: Record<typeof BUILTIN_STEPS[number], Record<typeof LIFECYCLES[number], boolean>> = {
+      citation_verify: {
+        PreToolUse: false, PostToolUse: false, Stop: true,
+        UserPromptSubmit: false, SubagentStop: false,
+        PreCompact: false, SessionStart: false, SessionEnd: false,
+      },
+      privilege_scan: {
+        PreToolUse: true, PostToolUse: true, Stop: true,
+        UserPromptSubmit: true, SubagentStop: false,
+        PreCompact: false, SessionStart: false, SessionEnd: false,
+      },
+      source_allowlist: {
+        PreToolUse: true, PostToolUse: false, Stop: false,
+        UserPromptSubmit: false, SubagentStop: false,
+        PreCompact: false, SessionStart: false, SessionEnd: false,
+      },
+      structured_output: {
+        PreToolUse: false, PostToolUse: false, Stop: true,
+        UserPromptSubmit: false, SubagentStop: false,
+        PreCompact: false, SessionStart: false, SessionEnd: false,
+      },
+      prompt_injection_screen: {
+        PreToolUse: false, PostToolUse: true, Stop: true,
+        UserPromptSubmit: true, SubagentStop: false,
+        PreCompact: false, SessionStart: false, SessionEnd: false,
+      },
+    }
+    for (const step of BUILTIN_STEPS) {
+      for (const life of LIFECYCLES) {
+        expect(
+          verifierFiresOnLifecycle(step, life),
+          `${step} x ${life}`,
+        ).toBe(expected[step][life])
+      }
+    }
+  })
+
+  // D57e P2: legacy flat-list shape guard. A custom-verifier mirror
+  // copy or an older cloud build may still ship `field_checks` as a
+  // FieldCheck[] (pre-D57e contract). fieldChecksFlat must short-
+  // circuit on Array.isArray(groups) and return a copy; otherwise
+  // Object.keys() returns numeric index strings and the loop yields
+  // junk. lifecycleGroupsFor must return [] on the legacy shape so
+  // the wizard's `event in field_checks` predicate falls through to
+  // the unknown-step branch.
+  it("fieldChecksFlat handles legacy flat-list shape (D57e P2)", () => {
+    const legacy = {
+      step: "old_custom",
+      triggers: [],
+      input_payload_paths: [],
+      verdict_set: ["pass"],
+      output_evidence: [],
+      // Pre-D57e shape: field_checks is a flat list.
+      field_checks: [
+        { path: "tool_input.url", check_description: "x" },
+        { path: "tool_input.command", check_description: "y" },
+      ] as unknown,
+    } as unknown as Parameters<typeof fieldChecksFlat>[0]
+    const out = fieldChecksFlat(legacy)
+    expect(out).toHaveLength(2)
+    expect(out[0].path).toBe("tool_input.url")
+    expect(out[1].path).toBe("tool_input.command")
+  })
+
+  it("lifecycleGroupsFor returns [] on legacy flat-list shape (D57e P2)", () => {
+    const legacy = {
+      step: "old_custom",
+      triggers: [],
+      input_payload_paths: [],
+      verdict_set: ["pass"],
+      output_evidence: [],
+      field_checks: [
+        { path: "tool_input.url", check_description: "x" },
+      ] as unknown,
+    } as unknown as Parameters<typeof lifecycleGroupsFor>[0]
+    expect(lifecycleGroupsFor(legacy)).toEqual([])
+  })
+
   it("fieldChecksFlat preserves lifecycle insertion order", () => {
     // privilege_scan's groups are declared in PreToolUse / PostToolUse
     // / Stop / UserPromptSubmit order; the flat dump must walk them

@@ -53,13 +53,19 @@ def _valid_policy(**override):
     # The policy IR still allows arbitrary sentinel_re patterns; the named
     # groups in the sample regex here are illustrative only — the runtime
     # no longer reads specific group names.
+    #
+    # D57e P1: the (PreToolUse, citation_verify) combination the
+    # original fixture used is the lifecycle-drift case the new
+    # endorsement gate refuses (citation_verify is Stop-only now).
+    # privilege_scan declares a PreToolUse field_checks group so the
+    # baseline e2e walk still exercises the same pre-D57e contract.
     base = {
         "id": "legal-filing/v1",
         "description": "v1 e2e policy",
         "version": "0.1",
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<subject>[A-Za-z0-9]+)_(?P<payload_hash>[A-Za-z0-9]+)",
-        "requires": [{"step": "citation_verify", "verdict": "pass"}],
+        "requires": [{"step": "privilege_scan", "verdict": "pass"}],
         "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",

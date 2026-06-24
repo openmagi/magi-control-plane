@@ -678,7 +678,7 @@ def create_app(
             )
         from .nl_compiler import PrecheckError, compile_with_review
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 compile_with_review,
                 compiler=llm_compiler,
                 reviewer=llm_reviewer,
@@ -692,6 +692,44 @@ def create_app(
             # compiler parse error — operator's prompt or model produced
             # something non-JSON. 422 because the input could be reformulated.
             raise HTTPException(422, str(e)) from e
+        # D57e P1: surface descriptor lifecycle drift on the compile
+        # response so the dashboard's compile preview can flag the
+        # mismatch BEFORE the operator clicks Save (which would 422 at
+        # PUT anyway). Annotates the existing `schema_issues` list
+        # with structured drift records so the existing renderer
+        # (`schema_issues: list[str | dict]`) can pick them up.
+        try:
+            from ..verifier.descriptors import (
+                validate_policy_against_descriptors,
+            )
+            ir = result.get("ir") or {}
+            trigger_event = ((ir.get("trigger") or {}).get("event") or "")
+            if isinstance(trigger_event, str) and trigger_event:
+                step_refs = [
+                    r.get("step", "")
+                    for r in (ir.get("requires") or [])
+                    if isinstance(r, dict)
+                    and r.get("kind") == "step"
+                    and isinstance(r.get("step"), str)
+                ]
+                drift_issues = validate_policy_against_descriptors(
+                    policy_id=str(ir.get("id") or "compiled-draft"),
+                    trigger_event=trigger_event,
+                    step_refs=step_refs,
+                )
+                if drift_issues:
+                    existing_issues = list(result.get("schema_issues") or [])
+                    for di in drift_issues:
+                        existing_issues.append(
+                            f"verifier {di['step']!r} does not fire on "
+                            f"{di['trigger_event']!r}; allowed: "
+                            f"{di['allowed_events']!r}"
+                        )
+                    result = dict(result)
+                    result["schema_issues"] = existing_issues
+        except Exception:  # pragma: no cover - defensive only
+            pass
+        return result
 
     @app.post("/policies/compile-interactive",
               dependencies=[Depends(require_admin_key)])
@@ -2020,6 +2058,66 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                            verifier_registry: "VerifierRegistry | None" = None,
                            ) -> None:
 
+    def _assert_policy_lifecycle_endorsed(policy: AnyPolicy) -> None:
+        """D57e P1: lifecycle-endorsement gate.
+
+        For every `EvidencePolicy` requires[] entry whose `kind ==
+        'step'`, check that the verifier descriptor declares a
+        `field_checks` group for the policy's `trigger.event`. On
+        miss, raise HTTPException(422). Skips:
+
+          - non-EvidencePolicy archetypes (no `requires` / `trigger`)
+          - non-step requires (regex / llm_critic / shacl: no
+            verifier descriptor to consult)
+          - steps with no registered descriptor (custom verifier,
+            `preview:` prefix, vendor preset whose descriptor mirror
+            lags) — step_enforcement / preview prefix already cover
+            those modes.
+
+        The wizard's Step 3 picker already filters verifiers against
+        the same predicate via `verifierFiresOnLifecycle()` in the
+        web layer. PUT / POST /policies/compile are public API
+        surfaces (admin-keyed, but still scriptable), so the same
+        filter has to be enforced at the wire boundary or a curl
+        body bypasses the picker filter and persists a vacuous
+        gate.
+        """
+        from ..verifier.descriptors import (
+            validate_policy_against_descriptors,
+        )
+        if not isinstance(policy, EvidencePolicy):
+            return
+        trig = getattr(policy, "trigger", None)
+        event = getattr(trig, "event", None) if trig is not None else None
+        if not isinstance(event, str) or not event:
+            return
+        step_refs: list[str] = []
+        for req in policy.requires:
+            if getattr(req, "kind", None) != "step":
+                continue
+            step = getattr(req, "step", None)
+            if isinstance(step, str) and step:
+                step_refs.append(step)
+        issues = validate_policy_against_descriptors(
+            policy_id=policy.id,
+            trigger_event=event,
+            step_refs=step_refs,
+        )
+        if not issues:
+            return
+        # First issue carries the most actionable detail; include the
+        # allowed lifecycles so the dashboard / scripted caller can
+        # remediate without a second round-trip.
+        first = issues[0]
+        raise HTTPException(
+            422,
+            (
+                f"verifier {first['step']!r} does not fire on "
+                f"{first['trigger_event']!r}; allowed: "
+                f"{first['allowed_events']!r}"
+            ),
+        )
+
     def _resolve_enforcement_for(policy: AnyPolicy) -> str:
         """P8: resolve policy enforcement label deterministically.
 
@@ -2208,6 +2306,11 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 )
             except StepResolutionError as e:
                 raise HTTPException(422, str(e)) from e
+            # D57e P1: also assert the descriptor surface endorses
+            # the (trigger.event, requires[].step) combination. The
+            # step_enforcement gate above only checks registry
+            # membership, not lifecycle endorsement.
+            _assert_policy_lifecycle_endorsed(policy)
             # When every req is non-step (regex / llm_critic / shacl),
             # the resolver short-circuits to "enforcing"; collapse to
             # the legacy label for parity with list/get so the dashboard
@@ -2273,6 +2376,53 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                                 f"re-author with current /verifiers "
                                 f"or 'preview:' prefix",
                             ) from e
+                        # D57e P0: also detect lifecycle drift on
+                        # re-arm. A row authored before D57e against
+                        # `(PostToolUse, citation_verify)` resolves
+                        # cleanly above (citation_verify is still
+                        # registered), but the descriptor no longer
+                        # endorses that lifecycle and the runtime
+                        # would silently round-trip a vacuous gate.
+                        # 409 with the allowed-lifecycles list mirrors
+                        # the decommissioned-verifier branch so the
+                        # operator sees the same actionable shape.
+                        from ..verifier.descriptors import (
+                            validate_policy_against_descriptors,
+                        )
+                        _trig = getattr(ov.policy, "trigger", None)
+                        _event = (
+                            getattr(_trig, "event", None)
+                            if _trig is not None else None
+                        )
+                        _step_refs = [
+                            r.step for r in ov.policy.requires
+                            if r.kind == "step"
+                            and isinstance(getattr(r, "step", None), str)
+                        ]
+                        _drift_issues = (
+                            validate_policy_against_descriptors(
+                                policy_id=ov.policy.id,
+                                trigger_event=_event or "",
+                                step_refs=_step_refs,
+                            )
+                            if isinstance(_event, str) and _event
+                            else []
+                        )
+                        if _drift_issues:
+                            _first = _drift_issues[0]
+                            raise HTTPException(
+                                409,
+                                (
+                                    f"cannot re-enable: verifier "
+                                    f"{_first['step']!r} no longer "
+                                    f"fires on "
+                                    f"{_first['trigger_event']!r}; "
+                                    f"allowed lifecycles: "
+                                    f"{_first['allowed_events']!r} — "
+                                    f"re-author this policy under one "
+                                    f"of those lifecycles"
+                                ),
+                            )
                     new_list.append(PolicyOverride(
                         policy=ov.policy, source=ov.source, enabled=body.enabled,
                         # P8: enable/disable is metadata-only; preserve
@@ -2764,21 +2914,69 @@ def _attach_verifier_descriptor_routes(app: FastAPI) -> None:
     public install flow to wire an API key just to render the Rules tab.
     Rate limit still applies via the global TokenBucketLimiter.
     """
-    from ..verifier.descriptors import all_descriptors, get_descriptor
+    from ..verifier.descriptors import (
+        all_descriptors, field_checks_flat, get_descriptor,
+    )
+
+    def _augment_with_flat(d: dict) -> dict:
+        """D57e follow-up (P1 wire-format back-compat): emit a
+        `field_checks_flat` sibling key alongside the grouped
+        `field_checks` dict so third-party consumers that pre-date the
+        D57e shape (and iterate `field_checks` as a flat list) keep
+        working without code changes during their migration window.
+
+        The grouped shape stays in `field_checks` (new contract). New
+        consumers ignore `field_checks_flat`; legacy consumers ignore
+        the grouped dict and read the flat list. Both are a single
+        Python source of truth via `field_checks_flat()`.
+        """
+        out = dict(d)
+        out["field_checks_flat"] = field_checks_flat(d)
+        return out
+
+    def _flat_only(d: dict) -> dict:
+        """D57e follow-up (P1): when `?shape=flat` is set, serve the
+        pre-D57e shape: `field_checks` is the flat list and the
+        grouped `field_checks_flat` sibling is omitted. One-shot
+        escape hatch for consumers that cannot yet adopt either the
+        sibling key or the grouped shape; documented as deprecated.
+        """
+        out = dict(d)
+        out["field_checks"] = field_checks_flat(d)
+        out.pop("field_checks_flat", None)
+        return out
 
     @app.get("/verifier-descriptors")
-    def list_verifier_descriptors() -> dict:
-        return {"descriptors": all_descriptors()}
+    def list_verifier_descriptors(shape: str | None = None) -> dict:
+        # `shape=flat` collapses `field_checks` back to the pre-D57e
+        # flat list for legacy consumers still on the old contract.
+        # Default emits the D57e grouped shape AND a `field_checks_flat`
+        # sibling so consumers can migrate without breaking.
+        if shape == "flat":
+            return {"descriptors": [_flat_only(d) for d in all_descriptors()]}
+        if shape not in (None, "grouped"):
+            raise HTTPException(
+                400,
+                f"unknown shape {shape!r}; allowed: 'grouped' (default), 'flat'",
+            )
+        return {"descriptors": [_augment_with_flat(d) for d in all_descriptors()]}
 
     @app.get("/verifier-descriptors/{step}")
-    def get_verifier_descriptor(step: str) -> dict:
+    def get_verifier_descriptor(step: str, shape: str | None = None) -> dict:
         d = get_descriptor(step)
         if d is None:
             raise HTTPException(
                 404,
                 f"no descriptor for verifier step {step!r}",
             )
-        return d
+        if shape == "flat":
+            return _flat_only(d)
+        if shape not in (None, "grouped"):
+            raise HTTPException(
+                400,
+                f"unknown shape {shape!r}; allowed: 'grouped' (default), 'flat'",
+            )
+        return _augment_with_flat(d)
 
 
 class CustomVerifierTriggerIn(BaseModel):
@@ -3190,7 +3388,110 @@ def _build_production_app() -> FastAPI:
         llm_reviewer=_resolve_llm_provider_from_env("MAGI_CP_LLM_REVIEWER"),
     )
     attach_metrics(app)
+    # D57e P0: saved-policy drift sweep at boot. After the registry +
+    # routes are wired, walk PolicyStore.load() once and emit a
+    # structured warning for any EvidencePolicy whose
+    # (trigger.event, requires[].step) combination references a
+    # lifecycle group the verifier descriptor no longer endorses
+    # (e.g. a pre-D57e `after-tool-use-cite/v1` row referencing
+    # citation_verify under PostToolUse). The PUT / PATCH endpoints
+    # already refuse to PERSIST such drift inline; this hook surfaces
+    # rows authored BEFORE the gate was added so an operator running
+    # an upgrade sees the gap in logs instead of discovering it via a
+    # silent runtime no-op.
+    try:
+        _warn_on_saved_policy_lifecycle_drift(app)
+    except Exception:  # pragma: no cover - defensive
+        # Drift sweep is best-effort; never block boot on its
+        # failure. PUT / PATCH / list still defend the live surface.
+        import logging
+        logging.getLogger(__name__).exception(
+            "magi-cp: saved-policy lifecycle drift sweep failed; "
+            "PUT/PATCH gates still defend the live surface",
+        )
     return app
+
+
+def _warn_on_saved_policy_lifecycle_drift(app: FastAPI) -> None:
+    """D57e P0: walk every persisted EvidencePolicy and log a
+    structured warning when its (trigger.event, requires[].step)
+    pairs reference a verifier descriptor whose D57e field_checks
+    groups no longer include trigger.event.
+
+    The warning carries `policy_id`, `step`, `trigger_event`, and the
+    descriptor's currently-allowed lifecycles so an operator can grep
+    + remediate without a second lookup. We do NOT downgrade
+    enforcement here — the live label is computed lazily on read by
+    `_resolve_legacy_unstamped` + on re-arm by patch_enabled; the boot
+    sweep is observe-only so a stale on-disk row doesn't change
+    semantics during a rollout. The PATCH /enabled handler is where
+    the operator's action loop closes (re-arm now rejects with 409).
+    """
+    import logging
+    from ..policy.ir import EvidencePolicy
+    from ..verifier.descriptors import (
+        validate_policy_against_descriptors,
+    )
+
+    log = logging.getLogger("magi_cp.policy.lifecycle_drift")
+
+    # Pull PolicyStore off the running app's state. create_app attaches
+    # it to a closure rather than `app.state`, so we walk the routes
+    # and find the store via the policy_store path. Simpler: import the
+    # PolicyStore directly with the same env path resolution used
+    # inside create_app() so this hook stays independent.
+    from .policy_store import PolicyStore
+    store = PolicyStore(
+        path=os.environ.get("MAGI_CP_POLICY_STORE_PATH", "policies.json"),
+    )
+    try:
+        overrides = store.load()
+    except Exception:
+        log.exception("magi-cp: could not load policy store for drift sweep")
+        return
+
+    drift_count = 0
+    for ov in overrides:
+        policy = ov.policy
+        if not isinstance(policy, EvidencePolicy):
+            continue
+        trig = getattr(policy, "trigger", None)
+        event = getattr(trig, "event", None) if trig is not None else None
+        if not isinstance(event, str) or not event:
+            continue
+        step_refs = [
+            r.step for r in policy.requires
+            if r.kind == "step"
+            and isinstance(getattr(r, "step", None), str)
+        ]
+        issues = validate_policy_against_descriptors(
+            policy_id=policy.id,
+            trigger_event=event,
+            step_refs=step_refs,
+        )
+        for issue in issues:
+            drift_count += 1
+            # Structured warning so ops dashboards + a future
+            # /admin/policy-drift surface can both parse it without
+            # text-grep. Format mirrors existing structlog calls in
+            # this module.
+            log.warning(
+                "policy_lifecycle_drift policy_id=%r step=%r "
+                "trigger_event=%r allowed_events=%r reason=%r "
+                "remediation=%s",
+                issue["policy_id"], issue["step"],
+                issue["trigger_event"], issue["allowed_events"],
+                issue["reason"],
+                "re-author this policy under one of the allowed "
+                "lifecycles or remove the step requirement",
+            )
+    if drift_count > 0:
+        log.warning(
+            "magi-cp: %d saved policy row(s) carry D57e lifecycle "
+            "drift. PUT/PATCH gates refuse to re-stamp them; "
+            "re-author each row under an allowed lifecycle.",
+            drift_count,
+        )
 
 
 def run() -> None:  # pragma: no cover

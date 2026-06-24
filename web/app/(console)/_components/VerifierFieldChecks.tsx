@@ -1,7 +1,6 @@
 import {
   fieldChecksFlat,
   getVerifierDescriptor,
-  lifecycleGroupsFor,
   type FieldCheck,
   type FieldChecksByLifecycle,
 } from "@/lib/verifier-descriptors"
@@ -203,14 +202,14 @@ export function VerifierFieldChecks({
           >
             <summary
               className="flex cursor-pointer items-baseline gap-2 text-[11px] uppercase tracking-wider font-semibold text-[var(--color-text-secondary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
-              aria-label={`${event} ${lifecycleTooltip(event)}`}
+              aria-label={`${event} ${lifecycleTooltip(event, t)}`}
             >
               <Code className="text-[11.5px] normal-case tracking-normal">{event}</Code>
               <span
                 className="text-[10.5px] font-normal normal-case tracking-normal text-[var(--color-text-tertiary)]"
-                title={lifecycleTooltip(event)}
+                title={lifecycleTooltip(event, t)}
               >
-                {lifecycleTooltip(event)}
+                {lifecycleTooltip(event, t)}
               </span>
               {isActive && (
                 <span
@@ -240,31 +239,33 @@ export function VerifierFieldChecks({
 
 /** D57e: plain-language tooltip for each CC hook event. Surfaced on
  * the <summary> via title= and aria-label= so a SR scan of the
- * section headings hears "PreToolUse, Before any tool runs" instead
- * of bare camel-case event names. Falls back to the event name when
- * the event is one this helper does not know (preserves forward
- * compat for an event the cloud adds before the helper does). */
-function lifecycleTooltip(event: string): string {
-  switch (event) {
-    case "PreToolUse":
-      return "Before any tool runs"
-    case "PostToolUse":
-      return "After a tool returns"
-    case "Stop":
-      return "Before the agent's final reply"
-    case "UserPromptSubmit":
-      return "When a user prompt arrives"
-    case "SubagentStop":
-      return "When a subagent stops"
-    case "PreCompact":
-      return "Before context compaction"
-    case "SessionStart":
-      return "When the session opens"
-    case "SessionEnd":
-      return "When the session closes"
-    default:
-      return event
-  }
+ * section headings hears "PreToolUse, Before any tool runs" (en) or
+ * "PreToolUse, 도구가 실행되기 전" (ko) instead of bare camel-case
+ * event names. Falls back to the event name when the event is one
+ * this helper does not know (preserves forward compat for an event
+ * the cloud adds before the helper does).
+ *
+ * D57e P2 (i18n fix): routed through t() so the dashboard's ko /
+ * en split surfaces in the tooltip + aria-label. The key shape is
+ * `rules.verifier.fieldChecks.lifecycle.<event>`; unknown events
+ * (preview / forward-compat) bypass t() and fall through to the
+ * event name. */
+const _KNOWN_LIFECYCLE_EVENTS = new Set<string>([
+  "PreToolUse",
+  "PostToolUse",
+  "Stop",
+  "UserPromptSubmit",
+  "SubagentStop",
+  "PreCompact",
+  "SessionStart",
+  "SessionEnd",
+])
+
+function lifecycleTooltip(event: string, t: T): string {
+  if (!_KNOWN_LIFECYCLE_EVENTS.has(event)) return event
+  return t(
+    `rules.verifier.fieldChecks.lifecycle.${event}` as import("@/lib/i18n/dict").TKey,
+  )
 }
 
 function FieldCheckRows({ rows }: { rows: FieldCheck[] }) {
@@ -402,7 +403,8 @@ function Row({
   )
 }
 
-/** D57e: re-export the lifecycle helper for the wizard's Step 3
- * picker filter. Single source for "does this verifier fire on this
- * lifecycle": descriptors.ts in lib/. */
-export { lifecycleGroupsFor }
+/* D57e P2 cleanup: the `lifecycleGroupsFor` re-export was a
+ * duplicated public-API surface — the canonical export lives in
+ * `@/lib/verifier-descriptors`. Callers should import from there
+ * directly; tests that imported it via this module path were
+ * routed back to the lib seam. */

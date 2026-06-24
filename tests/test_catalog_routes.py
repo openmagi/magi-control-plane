@@ -43,13 +43,20 @@ def client(tmp_path):
 
 
 def _valid_policy(**override):
+    # D57e P1: keep the (PreToolUse, Bash, block) trigger shape this
+    # suite asserts on, but swap citation_verify (Stop-only) for
+    # privilege_scan (declares a PreToolUse field_checks group) so
+    # the new descriptor-endorsement gate accepts the body. Tests
+    # below still assert against "citation_verify" for the catalog
+    # built-in row enumeration, but that row is built off the
+    # descriptor registry not this policy's requires[].
     base = {
         "id": "legal-filing/v1",
         "description": "t",
         "version": "0.1",
         "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
-        "requires": [{"step": "citation_verify", "verdict": "pass"}],
+        "requires": [{"step": "privilege_scan", "verdict": "pass"}],
         "action": "block",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
@@ -80,7 +87,15 @@ def test_evidence_types_lists_builtin_steps(client):
 
 
 def test_evidence_types_annotates_used_by_when_policy_references_step(client):
-    _save_policy(client, _valid_policy())
+    # D57e P1: citation_verify is Stop-only now, so an EvidencePolicy
+    # that references it must trigger on Stop. The matcher narrows
+    # to wildcard + action narrows to audit per the matrix table.
+    body = _valid_policy(
+        trigger={"host": "claude-code", "event": "Stop", "matcher": "*"},
+        requires=[{"step": "citation_verify", "verdict": "pass"}],
+        action="audit",
+    )
+    _save_policy(client, body)
     items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
     citation = next(i for i in items if i["step"] == "citation_verify")
     assert citation["used_by_policies"] == ["legal-filing/v1"]

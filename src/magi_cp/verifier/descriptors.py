@@ -678,9 +678,21 @@ def field_checks_flat(descriptor: VerifierDescriptor) -> list[FieldCheck]:
     The /checks catalog wire and any other consumer that pre-dates the
     grouped shape calls this to keep its existing flat-list contract.
     The dashboard-side renderer reads the grouped shape directly.
+
+    Legacy shape guard (D57e P2): when called against an older
+    descriptor whose `field_checks` is still a flat list (the pre-D57e
+    shape carried in a custom-verifier row or an older mirror copy),
+    short-circuit and return the list as-is. Without this guard the
+    body would call `.items()` on a list and raise AttributeError —
+    the helper is documented as the back-compat bridge for older mirror
+    copies, so it has to actually handle the old shape.
     """
     out: list[FieldCheck] = []
     groups = descriptor.get("field_checks") or {}
+    if isinstance(groups, list):
+        # Pre-D57e flat shape. Already a list of FieldCheck rows;
+        # return a defensive copy so callers can mutate freely.
+        return list(groups)
     for _ev, rows in groups.items():
         for row in rows:
             out.append(row)
@@ -787,6 +799,17 @@ def _assert_field_checks_paths_resolve() -> None:
     We import payload_schemas lazily (it lives in a sibling package) so
     a circular-import surprise stays surface-level if the layout ever
     flips.
+
+    Scope (D57e P1 docstring fix): this gate covers DESCRIPTOR
+    authoring drift only. It does NOT detect saved-policy drift across
+    a descriptor narrowing — that case (an EvidencePolicy whose
+    `(trigger.event, requires[].step)` combination references a
+    lifecycle group the descriptor no longer carries) is handled by
+    `validate_policy_against_descriptors()` below, which the cloud
+    factory calls at startup against `PolicyStore.load()` and which
+    the PUT / PATCH /policies endpoints call inline. Both halves of
+    the contract live in this module so a future reader does not need
+    to discover the second gate via a sibling-module spelunking session.
     """
     from magi_cp.policy import payload_schemas  # local import to avoid cycle
 
@@ -871,6 +894,72 @@ def _assert_field_checks_paths_resolve() -> None:
                 )
 
 
+def validate_policy_against_descriptors(
+    *,
+    policy_id: str,
+    trigger_event: str,
+    step_refs: list[str],
+) -> list[dict]:
+    """D57e P0: saved-policy drift detector.
+
+    Given a stored policy's `(policy_id, trigger.event, requires[].step)`
+    triple, return a list of drift issues — one per `requires` step
+    that names a verifier descriptor whose D57e lifecycle groups no
+    longer include `trigger.event`.
+
+    Each issue dict carries enough context for the cloud's startup
+    validator + REST handlers to render a structured warning or 422:
+
+        {
+            "policy_id": str,
+            "step": str,
+            "trigger_event": str,
+            "allowed_events": list[str],  # descriptor field_checks keys
+            "reason": "lifecycle_pruned",
+        }
+
+    Skips:
+      - steps with no registered descriptor (custom verifier, preview
+        prefix, vendor preset whose descriptor mirror lags) — the
+        descriptor surface has nothing to assert against; the existing
+        step_enforcement path catches those.
+      - steps preceded by `preview:` (in-development verifiers explicitly
+        opted into a no-runtime-guarantee mode).
+
+    Why this is the right layer: the import-time gate
+    `_assert_field_checks_paths_resolve()` protects the DESCRIPTORS
+    against authoring drift. It does NOT cover saved policies that
+    pre-date a descriptor narrowing. This helper is the saved-policy
+    counterpart; callers (the cloud factory's startup hook + PUT /
+    PATCH endpoint handlers) use it to surface the gap the import-time
+    gate cannot see.
+    """
+    from .descriptors import get_descriptor as _get_d  # avoid cycle
+    out: list[dict] = []
+    for raw_step in step_refs:
+        if not raw_step or not isinstance(raw_step, str):
+            continue
+        if raw_step.startswith("preview:"):
+            continue
+        d = _get_d(raw_step)
+        if d is None:
+            continue
+        groups = d.get("field_checks") or {}
+        # Legacy flat-list shape: no lifecycle keying to assert against.
+        if isinstance(groups, list):
+            continue
+        allowed = list(groups.keys())
+        if trigger_event not in groups:
+            out.append({
+                "policy_id": policy_id,
+                "step": raw_step,
+                "trigger_event": trigger_event,
+                "allowed_events": allowed,
+                "reason": "lifecycle_pruned",
+            })
+    return out
+
+
 def _assert_input_assembly_shape() -> None:
     """D57c: every built-in descriptor MUST declare an `input_assembly`
     value (`cc_stdin` or `caller_assembled`). caller_assembled rows
@@ -923,4 +1012,5 @@ __all__ = [
     "all_descriptors",
     "field_checks_flat",
     "get_descriptor",
+    "validate_policy_against_descriptors",
 ]

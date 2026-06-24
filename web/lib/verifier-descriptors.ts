@@ -546,9 +546,23 @@ export function allVerifierDescriptors(): VerifierDescriptor[] {
 /** D57e: flatten the per-lifecycle field_checks groups into a single
  * list, preserving lifecycle insertion order. Pre-D57e consumers
  * that expected a flat array call this; the dashboard renders the
- * grouped shape directly. */
+ * grouped shape directly.
+ *
+ * Legacy shape guard (D57e P2): when called against an older
+ * descriptor whose `field_checks` is still an array (the pre-D57e
+ * flat shape carried in a custom-verifier row or an older mirror
+ * copy from a cloud that has not yet rolled the dict-of-arrays),
+ * return a copy of the array as-is. Without this guard
+ * `Object.keys(groups)` returns array index strings, and the inner
+ * loop iterates row dicts as if they were arrays, silently producing
+ * junk. The helper is documented as the back-compat bridge for older
+ * mirror copies — it has to actually handle the old shape. */
 export function fieldChecksFlat(d: VerifierDescriptor): FieldCheck[] {
-  const groups = d.field_checks ?? {}
+  const groups = (d.field_checks ?? {}) as FieldChecksByLifecycle | FieldCheck[]
+  if (Array.isArray(groups)) {
+    // Pre-D57e flat shape. Already a list of FieldCheck rows.
+    return [...groups]
+  }
   const out: FieldCheck[] = []
   for (const ev of Object.keys(groups)) {
     for (const row of groups[ev]) out.push(row)
@@ -558,9 +572,15 @@ export function fieldChecksFlat(d: VerifierDescriptor): FieldCheck[] {
 
 /** D57e: lifecycle CC events the verifier carries a field_checks
  * group for. Drives the Step 3 picker filter: a verifier shows iff
- * its lifecycle groups include the wizard's current lifecycle. */
+ * its lifecycle groups include the wizard's current lifecycle.
+ *
+ * Legacy shape guard (D57e P2): a pre-D57e flat-list descriptor has
+ * no lifecycle keying; return [] so callers fall back to the
+ * "unknown lifecycle, show in picker" branch. */
 export function lifecycleGroupsFor(d: VerifierDescriptor): string[] {
-  return Object.keys(d.field_checks ?? {})
+  const groups = (d.field_checks ?? {}) as FieldChecksByLifecycle | FieldCheck[]
+  if (Array.isArray(groups)) return []
+  return Object.keys(groups)
 }
 
 /** D57e: convenience for the Step 3 picker. Returns true when the

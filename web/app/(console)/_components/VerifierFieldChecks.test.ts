@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
 import path from "node:path"
+// D57e P2 cleanup: lifecycleGroupsFor was re-exported through the
+// component module in the original D57e patch. The re-export was a
+// duplicated public-API surface and got dropped; tests now import
+// from the canonical lib seam alongside the other helpers.
 import {
   fieldChecksFlat,
   getVerifierDescriptor,
@@ -66,9 +70,14 @@ describe("VerifierFieldChecks source invariants", () => {
   it("labels each group with a plain-language tooltip (D57e)", () => {
     // The brief: labeled with the CC event name + a plain-language
     // tooltip ("PreToolUse" = "Before any tool runs").
+    //
+    // D57e P2 (i18n): the tooltip strings now route through t() so
+    // ko speakers see the same payload in Korean. We assert on the
+    // i18n key prefix (the canonical seam) instead of the hardcoded
+    // English copy — `dict.ts` is the source of truth for the en /
+    // ko strings.
     expect(src).toMatch(/lifecycleTooltip/)
-    expect(src).toContain("Before any tool runs")
-    expect(src).toContain("Before the agent's final reply")
+    expect(src).toContain("rules.verifier.fieldChecks.lifecycle.")
   })
 
   it("accepts a fieldChecksOverride prop so custom-source catalog rows render the tree", () => {

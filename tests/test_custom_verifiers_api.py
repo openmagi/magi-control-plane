@@ -489,6 +489,52 @@ class TestVerifierDescriptors:
         ):
             assert builtin in steps
 
+    def test_list_endpoint_emits_field_checks_flat_sibling(self, client):
+        """D57e P1 back-compat: the default response shape pairs the
+        grouped `field_checks` dict with a `field_checks_flat` sibling
+        list so pre-D57e third-party consumers iterating
+        `for fc in d['field_checks_flat']: fc['path']` keep working
+        across the rollout window."""
+        r = client.get("/verifier-descriptors")
+        assert r.status_code == 200
+        for d in r.json()["descriptors"]:
+            assert isinstance(d["field_checks"], dict), d["step"]
+            assert isinstance(d.get("field_checks_flat"), list), d["step"]
+            assert len(d["field_checks_flat"]) > 0, d["step"]
+            for fc in d["field_checks_flat"]:
+                assert "path" in fc and "check_description" in fc, d["step"]
+
+    def test_list_endpoint_shape_flat_collapses_back(self, client):
+        """D57e P1: `?shape=flat` returns the pre-D57e contract — a
+        flat `field_checks` list and no `field_checks_flat` sibling.
+        One-shot migration escape hatch for consumers that cannot
+        adopt either the sibling key or the grouped shape."""
+        r = client.get("/verifier-descriptors?shape=flat")
+        assert r.status_code == 200
+        for d in r.json()["descriptors"]:
+            assert isinstance(d["field_checks"], list), d["step"]
+            assert "field_checks_flat" not in d, d["step"]
+            assert len(d["field_checks"]) > 0, d["step"]
+
+    def test_list_endpoint_rejects_unknown_shape(self, client):
+        r = client.get("/verifier-descriptors?shape=banana")
+        assert r.status_code == 400
+
+    def test_get_one_endpoint_emits_field_checks_flat_sibling(self, client):
+        r = client.get("/verifier-descriptors/privilege_scan")
+        assert r.status_code == 200
+        d = r.json()
+        assert isinstance(d["field_checks"], dict)
+        assert isinstance(d.get("field_checks_flat"), list)
+        assert len(d["field_checks_flat"]) > 0
+
+    def test_get_one_endpoint_shape_flat(self, client):
+        r = client.get("/verifier-descriptors/privilege_scan?shape=flat")
+        assert r.status_code == 200
+        d = r.json()
+        assert isinstance(d["field_checks"], list)
+        assert "field_checks_flat" not in d
+
     def test_get_one_endpoint(self, client):
         r = client.get("/verifier-descriptors/privilege_scan")
         assert r.status_code == 200

@@ -50,14 +50,20 @@ def client(tmp_path):
 
 
 def _valid_policy(**override):
+    # D57e P1: this suite intentionally focuses on the
+    # citation_verify catalog row, so the trigger event is the one
+    # citation_verify actually fires on (Stop). The matrix requires
+    # wildcard matcher + audit action on Stop, so the baseline body
+    # mirrors that combination instead of the pre-D57e (PreToolUse,
+    # Bash, block) shape the new lifecycle gate refuses.
     base = {
         "id": "legal-filing/v1",
         "description": "test policy",
         "version": "0.1",
-        "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
+        "trigger": {"host": "claude-code", "event": "Stop", "matcher": "*"},
         "sentinel_re": r"FILE_COURT_(?P<matter>[A-Za-z0-9]+)_(?P<doc_id>[A-Za-z0-9]+)",
         "requires": [{"step": "citation_verify", "verdict": "pass"}],
-        "action": "block",
+        "action": "audit",
         "on_signature_invalid": "deny",
         "gate_binary": "/usr/local/bin/magi-gate.sh",
     }

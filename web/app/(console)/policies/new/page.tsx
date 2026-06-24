@@ -309,6 +309,13 @@ interface WizardState {
   // entry and carry the original raw value here so Step 2 can surface
   // a one-shot "we trimmed your alternation" banner. Read-only.
   _droppedAlternation?: string
+  // D57e P1: evidenceRefs naming a verifier that does not fire on
+  // the current lifecycle (e.g. `source_allowlist` riding through on
+  // a Stop policy URL) are pruned at the state-build seam AND on
+  // save. We stash the dropped names here so Step 3 + Step 6 can
+  // surface a one-shot banner mirroring `_droppedConditionKind`.
+  // Read-only — not part of URL state.
+  _droppedEvidenceRefs?: string[]
 }
 
 /* ─── IR + summary builders ───────────────────────────────────────── */
@@ -826,6 +833,24 @@ async function saveWizard(formData: FormData): Promise<void> {
   if (!matrixMatchers.has(klass)) {
     redirect("/policies/new?mode=guided&step=2&err=invalid_input"); return
   }
+  // D57e P1: prune evidenceRefs at the save seam too. The
+  // GuidedWizard state-build prune already filters out cross-lifecycle
+  // refs before HiddenState re-serializes them, but a server action
+  // accepts arbitrary FormData (a hand-rolled POST, a stale tab that
+  // never re-rendered, or the per-step `<input type=hidden
+  // name=evidence_refs>` riding through from an earlier step where the
+  // picker was hidden). Re-running the same `verifierFiresOnLifecycle`
+  // filter here is the canonical defense — without it the IR can still
+  // persist a `requires:[{kind:'step', step:<dropped>, verdict:'pass'}]`
+  // that the runtime never fires.
+  const _rawEvidenceRefs = (formData.getAll("evidence_ref") as string[])
+    .map((v) => v.trim()).filter(Boolean)
+    .concat((String(formData.get("evidence_refs") ?? ""))
+      .split(",").map((s) => s.trim()).filter(Boolean))
+  const _ccEvent = LIFECYCLE_TO_EVENT[lifecycle]
+  const _evidenceRefsKept = _rawEvidenceRefs.filter((s) =>
+    verifierFiresOnLifecycle(s, _ccEvent),
+  )
   const state: WizardState = {
     lifecycle,
     toolScope,
@@ -834,10 +859,7 @@ async function saveWizard(formData: FormData): Promise<void> {
     allowlist: String(formData.get("allowlist") ?? "").trim() || undefined,
     pattern: String(formData.get("pattern") ?? "").trim() || undefined,
     llmCriterion: String(formData.get("llmCriterion") ?? "").trim() || undefined,
-    evidenceRefs: (formData.getAll("evidence_ref") as string[])
-      .map((v) => v.trim()).filter(Boolean)
-      .concat((String(formData.get("evidence_refs") ?? ""))
-        .split(",").map((s) => s.trim()).filter(Boolean)),
+    evidenceRefs: _evidenceRefsKept,
     shaclTtl: String(formData.get("shaclTtl") ?? "").trim() || undefined,
     action,
     id: String(formData.get("id") ?? "").trim(),
@@ -1704,6 +1726,34 @@ function GuidedWizard({
     }
   }
 
+  // D57e P1: prune evidenceRefs at the state-build seam so a stale
+  // ref riding through on the URL (or a prebuilt Edit-jump) that
+  // names a verifier the current lifecycle does not fire is dropped
+  // BEFORE HiddenState re-serializes it and BEFORE saveWizard reads
+  // it back from FormData. Without this prune the IR persists a
+  // `requires:[{kind:'step', step:<dropped>, verdict:'pass'}]`
+  // pointing at a verifier that will never fire, which the runtime
+  // collapses to a vacuous pass. Symmetric to `_droppedConditionKind`
+  // / `_droppedAlternation`. Surfaces the dropped names so Step 3 +
+  // Step 6 can render a one-shot banner.
+  const _resolvedLifecycle: Lifecycle | undefined =
+    lifecycle ?? draftState?.lifecycle
+  const _rawEvidenceRefs: string[] | undefined =
+    evidenceRefs.length > 0 ? evidenceRefs : draftState?.evidenceRefs
+  let _prunedEvidenceRefs: string[] | undefined = _rawEvidenceRefs
+  let _droppedEvidenceRefs: string[] | undefined
+  if (_rawEvidenceRefs && _resolvedLifecycle) {
+    const _ccEvent = LIFECYCLE_TO_EVENT[_resolvedLifecycle]
+    const _kept: string[] = []
+    const _dropped: string[] = []
+    for (const s of _rawEvidenceRefs) {
+      if (verifierFiresOnLifecycle(s, _ccEvent)) _kept.push(s)
+      else _dropped.push(s)
+    }
+    _prunedEvidenceRefs = _kept.length > 0 ? _kept : undefined
+    if (_dropped.length > 0) _droppedEvidenceRefs = _dropped
+  }
+
   const state: WizardState = {
     lifecycle: lifecycle ?? draftState?.lifecycle,
     toolScope: normalizedToolScope,
@@ -1712,7 +1762,7 @@ function GuidedWizard({
     allowlist: searchParams.allowlist || draftState?.allowlist,
     pattern: searchParams.pattern || draftState?.pattern,
     llmCriterion: searchParams.llmCriterion || draftState?.llmCriterion,
-    evidenceRefs: evidenceRefs.length > 0 ? evidenceRefs : draftState?.evidenceRefs,
+    evidenceRefs: _prunedEvidenceRefs,
     shaclTtl: searchParams.shaclTtl || draftState?.shaclTtl,
     action: action ?? draftState?.action,
     id: searchParams.id || draftState?.id,
@@ -1726,6 +1776,7 @@ function GuidedWizard({
       !conditionKind && draftState?._droppedConditionKind
         ? draftState._droppedConditionKind : undefined,
     _droppedAlternation: droppedAlternationCarry,
+    _droppedEvidenceRefs,
   }
 
   // D56c: every no-tool-context lifecycle auto-skips Step 2 (tool
@@ -2389,6 +2440,23 @@ function Step3Condition({
             : `The original policy carried a ${droppedKind} requirement that does not apply ${lifecycleLabel}; it has been dropped.`}
         </div>
       )}
+      {/* D57e P1: evidenceRefs riding through on the URL that named a
+          verifier the current lifecycle does not fire are pruned at the
+          state-build seam. Surface a one-shot banner mirroring the
+          dropped-condition-kind / dropped-alternation pattern so the
+          operator knows their cross-lifecycle ref was removed and can
+          decide whether to pick a different verifier or change the
+          lifecycle. */}
+      {state._droppedEvidenceRefs && state._droppedEvidenceRefs.length > 0 && (
+        <div
+          data-testid="step3-dropped-evidence-refs-banner"
+          className="rounded-xl border border-amber-300 bg-amber-50/60 px-3 py-2 text-xs text-amber-900"
+        >
+          {ko
+            ? `${lifecycleLabel} 라이프사이클에서 발동하지 않는 verifier (${state._droppedEvidenceRefs.join(", ")}) 가 제거되었습니다. 다른 verifier 를 선택하거나 라이프사이클을 변경하세요.`
+            : `Verifier(s) that do not fire on ${lifecycleLabel} were removed: ${state._droppedEvidenceRefs.join(", ")}. Pick a different verifier or change the lifecycle.`}
+        </div>
+      )}
       <form action={action} className="space-y-3">
         <input type="hidden" name="_step" value="3" />
         <HiddenState state={{
@@ -2523,7 +2591,23 @@ function Step3Condition({
                       const filtered = wiredSteps.filter((w) =>
                         verifierFiresOnLifecycle(w.step, ccEvent),
                       )
-                      const droppedCount = wiredSteps.length - filtered.length
+                      const droppedSteps = wiredSteps
+                        .filter((w) =>
+                          !verifierFiresOnLifecycle(w.step, ccEvent),
+                        )
+                        .map((w) => w.step)
+                      const droppedCount = droppedSteps.length
+                      // D57e P1 follow-up: when the wizard is in EDIT
+                      // mode (the user reached this step with an
+                      // existing evidenceRefs payload), surface any
+                      // ref the policy still references but that the
+                      // lifecycle now drops. The picker can't render
+                      // a checkbox for it (no descriptor group for
+                      // this lifecycle), but the operator needs to
+                      // see WHICH ref vanished so they can pick a
+                      // remediation. Empty in create mode.
+                      const editedDroppedRefs = (state.evidenceRefs ?? [])
+                        .filter((s) => !verifierFiresOnLifecycle(s, ccEvent))
                       return (
                         <>
                           {wiredSteps.length === 0 && (
@@ -2546,11 +2630,23 @@ function Step3Condition({
                           {droppedCount > 0 && filtered.length > 0 && (
                             <p
                               data-testid="step3-verifier-picker-dropped-note"
+                              data-dropped-verifier-steps={droppedSteps.join(",")}
                               className="text-[11px] italic text-[var(--color-text-tertiary)]"
                             >
                               {ko
-                                ? `${droppedCount} 개의 verifier 가 이 라이프사이클에서 발동하지 않아 숨김 처리되었습니다.`
-                                : `${droppedCount} verifier(s) hidden because they do not fire on this lifecycle.`}
+                                ? `${droppedSteps.join(", ")} 가 이 라이프사이클에서 발동하지 않아 숨김 처리되었습니다 (${droppedCount}개).`
+                                : `Hidden because they do not fire on this lifecycle: ${droppedSteps.join(", ")} (${droppedCount}).`}
+                            </p>
+                          )}
+                          {editedDroppedRefs.length > 0 && (
+                            <p
+                              data-testid="step3-verifier-picker-edit-drift-note"
+                              data-edit-drift-verifier-steps={editedDroppedRefs.join(",")}
+                              className="text-[11px] text-amber-800 bg-amber-50/40 border border-amber-300 rounded-md px-2 py-1"
+                            >
+                              {ko
+                                ? `이 정책이 참조하던 ${editedDroppedRefs.join(", ")} 는 ${lifecycleLabel} 라이프사이클에서 발동하지 않습니다.`
+                                : `This policy references ${editedDroppedRefs.join(", ")}, but they do not fire on ${lifecycleLabel}.`}
                             </p>
                           )}
                         </>
@@ -3142,14 +3238,47 @@ function Step6Review({
               {state.conditionKind === "llm_critic" && (
                 <> · <em className="break-words">{state.llmCriterion || (ko ? "(비어있음)" : "(empty)")}</em></>
               )}
-              {state.conditionKind === "evidence_ref" && evidenceList.length > 0 && (
-                <ul className="mt-1 space-y-0.5 list-disc pl-5">
-                  {evidenceList.map((v) => {
-                    const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
-                    return <li key={v}><code className="font-mono">{v}</code> {desc && <span className="text-[var(--color-text-tertiary)]">· {desc}</span>}</li>
-                  })}
-                </ul>
-              )}
+              {state.conditionKind === "evidence_ref" && evidenceList.length > 0 && (() => {
+                // D57e P2 (step6 stale-ref display): the Step 3
+                // picker filters wiredSteps via
+                // `verifierFiresOnLifecycle`. The state-build seam
+                // prunes evidenceRefs against the same filter. But if
+                // a future call site bypasses the prune (e.g. a
+                // hand-crafted server-action body) the review summary
+                // would still surface a "source_allowlist=pass" line
+                // under a Stop policy, which the runtime never
+                // enforces. We mirror the picker filter here as a
+                // second defensive sieve and surface a small inline
+                // warning when an item is dropped so the operator
+                // knows to revisit Step 3.
+                const kept = evidenceList.filter((v) =>
+                  verifierFiresOnLifecycle(v, event),
+                )
+                const droppedFromReview = evidenceList.filter((v) =>
+                  !verifierFiresOnLifecycle(v, event),
+                )
+                return (
+                  <>
+                    <ul className="mt-1 space-y-0.5 list-disc pl-5">
+                      {kept.map((v) => {
+                        const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
+                        return <li key={v}><code className="font-mono">{v}</code> {desc && <span className="text-[var(--color-text-tertiary)]">· {desc}</span>}</li>
+                      })}
+                    </ul>
+                    {droppedFromReview.length > 0 && (
+                      <p
+                        data-testid="step6-evidence-list-stale-warning"
+                        data-stale-verifier-steps={droppedFromReview.join(",")}
+                        className="mt-1 text-[11px] text-amber-800"
+                      >
+                        {ko
+                          ? `참고: ${droppedFromReview.join(", ")} 은 이 라이프사이클에서 발동하지 않습니다. Step 3 에서 다시 확인하세요.`
+                          : `Heads up: ${droppedFromReview.join(", ")} do not fire on this lifecycle. Revisit Step 3.`}
+                      </p>
+                    )}
+                  </>
+                )
+              })()}
               {state.conditionKind === "shacl" && state.shaclTtl && (
                 <> · SHACL ({state.shaclTtl.length} chars)</>
               )}

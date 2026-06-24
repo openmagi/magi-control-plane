@@ -475,9 +475,16 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // _droppedAlternation so Step 2 can surface a banner. Pin
       // every step of the normalization so a future refactor that
       // drops the seam is intentional.
+      //
+      // D57e P1: the seam grew an evidenceRefs lifecycle prune block
+      // between the toolScope normalization and the WizardState
+      // literal, so the 2500-char slice the original test used no
+      // longer reached `toolScope: normalizedToolScope`. Bumped to
+      // 5000 chars so both invariants stay in the window without
+      // restructuring the seam.
       const buildStart = src.indexOf("const draftState = _irToWizardState")
       expect(buildStart).toBeGreaterThan(-1)
-      const body = src.slice(buildStart, buildStart + 2500)
+      const body = src.slice(buildStart, buildStart + 5000)
       // splits on `,` OR `|`
       expect(body).toMatch(/split\(\s*\/\[,\|\]\/\s*\)/)
       // canonical state.toolScope is the normalized form
