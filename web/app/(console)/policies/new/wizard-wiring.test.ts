@@ -1542,4 +1542,214 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).not.toContain("\"invalid_input\"")
     })
   })
+
+  /* D68: Step 4 → Step 5 advance refuses empty action-specifics.
+   *
+   * Mirror of D62 (Step 3 → Step 4). Recurring live-verification
+   * problem: operator picks action=inject_context at Step 4, clicks
+   * Next, advanceWizard silently rejects because injectTemplate is
+   * empty, redirects to step=4 with NO err param, operator stares
+   * at the picker unable to tell what is wrong. Same pattern for
+   * action=run_command (empty command AND no script_id) and
+   * action=input_rewrite (empty rewriter config).
+   *
+   * Fix: advanceWizard now refuses the Step 4 → Step 5 advance
+   * when the chosen action's sub-form fields are empty, redirects
+   * to step=4 with a precise err code (missing_template /
+   * missing_command_or_script / missing_rewriter_config), and
+   * Step4Action renders an inline banner near the Step 4b sub-form
+   * (NOT at the top of the page) plus a per-input red ring with
+   * helper copy.
+   */
+  describe("D68: Step 4 advance refuses empty action-specifics", () => {
+    it("validateStep4ActionSpecifics gates each action on its required field", () => {
+      // Pin the per-action specifics gate. Source-inspection only,
+      // matching the D62 validateStep3Specifics pattern.
+      const start = src.indexOf("function validateStep4ActionSpecifics")
+      expect(start).toBeGreaterThan(-1)
+      const end = src.indexOf("\n}\n", start)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // Each action maps to exactly ONE per-action err code.
+      expect(body).toMatch(/case "inject_context":[\s\S]*?"missing_template"/)
+      expect(body).toMatch(/case "run_command":[\s\S]*?"missing_command_or_script"/)
+      expect(body).toMatch(/case "input_rewrite":[\s\S]*?"missing_rewriter_config"/)
+      // The run_command branch must read BOTH runCommandBody AND
+      // runCommandScriptId so the attach-mode happy path (script
+      // uploaded, body empty) advances without a false positive.
+      expect(body).toMatch(/runCommandBody/)
+      expect(body).toMatch(/runCommandScriptId/)
+      // inject_context branch must read injectTemplate.
+      expect(body).toMatch(/injectTemplate/)
+      // input_rewrite must dispatch on rewriterKind so each kind's
+      // required config field is checked.
+      expect(body).toMatch(/rewriterKind/)
+      expect(body).toMatch(/rewriterPrefix/)
+      expect(body).toMatch(/rewriterFrom/)
+      expect(body).toMatch(/rewriterTo/)
+      expect(body).toMatch(/rewriterPattern/)
+      // block / ask / audit are NOT in the gate body — they have no
+      // sub-form and the default branch returns null.
+      expect(body).toMatch(/default:[\s\S]*?return null/)
+    })
+
+    it("advanceWizard wires validateStep4ActionSpecifics into the Step 4 → 5 advance", () => {
+      // The gate must fire when stepIn === 4, BEFORE the
+      // `params.set("step", String(nextStep))` line. Pin both the
+      // conditional and the redirect target so a refactor cannot
+      // move the call site past the redirect.
+      const start = src.indexOf("async function advanceWizard")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 10_000)
+      expect(body).toMatch(/if \(stepIn === 4\)/)
+      expect(body).toMatch(/validateStep4ActionSpecifics\(/)
+      // Redirect target carries step=4 and err=<code>.
+      expect(body).toMatch(/params\.set\("step",\s*"4"\)/)
+      expect(body).toMatch(/params\.set\("err",\s*stepFourErr\)/)
+      // Ordering: the gate call must precede the standard
+      // `params.set("step", String(nextStep))` so the empty-
+      // specifics case never reaches the Step 5 redirect path.
+      const gateIdx = body.indexOf("validateStep4ActionSpecifics")
+      const nextStepIdx = body.indexOf("params.set(\"step\", String(nextStep))")
+      expect(gateIdx).toBeGreaterThan(-1)
+      expect(nextStepIdx).toBeGreaterThan(-1)
+      expect(gateIdx).toBeLessThan(nextStepIdx)
+    })
+
+    it("STEP4_ERR_CODES enumerates every D68 per-action code in lib/flash.ts", () => {
+      // Mirror of the D62 STEP3_ERR_CODES pin. The three codes are
+      // deliberately omitted from ERR_CODES so resolveFlash returns
+      // null for them (the inline localized banner is the single
+      // source of truth — a duplicate English page-level banner
+      // above the localized inline copy would regress locale
+      // parity exactly as the D62 review documented).
+      const flashSrc = readFileSync(
+        path.join(__dirname, "..", "..", "..", "..", "lib", "flash.ts"),
+        "utf-8",
+      )
+      const codes = [
+        "missing_template",
+        "missing_command_or_script",
+        "missing_rewriter_config",
+      ]
+      expect(flashSrc).toMatch(/export const STEP4_ERR_CODES\s*=\s*\[/)
+      for (const code of codes) {
+        expect(flashSrc).toMatch(new RegExp(`"${code}"`))
+      }
+      // Negative pin: each code must NOT appear inside ERR_CODES.
+      const errCodesMatch = flashSrc.match(
+        /const ERR_CODES[\s\S]*?=\s*\{([\s\S]+?)\n\}/,
+      )
+      expect(errCodesMatch).not.toBeNull()
+      const errCodesBody = errCodesMatch![1]
+      for (const code of codes) {
+        expect(errCodesBody).not.toMatch(new RegExp(`\\b${code}:`))
+      }
+    })
+
+    it("Step 4 component surfaces inline err banner + per-input helper inside Step 4b", () => {
+      // The banner must live INSIDE the Step 4b sub-form (NOT at
+      // the top of the page). Each action that owns a sub-form
+      // renders its own banner so the operator sees the explanation
+      // at the location their attention is already.
+      const start = src.indexOf("function Step4Action")
+      expect(start).toBeGreaterThan(-1)
+      // Slice to the next top-level function so the entire
+      // Step4Action body is in scope.
+      const end = src.indexOf("\nfunction Step5Naming", start)
+      expect(end).toBeGreaterThan(start)
+      const body = src.slice(start, end)
+      // wizardErr prop wired through from GuidedWizard.
+      expect(body).toMatch(/wizardErr\?:\s*string/)
+      // Per-sub-form inline banner data-testids (one per action that
+      // owns a Step 4b sub-form). The banners sit inside the
+      // peer-checked editor div, NOT at the top of the page.
+      expect(body).toContain("step4b-inject-err-banner")
+      expect(body).toContain("step4b-rewriter-err-banner")
+      expect(body).toContain("step4b-run-command-err-banner")
+      // Per-input red-ring helpers — one per archetype.
+      expect(body).toContain("step4-inject-template-helper")
+      expect(body).toContain("step4-rewriter-prefix-helper")
+      expect(body).toContain("step4-rewriter-scheme-helper")
+      expect(body).toContain("step4-rewriter-pattern-helper")
+      expect(body).toContain("step4-run-command-helper")
+    })
+
+    it("Step 4 renders localized helper copy per empty-specifics case (KO+EN)", () => {
+      const dictSrc = readFileSync(
+        path.join(__dirname, "..", "..", "..", "..", "lib", "i18n", "dict.ts"),
+        "utf-8",
+      )
+      for (const key of [
+        "newPolicy.wizard.step4.err.missingTemplate",
+        "newPolicy.wizard.step4.err.missingCommandOrScript",
+        "newPolicy.wizard.step4.err.missingRewriterConfig",
+      ]) {
+        // Each key must appear at least twice (KO block + EN block).
+        const occurrences = dictSrc.split(`"${key}"`).length - 1
+        expect(occurrences).toBeGreaterThanOrEqual(2)
+      }
+    })
+
+    it("Step 4 component's GuidedWizard call forwards searchParams.err as wizardErr", () => {
+      // Pin the prop flow so a refactor that drops the wizardErr
+      // prop on Step4Action's invocation leaves the inline banner
+      // permanently dark. Mirror of the Step3Condition wiring at
+      // the same call site.
+      const callSite = src.match(
+        /Step4Action[\s\S]{0,400}?wizardErr=\{searchParams\.err\}/,
+      )
+      expect(callSite).not.toBeNull()
+    })
+
+    it("each empty-specifics action maps to its own err code (no shared 'invalid_input')", () => {
+      // Negative pin: the gate must NOT fall back to the generic
+      // "invalid_input" code (the old silent-pass-through-to-Step-5
+      // behavior).
+      const start = src.indexOf("function validateStep4ActionSpecifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      const expected = [
+        "missing_template",
+        "missing_command_or_script",
+        "missing_rewriter_config",
+      ]
+      for (const code of expected) expect(body).toContain(`"${code}"`)
+      // The gate must NOT short-circuit to "invalid_input".
+      expect(body).not.toContain("\"invalid_input\"")
+    })
+
+    it("block / ask / audit advance with no sub-form requirement", () => {
+      // The gate's default branch returns null, so picking a
+      // sub-form-less action lands the operator on Step 5 without
+      // a precise err. Source-pin both: (a) the default-null
+      // branch, and (b) the absence of any case row for the three
+      // sub-form-less actions in the gate body (block / ask /
+      // audit must NOT appear as case discriminators here).
+      const start = src.indexOf("function validateStep4ActionSpecifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(/default:[\s\S]*?return null/)
+      // No per-action case for block / ask / audit — they pass through.
+      expect(body).not.toMatch(/case "block":/)
+      expect(body).not.toMatch(/case "ask":/)
+      expect(body).not.toMatch(/case "audit":/)
+    })
+
+    it("run_command attach-mode (script_id only, body empty) advances OK", () => {
+      // Behavioural pin: the run_command branch must use a logical
+      // OR over runCommandBody and runCommandScriptId, so attach-
+      // mode operators (who fill ONLY the script_id via the upload
+      // widget) are not falsely refused. A naive AND or a body-
+      // only check would re-introduce the silent-reject loop for
+      // attach-mode.
+      const start = src.indexOf("function validateStep4ActionSpecifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      // The run_command case body must return null when EITHER
+      // field is present. The shape we ship is
+      //   return body || scriptId ? null : "missing_command_or_script"
+      expect(body).toMatch(/body \|\| scriptId\s*\?\s*null\s*:/)
+    })
+  })
 })

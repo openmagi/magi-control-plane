@@ -199,6 +199,15 @@ const KO_RAW = {
   "newPolicy.wizard.step3.err.missingDomain":     "감시할 도메인을 입력하세요 (예: api.openai.com).",
   "newPolicy.wizard.step3.err.missingAllowlist":  "허용 도메인을 최소 1개 입력하세요 (쉼표로 구분, 예: api.openai.com, github.com).",
   "newPolicy.wizard.step3.err.missingEvidence":   "최소 1개의 verifier 를 선택하세요.",
+  // D68: Step 4 action-specifics. advanceWizard refuses Step 4→5 advance
+  // when the chosen action's Step 4b sub-form is empty; these keys
+  // render as an inline banner near the sub-form (NOT at the top of the
+  // page) plus a per-input red-ring helper. Mirror of step3.err.* —
+  // codes intentionally omitted from lib/flash.ts ERR_CODES so the
+  // localized inline banner is the single source of truth.
+  "newPolicy.wizard.step4.err.missingTemplate":        "모델 컨텍스트에 주입할 본문을 입력하세요 (최대 16000자).",
+  "newPolicy.wizard.step4.err.missingCommandOrScript": "실행할 명령을 직접 입력하거나, 업로드된 스크립트를 첨부하세요.",
+  "newPolicy.wizard.step4.err.missingRewriterConfig": "재작성기 설정을 채워주세요 (접두사 / from·to 스킴 / 정규식 패턴 중 선택한 항목).",
   "newPolicy.wizard.step4.heading": "구체적인 매칭 패턴은?",
   "newPolicy.wizard.step4.helper": "어떤 도구/도구패턴이 트리거 대상인지, 그리고 정책이 매칭할 sentinel tag 를 지정하세요.",
   "newPolicy.wizard.step4.matcherLocked": "이 시점 이벤트는 도구 컨텍스트가 없어 wildcard 로 고정됩니다.",
@@ -943,6 +952,15 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.wizard.step3.err.missingDomain":     "Enter the fetch domain to watch (e.g. api.openai.com).",
   "newPolicy.wizard.step3.err.missingAllowlist":  "Enter at least one allowed domain (comma-separated, e.g. api.openai.com, github.com).",
   "newPolicy.wizard.step3.err.missingEvidence":   "Pick at least one verifier to reference.",
+  // D68: Step 4 action-specifics. advanceWizard refuses Step 4→5 advance
+  // when the chosen action's Step 4b sub-form is empty; these keys
+  // render as an inline banner near the sub-form (NOT at the top of the
+  // page) plus a per-input red-ring helper. Mirror of step3.err.* —
+  // codes intentionally omitted from lib/flash.ts ERR_CODES so the
+  // localized inline banner is the single source of truth.
+  "newPolicy.wizard.step4.err.missingTemplate":        "Enter the text to inject into the model context (max 16000 chars).",
+  "newPolicy.wizard.step4.err.missingCommandOrScript": "Type a command to run, or attach an uploaded script.",
+  "newPolicy.wizard.step4.err.missingRewriterConfig": "Fill in the rewriter config: prefix (prefix_strip) / from + to (scheme_force) / pattern (regex_substitute).",
   "newPolicy.wizard.step4.heading": "Specifics: tool matcher + sentinel",
   "newPolicy.wizard.step4.helper": "Which tool / pattern the trigger applies to, and the sentinel tag the policy matches in the call body.",
   "newPolicy.wizard.step4.matcherLocked": "This event has no tool context: matcher is locked to wildcard.",

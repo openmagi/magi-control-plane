@@ -13,7 +13,7 @@ import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
-import { codeForError, resolveFlash, type Step3ErrCode } from "@/lib/flash"
+import { codeForError, resolveFlash, type Step3ErrCode, type Step4ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
   validateDraft, type PolicyDraft,
@@ -1318,6 +1318,29 @@ async function advanceWizard(formData: FormData): Promise<void> {
     }
   }
 
+  // D68: Step 4 → Step 5 advance now validates the chosen action's
+  // sub-form (Step 4b) specifics. Mirror of D62 for Step 3. Before
+  // D68 the wizard would silently bounce an inject_context with no
+  // template (and run_command with no command + no script_id, and
+  // input_rewrite with no rewriter config) back to Step 4 with NO
+  // err param at all — saveWizard's per-action branches redirected
+  // with a generic `err=invalid_input` or even no err at all,
+  // leaving the operator staring at the picker with no inline
+  // pointer to the empty field. Refuse the advance here, redirect
+  // back to Step 4 with a precise err code, and Step4Action renders
+  // an inline banner near the Step 4b sub-form + a red ring on the
+  // specific input that's empty. block / ask / audit have no
+  // sub-form and pass through.
+  if (stepIn === 4) {
+    const actionRaw = params.get("action")
+    const stepFourErr = validateStep4ActionSpecifics(actionRaw, params)
+    if (stepFourErr) {
+      params.set("step", "4")
+      params.set("err", stepFourErr)
+      redirect(`/policies/new?${params.toString()}`); return
+    }
+  }
+
   // P9 (D49): cumulative-tip dismissal lives in sessionStorage owned
   // by SteeringAwareField; nothing to scrub off the URL here.
 
@@ -1369,6 +1392,80 @@ function validateStep3Specifics(
       const _exhaustive: never = kind
       return _exhaustive
     }
+  }
+}
+
+/** D68: Step 4 → Step 5 advance gate. Returns a precise err code
+ *  when the operator picked an action that owns a Step 4b sub-form
+ *  but left its required fields empty. Returns null when the
+ *  advance is safe.
+ *
+ *  Three actions own a Step 4b sub-form today:
+ *   - inject_context  → empty `injectTemplate` returns "missing_template"
+ *   - run_command     → empty `runCommandBody` AND empty
+ *                       `runCommandScriptId` returns
+ *                       "missing_command_or_script"
+ *                       (inline-mode operators fill body; attach-mode
+ *                       operators fill script_id; both empty is the
+ *                       silent-pass-through bug D68 closes)
+ *   - input_rewrite   → empty rewriter config (varies by kind:
+ *                       prefix_strip needs `rewriterPrefix`,
+ *                       scheme_force needs both `rewriterFrom` +
+ *                       `rewriterTo`, regex_substitute needs
+ *                       `rewriterPattern`) returns
+ *                       "missing_rewriter_config"
+ *
+ *  block / ask / audit / strip have no Step 4b sub-form: pass
+ *  through. An unknown action falls through to null (Step 4 also
+ *  requires the radio so this branch only fires on a hand-rolled
+ *  POST that bypassed the form).
+ *
+ *  Mirror of D62's validateStep3Specifics: the same locale-parity
+ *  rule applies (codes intentionally omitted from ERR_CODES so the
+ *  inline localized banner is the single source of truth). */
+function validateStep4ActionSpecifics(
+  actionRaw: string | null,
+  params: URLSearchParams,
+): Step4ErrCode | null {
+  if (!actionRaw) return null
+  switch (actionRaw) {
+    case "inject_context": {
+      const template = (params.get("injectTemplate") ?? "").trim()
+      return template ? null : "missing_template"
+    }
+    case "run_command": {
+      const body = (params.get("runCommandBody") ?? "").trim()
+      const scriptId = (params.get("runCommandScriptId") ?? "").trim()
+      // The Step 4b mode <select> picks ONE lane (inline vs attach),
+      // but both fields ride on the URL state (Edit-jump round-trip).
+      // We only refuse the advance when BOTH are empty so the
+      // operator who attached a script via the upload widget but
+      // never typed a body can still advance.
+      return body || scriptId ? null : "missing_command_or_script"
+    }
+    case "input_rewrite": {
+      const kind = (params.get("rewriterKind") ?? "").trim()
+      if (kind === "prefix_strip") {
+        const prefix = params.get("rewriterPrefix") ?? ""
+        return prefix ? null : "missing_rewriter_config"
+      }
+      if (kind === "scheme_force") {
+        const from = params.get("rewriterFrom") ?? ""
+        const to = params.get("rewriterTo") ?? ""
+        return from && to ? null : "missing_rewriter_config"
+      }
+      if (kind === "regex_substitute") {
+        const pattern = params.get("rewriterPattern") ?? ""
+        return pattern ? null : "missing_rewriter_config"
+      }
+      // Operator picked input_rewrite but the kind <select> never
+      // landed in FormData (scripted POST, broken Edit-jump). Treat
+      // as missing rewriter config so the inline banner points the
+      // operator at the rewriter editor.
+      return "missing_rewriter_config"
+    }
+    default:
+      return null
   }
 }
 
@@ -2946,7 +3043,7 @@ function GuidedWizard({
       {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 2 && <Step2ToolScope t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 3 && <Step3Condition t={t} locale={locale} state={state} wiredSteps={wiredSteps} action={advanceAction} wizardErr={searchParams.err} />}
-      {effectiveStep === 4 && <Step4Action t={t} locale={locale} state={state} action={advanceAction} />}
+      {effectiveStep === 4 && <Step4Action t={t} locale={locale} state={state} action={advanceAction} wizardErr={searchParams.err} />}
       {effectiveStep === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
       {effectiveStep === 6 && <Step6Review t={t} locale={locale} state={state} action={saveAction} advanceAction={advanceAction} wiredSteps={wiredSteps} />}
     </div>
@@ -4262,10 +4359,19 @@ function Step3Condition({
 /* ─── Step 4. Action ─────────────────────────────────────────────── */
 
 function Step4Action({
-  t, locale, state, action,
+  t, locale, state, action, wizardErr,
 }: {
   state: WizardState; locale: "ko" | "en"
   action: (fd: FormData) => Promise<void>
+  /** D68: precise err code from advanceWizard's Step 4 action-
+   *  specifics validation (mirror of Step3Condition.wizardErr). Drives
+   *  the inline highlight + helper copy on the empty Step 4b field.
+   *  When set, the banner renders inside the corresponding action's
+   *  peer-checked sub-form (next to the empty input) so the
+   *  operator sees the explanation where their attention already
+   *  is. block / ask / audit have no Step 4b and never receive an
+   *  err code here. */
+  wizardErr?: string
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const lifecycle = state.lifecycle ?? "before_tool_use"
@@ -4337,6 +4443,40 @@ function Step4Action({
       sub: t("newPolicy.action.runCommand.description"),
     },
   }
+  // D68: precise per-action inline highlight. `wizardErr` is the err
+  // code advanceWizard sets when refusing the Step 4 → Step 5
+  // advance on empty action-specifics. Map each code to the action
+  // whose sub-form it points at, and to the localized helper key
+  // (rendered both as a red-text inline banner near the Step 4b
+  // editor AND as a per-input red-ring helper on the empty field
+  // itself).
+  //
+  // Mirror of Step3Condition's ERR_TO_KIND / ERR_TO_TKEY pattern:
+  // the maps are typed by `Step4ErrCode` so a future code without a
+  // row fails at compile time.
+  const ERR_TO_ACTION: Record<Step4ErrCode, Action> = {
+    missing_template: "inject_context",
+    missing_command_or_script: "run_command",
+    missing_rewriter_config: "input_rewrite",
+  }
+  const ERR_TO_TKEY: Record<Step4ErrCode, import("@/lib/i18n/dict").TKey> = {
+    missing_template: "newPolicy.wizard.step4.err.missingTemplate",
+    missing_command_or_script: "newPolicy.wizard.step4.err.missingCommandOrScript",
+    missing_rewriter_config: "newPolicy.wizard.step4.err.missingRewriterConfig",
+  }
+  const isStep4ErrCode = (s: string | undefined): s is Step4ErrCode =>
+    s !== undefined && s in ERR_TO_ACTION
+  const step4ErrCode = isStep4ErrCode(wizardErr) ? wizardErr : undefined
+  const step4ErrAction = step4ErrCode ? ERR_TO_ACTION[step4ErrCode] : undefined
+  const step4ErrHelperKey = step4ErrCode ? ERR_TO_TKEY[step4ErrCode] : undefined
+  const step4ErrHelper = step4ErrHelperKey ? t(step4ErrHelperKey) : undefined
+  // The red-ring class is applied to the per-action sub-form input
+  // only when the err code points at that action. Note the leading
+  // space so call sites concatenate without leaving a trailing
+  // space on the no-error branch (matches errRingFor in Step3).
+  const errRingCls = "ring-2 ring-red-400 border-red-400"
+  const errRingFor = (a: Action): string =>
+    step4ErrAction === a ? " " + errRingCls : ""
   return (
     <StepShell
       t={t}
@@ -4521,6 +4661,16 @@ function Step4Action({
                   data-testid="step4b-inject-editor"
                   className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
                 >
+                  {step4ErrAction === "inject_context" && step4ErrHelper && (
+                    <div
+                      data-testid="step4b-inject-err-banner"
+                      data-step4-err={wizardErr}
+                      role="alert"
+                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+                    >
+                      {step4ErrHelper}
+                    </div>
+                  )}
                   <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
                     {ko
                       ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
@@ -4540,8 +4690,16 @@ function Step4Action({
                         ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
                         : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
                       spellCheck={false}
-                      className={inputCls() + " font-mono"}
+                      className={inputCls() + " font-mono" + errRingFor("inject_context")}
                     />
+                    {step4ErrAction === "inject_context" && step4ErrHelper && (
+                      <p
+                        data-testid="step4-inject-template-helper"
+                        className="mt-1 text-xs text-red-700"
+                      >
+                        {step4ErrHelper}
+                      </p>
+                    )}
                     {/* P2 follow-up (wizard-flow oversized text): the
                         textarea's maxLength only stops direct
                         typing/IME — a >16000-char paste is silently
@@ -4625,6 +4783,16 @@ function Step4Action({
                   data-testid="step4b-rewriter-editor"
                   className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
                 >
+                  {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                    <div
+                      data-testid="step4b-rewriter-err-banner"
+                      data-step4-err={wizardErr}
+                      role="alert"
+                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+                    >
+                      {step4ErrHelper}
+                    </div>
+                  )}
                   <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
                     {ko
                       ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
@@ -4684,8 +4852,16 @@ function Step4Action({
                         defaultValue={state.rewriterPrefix ?? ""}
                         placeholder={ko ? "예: sudo " : "e.g. sudo "}
                         spellCheck={false}
-                        className={inputCls() + " font-mono"}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
                       />
+                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                        <p
+                          data-testid="step4-rewriter-prefix-helper"
+                          className="mt-1 text-xs text-red-700"
+                        >
+                          {step4ErrHelper}
+                        </p>
+                      )}
                     </div>
                     <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
                       <input
@@ -4714,7 +4890,7 @@ function Step4Action({
                         defaultValue={state.rewriterFrom ?? "http://"}
                         placeholder="http://"
                         spellCheck={false}
-                        className={inputCls() + " font-mono"}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
                       />
                     </div>
                     <div>
@@ -4727,8 +4903,16 @@ function Step4Action({
                         defaultValue={state.rewriterTo ?? "https://"}
                         placeholder="https://"
                         spellCheck={false}
-                        className={inputCls() + " font-mono"}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
                       />
+                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                        <p
+                          data-testid="step4-rewriter-scheme-helper"
+                          className="mt-1 text-xs text-red-700"
+                        >
+                          {step4ErrHelper}
+                        </p>
+                      )}
                     </div>
                   </div>
                   {/* regex_substitute config */}
@@ -4743,8 +4927,16 @@ function Step4Action({
                         defaultValue={state.rewriterPattern ?? ""}
                         placeholder="^\\s*sudo\\s+"
                         spellCheck={false}
-                        className={inputCls() + " font-mono"}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
                       />
+                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                        <p
+                          data-testid="step4-rewriter-pattern-helper"
+                          className="mt-1 text-xs text-red-700"
+                        >
+                          {step4ErrHelper}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <FieldLabel>
@@ -4822,8 +5014,23 @@ function Step4Action({
                  */}
                 <div
                   data-testid="step4b-run-command-editor"
-                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4"
+                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
                 >
+                  {step4ErrAction === "run_command" && step4ErrHelper && (
+                    <div
+                      data-testid="step4b-run-command-err-banner"
+                      data-step4-err={wizardErr}
+                      role="alert"
+                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+                    >
+                      <p
+                        data-testid="step4-run-command-helper"
+                        className="m-0"
+                      >
+                        {step4ErrHelper}
+                      </p>
+                    </div>
+                  )}
                   <Step4bRunCommandFields
                     locale={locale}
                     defaultMode={state.runCommandMode}

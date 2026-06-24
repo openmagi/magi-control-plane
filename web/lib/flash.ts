@@ -40,6 +40,11 @@ const ERR_CODES: Record<string, string> = {
   // STEP3_ERR_CODES in this file for the canonical list (still
   // exported so wizard-wiring tests can pin the mapping).
   // D62 codes intentionally omitted from ERR_CODES; see comment above.
+  // D68: the three Step 4 action-specifics codes (missing_template,
+  // missing_command_or_script, missing_rewriter_config) follow the
+  // same locale-parity rule. Step4Action renders an inline banner
+  // plus per-input red-ring helper inside the Step 4b sub-form for
+  // each code; see STEP4_ERR_CODES below.
 }
 
 /** D62 follow-up: canonical Step 3 specifics err codes. Exported so
@@ -56,6 +61,26 @@ export const STEP3_ERR_CODES = [
   "missing_evidence",
 ] as const
 export type Step3ErrCode = (typeof STEP3_ERR_CODES)[number]
+
+/** D68: canonical Step 4 action-specifics err codes. Mirrors the
+ *  D62 pattern for Step 3. advanceWizard now refuses the Step 4 to
+ *  Step 5 advance when the chosen action's sub-form fields are
+ *  empty, redirecting back to step=4 with one of these codes.
+ *  Step4Action renders an inline error banner near the Step 4b
+ *  sub-form (NOT at the top of the page) plus a per-input red-ring
+ *  helper, replacing the old generic `invalid_input` banner.
+ *
+ *  Codes are deliberately omitted from ERR_CODES above so
+ *  resolveFlash returns null for them: the inline localized banner
+ *  is the single source of truth (a duplicate English page-level
+ *  banner above the localized inline copy would regress locale
+ *  parity exactly as the D62 review documented). */
+export const STEP4_ERR_CODES = [
+  "missing_template",
+  "missing_command_or_script",
+  "missing_rewriter_config",
+] as const
+export type Step4ErrCode = (typeof STEP4_ERR_CODES)[number]
 
 export function resolveFlash(
   msg: string | undefined,
