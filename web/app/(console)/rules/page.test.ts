@@ -82,6 +82,15 @@ describe("rules page source invariants", () => {
     expect(src).toContain("cloud.listPrebuiltPolicies")
     expect(src).toContain("PrebuiltSection")
     expect(src).toMatch(/prebuilt=\{prebuilt\}/)
+    // The "verifier = function, policy = composition" framing leans
+    // on PrebuiltSection landing ABOVE the operator's policies. A
+    // refactor that flipped the order would silently subvert that
+    // framing without breaking other assertions, so pin the offset.
+    const idxPrebuilt = src.indexOf("<PrebuiltSection")
+    const idxPolicyList = src.indexOf("rules.summary.policies")
+    expect(idxPrebuilt).toBeGreaterThan(-1)
+    expect(idxPolicyList).toBeGreaterThan(-1)
+    expect(idxPrebuilt).toBeLessThan(idxPolicyList)
   })
 
   it("D54: prebuiltDraftHref encodes draft twice and uses mode=advanced", () => {

@@ -67,8 +67,14 @@ export default async function RulesPage({
     // is the simplest reliable shape and keeps the failure paths
     // separated). A prebuilt-fetch error doesn't surface a banner;
     // the section just hides, since it carries no operator data.
+    // D54 follow-up: log the failure code distinctly so an admin-key
+    // misconfiguration (the endpoint is admin-key gated, the policies
+    // endpoint is API-key gated, so the two can disagree) shows up
+    // in the dashboard's server log instead of being lost in /dev/null.
     try { prebuilt = await cloud.listPrebuiltPolicies() }
-    catch { /* silent: see comment on `prebuilt` decl */ }
+    catch (e: unknown) {
+      console.error(`rules: listPrebuiltPolicies failed code=${codeForError(e)}`)
+    }
   } else if (tab === "evidence") {
     try {
       evidence = await cloud.listEvidenceTypes()

@@ -99,15 +99,17 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
         id="prebuilt/citation-verify-at-final",
         title="Audit citations on final answer",
         summary=(
-            "Run citation_verify once before the agent finishes its reply "
-            "and write the verdict to the audit ledger. Stop fires after "
-            "the response is composed, so this template audits rather "
-            "than blocks; pair with /verify_inline if you need a hard "
-            "gate earlier in the flow."
+            "Check legal citations against the source corpus once "
+            "before the agent finishes its reply, and write the "
+            "verdict to the audit ledger. The Stop hook fires after "
+            "the response is composed, so this template records "
+            "rather than blocking the response. Pair with "
+            "/verify_inline if you need to block before the response "
+            "is composed."
         ),
         description=(
-            "Run citation_verify against the agent's final answer and "
-            "record the verdict to the ledger."
+            "Verify legal citations against the source corpus on the "
+            "agent's final answer and record the verdict to the ledger."
         ),
         event="Stop",
         matcher="*",
@@ -121,11 +123,15 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
             "Scan the command body of every Bash invocation for "
             "attorney-client privilege markers, work-product flags, "
             "and Korean RRN patterns. Records the verdict to the "
-            "audit ledger without blocking the tool run."
+            "audit ledger without blocking the tool run. Switch the "
+            "action to 'block' in the editor if your environment "
+            "treats these as hard policy violations rather than "
+            "review-only signals."
         ),
         description=(
-            "Run privilege_scan on Bash command bodies and record "
-            "the verdict to the ledger."
+            "Scan Bash command bodies for privilege markers, work "
+            "product flags, and Korean RRN patterns. Record the "
+            "verdict to the ledger."
         ),
         event="PreToolUse",
         matcher="Bash",
@@ -150,20 +156,20 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
         verifier_step="source_allowlist",
     ),
     _PrebuiltSpec(
-        id="prebuilt/structured-output-bash",
-        title="Audit malformed Bash output",
+        id="prebuilt/structured-output-at-final",
+        title="Audit malformed structured final answers",
         summary=(
-            "Parse Bash output as JSON and validate it against the "
-            "configured JSON-Schema subset. PostToolUse can only audit "
-            "(the tool already ran), so this template records the "
-            "verdict to the ledger; mismatches surface for review."
+            "Validate the agent's final answer against the configured "
+            "JSON-Schema subset. The Stop hook fires after the reply "
+            "is composed, so this template records the verdict to the "
+            "audit ledger when the structure does not match."
         ),
         description=(
-            "Run structured_output on Bash output and record the "
-            "verdict to the ledger."
+            "Validate the agent's final answer against the configured "
+            "JSON-Schema subset and record the verdict to the ledger."
         ),
-        event="PostToolUse",
-        matcher="Bash",
+        event="Stop",
+        matcher="*",
         action="audit",
         verifier_step="structured_output",
     ),
@@ -177,8 +183,8 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
             "Records the verdict to the audit ledger."
         ),
         description=(
-            "Run prompt_injection_screen on WebFetch responses and "
-            "record the verdict to the ledger."
+            "Scan WebFetch responses for prompt-injection attempts "
+            "and record the verdict to the ledger."
         ),
         event="PostToolUse",
         matcher="WebFetch",
