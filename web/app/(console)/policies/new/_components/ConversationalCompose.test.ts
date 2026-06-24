@@ -197,6 +197,37 @@ describe("ConversationalCompose source invariants", () => {
     expect(src).not.toMatch(/isLastAssistant && !errored/)
   })
 
+  it("D57a: provider_unconfigured renders a structured bubble with friendly first line + escape CTAs + collapsible setup guide", () => {
+    // The brief: soften the env-var-heavy admin-facing copy. The
+    // bubble must now expose a short user-facing line and TWO escape
+    // CTAs (guided / advanced IR editor) plus a collapsible setup
+    // guide. The plain ChatTurn path remains for every other error
+    // code; only provider_unconfigured branches to ProviderUnconfigured-
+    // Bubble.
+    expect(src).toContain("ProviderUnconfiguredBubble")
+    // The branch in the render loop must check errorKind on the turn.
+    expect(src).toMatch(/errorKind === "provider_unconfigured"/)
+    // The error branch in sendTurn must tag provider_unconfigured turns
+    // with the errorKind discriminator so the renderer can swap layout.
+    expect(src).toMatch(/errorKind:\s*HistoryTurn\["errorKind"\]/)
+    // Escape CTAs link to the other two authoring modes.
+    expect(src).toContain('href="/policies/new?mode=guided"')
+    expect(src).toContain('href="/policies/new?mode=advanced"')
+    expect(src).toContain("conv-provider-unconfigured-cta-guided")
+    expect(src).toContain("conv-provider-unconfigured-cta-advanced")
+    // Collapsible "Show setup guide" disclosure (aria-expanded carries
+    // the state for keyboard / SR users).
+    expect(src).toContain("conv-provider-unconfigured-setup-toggle")
+    expect(src).toContain("conv-provider-unconfigured-setup-body")
+    expect(src).toContain("aria-expanded")
+    // Setup body references the new i18n keys (the admin env-var
+    // details now live behind the disclosure).
+    expect(src).toContain("newPolicy.conv.error.providerUnconfigured.setupBody")
+    expect(src).toContain("newPolicy.conv.error.providerUnconfigured.ctaGuided")
+    expect(src).toContain("newPolicy.conv.error.providerUnconfigured.ctaAdvanced")
+    expect(src).toContain("newPolicy.conv.error.providerUnconfigured.docsLink")
+  })
+
   it("setPicks({}) runs in finally whenever answers were sent (no cross-turn leak)", () => {
     // D55b code review P2: the picks map must reset whenever a
     // multi-select payload went out, not only on success. Otherwise a

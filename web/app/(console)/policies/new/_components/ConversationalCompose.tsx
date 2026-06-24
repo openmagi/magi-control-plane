@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/Button"
 import { Skeleton } from "@/components/ui/Skeleton"
 import { translate } from "@/lib/i18n/dict"
@@ -55,6 +56,12 @@ interface HistoryTurn {
    *  Not sent back over the wire. The server reconstructs the question
    *  set deterministically from `draft_so_far`. */
   questions?: QuestionVM[]
+  /** D57a: tag an assistant turn as a structured error bubble so the
+   *  renderer can swap in a richer layout (escape-hatch CTAs +
+   *  collapsible setup guide) instead of the plain text bubble.
+   *  Only "provider_unconfigured" gets the rich treatment today; the
+   *  other error codes still render via ChatTurn. */
+  errorKind?: "provider_unconfigured"
 }
 
 interface StarterPill {
@@ -228,6 +235,8 @@ export function ConversationalCompose({
         } catch { /* keep default */ }
         if (myId !== reqIdRef.current) return
         const assistantMsg = errorBubbleText(code, t, locale)
+        const errorKind: HistoryTurn["errorKind"] =
+          code === "provider_unconfigured" ? "provider_unconfigured" : undefined
         // Carry the previous assistant turn's questions forward onto
         // the error bubble so the user can re-click and retry. The
         // brief's provider_unconfigured-as-bubble rule still holds:
@@ -244,7 +253,12 @@ export function ConversationalCompose({
           })()
           return [
             ...prev,
-            { role: "assistant", content: assistantMsg, questions: lastQuestions },
+            {
+              role: "assistant",
+              content: assistantMsg,
+              questions: lastQuestions,
+              errorKind,
+            },
           ]
         })
         setErrored(true)
@@ -402,6 +416,20 @@ export function ConversationalCompose({
             const questionsForTurn = isLastAssistant
               ? h.questions ?? null
               : null
+            // D57a: provider_unconfigured renders a structured bubble
+            // (short user-friendly line + escape-hatch CTAs to guided
+            // and advanced modes + collapsible setup guide). The plain
+            // ChatTurn path is preserved for every other error code.
+            if (h.role === "assistant" && h.errorKind === "provider_unconfigured") {
+              return (
+                <ProviderUnconfiguredBubble
+                  key={idx}
+                  t={t}
+                  message={h.content}
+                  testId={`conv-chat-turn-${idx}`}
+                />
+              )
+            }
             return (
               <ChatTurn
                 key={idx}
@@ -547,6 +575,115 @@ function errorBubbleText(
     return t("newPolicy.conv.error.network")
   }
   return t("newPolicy.conv.error.upstream")
+}
+
+/** D57a: structured assistant bubble for the provider_unconfigured
+ *  error. Two-tier message:
+ *    - short user-friendly first line (no env-var jargon),
+ *    - two escape-hatch CTAs (guided wizard / advanced IR editor),
+ *    - collapsible "Show setup guide" disclosure with the admin
+ *      details (env keys + restart cmd + docs link).
+ *  Renders inside the chat scroll like an ordinary assistant bubble
+ *  so the conversational lens is preserved (no top-of-page banner).
+ */
+function ProviderUnconfiguredBubble({
+  t, message, testId,
+}: {
+  t: T
+  message: string
+  testId?: string
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div
+      data-testid={testId}
+      data-role="assistant"
+      data-error-kind="provider_unconfigured"
+      className="mr-auto flex flex-col gap-3 max-w-[85%]"
+    >
+      <div
+        className={
+          "rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap " +
+          "bg-white border border-black/[0.08] text-[var(--color-text-primary)]"
+        }
+      >
+        {message}
+      </div>
+
+      <div
+        className="flex flex-wrap gap-2"
+        data-testid="conv-provider-unconfigured-ctas"
+      >
+        <Link
+          href="/policies/new?mode=guided"
+          className={
+            "rounded-xl border border-[var(--color-accent)] bg-[var(--color-accent)] " +
+            "px-3 py-1.5 text-xs font-medium text-white " +
+            "hover:bg-[var(--color-accent)]/90"
+          }
+          data-testid="conv-provider-unconfigured-cta-guided"
+        >
+          {t("newPolicy.conv.error.providerUnconfigured.ctaGuided")}
+        </Link>
+        <Link
+          href="/policies/new?mode=advanced"
+          className={
+            "rounded-xl border border-black/[0.12] bg-white px-3 py-1.5 " +
+            "text-xs font-medium text-[var(--color-text-primary)] " +
+            "hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.04]"
+          }
+          data-testid="conv-provider-unconfigured-cta-advanced"
+        >
+          {t("newPolicy.conv.error.providerUnconfigured.ctaAdvanced")}
+        </Link>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="conv-provider-unconfigured-setup"
+          data-testid="conv-provider-unconfigured-setup-toggle"
+          className={
+            "self-start text-xs font-medium text-[var(--color-text-secondary)] " +
+            "hover:text-[var(--color-accent)] focus:outline-none"
+          }
+        >
+          {open
+            ? "▾ " + t("newPolicy.conv.error.providerUnconfigured.setupToggleHide")
+            : "▸ " + t("newPolicy.conv.error.providerUnconfigured.setupToggle")}
+        </button>
+        {open && (
+          <div
+            id="conv-provider-unconfigured-setup"
+            data-testid="conv-provider-unconfigured-setup-body"
+            className={
+              "rounded-xl border border-black/[0.06] bg-gray-50/60 px-3 py-2 " +
+              "text-xs leading-relaxed text-[var(--color-text-secondary)] " +
+              "flex flex-col gap-2"
+            }
+          >
+            <p className="m-0 whitespace-pre-wrap">
+              {t("newPolicy.conv.error.providerUnconfigured.setupBody")}
+            </p>
+            <a
+              href="https://openmagi.ai/docs/install"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={
+                "self-start text-xs font-medium text-[var(--color-accent)] " +
+                "hover:underline"
+              }
+              data-testid="conv-provider-unconfigured-docs-link"
+            >
+              {t("newPolicy.conv.error.providerUnconfigured.docsLink")}
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default ConversationalCompose
