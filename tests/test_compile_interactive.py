@@ -744,3 +744,368 @@ def test_does_not_persist_policy_on_save_path():
     )
     after = c.get("/policies", headers=HEADERS).json()["items"]
     assert after == []
+
+
+# ── D65 run_command intent ────────────────────────────────────────────
+
+
+def test_run_command_inline_command_lands_on_draft():
+    """When the user names a specific inline command body
+    ("run pytest -q at final answer"), the conversational compiler
+    proposes type=run_command with command=<that text> and an
+    appropriate event (Stop). The wizard's verifier vocabulary
+    (`requires`, `action`) MUST NOT appear on the draft.
+    """
+    canned = _llm_response(
+        message="This rule will run: pytest -q at the final answer.",
+        updates={
+            "type": "run_command",
+            "command": "pytest -q",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run pytest -q before the agent's final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft is not None
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "pytest -q"
+    assert draft["runtime"] == "bash"
+    assert draft["trigger"]["event"] == "Stop"
+    assert draft["trigger"]["matcher"] == "*"
+    # Evidence-archetype keys must NOT be present.
+    assert "requires" not in draft
+    assert "action" not in draft
+
+
+def test_run_command_inline_git_status_pre_tool_use():
+    """A different canonical phrasing: "run git status before each Bash
+    call". The compiler should pick the matching event (PreToolUse +
+    Bash) and write the inline command verbatim."""
+    canned = _llm_response(
+        message="This rule will run: git status before each Bash call.",
+        updates={
+            "type": "run_command",
+            "command": "git status",
+            "runtime": "bash",
+            "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run git status before each bash call"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft["type"] == "run_command"
+    assert draft["command"] == "git status"
+    assert draft["trigger"]["event"] == "PreToolUse"
+    assert draft["trigger"]["matcher"] == "Bash"
+
+
+def test_run_command_script_id_missing_prompts_for_upload():
+    """When the user mentions a script that has not been uploaded yet
+    ("our fact-check script"), the compiler commits to type=run_command
+    with no body. The assistant_message MUST point the operator at
+    `/scripts` so they can upload it and come back. The wizard reports
+    the body as still missing so ready_to_save stays false.
+    """
+    # The LLM gives the canonical message; the server preserves it.
+    canned = _llm_response(
+        message=(
+            "I'd run your fact-check script, but it isn't uploaded yet. "
+            "Upload it at /scripts and come back to enable this rule."
+        ),
+        updates={
+            "type": "run_command",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "script_id": "",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run our fact-check.py at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft["type"] == "run_command"
+    # No inline command and no script_path was committed.
+    assert not draft.get("command"), draft
+    assert not draft.get("script_path"), draft
+    # Assistant message links the operator to /scripts.
+    assert "/scripts" in body["assistant_message"], body
+    # ready_to_save stays false because the body is empty.
+    assert body["ready_to_save"] is False, body
+    # The body is reported as missing via the requires_body slot.
+    assert "requires_body" in body["missing_fields"], body
+
+
+def test_run_command_script_id_missing_server_fallback_message():
+    """If the LLM forgets to mention /scripts, the server synthesizes
+    the prompt so the operator still sees the link."""
+    canned = _llm_response(
+        message="",  # LLM didn't write a body
+        updates={
+            "type": "run_command",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "run our deploy script at final answer"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Server-synthesised fallback mentions /scripts.
+    assert "/scripts" in body["assistant_message"], body
+    assert body["ready_to_save"] is False
+
+
+def test_verifier_phrasing_still_produces_evidence_not_run_command():
+    """A verifier-shaped phrasing ("block when citations missing") MUST
+    still produce an evidence (verifier) policy. The compiler MUST NOT
+    pivot to run_command just because the user wrote "block"."""
+    # The LLM sees a verifier-shape phrasing — it returns a regex
+    # verifier proposal, NOT a run_command.
+    canned = _llm_response(
+        message="This rule will block when no citation is present.",
+        updates={
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "requires": [
+                {"kind": "regex", "pattern": r"\bhttps?://\S+"},
+            ],
+            "action": "block",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "block when citations are missing"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    # No run_command discriminator, no run_command-only fields.
+    assert draft.get("type") != "run_command"
+    for forbidden in ("command", "script_path", "runtime", "args",
+                       "timeout_ms", "fail_closed"):
+        assert forbidden not in draft, (forbidden, draft)
+    # Evidence-archetype fields landed.
+    assert draft["requires"][0]["kind"] == "regex"
+    assert draft["action"] == "block"
+
+
+def test_run_command_full_walkthrough_passes_ir_validator():
+    """An end-to-end happy path for run_command. Once the four
+    behavioral fields (lifecycle, matcher, command body, id) are
+    filled, the draft round-trips through `policy_from_dict()` and
+    `ready_to_save` flips to True."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "rerun-pytest-on-stop",
+        "description": "Run pytest at the agent's final answer",
+        "type": "run_command",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "runtime": "bash",
+        "command": "pytest -q",
+        "timeout_ms": 5_000,
+        "fail_closed": False,
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["missing_fields"] == [], body
+    assert body["needs_more"] is False
+    assert body["ready_to_save"] is True
+
+    # The resulting draft must pass the RunCommandPolicy validator.
+    from magi_cp.policy.ir import policy_from_dict, RunCommandPolicy
+    p = policy_from_dict(body["draft"])
+    assert isinstance(p, RunCommandPolicy)
+    assert p.command == "pytest -q"
+    assert p.trigger.event == "Stop"
+
+
+def test_llm_cannot_smuggle_dangerous_run_command_fields():
+    """The run_command merge whitelist refuses oversized commands,
+    bad script ids, illegal runtimes, and oversized timeouts even when
+    the LLM proposes them."""
+    canned = _llm_response(
+        message="ok",
+        updates={
+            "type": "run_command",
+            "command": "x" * 10_000,           # > 4_000 inline cap
+            "runtime": "ruby",                 # not in {bash, python3, node}
+            "args": ["ok", "x" * 1_000],       # second arg > 256
+            "timeout_ms": 1_000_000,            # > 30_000 cap
+            "fail_closed": "yes",              # not a bool
+            "script_id": "nothex",             # bad shape
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    # The discriminator landed.
+    assert draft["type"] == "run_command"
+    # Every dangerous proposal was rejected.
+    assert "command" not in draft, draft
+    assert draft.get("runtime") != "ruby"
+    assert "args" not in draft, draft
+    assert "timeout_ms" not in draft, draft
+    assert "fail_closed" not in draft, draft
+    assert "script_path" not in draft, draft
+
+
+def test_run_command_inline_command_via_requires_body_answer():
+    """The wizard's `q_requires_body` answer path writes the inline
+    command body on a run_command draft (rather than a regex pattern
+    onto a requires item). This keeps the existing wizard question
+    plumbing reusable for run_command authoring."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior = {
+        "type": "run_command",
+        "id": "rerun-pytest",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "runtime": "bash",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": prior,
+            "answers": {"q_requires_body": "pytest -q"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft["command"] == "pytest -q"
+    # The draft is now valid and saves.
+    assert body["ready_to_save"] is True, body
+
+
+def test_run_command_sanitizer_drops_unknown_runtime_on_draft_entry():
+    """A client cannot smuggle an illegal `runtime` ("ruby") via
+    draft_so_far when the draft is run_command. The sanitizer drops
+    it on entry."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    poisoned = {
+        "type": "run_command",
+        "id": "rerun-pytest",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "command": "pytest -q",
+        "runtime": "ruby",  # not allowed
+        "timeout_ms": 99_999,  # also out of range
+        "fail_closed": "yes",  # not a bool
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": poisoned, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft.get("runtime") != "ruby", draft
+    assert "timeout_ms" not in draft or 100 <= draft["timeout_ms"] <= 30_000
+    assert "fail_closed" not in draft or isinstance(draft["fail_closed"], bool)
+
+
+def test_llm_cannot_smuggle_unsupported_type_discriminator():
+    """The `type` discriminator is gated to `run_command` only. A
+    prompt-injected pivot to `permission` / `subagent` / `mcp_gating`
+    must NOT land on the draft (the wizard's question vocabulary
+    cannot complete those archetypes)."""
+    canned = _llm_response(
+        message="ok",
+        updates={
+            "type": "permission",
+            "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert "type" not in draft or draft["type"] == "run_command", draft
