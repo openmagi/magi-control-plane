@@ -188,14 +188,18 @@ def test_turn_n_all_fields_ready_to_save_and_ir_valid():
     assert p.trigger.matcher == "Bash"
 
 
-def test_full_four_turn_walkthrough_produces_valid_ir():
-    """End-to-end happy path: lifecycle → matcher → requires →
-    on_missing → save. Each turn uses one canned LLM response; the
-    final draft validates."""
-    # All four turns: the LLM is minimal (no updates, no questions);
+def test_full_walkthrough_requires_body_and_id_before_ready():
+    """End-to-end happy path. After the four behavioral choices the
+    wizard still asks for the pattern body (so the seeded EvidenceReq
+    is not empty) and the policy id (so the IR loader does not
+    KeyError). `ready_to_save=True` is only reported once the merged
+    draft round-trips through `policy_from_dict()` cleanly.
+    """
+    # Six turns: lifecycle, matcher, requires (type), requires_body,
+    # on_missing, id. The LLM is minimal (no updates, no questions);
     # the server's canonical question + answer-merge does the work.
     canned_each = _llm_response(message="ok", updates={}, questions=[])
-    c = _client(llm_compiler=FakeLlmProvider([canned_each] * 4))
+    c = _client(llm_compiler=FakeLlmProvider([canned_each] * 6))
 
     # Turn 1: answer q_lifecycle.
     r1 = c.post(
@@ -225,7 +229,8 @@ def test_full_four_turn_walkthrough_produces_valid_ir():
     d2 = r2.json()["draft"]
     assert d2["trigger"]["matcher"] == "Bash"
 
-    # Turn 3: answer q_requires.
+    # Turn 3: answer q_requires (the TYPE choice). The wizard seeds an
+    # empty EvidenceReq and reports requires_body as still missing.
     r3 = c.post(
         "/policies/compile-interactive",
         headers=HEADERS,
@@ -236,24 +241,292 @@ def test_full_four_turn_walkthrough_produces_valid_ir():
         },
     )
     assert r3.status_code == 200, r3.text
-    d3 = r3.json()["draft"]
+    body3 = r3.json()
+    d3 = body3["draft"]
     assert d3["requires"][0]["kind"] == "regex"
+    assert d3["requires"][0]["pattern"] == ""
+    assert body3["ready_to_save"] is False, body3
+    assert "requires_body" in body3["missing_fields"], body3
+    assert any(q["id"] == "q_requires_body" for q in body3["questions"])
 
-    # Turn 4: answer q_on_missing.
+    # Turn 4: answer q_requires_body. The pattern body lands on the
+    # first requires item.
     r4 = c.post(
         "/policies/compile-interactive",
         headers=HEADERS,
         json={
             "history": [],
             "draft_so_far": d3,
-            "answers": {"q_on_missing": "block"},
+            "answers": {"q_requires_body": r"\brm -rf\b"},
         },
     )
     assert r4.status_code == 200, r4.text
-    body = r4.json()
-    assert body["ready_to_save"] is True
+    d4 = r4.json()["draft"]
+    assert d4["requires"][0]["pattern"] == r"\brm -rf\b"
+
+    # Turn 5: answer q_on_missing.
+    r5 = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": d4,
+            "answers": {"q_on_missing": "block"},
+        },
+    )
+    assert r5.status_code == 200, r5.text
+    body5 = r5.json()
+    d5 = body5["draft"]
+    assert d5["action"] == "block"
+    # Still not ready: id is missing.
+    assert body5["ready_to_save"] is False
+    assert "id" in body5["missing_fields"]
+
+    # Turn 6: answer q_id. The draft now passes the IR validator and
+    # ready_to_save flips to True.
+    r6 = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": d5,
+            "answers": {"q_id": "block-bash-rm"},
+        },
+    )
+    assert r6.status_code == 200, r6.text
+    body = r6.json()
+    assert body["ready_to_save"] is True, body
     assert body["missing_fields"] == []
-    assert body["draft"]["action"] == "block"
+    assert body["draft"]["id"] == "block-bash-rm"
+    # The draft round-trips through the IR loader cleanly.
+    from magi_cp.policy.ir import policy_from_dict
+    p = policy_from_dict(body["draft"])
+    assert p.action == "block"
+    assert p.trigger.matcher == "Bash"
+
+
+# ── new follow-up tests for the hardening pass ────────────────────────
+
+
+def test_empty_requires_body_blocks_ready_to_save():
+    """An empty pattern / criterion / shape_ttl / step must NOT be
+    reported as ready_to_save, even when every behavioral field is
+    filled. The IR validator would reject the draft on PUT.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "block-bash",
+        "description": "x",
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        # Empty body: seeded by an earlier q_requires answer.
+        "requires": [{"kind": "regex", "pattern": ""}],
+        "action": "block",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_save"] is False, body
+    assert "requires_body" in body["missing_fields"]
+
+
+def test_draft_so_far_drops_gate_binary_and_unknown_keys():
+    """A client cannot smuggle `gate_binary` or other archetype fields
+    via draft_so_far. The sanitizer strips them on entry."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    poisoned = {
+        "id": "block-bash",
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        # SECURITY: every one of these is intentionally NOT in the
+        # sanitizer allowlist. They must vanish on the wire.
+        "gate_binary": "/tmp/x.sh",
+        "on_signature_invalid": "allow",
+        "type": "permission",
+        "pattern": "evil",
+        "permission": "allow",
+        "tool_allowlist": ["Bash"],
+        "sentinel_re": "(?P<x>.*)",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": poisoned, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()["draft"]
+    for forbidden in ("gate_binary", "on_signature_invalid", "type",
+                       "pattern", "permission", "tool_allowlist",
+                       "sentinel_re"):
+        assert forbidden not in out, (forbidden, out)
+
+
+def test_llm_cannot_smuggle_gate_binary_or_host():
+    """The LLM-merge whitelist refuses `gate_binary`, `host`, `type`,
+    `on_signature_invalid`. A prompt-injected response that tries to
+    write any of them must NOT land on the draft."""
+    canned = _llm_response(
+        message="ok",
+        updates={
+            "trigger": {
+                "host": "evil-runtime", "event": "PreToolUse",
+                "matcher": "Bash",
+            },
+            "gate_binary": "/tmp/pwn.sh",
+            "on_signature_invalid": "allow",
+            "type": "permission",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": None,
+            "answers": {"q_lifecycle": "before_tool_use"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    out = r.json()["draft"]
+    # host pinned to claude-code regardless of the LLM's pivot attempt.
+    assert out["trigger"]["host"] == "claude-code"
+    # The other three keys never make it onto the draft.
+    for forbidden in ("gate_binary", "on_signature_invalid", "type"):
+        assert forbidden not in out, (forbidden, out)
+
+
+def test_matcher_answer_rejects_unknown_tool():
+    """A bogus matcher value (e.g. "banana") must NOT be written onto
+    the draft. The wizard re-asks the question on the next turn."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse",
+        },
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": prior,
+            "answers": {"q_matcher": "banana"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Matcher was rejected; still missing.
+    assert "matcher" in body["missing_fields"]
+    assert "matcher" not in body["draft"].get("trigger", {}), body
+
+
+def test_llm_requires_drop_bad_items():
+    """LLM-supplied requires items that don't validate are dropped.
+    An uncompilable regex must not land on the draft."""
+    canned = _llm_response(
+        message="ok",
+        updates={
+            "requires": [
+                {"kind": "regex", "pattern": "[unclosed"},
+                # A valid item alongside; it should land.
+                {"kind": "regex", "pattern": r"\brm\b"},
+            ],
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": {
+                "trigger": {
+                    "host": "claude-code", "event": "PreToolUse",
+                    "matcher": "Bash",
+                },
+            },
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    reqs = r.json()["draft"]["requires"]
+    patterns = [r.get("pattern") for r in reqs]
+    assert "[unclosed" not in patterns, reqs
+    assert r"\brm\b" in patterns, reqs
+
+
+def test_oversize_assistant_turn_422():
+    """Assistant turns are capped symmetrically with user turns; an
+    11K-char assistant turn no longer slips through the pydantic
+    boundary."""
+    c = _client(llm_compiler=FakeLlmProvider([]))
+    big = "y" * 5_000
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "assistant", "content": big}],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_answers_per_value_cap_422():
+    """A single huge answer value is rejected at the pydantic boundary."""
+    c = _client(llm_compiler=FakeLlmProvider([]))
+    huge = "x" * 5_000
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": None,
+            "answers": {"q_matcher": huge},
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_invalid_policy_id_answer_dropped():
+    """A bad id answer (one that fails `_validate_id`) must NOT land on
+    the draft."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": r"\brm\b"}],
+        "action": "block",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": prior,
+            "answers": {"q_id": "../escape"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Bad id was rejected; missing_fields still includes id.
+    assert "id" in body["missing_fields"], body
+    assert "id" not in body["draft"], body
 
 
 # ── edge cases ────────────────────────────────────────────────────────
@@ -372,13 +645,20 @@ def test_endpoint_requires_admin_key():
 
 
 def test_assistant_message_strips_internal_vocab():
-    """The server scrubs internal terms (regex / shacl / llm_critic /
-    matcher / lifecycle / on_missing) out of any user-facing string,
-    even when the LLM leaks them."""
+    """The server scrubs ALL eight forbidden internal terms (regex /
+    shacl / llm_critic / matcher / lifecycle / on_missing /
+    EvidenceReq / kind) out of any user-facing string, even when the
+    LLM leaks them. Also exercises the Korean surface so a future
+    scrubber regression that re-introduces any of these in either
+    language ships red.
+    """
     canned = _llm_response(
         message=(
-            "Pick a regex or shacl, then set on_missing. "
-            "Lifecycle drives the matcher."
+            "Pick a regex or a regular expression or a SHACL shape. "
+            "Use llm_critic when you need an LLM judge. Build the "
+            "EvidenceReq with the right kind. Lifecycle drives the "
+            "matcher. Then choose on_missing. "
+            "한글로도 LLM이 판단합니다, kind를 고르세요."
         ),
         updates={},
         questions=[],
@@ -391,9 +671,18 @@ def test_assistant_message_strips_internal_vocab():
     )
     assert r.status_code == 200
     msg = r.json()["assistant_message"]
-    # Internal vocabulary is gone.
-    for forbidden in ("regex", "shacl", "matcher",
-                       "lifecycle", "on_missing"):
+    # Internal vocabulary is gone (all eight terms + the bare LLM
+    # acronym + the lowercase EvidenceReq spelling).
+    for forbidden in (
+        "regex", "regular expression",
+        "shacl",
+        "llm_critic", "llm",
+        "matcher",
+        "lifecycle",
+        "on_missing",
+        "evidencereq",
+        "kind",
+    ):
         assert forbidden.lower() not in msg.lower(), (forbidden, msg)
     # Plain-language replacements are present.
     assert "a pattern in the response" in msg.lower()

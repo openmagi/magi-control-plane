@@ -28,7 +28,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FPath
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
@@ -190,9 +190,13 @@ class CompileReq(BaseModel):
 
 
 # D55a: conversational compile (turn-by-turn variant of /policies/compile).
-# Shares MAX_HISTORY_TURNS / MAX_USER_MESSAGE_CHARS / MAX_QUESTIONS_PER_TURN
-# with the library module so the cap surface is single-source-of-truth.
+# Shares its caps with the library module so the boundary is single-
+# source-of-truth.
 from ..policy.nl_compiler_interactive import (
+    MAX_ANSWER_KEY_CHARS as _D55A_MAX_ANSWER_KEY_CHARS,
+    MAX_ANSWER_VALUE_CHARS as _D55A_MAX_ANSWER_VALUE_CHARS,
+    MAX_ANSWERS as _D55A_MAX_ANSWERS,
+    MAX_ASSISTANT_MESSAGE_CHARS as _D55A_MAX_ASSISTANT_MESSAGE_CHARS,
     MAX_HISTORY_TURNS as _D55A_MAX_HISTORY_TURNS,
     MAX_USER_MESSAGE_CHARS as _D55A_MAX_USER_MESSAGE_CHARS,
 )
@@ -201,28 +205,39 @@ from ..policy.nl_compiler_interactive import (
 class InteractiveTurnIn(BaseModel):
     """One {role, content} pair in the conversational compile history.
 
-    Same shape as PriorTurnIn but with the D55a per-turn user cap
-    (2_000 chars vs PriorTurnIn's 10_000) so a chatty operator can't
-    drown the LLM budget. Assistant turns are unbounded by spec — they
-    are echoes of what we sent last; if the client carries them back
-    over the wire that's our own bytes coming home.
+    Per-turn caps are SYMMETRIC: both user and assistant turns share
+    the user-message cap. Earlier versions used `max(user_cap, 10_000)`
+    on assistant turns on the theory that they're echoes of server
+    output. That is not a guarantee at the library boundary, since a
+    direct caller (not via FastAPI) can ship a 50K-char assistant turn
+    and use it as a prompt-injection surface (the LLM is steered by
+    fenced assistant content). The library's `_validate_history` also
+    enforces symmetric caps; both boundaries agree.
     """
     model_config = {"extra": "forbid"}
 
     role: str = Field(..., pattern=r"^(user|assistant)$")
-    # Library applies the same user-message cap on the way in; we
-    # enforce on user turns at the pydantic boundary so a clearly bad
-    # request 422s before the LLM ever spins up.
-    content: str = Field(..., min_length=1,
-                          max_length=max(_D55A_MAX_USER_MESSAGE_CHARS,
-                                          10_000))
+    content: str = Field(
+        ..., min_length=1,
+        max_length=max(_D55A_MAX_USER_MESSAGE_CHARS,
+                        _D55A_MAX_ASSISTANT_MESSAGE_CHARS),
+    )
 
 
 class InteractiveCompileReq(BaseModel):
     """Body for POST /policies/compile-interactive.
 
-    `draft_so_far` and `answers` are loose dicts at this boundary; the
-    library module does the type-narrow merge.
+    `draft_so_far` is a loose dict at this boundary; the library
+    module's `_sanitize_draft_so_far` drops unknown top-level keys and
+    coerces subtrees to safe shapes (so a client cannot pre-seed
+    `gate_binary`, `pattern`, or other archetype-specific fields by
+    stuffing them into the draft).
+
+    `answers` is constrained at the pydantic boundary AND in the
+    library so a runaway request 422s before the library's aggregate
+    cap deep-copies a multi-MB payload. The library's
+    `_validate_answers_shape` enforces the same bounds for direct
+    callers.
     """
     model_config = {"extra": "forbid"}
 
@@ -230,7 +245,36 @@ class InteractiveCompileReq(BaseModel):
         default=None, max_length=_D55A_MAX_HISTORY_TURNS,
     )
     draft_so_far: dict | None = None
-    answers: dict[str, str] | None = None
+    answers: dict[str, str] | None = Field(
+        default=None, max_length=_D55A_MAX_ANSWERS,
+    )
+
+    @field_validator("answers")
+    @classmethod
+    def _bound_answer_keys_and_values(
+        cls, v: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Per-key / per-value length cap for `answers`.
+
+        Pydantic v2 cannot enforce a per-key or per-value length cap
+        on a `dict[str, str]` via `Field(max_length=...)` alone (that
+        only bounds the number of keys). A field_validator gives us a
+        clean 422 on the same boundary as the rest of the request.
+        """
+        if v is None:
+            return v
+        for k, val in v.items():
+            if len(k) > _D55A_MAX_ANSWER_KEY_CHARS:
+                raise ValueError(
+                    f"answer key too long ({len(k)} > "
+                    f"{_D55A_MAX_ANSWER_KEY_CHARS} chars)"
+                )
+            if len(val) > _D55A_MAX_ANSWER_VALUE_CHARS:
+                raise ValueError(
+                    f"answer {k!r} too long ({len(val)} > "
+                    f"{_D55A_MAX_ANSWER_VALUE_CHARS} chars)"
+                )
+        return v
 
 
 # D53b: replay-against-last-24h dry-run authoring affordance.
