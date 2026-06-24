@@ -137,4 +137,95 @@ describe("policies/new wizard — P9 steering wiring", () => {
     expect(src).toContain("dryRunSlot={")
     expect(src).toMatch(/DryRunPanel[\s\S]*?ir=\{isValid \?/)
   })
+
+  // ── D56a ─────────────────────────────────────────────────────
+  // Prebuilt "Use this" now lands on Step 6 review with a prefilled
+  // IR; Step 6 surfaces per-field Edit jumps + inline editors for
+  // sub-config that lives inside the IR but isn't its own wizard
+  // step. These guard the URL contract.
+
+  it("D56a: GuidedWizard reads searchParams.draft and merges into the WizardState", () => {
+    // The merge must use draft as a FALLBACK (URL params win) so an
+    // Edit jump from Step 6 to an earlier step and back doesn't
+    // re-override the operator's edit. We pin the function name
+    // (_irToWizardState) and the call site (`searchParams.draft`).
+    expect(src).toContain("_irToWizardState")
+    expect(src).toContain("_parseDraftQuery(searchParams.draft)")
+    // The state record uses ?? / || fallbacks against draftState.
+    expect(src).toMatch(/lifecycle:\s*lifecycle\s*\?\?\s*draftState\?\.lifecycle/)
+    expect(src).toMatch(/toolScope:\s*searchParams\.toolScope\s*\|\|\s*draftState\?\.toolScope/)
+    expect(src).toMatch(/conditionKind:\s*conditionKind\s*\?\?\s*draftState\?\.conditionKind/)
+    expect(src).toMatch(/action:\s*action\s*\?\?\s*draftState\?\.action/)
+  })
+
+  it("D56a: IR-to-WizardState mapping covers the prebuilt event surface", () => {
+    // The 5 prebuilts emit PreToolUse / PostToolUse / Stop. The
+    // mapper must cover all three; anything else degrades to
+    // undefined (Step 1's default kicks in). Source-level pin so
+    // a future widening of the event surface lands consciously.
+    expect(src).toMatch(/case "PreToolUse":\s*lifecycle = "before_tool_use"/)
+    expect(src).toMatch(/case "PostToolUse":\s*lifecycle = "after_tool_use"/)
+    expect(src).toMatch(/case "Stop":\s*lifecycle = "pre_final"/)
+    // step requires -> evidence_ref conditionKind (the prebuilt
+    // catalog's whole shape) must round-trip cleanly.
+    expect(src).toMatch(/conditionKind = "evidence_ref"/)
+    // Suggested id strips the `prebuilt/` slug so the operator
+    // picks a fresh one at Step 5.
+    expect(src).toMatch(/rawId\.startsWith\("prebuilt\/"\)/)
+  })
+
+  it("D56a: Step 6 renders an EditLink for each editable field row", () => {
+    // 5 rows: name (5), lifecycle (1), tool scope (2), condition
+    // (3), action (4). Tool scope is conditionally rendered when
+    // lifecycle !== "pre_final", so source-level we expect 5
+    // EditLink calls in Step6Review.
+    const stepStart = src.indexOf("function Step6Review")
+    expect(stepStart).toBeGreaterThan(-1)
+    // Step6Review grew with the per-row EditLink wiring + sub-config
+    // inline editors (D56a). Slice covers the whole body but stops
+    // before the next top-level helper so we don't pick up siblings.
+    const stepBody = src.slice(stepStart, stepStart + 12_000)
+    expect(stepBody.match(/<EditLink /g)?.length).toBeGreaterThanOrEqual(5)
+    // Each Edit jump pins a step number 1..5.
+    for (const n of [1, 2, 3, 4, 5]) {
+      const re = new RegExp(`step=\\{${n}\\}`)
+      expect(stepBody).toMatch(re)
+    }
+  })
+
+  it("D56a: Step 6 surfaces an inline editor for sub-config (regex/llm/shacl/fetch/allowlist)", () => {
+    // Inline sub-config editor mounts inside the condition row.
+    // We pin the panel name + the 5 sub-config field names the
+    // panel can edit.
+    expect(src).toContain("InlineSubConfigPanel")
+    expect(src).toMatch(/case "regex":[\s\S]*?name = "pattern"/)
+    expect(src).toMatch(/case "llm_critic":[\s\S]*?name = "llmCriterion"/)
+    expect(src).toMatch(/case "shacl":[\s\S]*?name = "shaclTtl"/)
+    expect(src).toMatch(/case "fetch_domain":[\s\S]*?name = "fetchDomain"/)
+    expect(src).toMatch(/case "domain_allowlist":[\s\S]*?name = "allowlist"/)
+    // The inline form posts to advanceAction with _step=5 (so
+    // advanceWizard's stepIn+1 lands the operator back on Step 6).
+    expect(src).toMatch(/InlineSubConfigPanel[\s\S]*?advanceAction/)
+    expect(src).toMatch(/<input type="hidden" name="_step" value="5" \/>/)
+  })
+
+  it("D56a: buildWizardHref persists every WizardState field — Edit jumps round-trip", () => {
+    // Step 6 -> Edit jump -> Step N -> Back -> Step 6 must
+    // preserve every field. We pin every field name appears in
+    // buildWizardHref's param list (the canonical URL serializer)
+    // so a refactor adding a new field can't silently break the
+    // round-trip.
+    const start = src.indexOf("function buildWizardHref")
+    expect(start).toBeGreaterThan(-1)
+    const body = src.slice(start, start + 1500)
+    for (const field of [
+      "lifecycle", "conditionKind", "toolScope",
+      "fetchDomain", "allowlist", "pattern", "llmCriterion",
+      "shaclTtl", "action", "id", "description",
+    ]) {
+      expect(body).toContain(field)
+    }
+    // evidence_refs joins into the CSV form the wizard reads back.
+    expect(body).toMatch(/evidenceRefs\.join\(","\)/)
+  })
 })

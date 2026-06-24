@@ -653,6 +653,111 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
   } catch { return null }
 }
 
+/** D56a: convert a PolicyDraft IR (the shape emitted by the cloud
+ * for prebuilt templates, and what saveWizard would round-trip on
+ * reload) into the WizardState shape the guided wizard renders. We
+ * only consume the prebuilt's IR; anything we can't map cleanly we
+ * leave undefined (the wizard's downstream code already tolerates
+ * partial state and surfaces "—" placeholders on Step 6). */
+function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
+  if (!ir) return null
+  // event -> lifecycle. Anything outside the wizard's 3-lifecycle
+  // model (UserPromptSubmit / PreCompact / Subagent* / Session*)
+  // can't be authored in guided mode, so we leave lifecycle
+  // undefined and let Step 1's default (`before_tool_use`) take
+  // over. The prebuilt catalog only emits PreToolUse / PostToolUse
+  // / Stop today; future ones still degrade safely.
+  let lifecycle: Lifecycle | undefined
+  switch (ir.trigger?.event) {
+    case "PreToolUse":  lifecycle = "before_tool_use"; break
+    case "PostToolUse": lifecycle = "after_tool_use";  break
+    case "Stop":        lifecycle = "pre_final";       break
+    default:            lifecycle = undefined
+  }
+
+  // matcher -> toolScope. `*` (wildcard) is "any tool" which we
+  // model as undefined; `A|B|C` (alternation, the runtime convention
+  // for multi-tool) maps to a CSV the wizard's Step 2 understands;
+  // a bare tool name stays as-is. pre_final's toolScope is irrelevant.
+  let toolScope: string | undefined
+  const matcher = ir.trigger?.matcher ?? "*"
+  if (lifecycle !== "pre_final" && matcher && matcher !== "*") {
+    toolScope = matcher.includes("|")
+      ? matcher.split("|").map((s) => s.trim()).filter(Boolean).join(",")
+      : matcher
+  }
+
+  // requires -> conditionKind + per-kind specifics. The wizard
+  // models the requires list as a single conditionKind with one set
+  // of inline specifics. The prebuilts all emit kind=step requires
+  // pointing at a single verifier; we widen to also lift a leading
+  // regex / llm_critic / shacl entry so a hand-authored draft from
+  // /policies/new?mode=advanced also round-trips.
+  const requires = ir.requires ?? []
+  let conditionKind: ConditionKind = "none"
+  let evidenceRefs: string[] | undefined
+  let pattern: string | undefined
+  let llmCriterion: string | undefined
+  let shaclTtl: string | undefined
+  if (requires.length === 0) {
+    conditionKind = "none"
+  } else {
+    const stepRefs: string[] = []
+    let sawNonStep = false
+    for (const r of requires) {
+      const k = "kind" in r ? r.kind : "step"
+      if (k === "step" && "step" in r) {
+        stepRefs.push(r.step)
+      } else if (k === "regex" && "pattern" in r) {
+        conditionKind = "regex"
+        pattern = r.pattern
+        sawNonStep = true
+        break
+      } else if (k === "llm_critic" && "criterion" in r) {
+        conditionKind = "llm_critic"
+        llmCriterion = r.criterion
+        sawNonStep = true
+        break
+      } else if (k === "shacl" && "shape_ttl" in r) {
+        conditionKind = "shacl"
+        shaclTtl = r.shape_ttl
+        sawNonStep = true
+        break
+      }
+    }
+    if (!sawNonStep && stepRefs.length > 0) {
+      conditionKind = "evidence_ref"
+      evidenceRefs = stepRefs
+    }
+  }
+
+  const actionRaw = ir.action
+  const action: Action | undefined =
+    actionRaw === "block" || actionRaw === "ask" ||
+    actionRaw === "audit" || actionRaw === "strip"
+      ? actionRaw : undefined
+
+  // Drop the prebuilt's `prebuilt/...` slug as the suggested id so
+  // the operator picks a fresh policy id on Step 5; description
+  // copies through verbatim so the review summary reads well.
+  const rawId = (ir.id ?? "").toString()
+  const suggestedId = rawId.startsWith("prebuilt/")
+    ? "" : rawId
+
+  return {
+    lifecycle,
+    toolScope,
+    conditionKind,
+    pattern,
+    llmCriterion,
+    evidenceRefs,
+    shaclTtl,
+    action,
+    id: suggestedId || undefined,
+    description: ir.description?.toString() || undefined,
+  }
+}
+
 /* ─── page ────────────────────────────────────────────────────────── */
 
 export default async function NewPolicyPage({
@@ -1270,19 +1375,30 @@ function GuidedWizard({
     ? (actionParam as Action) : undefined
   const evidenceRefs = (searchParams.evidence_refs ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 
+  // D56a: prebuilt "Use this" routes here with a `draft=<encoded IR>`
+  // querystring. We decode it once into a PolicyDraft, project to a
+  // WizardState, and use each field as a FALLBACK for the matching
+  // URL param. URL params win (so Edit jumps from Step 6 -> earlier
+  // step -> back round-trip cleanly without the draft re-overriding
+  // the operator's edit). The HiddenState carry on each step then
+  // re-serializes the merged state into the URL, so once Step 6
+  // hands off control to another step the draft prefill is no
+  // longer needed.
+  const draftState = _irToWizardState(_parseDraftQuery(searchParams.draft))
+
   const state: WizardState = {
-    lifecycle,
-    toolScope: searchParams.toolScope || undefined,
-    conditionKind,
-    fetchDomain: searchParams.fetchDomain || undefined,
-    allowlist: searchParams.allowlist || undefined,
-    pattern: searchParams.pattern || undefined,
-    llmCriterion: searchParams.llmCriterion || undefined,
-    evidenceRefs: evidenceRefs.length > 0 ? evidenceRefs : undefined,
-    shaclTtl: searchParams.shaclTtl || undefined,
-    action,
-    id: searchParams.id || undefined,
-    description: searchParams.description || undefined,
+    lifecycle: lifecycle ?? draftState?.lifecycle,
+    toolScope: searchParams.toolScope || draftState?.toolScope,
+    conditionKind: conditionKind ?? draftState?.conditionKind,
+    fetchDomain: searchParams.fetchDomain || draftState?.fetchDomain,
+    allowlist: searchParams.allowlist || draftState?.allowlist,
+    pattern: searchParams.pattern || draftState?.pattern,
+    llmCriterion: searchParams.llmCriterion || draftState?.llmCriterion,
+    evidenceRefs: evidenceRefs.length > 0 ? evidenceRefs : draftState?.evidenceRefs,
+    shaclTtl: searchParams.shaclTtl || draftState?.shaclTtl,
+    action: action ?? draftState?.action,
+    id: searchParams.id || draftState?.id,
+    description: searchParams.description || draftState?.description,
   }
 
   // pre_final auto-skips Step 2 (tool scope is irrelevant).
@@ -1298,7 +1414,7 @@ function GuidedWizard({
       {effectiveStep === 3 && <Step3Condition t={t} locale={locale} state={state} wiredSteps={wiredSteps} action={advanceAction} />}
       {effectiveStep === 4 && <Step4Action t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 5 && <Step5Naming t={t} state={state} action={advanceAction} />}
-      {effectiveStep === 6 && <Step6Review t={t} locale={locale} state={state} action={saveAction} wiredSteps={wiredSteps} />}
+      {effectiveStep === 6 && <Step6Review t={t} locale={locale} state={state} action={saveAction} advanceAction={advanceAction} wiredSteps={wiredSteps} />}
     </div>
   )
 }
@@ -2129,20 +2245,219 @@ function Step5Naming({
 
 /* ─── Step 6. Review ─────────────────────────────────────────────── */
 
+/** D56a: per-row "Edit" affordance on Step 6. Jumps to the step that
+ *  owns the field (1=lifecycle, 2=tool scope, 3=condition, 4=action,
+ *  5=name) with the full WizardState carried in the URL. Round-trip
+ *  is preserved because `buildWizardHref` writes every populated
+ *  field, and each earlier step's HiddenState re-emits the carry on
+ *  its way back to Step 6. */
+function EditLink({
+  t, state, step,
+}: {
+  state: WizardState; step: number
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  return (
+    <Link
+      href={buildWizardHref(state, step)}
+      className="inline-flex items-center rounded-md border border-black/[0.08] bg-white px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] hover:border-[var(--color-accent)]/40 hover:text-[var(--color-accent)] hover:no-underline"
+    >
+      {t("newPolicy.wizard.step6.editField")}
+    </Link>
+  )
+}
+
+/** D56a: small expandable inline editor for sub-config that lives
+ *  inside the IR but isn't a wizard step (regex pattern, allowlist
+ *  CSV, llm_critic prompt, SHACL ttl, fetch_domain). The form posts
+ *  back to advanceWizard with `_step=6` plus a hidden `_intent` so
+ *  the action recognizes a Step-6 inline edit. We piggy-back on the
+ *  existing advanceWizard URL-merging code path: it already drops
+ *  every form field into URL params (HiddenState carries the rest),
+ *  so any sub-config name we name-collide with the wizard's URL
+ *  contract (`pattern`, `allowlist`, `llmCriterion`, `shaclTtl`,
+ *  `fetchDomain`) just round-trips back into the wizard state. We
+ *  push `_step=5` so the advance bumps to step 6 — i.e. the user
+ *  lands back on Step 6 after the inline save. */
+function InlineSubConfigPanel({
+  t, locale, state, advanceAction,
+}: {
+  state: WizardState; locale: "ko" | "en"
+  advanceAction: (fd: FormData) => Promise<void>
+  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+}) {
+  const ko = locale === "ko"
+  const kind = state.conditionKind ?? "none"
+  if (kind === "none" || kind === "evidence_ref") return null
+
+  // Pick the right field name + label + control per kind. Stays in
+  // sync with Step 3's specifics block (deriveRequires reads the
+  // same field names). NOT a textarea by default — these are
+  // typically short strings; the SHACL ttl is the exception.
+  let label: string
+  let helper: string
+  let element: "input" | "textarea"
+  let name: string
+  let initial: string
+  let placeholder: string
+  let useChips = false
+  let chipVariant: "path" | "shacl-stub" = "path"
+  let textareaId = "w-step6-sub-config"
+
+  switch (kind) {
+    case "regex":
+      label = ko ? "정규식 패턴" : "Regex pattern"
+      helper = ko ? "Python `re` 문법. 비우면 condition 이 만족 안 됨." : "Python `re` syntax. Empty pattern means no condition."
+      element = "input"
+      name = "pattern"
+      initial = state.pattern ?? ""
+      placeholder = "AKIA[A-Z0-9]{16}"
+      useChips = true
+      textareaId = "w-step6-pattern"
+      break
+    case "llm_critic":
+      label = ko ? "LLM critic 기준" : "LLM critic criterion"
+      helper = ko ? "자연어 기준. LLM 이 NO 를 반환하면 발동." : "Plain-English criterion. The condition fires when the LLM answers NO."
+      element = "textarea"
+      name = "llmCriterion"
+      initial = state.llmCriterion ?? ""
+      placeholder = ko
+        ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
+        : "e.g. Does the output contain a guess the user did not ask for?"
+      useChips = true
+      textareaId = "w-step6-llm"
+      break
+    case "shacl":
+      label = "SHACL shape (Turtle)"
+      helper = ko
+        ? "magi: 네임스페이스에 anchor 되어야 vacuous-satisfaction 을 피합니다."
+        : "Anchor on the magi: namespace so the shape can't be vacuously satisfied."
+      element = "textarea"
+      name = "shaclTtl"
+      initial = state.shaclTtl ?? ""
+      placeholder = "@prefix sh:   <http://www.w3.org/ns/shacl#> .\n@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n…"
+      useChips = true
+      chipVariant = "shacl-stub"
+      textareaId = "w-step6-shacl"
+      break
+    case "fetch_domain":
+      label = ko ? "Fetch 도메인" : "Fetch domain"
+      helper = ko ? "WebFetch 가 이 도메인에 접근할 때 발동." : "Fires when WebFetch hits this exact domain."
+      element = "input"
+      name = "fetchDomain"
+      initial = state.fetchDomain ?? ""
+      placeholder = "example.com"
+      textareaId = "w-step6-fetch"
+      break
+    case "domain_allowlist":
+      label = ko ? "허용 도메인 (쉼표 구분)" : "Allowed domains (comma-separated)"
+      helper = ko ? "이 목록에 없는 도메인 접근은 condition 이 만족 안 됨." : "A fetch outside this list does not satisfy the condition."
+      element = "input"
+      name = "allowlist"
+      initial = state.allowlist ?? ""
+      placeholder = "api.openai.com, github.com, npmjs.com"
+      textareaId = "w-step6-allow"
+      break
+    default:
+      return null
+  }
+
+  // Per-event payload chip context (matches Step 3's wiring).
+  const lifecycle = state.lifecycle ?? "before_tool_use"
+  const ccEvent = payloadLifecycleToEvent(lifecycle)
+  const ccMatcher = lifecycle === "pre_final" ? undefined : state.toolScope
+  const fields = useChips ? payloadAvailableFields(ccEvent, ccMatcher) : []
+
+  return (
+    <details
+      data-testid="step6-subconfig-editor"
+      className="mt-2 rounded-lg border border-black/[0.08] bg-[var(--color-surface-1,#f9fafb)]/40"
+    >
+      <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)]">
+        {t("newPolicy.wizard.step6.editSubConfig.summary", { field: label })}
+      </summary>
+      <form action={advanceAction} className="space-y-2 px-3 py-3">
+        {/* _step=5 -> advanceWizard nudges nextStep to 6, so the
+            operator lands back on Step 6 after the inline save. */}
+        <input type="hidden" name="_step" value="5" />
+        <HiddenState
+          state={{
+            ...state,
+            // Clear the field we're about to edit so the freshly
+            // submitted value wins. The rest of the wizard state
+            // (lifecycle / toolScope / conditionKind / action / id /
+            // …) round-trips intact.
+            pattern: name === "pattern" ? undefined : state.pattern,
+            allowlist: name === "allowlist" ? undefined : state.allowlist,
+            llmCriterion: name === "llmCriterion" ? undefined : state.llmCriterion,
+            shaclTtl: name === "shaclTtl" ? undefined : state.shaclTtl,
+            fetchDomain: name === "fetchDomain" ? undefined : state.fetchDomain,
+          }}
+        />
+        <FieldLabel>{label}</FieldLabel>
+        <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">{helper}</p>
+        {useChips && fields.length > 0 && (
+          <PayloadFieldChips
+            fields={fields}
+            locale={locale}
+            targetTextareaId={textareaId}
+            variant={chipVariant}
+          />
+        )}
+        {element === "input" ? (
+          <input
+            id={textareaId}
+            name={name}
+            defaultValue={initial}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            maxLength={2000}
+            className={inputCls() + " font-mono text-sm"}
+          />
+        ) : (
+          <textarea
+            id={textareaId}
+            name={name}
+            defaultValue={initial}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            rows={name === "shaclTtl" ? 8 : 3}
+            className={inputCls() + " font-mono text-sm leading-relaxed"}
+          />
+        )}
+        <button
+          type="submit"
+          className="inline-flex items-center justify-center rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--color-accent-hover)] cursor-pointer transition-colors"
+        >
+          {t("newPolicy.wizard.step6.editSubConfig.save")}
+        </button>
+      </form>
+    </details>
+  )
+}
+
 function Step6Review({
-  t, locale, state, action, wiredSteps,
+  t, locale, state, action, advanceAction, wiredSteps,
 }: {
   state: WizardState
   locale: "ko" | "en"
   action: (fd: FormData) => Promise<void>
+  advanceAction: (fd: FormData) => Promise<void>
   wiredSteps: WiredStep[]
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  const ko = locale === "ko"
   const event = LIFECYCLE_TO_EVENT[state.lifecycle ?? "before_tool_use"]
   const matcher = deriveMatcher(state)
   const requires = deriveRequires(state)
   const summary = plainSummary(state, locale)
   const evidenceList = state.evidenceRefs ?? []
+  // D56a: Step 6 surfaces per-row Edit affordances jumping back to
+  // the step that owns the field. We render the rows ourselves so
+  // each row gets its own Edit button + (for sub-config that lives
+  // INSIDE the IR but isn't a wizard step) an inline editor.
   return (
     <StepShell
       t={t}
@@ -2155,63 +2470,103 @@ function Step6Review({
         <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
           {summary}
         </p>
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs mt-4 pt-4 border-t border-black/[0.06]">
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">id</dt>
-          <dd className="font-mono text-[12.5px]" translate="no">{state.id}</dd>
+        <ul className="m-0 mt-4 list-none p-0 space-y-2 border-t border-black/[0.06] pt-4 text-xs">
+          {/* Name row → Step 5 */}
+          <li data-testid="step6-row-name" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
+            <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "이름" : "name"}</span>
+            <span className="font-mono text-[12.5px]" translate="no">
+              {state.id ?? <em className="text-[var(--color-text-tertiary)] not-italic">{ko ? "(아직 미정)" : "(not set yet)"}</em>}
+            </span>
+            <EditLink t={t} state={state} step={5} />
+          </li>
 
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">lifecycle</dt>
-          <dd className="text-[var(--color-text-secondary)]">{state.lifecycle}</dd>
+          {/* Lifecycle row → Step 1 */}
+          <li data-testid="step6-row-lifecycle" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
+            <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "시점" : "lifecycle"}</span>
+            <span className="text-[var(--color-text-secondary)]">
+              {state.lifecycle ?? <em className="text-[var(--color-text-tertiary)] not-italic">—</em>}
+              <span className="ml-2 font-mono text-[11px] text-[var(--color-text-tertiary)]">{event}</span>
+            </span>
+            <EditLink t={t} state={state} step={1} />
+          </li>
 
+          {/* Tool scope row → Step 2 (only when lifecycle != pre_final). */}
           {state.lifecycle !== "pre_final" && (
-            <>
-              <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">tool scope</dt>
-              <dd className="text-[var(--color-text-secondary)]">
+            <li data-testid="step6-row-tool-scope" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
+              <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "도구" : "tool scope"}</span>
+              <span className="text-[var(--color-text-secondary)]">
                 {!state.toolScope || state.toolScope === "*"
-                  ? <em>any tool</em>
+                  ? <em>{ko ? "모든 도구" : "any tool"}</em>
                   : <code className="font-mono">{state.toolScope}</code>}
-              </dd>
-            </>
+                <span className="ml-2 font-mono text-[11px] text-[var(--color-text-tertiary)]">matcher={matcher}</span>
+              </span>
+              <EditLink t={t} state={state} step={2} />
+            </li>
           )}
 
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">trigger (IR)</dt>
-          <dd><code className="font-mono">{event} · {matcher}</code></dd>
+          {/* Condition row → Step 3 (one row per condition entry; inline editor for sub-config). */}
+          <li data-testid="step6-row-condition" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
+            <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "조건" : "condition"}</span>
+            <div className="text-[var(--color-text-secondary)] min-w-0">
+              <span>{state.conditionKind === "none" ? "—" : (state.conditionKind ?? "—")}</span>
+              {state.conditionKind === "fetch_domain" && (
+                <> · <code className="font-mono break-all">{state.fetchDomain || (ko ? "(비어있음)" : "(empty)")}</code></>
+              )}
+              {state.conditionKind === "domain_allowlist" && (
+                <> · <code className="font-mono break-all">{state.allowlist || (ko ? "(비어있음)" : "(empty)")}</code></>
+              )}
+              {state.conditionKind === "regex" && (
+                <> · <code className="font-mono break-all">{state.pattern || (ko ? "(비어있음)" : "(empty)")}</code></>
+              )}
+              {state.conditionKind === "llm_critic" && (
+                <> · <em className="break-words">{state.llmCriterion || (ko ? "(비어있음)" : "(empty)")}</em></>
+              )}
+              {state.conditionKind === "evidence_ref" && evidenceList.length > 0 && (
+                <ul className="mt-1 space-y-0.5 list-disc pl-5">
+                  {evidenceList.map((v) => {
+                    const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
+                    return <li key={v}><code className="font-mono">{v}</code> {desc && <span className="text-[var(--color-text-tertiary)]">· {desc}</span>}</li>
+                  })}
+                </ul>
+              )}
+              {state.conditionKind === "shacl" && state.shaclTtl && (
+                <> · SHACL ({state.shaclTtl.length} chars)</>
+              )}
+              {state.conditionKind === "shacl" && !state.shaclTtl && (
+                <> · <em>{ko ? "(비어있음)" : "(empty)"}</em></>
+              )}
+              <InlineSubConfigPanel t={t} locale={locale} state={state} advanceAction={advanceAction} />
+            </div>
+            <EditLink t={t} state={state} step={3} />
+          </li>
 
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">condition</dt>
-          <dd className="text-[var(--color-text-secondary)]">
-            {state.conditionKind === "none" ? "—" : state.conditionKind}
-            {state.conditionKind === "fetch_domain" && state.fetchDomain && <> · <code className="font-mono">{state.fetchDomain}</code></>}
-            {state.conditionKind === "domain_allowlist" && state.allowlist && <> · <code className="font-mono">{state.allowlist}</code></>}
-            {state.conditionKind === "regex" && state.pattern && <> · <code className="font-mono">{state.pattern}</code></>}
-            {state.conditionKind === "llm_critic" && state.llmCriterion && <> · <em>{state.llmCriterion}</em></>}
-            {state.conditionKind === "evidence_ref" && evidenceList.length > 0 && (
-              <ul className="mt-1 space-y-0.5 list-disc pl-5">
-                {evidenceList.map((v) => {
-                  const desc = wiredSteps.find((w) => w.step === v)?.description ?? ""
-                  return <li key={v}><code className="font-mono">{v}</code> {desc && <span className="text-[var(--color-text-tertiary)]">· {desc}</span>}</li>
-                })}
-              </ul>
-            )}
-            {state.conditionKind === "shacl" && state.shaclTtl && <> · SHACL ({state.shaclTtl.length} chars)</>}
-          </dd>
+          {/* Action row → Step 4 */}
+          <li data-testid="step6-row-action" className="grid grid-cols-[max-content_1fr_max-content] items-start gap-x-3">
+            <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "동작" : "action"}</span>
+            <span className="text-[var(--color-text-secondary)]">
+              {state.action ?? <em className="text-[var(--color-text-tertiary)] not-italic">—</em>}
+            </span>
+            <EditLink t={t} state={state} step={4} />
+          </li>
 
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">action</dt>
-          <dd className="text-[var(--color-text-secondary)]">{state.action}</dd>
-
-          <dt className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold">requires (IR)</dt>
-          <dd className="text-[var(--color-text-secondary)] text-xs">
-            {requires.length === 0
-              ? "—"
-              : requires.map((r) => {
-                  const k = "kind" in r ? r.kind : "step"
-                  if (k === "step") return `${("step" in r ? r.step : "?")}=pass`
-                  if (k === "regex") return `regex(${("pattern" in r ? r.pattern : "").slice(0, 36)}…)`
-                  if (k === "llm_critic") return `llm(…)`
-                  if (k === "shacl") return "shacl(…)"
-                  return k
-                }).join(", ")}
-          </dd>
-
-        </dl>
+          {/* IR-derived requires (read-only summary). No Edit row;
+              edits happen via the condition row above. */}
+          <li className="grid grid-cols-[max-content_1fr] items-start gap-x-3 pt-1 border-t border-black/[0.04]">
+            <span className="text-[var(--color-text-tertiary)] uppercase tracking-wider font-semibold pt-0.5">{ko ? "IR requires" : "requires (IR)"}</span>
+            <span className="text-[var(--color-text-secondary)] text-xs break-all">
+              {requires.length === 0
+                ? "—"
+                : requires.map((r) => {
+                    const k = "kind" in r ? r.kind : "step"
+                    if (k === "step") return `${("step" in r ? r.step : "?")}=pass`
+                    if (k === "regex") return `regex(${("pattern" in r ? r.pattern : "").slice(0, 36)}…)`
+                    if (k === "llm_critic") return `llm(…)`
+                    if (k === "shacl") return "shacl(…)"
+                    return k
+                  }).join(", ")}
+            </span>
+          </li>
+        </ul>
       </Card>
       <form action={action}>
         <HiddenState state={state} />

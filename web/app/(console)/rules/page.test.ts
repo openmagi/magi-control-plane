@@ -93,14 +93,17 @@ describe("rules page source invariants", () => {
     expect(idxPrebuilt).toBeLessThan(idxPolicyList)
   })
 
-  it("D54: prebuiltDraftHref encodes draft twice and uses mode=advanced", () => {
-    // The PolicyBuilder's _parseDraftQuery does a decodeURIComponent
-    // before JSON.parse. Next.js searchParams already decodes once,
-    // so we must encode twice: once for URL transport, once so the
-    // builder's decode reveals raw JSON.
+  it("D56a: prebuiltDraftHref encodes draft twice and lands on guided wizard step 6", () => {
+    // D56a rerouted prebuilt "Use this" off the raw IR editor (was
+    // mode=advanced) onto the guided wizard's Step 6 (review). The
+    // wizard's WizardState parser reads `draft` the same way the
+    // PolicyBuilder did, so the double-encode contract still holds:
+    // Next.js searchParams decodes once on the way in, the wizard
+    // decodes again before JSON.parse, both layers must survive.
     expect(src).toContain("prebuiltDraftHref")
     expect(src).toMatch(/encodeURIComponent\(encodeURIComponent\(/)
-    expect(src).toContain("mode=advanced")
+    expect(src).toContain("mode=guided")
+    expect(src).toContain("step=6")
     expect(src).toContain("&draft=")
   })
 

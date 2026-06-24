@@ -406,9 +406,15 @@ function PrebuiltSection({
  * was already encodeURIComponent'd; we hand-build the query so the
  * shape is auditable in one place. */
 function prebuiltDraftHref(p: PrebuiltPolicyEntry): string {
+  // D56a: route prebuilt "Use this" to the Guided wizard's Step 6
+  // (Review) rather than the raw IR editor (mode=advanced). Step 6
+  // round-trips the prefill through its WizardState parser and offers
+  // per-field Edit jumps to the relevant earlier step so the operator
+  // can fill in placeholder fields (allowlists, prompts, ttl, …) in a
+  // form-based UI instead of editing JSON.
   const draftJson = JSON.stringify(p.ir)
   const doubleEncoded = encodeURIComponent(encodeURIComponent(draftJson))
-  return `/policies/new?mode=advanced&draft=${doubleEncoded}`
+  return `/policies/new?mode=guided&step=6&draft=${doubleEncoded}`
 }
 
 function EvidenceTab({
