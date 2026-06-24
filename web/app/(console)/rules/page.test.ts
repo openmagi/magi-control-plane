@@ -178,20 +178,61 @@ describe("rules page source invariants (D56e)", () => {
   })
 
   // ── D67: lock prebuilt-row dedup with regression tests ────────
+  //
+  // These tests scope their assertions to the PoliciesTab function
+  // body so the invariants they claim (filter precedes map, count
+  // badge is fed by filtered length, no unfiltered items.map renders
+  // a Card) hold at the actual render boundary, not anywhere in the
+  // file. A refactor that moves the filter into a sibling helper but
+  // re-introduces a raw items.map inside PoliciesTab must fail here.
+  const policiesTabBody = (() => {
+    const start = src.indexOf("function PoliciesTab(")
+    expect(start).toBeGreaterThan(-1)
+    // Brace-balance scan from the function body brace so we slice
+    // exactly the PoliciesTab function body and nothing downstream
+    // (PrebuiltSection, helper components, etc.). The signature
+    // contains a destructured `{ items, err, ... }` params block and
+    // a `{ ... }` type annotation, so we anchor on the opening
+    // `}) {` that closes the param/type list and starts the body.
+    const bodyAnchor = src.indexOf("}) {", start)
+    expect(bodyAnchor).toBeGreaterThan(start)
+    let i = bodyAnchor + 3 // position at the body-opening `{`
+    expect(src[i]).toBe("{")
+    let depth = 0
+    let end = -1
+    for (; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === "{") depth++
+      else if (ch === "}") {
+        depth--
+        if (depth === 0) {
+          end = i + 1
+          break
+        }
+      }
+    }
+    expect(end).toBeGreaterThan(start)
+    return src.slice(start, end)
+  })()
+
   it("D67: items.filter(prebuilt/) precedes the user-policies .map call site", () => {
-    // Regression for the D60 follow-up: the filter must run BEFORE
+    // Regression for the D60 follow-up. The filter must run BEFORE
     // the .map that renders the user-policies grid, otherwise the
     // grid silently re-renders every materialized prebuilt row.
-    const filterMatch = src.match(
+    // Scope everything to the PoliciesTab body so a sibling helper
+    // that hosts the filter cannot satisfy this invariant.
+    const filterMatch = policiesTabBody.match(
       /\.filter\(\s*\(\s*p\s*\)\s*=>\s*!\s*p\.id\.startsWith\(['"]prebuilt\/['"]\)\s*\)/,
     )
     expect(filterMatch).not.toBeNull()
-    const filterIdx = filterMatch ? src.indexOf(filterMatch[0]) : -1
+    const filterIdx = filterMatch
+      ? policiesTabBody.indexOf(filterMatch[0])
+      : -1
     expect(filterIdx).toBeGreaterThan(-1)
     // The user-policies grid maps over `userPolicies`, the variable
     // the filter assigns to. Any rendered `userPolicies.map` must
-    // appear AFTER the filter call site.
-    const mapIdx = src.indexOf("userPolicies.map(")
+    // appear AFTER the filter call site, within the same body.
+    const mapIdx = policiesTabBody.indexOf("userPolicies.map(")
     expect(mapIdx).toBeGreaterThan(-1)
     expect(filterIdx).toBeLessThan(mapIdx)
   })
@@ -199,33 +240,38 @@ describe("rules page source invariants (D56e)", () => {
   it("D67: count badge uses the filtered userPolicies length, not raw items", () => {
     // Without this the summary badge claims a higher policy count
     // than the grid actually renders, and the operator sees a stale
-    // number for every enabled prebuilt.
-    expect(src).toMatch(
-      /rules\.summary\.policies[^}]*nfFormat\(userPolicies\.length\)/,
-    )
+    // number for every enabled prebuilt. Two independent assertions
+    // (key present, formatter call present) keep the intent explicit
+    // and avoid a greedy regex that could span unrelated translated
+    // strings.
+    expect(policiesTabBody).toContain("rules.summary.policies")
+    expect(policiesTabBody).toContain("nfFormat(userPolicies.length)")
     // Empty-state branch must also key off userPolicies.length so
     // a tenant with only prebuilt rows still sees the empty state.
-    expect(src).toMatch(/userPolicies\.length\s*===\s*0/)
+    expect(policiesTabBody).toMatch(/userPolicies\.length\s*===\s*0/)
   })
 
   it("D67: a prebuilt/ id never renders inside the user-policies grid", () => {
-    // Concrete-id regression: if someone reintroduces an unfiltered
+    // Concrete-id regression. If someone reintroduces an unfiltered
     // items.map in the PoliciesTab grid the source no longer
-    // guarantees the filter — assert that the only place a literal
+    // guarantees the filter. Assert that the only place a literal
     // `prebuilt/` id token can appear in the PoliciesTab grid path
     // is via the filter predicate itself.
     //
-    // We grep the rendered <Card key={item.id}> body and confirm
-    // it iterates `userPolicies`, never the raw `items` collection.
-    const cardKeyMatch = src.match(
-      /\{userPolicies\.map\(\(item\)\s*=>\s*\(\s*<Card key=\{item\.id\}/,
+    // Positive form: the rendered <Card key={...}> in the grid must
+    // iterate `userPolicies`. We do not constrain the arg name, just
+    // that the map source is userPolicies and the body renders a
+    // <Card key=...> directly.
+    expect(policiesTabBody).toMatch(
+      /\{userPolicies\.map\(\(\s*\w+\s*\)\s*=>\s*\(\s*<Card key=\{/,
     )
-    expect(cardKeyMatch).not.toBeNull()
-    // Negative form: there must NOT be an `items.map((item)` that
-    // renders a `<Card key={item.id}>` directly (which would bypass
-    // the filter and double-render an enabled prebuilt row).
-    expect(src).not.toMatch(
-      /\{items\.map\(\(item\)\s*=>\s*\(\s*<Card key=\{item\.id\}/,
+    // Negative form (structural): there must NOT be any `items.map`
+    // anywhere inside PoliciesTab that renders a <Card key=...>
+    // directly. Arg name is unconstrained so a future refactor that
+    // writes `items.map((p) => <Card key={p.id}>...)` is still
+    // caught, not just the historical `(item)` arg shape.
+    expect(policiesTabBody).not.toMatch(
+      /\bitems\.map\(\s*\(\s*\w+\s*\)\s*=>\s*\(?\s*<Card key=\{/,
     )
   })
 })
