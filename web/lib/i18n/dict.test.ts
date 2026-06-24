@@ -65,4 +65,47 @@ describe("i18n dict drift gate", () => {
     }
     expect(dups, `duplicate EN keys:\n${dups.join("\n")}`).toEqual([])
   })
+
+  /**
+   * RulesDescription splice contract.
+   *
+   * web/app/(console)/rules/page.tsx splices a /ledger Link into the
+   * translated "rules.description" by substituting a marker into the
+   * {ledger} placeholder and splitting on it. The render only stays
+   * inline if both translations contain the literal {ledger} token AND
+   * the "rules.description.ledgerLink" key exists in both locales. The
+   * key-set drift gate above would not catch the case where both KO+EN
+   * simultaneously lost the placeholder (or both lost the link key), so
+   * we lock the contract here.
+   */
+  function extractValueFor(startMarker: string, endMarker: string, key: string): string | null {
+    const startIdx = src.indexOf(startMarker)
+    const endIdx = src.indexOf(endMarker, startIdx + 1)
+    if (startIdx < 0 || endIdx < 0) return null
+    const block = src.slice(startIdx, endIdx)
+    const re = new RegExp(`^\\s*"${key.replace(/\./g, "\\.")}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, "m")
+    const m = block.match(re)
+    return m ? m[1] : null
+  }
+
+  it("KO rules.description contains the {ledger} placeholder", () => {
+    const koDesc = extractValueFor("const KO_RAW = {", "} as const", "rules.description")
+    expect(koDesc, "rules.description missing from KO_RAW").not.toBeNull()
+    expect(koDesc).toContain("{ledger}")
+  })
+
+  it("EN rules.description contains the {ledger} placeholder", () => {
+    const enDesc = extractValueFor("const EN:", "\nconst DICT", "rules.description")
+    expect(enDesc, "rules.description missing from EN").not.toBeNull()
+    expect(enDesc).toContain("{ledger}")
+  })
+
+  it("rules.description.ledgerLink exists in both KO and EN", () => {
+    const koLink = extractValueFor("const KO_RAW = {", "} as const", "rules.description.ledgerLink")
+    const enLink = extractValueFor("const EN:", "\nconst DICT", "rules.description.ledgerLink")
+    expect(koLink, "rules.description.ledgerLink missing from KO_RAW").not.toBeNull()
+    expect(enLink, "rules.description.ledgerLink missing from EN").not.toBeNull()
+    expect(koLink!.length).toBeGreaterThan(0)
+    expect(enLink!.length).toBeGreaterThan(0)
+  })
 })
