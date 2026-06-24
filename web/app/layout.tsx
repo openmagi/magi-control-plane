@@ -1,5 +1,6 @@
 import "./globals.css"
 import type { Metadata, Viewport } from "next"
+import { MeshBackdrop } from "@/components/ui/_ds"
 import { getLocale, getT } from "@/lib/i18n/server"
 
 export const metadata: Metadata = {
@@ -34,6 +35,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <link rel="preconnect" href="https://cdn.jsdelivr.net" crossOrigin="anonymous" />
       </head>
       <body>
+        <MeshBackdrop intensity="subtle" />
         <a className="skip-link" href="#main-content">
           {t("nav.skipToMain")}
         </a>

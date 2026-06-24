@@ -55,7 +55,7 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
         ["--color-border-focus" as string]:   "#7C3AED",
         fontFamily:
           "'Plus Jakarta Sans', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif",
-        backgroundColor: "#FFFFFF",
+        backgroundColor: "transparent",
         color: "#0B0F19",
       }}
     >
