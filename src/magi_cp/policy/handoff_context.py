@@ -120,11 +120,17 @@ _ACTION_DROPPED_LABEL_KO: dict[str, str] = {
     "inject_context": "맥락 주입",
     "input_rewrite":  "입력 다시 쓰기",
     "strip":          "응답에서 제거",
+    # D63 review (P2): run_command joins the wizard-only archetype
+    # group so a wizard-built RunCommandPolicy handed off into
+    # conversational compose reads as "this rule runs a shell
+    # command" rather than as if it were a generic block/audit.
+    "run_command":    "쉘 명령 실행",
 }
 _ACTION_DROPPED_LABEL_EN: dict[str, str] = {
     "inject_context": "context injection",
     "input_rewrite":  "input rewriting",
     "strip":          "stripping the output",
+    "run_command":    "running a shell command",
 }
 
 # Plain-language labels for wizard-only ConditionKind values that the

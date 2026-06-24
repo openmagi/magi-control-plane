@@ -37,7 +37,13 @@ type T = (
   v?: Record<string, string | number>,
 ) => string
 
-type ActionArchetype = "block" | "ask" | "audit" | "strip"
+// D63 review (P1): widened to include `run_command` so a wizard-handed-off
+// or conversational-compose-emitted run_command IR renders its command
+// body / script id / runtime / args / timeout in the right-column draft
+// pane instead of falling through to "(not chosen yet)".
+type ActionArchetype =
+  | "block" | "ask" | "audit" | "strip"
+  | "run_command"
 
 export interface IrDraftPaneProps {
   t: T
@@ -93,11 +99,56 @@ function matcherFromDraft(d: Record<string, unknown> | null): string | null {
 
 function actionFromDraft(d: Record<string, unknown> | null): ActionArchetype | null {
   if (!d || typeof d !== "object") return null
+  // D63 review (P1): the run_command IR uses `type: "run_command"`
+  // (sibling-archetype dispatcher convention) rather than `action`. If
+  // either field signals run_command, surface it as the action label
+  // for the draft pane.
+  const t = (d as Record<string, unknown>).type
+  if (t === "run_command") return "run_command"
   const a = d.action
-  if (a === "block" || a === "ask" || a === "audit" || a === "strip") {
+  if (
+    a === "block" || a === "ask" || a === "audit" || a === "strip"
+    || a === "run_command"
+  ) {
     return a as ActionArchetype
   }
   return null
+}
+
+/** Read a run_command spec field from an IR draft.
+ *
+ * The persisted shape (`RunCommandDraftPersist` in page.tsx) carries
+ * `runtime` / `command` / `script_path` / `args` / `timeout_ms` /
+ * `fail_closed` directly on the top-level IR object. NL-compiled IR
+ * uses the same shape (we widen the NL compiler prompt below). We
+ * read defensively because the draft may be mid-merge.
+ */
+function readRunCommandField(
+  d: Record<string, unknown> | null,
+  key: "runtime" | "command" | "script_path",
+): string {
+  if (!d || typeof d !== "object") return ""
+  const v = (d as Record<string, unknown>)[key]
+  return typeof v === "string" ? v : ""
+}
+
+function readRunCommandArgs(d: Record<string, unknown> | null): string[] {
+  if (!d || typeof d !== "object") return []
+  const v = (d as Record<string, unknown>).args
+  if (!Array.isArray(v)) return []
+  return v.filter((x): x is string => typeof x === "string")
+}
+
+function readRunCommandTimeoutMs(d: Record<string, unknown> | null): number | null {
+  if (!d || typeof d !== "object") return null
+  const v = (d as Record<string, unknown>).timeout_ms
+  return typeof v === "number" && Number.isFinite(v) ? v : null
+}
+
+function readRunCommandFailClosed(d: Record<string, unknown> | null): boolean {
+  if (!d || typeof d !== "object") return false
+  const v = (d as Record<string, unknown>).fail_closed
+  return v === true
 }
 
 function conditionLabel(
@@ -222,8 +273,20 @@ function actionLabel(d: Record<string, unknown> | null, ko: boolean): string {
   const a = actionFromDraft(d)
   if (!a) return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
   return ko
-    ? ({ block: "차단", ask: "사용자 승인 요청", audit: "기록만", strip: "출력에서 제거" } as const)[a]
-    : ({ block: "Block the action", ask: "Ask a human", audit: "Just record", strip: "Strip from output" } as const)[a]
+    ? ({
+        block: "차단",
+        ask: "사용자 승인 요청",
+        audit: "기록만",
+        strip: "출력에서 제거",
+        run_command: "쉘 명령 실행",
+      } as const)[a]
+    : ({
+        block: "Block the action",
+        ask: "Ask a human",
+        audit: "Just record",
+        strip: "Strip from output",
+        run_command: "Run a shell command",
+      } as const)[a]
 }
 
 /* ── component ─────────────────────────────────────────────────────── */
@@ -284,8 +347,108 @@ export function IrDraftPane({
               {ko ? "동작" : "Action"}
             </dt>
             <dd className="m-0" data-testid="ir-draft-action">
-              {actionLabel(draft, ko)}
+              <span>{actionLabel(draft, ko)}</span>
+              {action === "run_command" && (
+                <span
+                  data-testid="ir-draft-action-warning"
+                  className="ml-2 inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-900"
+                  title={
+                    ko
+                      ? "이 정책은 magi-cp 프로세스 권한으로 쉘 명령을 실행합니다."
+                      : "This policy runs a shell command as the magi-cp process."
+                  }
+                >
+                  {ko ? "쉘 실행" : "runs shell"}
+                </span>
+              )}
             </dd>
+            {/*
+             * D63 review (P1): render run_command specifics so the
+             * operator sees what will execute, not a generic
+             * placeholder. The pane's "NEVER expose internal terms"
+             * rule still holds (we use plain-language `Runs:` etc),
+             * but the command body itself IS the operator-authored
+             * surface — withholding it would hide the policy's
+             * effect.
+             */}
+            {action === "run_command" && (() => {
+              const runtime = readRunCommandField(draft, "runtime") || "bash"
+              const command = readRunCommandField(draft, "command")
+              const scriptPath = readRunCommandField(draft, "script_path")
+              const args = readRunCommandArgs(draft)
+              const timeoutMs = readRunCommandTimeoutMs(draft)
+              const failClosed = readRunCommandFailClosed(draft)
+              return (
+                <>
+                  <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                    {ko ? "런타임" : "Runtime"}
+                  </dt>
+                  <dd
+                    className="m-0 font-mono text-[11px]"
+                    data-testid="ir-draft-run-command-runtime"
+                  >
+                    {runtime}
+                  </dd>
+                  <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                    {ko ? "실행 내용" : "Runs"}
+                  </dt>
+                  <dd
+                    className="m-0 font-mono text-[11px] whitespace-pre-wrap break-words"
+                    data-testid="ir-draft-run-command-body"
+                  >
+                    {command && (
+                      <code className="block">{command}</code>
+                    )}
+                    {!command && scriptPath && (
+                      <code className="block">
+                        {ko ? "스크립트 id: " : "script id: "}
+                        {scriptPath}
+                      </code>
+                    )}
+                    {!command && !scriptPath && (
+                      <em>{ko ? "(아직 명령 없음)" : "(no command yet)"}</em>
+                    )}
+                  </dd>
+                  {args.length > 0 && (
+                    <>
+                      <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                        {ko ? "인자" : "Args"}
+                      </dt>
+                      <dd
+                        className="m-0 font-mono text-[11px]"
+                        data-testid="ir-draft-run-command-args"
+                      >
+                        [{args.map((a) => JSON.stringify(a)).join(", ")}]
+                      </dd>
+                    </>
+                  )}
+                  {timeoutMs !== null && (
+                    <>
+                      <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                        {ko ? "타임아웃" : "Timeout"}
+                      </dt>
+                      <dd
+                        className="m-0 font-mono text-[11px]"
+                        data-testid="ir-draft-run-command-timeout"
+                      >
+                        {timeoutMs}ms
+                      </dd>
+                    </>
+                  )}
+                  <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                    {ko ? "실패 처리" : "On failure"}
+                  </dt>
+                  <dd
+                    className="m-0 text-[11px]"
+                    data-testid="ir-draft-run-command-fail-closed"
+                  >
+                    {failClosed
+                      ? (ko ? "타임아웃/실패 시 deny" : "Deny on timeout or non-zero exit")
+                      : (ko ? "타임아웃/실패 시 통과 + ledger 기록" : "Allow on timeout / failure, log to ledger")}
+                  </dd>
+                </>
+              )
+            })()}
           </dl>
         )}
       </section>
@@ -296,11 +459,20 @@ export function IrDraftPane({
        *  verbatim render. Power users see the IR shape in the Raw /
        *  Advanced mode (PolicyBuilder), not here. */}
 
+      {/*
+       * DryRunPanel's ActionArchetype union still covers the legacy 4
+       * archetypes (block / ask / audit / strip). For run_command we
+       * pass `audit` as a label hint (the dry-run replay shows
+       * historical hits, not a forecast of what run_command would
+       * decide — the script's stdout JSON is operator-supplied and
+       * cannot be replayed deterministically). A future widening of
+       * the panel's union can map run_command directly.
+       */}
       <DryRunPanel
         locale={locale}
         ir={readyToSave && draft ? draft : null}
         disabled={!readyToSave}
-        action={action ?? "audit"}
+        action={action === "run_command" ? "audit" : (action ?? "audit")}
       />
 
       {readyToSave && draft && (

@@ -856,11 +856,16 @@ _MIN_RUN_COMMAND_TIMEOUT_MS = 100
 _DEFAULT_RUN_COMMAND_TIMEOUT_MS = 5_000
 _MAX_RUN_COMMAND_ARGS = 16
 _MAX_RUN_COMMAND_ARG_LEN = 256
-# Script id shape: 64-hex sha256 hash (the canonical script id is the
-# sha256 of the file body). We accept any 16..64 hex segment so future
-# id schemes (e.g. shortened display ids) don't break authoring; the
-# script_store still uses 64-hex internally.
-_SCRIPT_ID_RE = re.compile(r"^[A-Fa-f0-9]{16,64}$")
+# Script id shape: full 64-hex sha256 hash (the canonical script id is
+# the sha256 of the file body). D63 review (P2 validator-mismatch):
+# previously accepted 16..64 hex, but ScriptStore.add only ever emits
+# 64-hex and the cloud resolver checks exact-string equality. Accepting
+# a shorter prefix here would let an IR pass validate() that the
+# runtime cannot resolve — and DELETE /scripts then orphans the policy
+# because the prefix scan finds no match. A future short-id scheme
+# should land as a sibling lookup on ScriptStore.get / body_path /
+# the DELETE reference scan TOGETHER with this widening.
+_SCRIPT_ID_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
 
 
 @dataclass

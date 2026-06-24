@@ -18,6 +18,7 @@ import {
   Card, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
 import { DeleteScriptButton } from "./_components/DeleteScriptButton"
+import { UploadScriptButton } from "./_components/UploadScriptButton"
 
 export const dynamic = "force-dynamic"
 
@@ -61,6 +62,17 @@ export default async function ScriptsPage() {
         title={t("scripts.title")}
         description={t("scripts.subtitle")}
       />
+
+      {/*
+       * D63 review (P1): an Upload button at the top of /scripts so
+       * operators have a self-serve path. Previously the page only
+       * surfaced delete + the empty-state link to /policies/new. The
+       * wizard's Step 4b attach lane now also wires the same /api/scripts
+       * proxy so both surfaces converge.
+       */}
+      <div className="flex justify-end mb-4">
+        <UploadScriptButton locale={locale} />
+      </div>
 
       {err && (
         <ErrorState title={t("scripts.uploadFailed")} body={err} />

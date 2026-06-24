@@ -12,6 +12,7 @@ import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
+import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
 import { codeForError, resolveFlash, type Step3ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -625,6 +626,20 @@ interface WizardState {
   rewriterPattern?: string                // regex_substitute
   rewriterReplacement?: string            // regex_substitute
   rewriterCount?: string                  // regex_substitute (stringified int)
+  // D63: when action="run_command" the wizard compiles to a
+  // RunCommandPolicy with these fields. They ride on the URL state the
+  // same way the rewriter fields do so Edit-jumps from Step 6 back to
+  // Step 4b preserve the command body / script id / timeout / etc.
+  // The Step 6 plain summary surfaces the verbatim command body via
+  // these fields too (brief: "do not strip the actual command body").
+  runCommandMode?: "inline" | "attach"
+  runCommandRuntime?: "bash" | "python3" | "node"
+  runCommandBody?: string                 // inline (≤4000 chars)
+  runCommandScriptId?: string             // attach (64-hex sha256)
+  runCommandScriptName?: string           // attach (operator-facing label)
+  runCommandArgs?: string                 // raw CSV (server splits + trims)
+  runCommandTimeoutMs?: string            // stringified int
+  runCommandFailClosed?: "true" | "false" // checkbox state
   id?: string
   description?: string
   // P9 (D49): suppression of the cumulative-judgment steering tip is
@@ -968,10 +983,32 @@ function plainSummary(s: WizardState, locale: "ko" | "en"): string {
   }
   // D63: run_command surfaces the inline command (or attached script
   // id) so Step 6 review reads as a plain "Will run: …" line.
+  // Brief review (P1): do NOT strip the actual command body — the
+  // operator needs to see what will execute before saving.
   if (act === "run_command") {
+    const mode = s.runCommandMode ?? "inline"
+    const runtime = s.runCommandRuntime ?? "bash"
+    const args = (s.runCommandArgs ?? "").trim()
+    const timeoutMs = s.runCommandTimeoutMs?.trim() || "5000"
+    const failClosed = s.runCommandFailClosed === "true"
+    const failTail = failClosed
+      ? (ko ? " (실패 시 deny)" : " (deny on failure)")
+      : (ko ? " (실패 시 audit + 통과)" : " (audit + continue on failure)")
+    if (mode === "attach") {
+      const name = (s.runCommandScriptName ?? s.runCommandScriptId ?? "").trim() || (ko ? "(스크립트 미지정)" : "(no script chosen)")
+      const argsTail = args ? (ko ? `, 인자 [${args}]` : `, args [${args}]`) : ""
+      return ko
+        ? `${lifeLabel}, 첨부 스크립트 실행: \`${name}\` (${runtime}${argsTail}, 타임아웃 ${timeoutMs}ms)${failTail}.`
+        : `${capitalize(lifeLabel)}: run attached script \`${name}\` (${runtime}${argsTail}, timeout ${timeoutMs}ms)${failTail}.`
+    }
+    // Inline lane: render the verbatim command body.
+    const rawBody = (s.runCommandBody ?? "").trim()
+    const body = rawBody.length > 160 ? rawBody.slice(0, 160) + "…" : rawBody
+    const cmd = body || (ko ? "(아직 명령 없음)" : "(no command yet)")
+    const argsTail = args ? (ko ? `, 인자 [${args}]` : `, args [${args}]`) : ""
     return ko
-      ? `${lifeLabel}, 이 hook 이 발사될 때 쉘 명령 또는 첨부한 스크립트를 실행합니다.`
-      : `${capitalize(lifeLabel)}: run a shell command or an attached script when this hook fires.`
+      ? `${lifeLabel}, 실행 (${runtime}): \`${cmd}\`${argsTail}, 타임아웃 ${timeoutMs}ms${failTail}.`
+      : `${capitalize(lifeLabel)}: run (${runtime}): \`${cmd}\`${argsTail}, timeout ${timeoutMs}ms${failTail}.`
   }
   type LegacyAct = "block" | "ask" | "audit" | "strip"
   const legacyAct: LegacyAct = (
@@ -1576,9 +1613,14 @@ async function saveWizard(formData: FormData): Promise<void> {
       }
     }
     const argsRaw = String(formData.get("runCommandArgs") ?? "")
+    // D63 review (P2 validation-asymmetry): also enforce the cloud's
+    // per-arg 256-char cap on the client so a long inline arg doesn't
+    // make it past the dashboard only to 4xx at the cloud's IR
+    // validate(). Slice each entry before sending so the operator
+    // gets a clean save.
     const argsRc = argsRaw
       .split(",")
-      .map((s) => s.trim())
+      .map((s) => s.trim().slice(0, 256))
       .filter((s) => s.length > 0)
       .slice(0, 16)
     const timeoutRaw = String(formData.get("runCommandTimeoutMs") ?? "5000")
@@ -2614,6 +2656,17 @@ function HiddenState({ state }: { state: WizardState }) {
       {state.rewriterPattern !== undefined && <input type="hidden" name="rewriterPattern" value={state.rewriterPattern} />}
       {state.rewriterReplacement !== undefined && <input type="hidden" name="rewriterReplacement" value={state.rewriterReplacement} />}
       {state.rewriterCount !== undefined && <input type="hidden" name="rewriterCount" value={state.rewriterCount} />}
+      {/* D63: run_command fields. We keep them as separate hidden
+       *  inputs (no JSON blob) so the existing per-field FormData
+       *  reader in saveWizard continues to work without parsing. */}
+      {state.runCommandMode && <input type="hidden" name="runCommandMode" value={state.runCommandMode} />}
+      {state.runCommandRuntime && <input type="hidden" name="runCommandRuntime" value={state.runCommandRuntime} />}
+      {state.runCommandBody !== undefined && <input type="hidden" name="runCommandBody" value={state.runCommandBody} />}
+      {state.runCommandScriptId && <input type="hidden" name="runCommandScriptId" value={state.runCommandScriptId} />}
+      {state.runCommandScriptName && <input type="hidden" name="runCommandScriptName" value={state.runCommandScriptName} />}
+      {state.runCommandArgs !== undefined && <input type="hidden" name="runCommandArgs" value={state.runCommandArgs} />}
+      {state.runCommandTimeoutMs && <input type="hidden" name="runCommandTimeoutMs" value={state.runCommandTimeoutMs} />}
+      {state.runCommandFailClosed && <input type="hidden" name="runCommandFailClosed" value={state.runCommandFailClosed} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
     </>
@@ -2793,6 +2846,16 @@ function GuidedWizard({
     rewriterPattern: searchParams.rewriterPattern ?? draftState?.rewriterPattern,
     rewriterReplacement: searchParams.rewriterReplacement ?? draftState?.rewriterReplacement,
     rewriterCount: searchParams.rewriterCount ?? draftState?.rewriterCount,
+    // D63: run_command URL params. Round-tripped through HiddenState
+    // so an Edit jump from Step 6 back to Step 4 preserves the body.
+    runCommandMode: (searchParams.runCommandMode as WizardState["runCommandMode"]) || undefined,
+    runCommandRuntime: (searchParams.runCommandRuntime as WizardState["runCommandRuntime"]) || undefined,
+    runCommandBody: searchParams.runCommandBody ?? undefined,
+    runCommandScriptId: searchParams.runCommandScriptId || undefined,
+    runCommandScriptName: searchParams.runCommandScriptName || undefined,
+    runCommandArgs: searchParams.runCommandArgs ?? undefined,
+    runCommandTimeoutMs: searchParams.runCommandTimeoutMs || undefined,
+    runCommandFailClosed: (searchParams.runCommandFailClosed as WizardState["runCommandFailClosed"]) || undefined,
     id: searchParams.id || draftState?.id,
     description: searchParams.description || draftState?.description,
     // D56d (P2 #4): if the prebuilt draft carried a conditionKind that
@@ -4719,8 +4782,6 @@ function Step4Action({
             )
           }
           if (a === "run_command") {
-            type TKey = import("@/lib/i18n/dict").TKey
-            const tDfl = (k: TKey) => t(k)
             return (
               <label key={a} className="block cursor-pointer">
                 <input
@@ -4743,108 +4804,42 @@ function Step4Action({
                   </span>
                   <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
                 </span>
+                {/*
+                 * D63 review (P1): hand off run_command Step 4b
+                 * rendering to a client island so:
+                 *   - inline-vs-attach modes are mutually exclusive
+                 *     (unused field never lands in FormData),
+                 *   - the attach lane has a real file upload wired
+                 *     to /api/scripts (no more hand-paste sha256),
+                 *   - the inline lane shows a dedicated commandHint
+                 *     i18n string (the old code reused attachHint
+                 *     which talked about 64KB uploads),
+                 *   - a "Browse uploaded scripts" link to /scripts
+                 *     surfaces in the attach lane.
+                 * Field names stay byte-stable so saveWizard's
+                 * server-action branch keeps reading the same keys.
+                 */}
                 <div
                   data-testid="step4b-run-command-editor"
-                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4"
                 >
-                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-                    {tDfl("newPolicy.step4.runCommand.warning")}
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.modeInline")}</FieldLabel>
-                      <select
-                        name="runCommandMode"
-                        defaultValue={"inline"}
-                        className={inputCls()}
-                      >
-                        <option value="inline">
-                          {tDfl("newPolicy.step4.runCommand.modeInline")}
-                        </option>
-                        <option value="attach">
-                          {tDfl("newPolicy.step4.runCommand.modeAttach")}
-                        </option>
-                      </select>
-                    </div>
-                    <div>
-                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.runtime")}</FieldLabel>
-                      <select
-                        name="runCommandRuntime"
-                        defaultValue="bash"
-                        className={inputCls()}
-                      >
-                        <option value="bash">bash</option>
-                        <option value="python3">python3</option>
-                        <option value="node">node</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <FieldLabel>{tDfl("newPolicy.step4.runCommand.commandLabel")}</FieldLabel>
-                    <textarea
-                      name="runCommandBody"
-                      rows={3}
-                      maxLength={4000}
-                      placeholder={tDfl("newPolicy.step4.runCommand.commandPlaceholder")}
-                      className={inputCls() + " font-mono"}
-                    />
-                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                      {tDfl("newPolicy.step4.runCommand.attachHint")}
-                    </p>
-                  </div>
-                  <div>
-                    <FieldLabel>{tDfl("newPolicy.step4.runCommand.attachLabel")}</FieldLabel>
-                    <input
-                      type="text"
-                      name="runCommandScriptId"
-                      maxLength={64}
-                      pattern="[A-Fa-f0-9]{16,64}"
-                      placeholder="sha256 script id"
-                      className={inputCls() + " font-mono"}
-                    />
-                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                      {tDfl("newPolicy.step4.runCommand.attachHint")}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.args")}</FieldLabel>
-                      <input
-                        type="text"
-                        name="runCommandArgs"
-                        maxLength={4_000}
-                        placeholder="--short, --json"
-                        className={inputCls() + " font-mono"}
-                      />
-                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                        {tDfl("newPolicy.step4.runCommand.argsHint")}
-                      </p>
-                    </div>
-                    <div>
-                      <FieldLabel>{tDfl("newPolicy.step4.runCommand.timeout")}</FieldLabel>
-                      <input
-                        type="number"
-                        name="runCommandTimeoutMs"
-                        min={100}
-                        max={30_000}
-                        step={100}
-                        defaultValue={5_000}
-                        className={inputCls() + " font-mono"}
-                      />
-                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                        {tDfl("newPolicy.step4.runCommand.timeoutHint")}
-                      </p>
-                    </div>
-                  </div>
-                  <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
-                    <input
-                      type="checkbox"
-                      name="runCommandFailClosed"
-                      value="true"
-                      className="mt-0.5"
-                    />
-                    <span>{tDfl("newPolicy.step4.runCommand.failClosed")}</span>
-                  </label>
+                  <Step4bRunCommandFields
+                    locale={locale}
+                    defaultMode={state.runCommandMode}
+                    defaultRuntime={state.runCommandRuntime}
+                    defaultBody={state.runCommandBody}
+                    defaultScriptId={state.runCommandScriptId}
+                    defaultScriptName={state.runCommandScriptName}
+                    defaultArgs={state.runCommandArgs}
+                    defaultTimeoutMs={
+                      state.runCommandTimeoutMs
+                        ? Number.parseInt(state.runCommandTimeoutMs, 10) || 5000
+                        : 5000
+                    }
+                    defaultFailClosed={state.runCommandFailClosed === "true"}
+                    inputClassName={inputCls()}
+                    fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
+                  />
                 </div>
               </label>
             )

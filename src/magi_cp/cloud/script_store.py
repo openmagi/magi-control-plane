@@ -215,14 +215,24 @@ class ScriptStore:
 
     # ── public API ──────────────────────────────────────────────────
     def add(self, *, name: str, runtime: str, body: bytes) -> ScriptEntry:
-        """Persist a script. Idempotent on (sha256, name).
+        """Persist a script. Idempotent on sha256 of the body.
 
-        Re-uploading the SAME body under the SAME name returns the
-        existing row. Uploading the SAME body under a DIFFERENT name
-        returns a fresh entry pointing at the same body file (we
-        keep the existing row too — the dashboard can present both
-        names). Uploading a DIFFERENT body under an EXISTING name
-        raises :class:`ScriptStoreConflict`.
+        D63 review (P2 dedupe-semantics): the brief contract is
+        "dedupe by hash". Previously we tolerated multiple rows
+        sharing an id (different friendly names → one body file), but
+        DELETE/get/body_path consistently returned only the first
+        matching row, making the second name a phantom. Tightened
+        behavior:
+
+          - Re-uploading the SAME body under the SAME name returns
+            the existing row.
+          - Re-uploading the SAME body under a DIFFERENT name keeps
+            the EXISTING name (no rename, no second row). The caller
+            is told via the returned entry (whose `name` is the
+            original) which name actually shipped. This makes
+            id == hash a strict 1:1 invariant.
+          - Uploading a DIFFERENT body under an EXISTING name still
+            raises :class:`ScriptStoreConflict`.
         """
         clean_name = validate_name(name)
         runtime_t = validate_runtime(runtime)
@@ -238,9 +248,13 @@ class ScriptStore:
                     f"a different body (id={row.get('id')!r})"
                 )
 
-        # Idempotent: same name + same body → return existing.
+        # Dedupe-by-hash: any existing row with the same id wins,
+        # regardless of the caller's friendly name. Brief promises
+        # 1:1 id↔body — we keep the original name to preserve that
+        # invariant and avoid the dashboard showing two rows that
+        # share an id.
         for row in items:
-            if row.get("name") == clean_name and row.get("id") == digest:
+            if row.get("id") == digest:
                 return deserialize(row)
 
         entry = ScriptEntry(

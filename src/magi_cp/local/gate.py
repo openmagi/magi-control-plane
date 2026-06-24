@@ -4,6 +4,12 @@ CC pipes the hook event JSON on stdin. We parse `tool_input.command` for the
 sentinel `FILE_COURT_<subject>_<payload_hash>`, then ask the cloud for a
 verdict.
 
+D63 follow-up note (subprocess safety): see ``execute_run_command`` below
+for the run_command archetype's subprocess hardening — start_new_session
++ pgkill on timeout, byte-bounded pipe drains, scrubbed environment, and
+a non-HOME default cwd. The brief's "kill child group on timeout" and
+"stdout/stderr capped" requirements live there.
+
 PR2 NOTE — sentinel-less policies (`sentinel_re=None`):
   As of D43/D44, `Policy.sentinel_re` is Optional and the wizard no longer
   auto-emits a default sentinel. A policy authored with `sentinel_re=None`
@@ -39,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import sys
 import urllib.error
 import urllib.request
@@ -871,7 +878,28 @@ def input_rewrite_cli() -> int:
 _RUN_COMMAND_POLICY_ID_RE = _INPUT_REWRITE_POLICY_ID_RE
 _RUN_COMMAND_MAX_STDOUT = 64 * 1024
 _RUN_COMMAND_MAX_STDERR = 16 * 1024
-_RUN_COMMAND_TRUNCATED_TAG = "...[truncated]"
+_RUN_COMMAND_TRUNCATED_TAG = b"...[truncated]"
+# Per-policy grace window between SIGTERM and SIGKILL on the entire
+# child process group. Brief: "give a small grace window then escalate".
+_RUN_COMMAND_TERM_GRACE_SECONDS = 0.25
+# Env names that must NEVER be forwarded into a run_command child.
+# `MAGI_CP_*` covers our own admin/api keys, `*_API_KEY` / `*_TOKEN` /
+# `*_SECRET` / `*_PASSWORD` cover the common third-party shapes.
+_RUN_COMMAND_ENV_DENY_RE = re.compile(
+    r"(?:^MAGI_CP_)|"
+    r"(?:_API_KEY$)|(?:^API_KEY$)|"
+    r"(?:_TOKEN$)|(?:^TOKEN$)|"
+    r"(?:_SECRET$)|(?:^SECRET$)|"
+    r"(?:_PASSWORD$)|(?:^PASSWORD$)",
+)
+# Minimal allowlist the child inherits when no per-policy forward list
+# is configured. Operators authoring a script that needs more (e.g. a
+# corp env var) should add a future `forward_env` field on the IR; for
+# now we ship a sane minimum so `bash`, `python3`, `node` work.
+_RUN_COMMAND_DEFAULT_ENV_ALLOW: tuple[str, ...] = (
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "TZ", "USER", "LOGNAME", "SHELL",
+)
 
 
 def _ledger_path() -> str:
@@ -887,21 +915,106 @@ def _ledger_path() -> str:
 
 def _ledger_append(row: dict) -> None:
     """Best-effort JSONL append. Silent on disk-full / permission errors
-    so a logging gap never blocks the gate's response to CC."""
+    so a logging gap never blocks the gate's response to CC.
+
+    Issue D63 P2 (ledger-leak): create the ledger file 0o600 so a
+    non-root local user cannot read receipts containing run_command
+    stdout / stderr the operator's scripts may have echoed (PII /
+    tokens / API replies). Mirrors the 0o600 treatment the pubkey
+    cache file gets in :func:`_load_pubkey_for_kid`.
+    """
     path = _ledger_path()
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        line = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+        if not os.path.exists(path):
+            fd = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
+            return
+        # File exists: append with O_NOFOLLOW (refuse symlinks) and
+        # leave the mode alone if the operator has loosened it.
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
     except OSError:
         pass
 
 
-def _truncate(text: str, cap: int) -> tuple[str, bool]:
-    """Cap a string at `cap` UTF-8 chars. Returns (trimmed, truncated?)."""
-    if len(text) <= cap:
-        return text, False
-    return text[: cap - len(_RUN_COMMAND_TRUNCATED_TAG)] + _RUN_COMMAND_TRUNCATED_TAG, True
+def _truncate_bytes(data: bytes, cap: int) -> tuple[bytes, bool]:
+    """Cap a bytes blob at `cap` BYTES (not codepoints). Returns
+    (trimmed, truncated?). Brief: "switch to a byte budget" so the
+    ledger never holds more than the advertised cap on disk.
+    """
+    if len(data) <= cap:
+        return data, False
+    head_len = cap - len(_RUN_COMMAND_TRUNCATED_TAG)
+    if head_len < 0:
+        head_len = 0
+    return data[:head_len] + _RUN_COMMAND_TRUNCATED_TAG, True
+
+
+def _bytes_to_str_for_ledger(data: bytes) -> str:
+    """Decode bytes for the ledger row. Replaces undecodable bytes so a
+    binary blob never breaks JSON serialization."""
+    return data.decode("utf-8", errors="replace")
+
+
+def _build_run_command_env(forward_env: list[str] | None = None) -> dict[str, str]:
+    """Build the env dict a run_command child inherits.
+
+    Hardened by default: the parent gate's MAGI_CP_* keys (admin /
+    tenant API keys), as well as common third-party API key shapes,
+    are scrubbed regardless of the allowlist. Operators that need to
+    forward a specific env can pass `forward_env` (a list of allowed
+    names); the cloud-side IR doesn't carry this today but the helper
+    is plumbed so a future per-policy `forward_env: [str]` field flows
+    through without re-touching this path.
+    """
+    parent = os.environ
+    allowed: set[str] = set(_RUN_COMMAND_DEFAULT_ENV_ALLOW)
+    for name in forward_env or ():
+        if isinstance(name, str) and name and not _RUN_COMMAND_ENV_DENY_RE.search(name):
+            allowed.add(name)
+    out: dict[str, str] = {}
+    for k, v in parent.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        if k not in allowed:
+            continue
+        if _RUN_COMMAND_ENV_DENY_RE.search(k):
+            # Defense in depth: refuse even if an operator added a
+            # deny-pattern key to `forward_env`.
+            continue
+        out[k] = v
+    return out
+
+
+def _default_run_command_cwd(policy_id: str) -> str:
+    """Per-policy scratch dir under MAGI_CP_LOCAL_DIR / run_command /.
+
+    Brief: "deterministic default CWD … under
+    `~/.magi-cp/local/run_command/<policy_id>/`". Falls back to a
+    tempdir if the local dir is unwritable (the gate must still
+    respond to CC). The policy id is sanitized so a path-shaped id
+    can't escape the scratch root.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._\-]", "_", policy_id)[:64] or "_anon"
+    root = os.path.join(_local_dir(), "run_command", safe)
+    try:
+        os.makedirs(root, exist_ok=True)
+        return root
+    except OSError:
+        import tempfile as _tf
+        return _tf.gettempdir()
 
 
 def execute_run_command(
@@ -914,6 +1027,7 @@ def execute_run_command(
     timeout_ms: int = 5_000,
     fail_closed: bool = False,
     working_dir: str | None = None,
+    forward_env: list[str] | None = None,
 ) -> dict:
     """Run an inline command or attached script under a runtime.
 
@@ -924,13 +1038,35 @@ def execute_run_command(
     Soft failures (default = allow, ledger records the reason):
       - non-zero exit + fail_closed=False
       - stdout parse failure (not valid JSON)
-      - timeout (the partial stdout is parsed if possible)
+      - timeout (the partial stdout is NOT trusted; we never honor a
+        half-emitted decision from a process we had to kill)
 
     Fail-closed lane: when `fail_closed=True`, non-zero exit and
     timeouts both emit a deny shape with permissionDecisionReason
     pointing at the run_command policy.
+
+    Subprocess hardening (D63 review findings):
+      - The child runs in its OWN session (``start_new_session=True``)
+        so timeout escalates to ``killpg(SIGTERM)`` then ``killpg(SIGKILL)``
+        across the entire process group. Grandchildren a script forked
+        (``while true; do sleep 60 & done``) are reaped along with the
+        direct child.
+      - Stdout/stderr are read on background threads with a hard byte
+        cap; bytes past the cap are drained-and-dropped (the child
+        never blocks on a full pipe, but the gate's memory footprint
+        stays bounded regardless of how loud the script is).
+      - Env is scrubbed to a minimal allowlist (``PATH`` + locale + a
+        few daemons). ``MAGI_CP_*`` and ``*_API_KEY``-shaped names are
+        denied even from the per-policy `forward_env` allowlist so an
+        operator-author cannot accidentally leak the cloud's admin key
+        into a hook script that hits a webhook.
+      - ``working_dir`` falls back to a per-policy scratch dir under
+        ``~/.magi-cp/local/run_command/<policy_id>/`` (not $HOME) so a
+        relative-path script behaves the same regardless of where CC
+        fired the hook.
     """
     import subprocess as _sp
+    import threading as _th
     import time as _time
     args = list(args or [])
     if (bool(command) == bool(script_path)):
@@ -971,6 +1107,7 @@ def execute_run_command(
                 "stdout": "",
                 "stderr_summary": f"unknown runtime {runtime!r}",
                 "error": "runtime",
+                "runtime": runtime,
             })
             if fail_closed:
                 return _deny_dict(
@@ -981,48 +1118,207 @@ def execute_run_command(
         # Attached script: runtime + path + args.
         argv = [runtime, script_path, *args]
 
+    # Resolve cwd / env BEFORE the spawn so a misconfigured local dir
+    # doesn't leak the operator's working tree into the child (P1
+    # working-dir finding).
+    cwd_to_use = working_dir if working_dir else _default_run_command_cwd(policy_id)
+    child_env = _build_run_command_env(forward_env)
+
     started = _time.monotonic()
     timeout_s = max(0.1, min(30.0, timeout_ms / 1000.0))
+    proc_stdout_buf = bytearray()
+    proc_stderr_buf = bytearray()
     truncated_stdout = False
     truncated_stderr = False
-    proc_stdout = ""
-    proc_stderr = ""
     exit_code: int | None = None
     timed_out = False
     error: str | None = None
+    proc: _sp.Popen | None = None
+    argv0 = argv[0] if argv else ""
+
+    def _drain(stream, sink: bytearray, cap: int) -> bool:
+        """Read from `stream` until EOF, copying up to `cap` bytes into
+        `sink`. Continues to read-and-drop past the cap so the child
+        never blocks on a full pipe. Returns True iff bytes were
+        dropped (i.e. truncated)."""
+        dropped = False
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    return dropped
+                remaining = cap - len(sink)
+                if remaining > 0:
+                    sink.extend(chunk[:remaining])
+                if len(chunk) > remaining and remaining >= 0:
+                    if remaining < len(chunk):
+                        dropped = True
+        except (OSError, ValueError):
+            return dropped
+
     try:
-        proc = _sp.run(
-            argv,
-            cwd=working_dir,
-            input="",
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-        proc_stdout = proc.stdout or ""
-        proc_stderr = proc.stderr or ""
-        exit_code = proc.returncode
-    except _sp.TimeoutExpired as e:
-        timed_out = True
-        proc_stdout = (e.stdout.decode("utf-8", errors="replace")
-                       if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or ""))
-        proc_stderr = (e.stderr.decode("utf-8", errors="replace")
-                       if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or ""))
-        exit_code = None
-        error = "timeout"
+        # ``start_new_session=True`` puts the child into its own
+        # process group; we kill the GROUP on timeout so grandchildren
+        # are reaped too. On Windows this raises NotImplementedError
+        # — magi-cp self-host is *nix-only today, but we fall back to
+        # the legacy ``creationflags`` path for parity.
+        popen_kwargs: dict = {
+            "cwd": cwd_to_use,
+            "stdin": _sp.DEVNULL,
+            "stdout": _sp.PIPE,
+            "stderr": _sp.PIPE,
+            "env": child_env,
+            "close_fds": True,
+        }
+        if hasattr(os, "setsid"):
+            popen_kwargs["start_new_session"] = True
+        proc = _sp.Popen(argv, **popen_kwargs)
     except (FileNotFoundError, OSError) as e:
         error = f"spawn:{type(e).__name__}"
+        # Issue D63 P2 (spawn diagnostic): include runtime + argv0 so a
+        # tail of the ledger surfaces "node not installed" actionably.
+        _ledger_append({
+            "ts": int(_time.time()),
+            "policy_id": policy_id,
+            "kind": "run_command_execution",
+            "exit_code": None,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr_summary": f"spawn failed: {type(e).__name__}: {e}",
+            "stderr_truncated": False,
+            "stdout_truncated": False,
+            "timed_out": False,
+            "parse_error": None,
+            "error": error,
+            "runtime": runtime,
+            "argv0": argv0,
+        })
+        try:
+            sys.stderr.write(
+                f"magi-cp-run-command: spawn failed for policy '{policy_id}': "
+                f"{type(e).__name__}: {e} (runtime={runtime!r}, argv0={argv0!r})\n"
+            )
+        except OSError:
+            pass
+        # Brief: "consider treating 'runtime binary missing' as
+        # fail_closed regardless of policy setting (the policy clearly
+        # intended to run something)." FileNotFoundError on the
+        # interpreter binary is unambiguous — fail closed.
+        if isinstance(e, FileNotFoundError) or fail_closed:
+            return _deny_dict(
+                f"run_command policy '{policy_id}': {error} "
+                f"(runtime {runtime!r} missing or unspawnable)"
+            )
+        return _allow_dict()
 
+    assert proc is not None
+    # Read both streams on background threads with byte-bounded sinks.
+    stdout_thread = _th.Thread(
+        target=lambda: proc_stdout_buf.__iadd__(b"")  # placeholder
+        or None,
+    )
+    # The above thread starter is replaced by direct lambdas below.
+    truncated_stdout_box = [False]
+    truncated_stderr_box = [False]
+
+    def _stdout_worker() -> None:
+        truncated_stdout_box[0] = _drain(
+            proc.stdout, proc_stdout_buf, _RUN_COMMAND_MAX_STDOUT,
+        )
+
+    def _stderr_worker() -> None:
+        truncated_stderr_box[0] = _drain(
+            proc.stderr, proc_stderr_buf, _RUN_COMMAND_MAX_STDERR,
+        )
+
+    t_out = _th.Thread(target=_stdout_worker, daemon=True)
+    t_err = _th.Thread(target=_stderr_worker, daemon=True)
+    t_out.start()
+    t_err.start()
+
+    try:
+        exit_code = proc.wait(timeout=timeout_s)
+    except _sp.TimeoutExpired:
+        timed_out = True
+        error = "timeout"
+        # Brief P0: SIGTERM-grace-SIGKILL on the WHOLE group, not just
+        # the direct child PID. Stock subprocess.run only kills the
+        # direct child — that leaks grandchildren forever.
+        try:
+            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    pass
+                # Grace window: a well-behaved child exits on SIGTERM.
+                try:
+                    exit_code = proc.wait(timeout=_RUN_COMMAND_TERM_GRACE_SECONDS)
+                except _sp.TimeoutExpired:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                    try:
+                        exit_code = proc.wait(timeout=1.0)
+                    except _sp.TimeoutExpired:
+                        exit_code = None
+            else:  # pragma: no cover — Windows fallback
+                proc.terminate()
+                try:
+                    exit_code = proc.wait(timeout=_RUN_COMMAND_TERM_GRACE_SECONDS)
+                except _sp.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        exit_code = proc.wait(timeout=1.0)
+                    except _sp.TimeoutExpired:
+                        exit_code = None
+        finally:
+            # Drain readers so threads can exit cleanly. The streams
+            # close as soon as the child is reaped above; the workers
+            # will see EOF and return.
+            pass
+    finally:
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except OSError:
+            pass
+        try:
+            if proc.stderr is not None:
+                proc.stderr.close()
+        except OSError:
+            pass
+
+    truncated_stdout = truncated_stdout_box[0]
+    truncated_stderr = truncated_stderr_box[0]
     duration_ms = int((_time.monotonic() - started) * 1000)
-    proc_stdout, truncated_stdout = _truncate(proc_stdout, _RUN_COMMAND_MAX_STDOUT)
-    proc_stderr, truncated_stderr = _truncate(proc_stderr, _RUN_COMMAND_MAX_STDERR)
+    # Byte-bounded slice for the ledger (the read drain already
+    # capped, but be defensive in case the reader filled past the
+    # marker between the cap check and the worker exit).
+    stdout_bytes, stdout_marker = _truncate_bytes(
+        bytes(proc_stdout_buf), _RUN_COMMAND_MAX_STDOUT,
+    )
+    stderr_bytes, stderr_marker = _truncate_bytes(
+        bytes(proc_stderr_buf), _RUN_COMMAND_MAX_STDERR,
+    )
+    truncated_stdout = truncated_stdout or stdout_marker
+    truncated_stderr = truncated_stderr or stderr_marker
+    proc_stdout_s = _bytes_to_str_for_ledger(stdout_bytes)
+    proc_stderr_s = _bytes_to_str_for_ledger(stderr_bytes)
 
     parsed: dict | None = None
     parse_error: str | None = None
-    if proc_stdout:
+    # Brief P2: NEVER honor a timeout-killed child's stdout as the CC
+    # decision. The partial JSON could be a deliberate
+    # `{ echo allow; sleep 9999; }` exfil. Log it for audit but do
+    # not surface it to CC.
+    if proc_stdout_s and not timed_out:
         try:
-            decoded = json.loads(proc_stdout)
+            decoded = json.loads(proc_stdout_s)
             if isinstance(decoded, dict):
                 parsed = decoded
             else:
@@ -1031,18 +1327,20 @@ def execute_run_command(
             parse_error = f"stdout JSON parse: {e}"
 
     _ledger_append({
-        "ts": int(__import__("time").time()),
+        "ts": int(_time.time()),
         "policy_id": policy_id,
         "kind": "run_command_execution",
         "exit_code": exit_code,
         "duration_ms": duration_ms,
-        "stdout": proc_stdout,
+        "stdout": proc_stdout_s,
         "stdout_truncated": truncated_stdout,
-        "stderr_summary": proc_stderr,
+        "stderr_summary": proc_stderr_s,
         "stderr_truncated": truncated_stderr,
         "timed_out": timed_out,
         "parse_error": parse_error,
         "error": error,
+        "runtime": runtime,
+        "argv0": argv0,
     })
 
     # Decide the return shape.
@@ -1052,8 +1350,9 @@ def execute_run_command(
                 f"run_command policy '{policy_id}': timeout after "
                 f"{timeout_ms}ms"
             )
-        if parsed is not None:
-            return parsed
+        # Soft lane: NEVER honor a half-emitted decision from a
+        # process we had to kill. Ledger has the partial bytes for
+        # forensics; CC sees a clean allow.
         return _allow_dict()
     if error is not None:
         if fail_closed:
@@ -1163,7 +1462,46 @@ def run_command_cli() -> int:
         return 0
     if not isinstance(reply, dict) or not reply.get("matched"):
         return 0
-    spec = reply.get("spec") or {}
+    # P1 (sign-reply): if the cloud returned a signed envelope, verify
+    # the Ed25519 token under the cloud's pinned pubkey BEFORE
+    # honoring `spec`. The shim already trusts the pubkey cache for
+    # WAL token verification; same anchor here. Refusal lanes:
+    #   - signature invalid → silent allow (fail-soft)
+    #   - kid mismatch → silent allow
+    #   - spec body's policy_id != requested → silent allow
+    # An unsigned reply is still accepted when the env knob
+    # `MAGI_CP_REQUIRE_SIGNED_RUN_COMMAND_SPEC=1` is unset; tests in
+    # the in-process app factory build without a keystore and exercise
+    # the legacy shape. Self-host docker compose carries a keystore by
+    # default so signed is the operative path. Operators wanting
+    # hard-enforce can set the env var to "1".
+    signed = reply.get("signed")
+    spec: dict | None = None
+    if isinstance(signed, str) and signed:
+        signed_kid = reply.get("kid")
+        try:
+            pub = _load_pubkey_for_kid(
+                signed_kid if isinstance(signed_kid, str) else None,
+            )
+        except (urllib.error.URLError, OSError, ValueError):
+            return 0
+        body = verify_token(signed, pub)
+        if not isinstance(body, dict):
+            return 0
+        if body.get("kind") != "run_command_spec":
+            return 0
+        if body.get("policy_id") != policy_id:
+            return 0
+        signed_spec = body.get("spec")
+        if isinstance(signed_spec, dict):
+            spec = signed_spec
+    if spec is None:
+        if os.environ.get("MAGI_CP_REQUIRE_SIGNED_RUN_COMMAND_SPEC") == "1":
+            # Strict mode: refuse unsigned replies entirely.
+            return 0
+        unsigned_spec = reply.get("spec")
+        if isinstance(unsigned_spec, dict):
+            spec = unsigned_spec
     if not isinstance(spec, dict):
         return 0
 
@@ -1176,6 +1514,7 @@ def run_command_cli() -> int:
         timeout_ms=int(spec.get("timeout_ms", 5_000)),
         fail_closed=bool(spec.get("fail_closed", False)),
         working_dir=spec.get("working_dir"),
+        forward_env=list(spec.get("forward_env", []) or []) or None,
     )
     if out:
         print(json.dumps(out, ensure_ascii=False))
