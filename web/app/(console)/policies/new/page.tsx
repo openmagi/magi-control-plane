@@ -2,6 +2,7 @@ import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
+import SteeringAwareField from "./_components/SteeringAwareField"
 import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
@@ -16,6 +17,7 @@ import {
   lintShaclTargets as payloadLintShaclTargets,
   type FieldDescriptor as PayloadFieldDescriptor,
 } from "@/lib/payload-schemas"
+import type { SteerableConditionKind } from "@/lib/payload-steering"
 import { getT } from "@/lib/i18n/server"
 import {
   Badge, Card, CodeBlock, ErrorState,
@@ -133,6 +135,10 @@ interface WizardState {
   action?: Action
   id?: string
   description?: string
+  // P9 (D49): suppression of the cumulative-judgment steering tip is
+  // session-scoped, owned by SteeringAwareField via sessionStorage.
+  // Intentionally not part of URL state — a Cmd-R / paste-link should
+  // not survive a dismissal.
 }
 
 /* ─── IR + summary builders ───────────────────────────────────────── */
@@ -463,6 +469,9 @@ async function advanceWizard(formData: FormData): Promise<void> {
   if (stepIn === 1 && lifecycle === "pre_final") {
     nextStep = 3
   }
+
+  // P9 (D49): cumulative-tip dismissal lives in sessionStorage owned
+  // by SteeringAwareField; nothing to scrub off the URL here.
 
   params.set("step", String(nextStep))
   redirect(`/policies/new?${params.toString()}`)
@@ -1501,6 +1510,53 @@ function PayloadFieldChips({
   )
 }
 
+/** P9 (D49): build the two same-page switch-hrefs that the
+ * SteeringAwareField client island uses as a starting point. The
+ * island then splices the live in-flight text into them on each
+ * keystroke so the user does not lose what they have typed when they
+ * click "Switch to evidence_ref" / "Switch to pre_final + evidence_ref".
+ *
+ * Splitting URL construction (server) from live-text mutation
+ * (client) keeps the URL contract authoritative server-side and lets
+ * the client only own what it must own: the live textbox value and
+ * the dismissal flag. */
+function steeringBaseHrefs(state: WizardState): {
+  switchHref: string
+  switchPreFinalHref: string
+} {
+  return {
+    switchHref: buildWizardHref(
+      { ...state, conditionKind: "evidence_ref" }, 3,
+    ),
+    switchPreFinalHref: buildWizardHref(
+      { ...state, lifecycle: "pre_final", conditionKind: "evidence_ref" }, 1,
+    ),
+  }
+}
+
+/** Snapshot of the wizard state stripped to plain JSON for the
+ * SteeringAwareField client island. (`state` itself includes optional
+ * `Lifecycle` / `Action` enums that are server-only types; the client
+ * only needs the strings.) */
+function steeringSnapshot(
+  state: WizardState,
+): import("./_components/SteeringAwareField").WizardSnapshot {
+  return {
+    lifecycle: state.lifecycle,
+    toolScope: state.toolScope,
+    conditionKind: state.conditionKind,
+    fetchDomain: state.fetchDomain,
+    allowlist: state.allowlist,
+    pattern: state.pattern,
+    llmCriterion: state.llmCriterion,
+    evidenceRefs: state.evidenceRefs,
+    shaclTtl: state.shaclTtl,
+    action: state.action,
+    id: state.id,
+    description: state.description,
+  }
+}
+
 function Step3Condition({
   t, locale, state, wiredSteps, action,
 }: {
@@ -1547,6 +1603,16 @@ function Step3Condition({
   }
   const previewBadge = ko ? "프리뷰" : "preview"
   const prevStep = state.lifecycle === "pre_final" ? 1 : 2
+
+  // P9 (D49): the per-kind cumulative-judgment tip lives in a client
+  // island (SteeringAwareField). It needs two same-page hrefs as a
+  // starting point — the island then splices live in-flight text in.
+  const { switchHref: baseSwitchHref, switchPreFinalHref: baseSwitchPreFinalHref }
+    = steeringBaseHrefs(state)
+  const evidenceAllowed = (CONDITION_KINDS_BY_LIFECYCLE[lifecycle] as readonly ConditionKind[])
+    .includes("evidence_ref")
+  const wizardSnap = steeringSnapshot(state)
+  const fieldInputCls = inputCls()
 
   return (
     <StepShell
@@ -1624,15 +1690,21 @@ function Step3Condition({
                       targetTextareaId="w-regex-pattern"
                       variant="path"
                     />
-                    <input
-                      id="w-regex-pattern"
+                    <SteeringAwareField
+                      kind="regex"
+                      locale={locale}
+                      state={wizardSnap}
+                      evidenceAllowed={evidenceAllowed}
+                      baseSwitchHref={baseSwitchHref}
+                      baseSwitchPreFinalHref={baseSwitchPreFinalHref}
+                      inputId="w-regex-pattern"
+                      initialValue={state.pattern ?? ""}
+                      className={fieldInputCls}
+                      fieldElement="input"
                       name="pattern"
-                      maxLength={2000}
-                      defaultValue={state.pattern ?? ""}
                       placeholder="AKIA[A-Z0-9]{16}"
-                      spellCheck={false}
-                      autoComplete="off"
-                      className={inputCls() + " font-mono"}
+                      maxLength={2000}
+                      monospace
                     />
                   </div>
                 )}
@@ -1648,18 +1720,23 @@ function Step3Condition({
                       targetTextareaId={`w-llm-${k}`}
                       variant="path"
                     />
-                    <Textarea
-                      id={`w-llm-${k}`}
-                      name="llmCriterion"
+                    <SteeringAwareField
+                      kind="llm_critic"
+                      locale={locale}
+                      state={wizardSnap}
+                      evidenceAllowed={evidenceAllowed}
+                      baseSwitchHref={baseSwitchHref}
+                      baseSwitchPreFinalHref={baseSwitchPreFinalHref}
+                      inputId={`w-llm-${k}`}
+                      initialValue={state.llmCriterion ?? ""}
+                      className={fieldInputCls}
+                      fieldElement="textarea"
                       rows={3}
-                      defaultValue={state.llmCriterion ?? ""}
+                      name="llmCriterion"
                       placeholder={ko
                         ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
                         : "e.g. Does the output contain a guess the user did not ask for?"}
-                      spellCheck={false}
-                      autoComplete="off"
                       monospace
-                      label=""
                     />
                   </div>
                 )}
@@ -1699,16 +1776,21 @@ function Step3Condition({
                       targetTextareaId="w-shacl"
                       variant="shacl-stub"
                     />
-                    <Textarea
-                      id="w-shacl"
-                      name="shaclTtl"
+                    <SteeringAwareField
+                      kind="shacl"
+                      locale={locale}
+                      state={wizardSnap}
+                      evidenceAllowed={evidenceAllowed}
+                      baseSwitchHref={baseSwitchHref}
+                      baseSwitchPreFinalHref={baseSwitchPreFinalHref}
+                      inputId="w-shacl"
+                      initialValue={state.shaclTtl ?? ""}
+                      className={fieldInputCls}
+                      fieldElement="textarea"
                       rows={6}
-                      defaultValue={state.shaclTtl ?? ""}
+                      name="shaclTtl"
                       placeholder={"@prefix sh:   <http://www.w3.org/ns/shacl#> .\n@prefix magi: <https://magi.openmagi.ai/cc/hook#> .\n…"}
-                      spellCheck={false}
-                      autoComplete="off"
                       monospace
-                      label=""
                     />
                   </div>
                 )}
