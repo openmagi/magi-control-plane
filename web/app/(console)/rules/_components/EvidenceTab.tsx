@@ -156,12 +156,25 @@ export function EvidenceTab({
                         ({t("rules.evidenceRecords.recentEmissionsWindow")})
                       </span>
                     </div>
-                    <Link
-                      href={ledgerHref({ verifiers: [row.id] })}
-                      className="text-[var(--color-accent-light)] hover:underline"
-                    >
-                      {t("rules.evidenceRecords.viewInLedger")}
-                    </Link>
+                    {/*
+                      Inline rows aggregate every policy that authored a
+                      requires entry of this kind under one generic ledger
+                      step (`inline_<kind>`); a ledger filter on that step
+                      cannot be narrowed to a single policy's emissions.
+                      Hide the deep link on inline rows to avoid the
+                      misleading impression that the link drills into a
+                      specific policy. Per-policy drill-down lives on the
+                      policy detail page, reachable from the used-by list
+                      below.
+                    */}
+                    {row.origin !== "inline" && (
+                      <Link
+                        href={ledgerHref({ verifiers: [row.id] })}
+                        className="text-[var(--color-accent-light)] hover:underline"
+                      >
+                        {t("rules.evidenceRecords.viewInLedger")}
+                      </Link>
+                    )}
                   </div>
 
                   {row.used_by_policies.length > 0 && (
@@ -170,7 +183,12 @@ export function EvidenceTab({
                         {t("rules.evidenceRecords.usedBy")}:
                       </span>
                       {row.used_by_policies.map((pid, i) => (
-                        <span key={pid}>
+                        // Position-aware key so a backend that someday
+                        // surfaces duplicate policy ids in this list
+                        // (today deduped, but the type system does not
+                        // enforce uniqueness) does not trigger React
+                        // duplicate-key warnings.
+                        <span key={`${pid}:${i}`}>
                           {i > 0 && ", "}
                           <Link
                             href={`/policies/${encodeURI(pid)}`}

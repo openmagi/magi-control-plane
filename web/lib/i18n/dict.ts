@@ -338,36 +338,49 @@ const KO_RAW = {
   "presets.spec.inputSchema": "입력 스키마",
   "presets.spec.notWired": "magi-agent 카탈로그 항목 (이 런타임에 미연결). 정책 IR 가 사용할 수 있는 자리 표시자.",
 
-  /* ── rules (Policy=first-class + 2 derived read-only tabs) ───── */
+  /* ── rules (Policy=first-class + 2 derived read-only tabs) ─────
+   * D56e: tabs are Policies / Checks / Evidence records.
+   *
+   * Surviving legacy keys (DO NOT delete without a sweep):
+   *   rules.evidence.source.{builtin,custom,derived}
+   *     — still consumed by /ledger filter chip card titles
+   *       (web/app/(console)/ledger/page.tsx).
+   *   rules.evidence.missing / rules.evidence.missingHint
+   *     — still used on the per-policy detail screen when a step is
+   *       referenced but no verifier is registered.
+   *
+   * All `rules.tab.evidence.hint`, `rules.tab.conditions.hint`,
+   * `rules.summary.evidence`, `rules.summary.conditions`,
+   * `rules.empty.evidence`, `rules.empty.conditions`,
+   * `rules.evidence.usedBy`, `rules.condition.*` keys were removed
+   * here (their sole consumers were the deleted Verifiers + Conditions
+   * tabs). The label-side `rules.tab.evidence` slot was renamed to
+   * `rules.tab.evidenceRecords` so the key shape encodes the new
+   * "evidence record types" semantic and no external translation
+   * memory silently renders the old `Evidence`/`Verifiers` label for
+   * the new content. */
   "rules.title": "룰",
   "rules.description": "Policy 가 유일하게 편집되는 1차 entity. Verifier 는 런타임에서 실행되는 검증, evidence 는 verifier 가 {ledger} 에 남기는 기록입니다.",
   "rules.description.ledgerLink": "감사 원장",
   "rules.tab.policies": "Policies",
-  "rules.tab.evidence": "Evidence",
-  "rules.tab.conditions": "Conditions",
   "rules.tab.checks": "Checks",
-  "rules.tab.policies.hint": "어느 hook 시점, 어느 도구에서 어떤 evidence 가 pass 여야 하는지 묶는 룰, 편집/추가/삭제 가능.",
-  "rules.tab.evidence.hint": "Verifier 는 입력을 받아 통과 / 검토 / 차단 / 해당없음 판정을 계산하는 함수입니다. 정책(Policies 탭)이 어느 시점·도구에서 이 판정을 어떤 조치(차단 / 사람 승인 / 기록)로 묶을지 결정합니다. 실행되면 한 줄짜리 기록이 감사 원장에 남습니다. 정책 안에 인라인으로 들어가는 체크(패턴 검사, 구조 검사, AI 심사)는 Conditions 탭에서 확인할 수 있습니다. Read-only.",
-  "rules.tab.conditions.hint": "Policy 에서 추출된 sentinel_re 와 tool matcher. Read-only, policy 를 편집하면 변경됩니다.",
-  "rules.tab.checks.hint": "Check 는 입력을 받아 판정을 내리는 순수 함수입니다. 빌트인 verifier, 직접 등록한 custom verifier, 정책 안에 인라인으로 작성한 regex / llm_critic / shacl 본문이 모두 한 곳에 모입니다. Read-only — 인라인 체크는 원본 정책을 편집하면 같이 변경됩니다.",
+  "rules.tab.evidenceRecords": "Evidence records",
+  "rules.tab.policies.hint": "어느 hook 시점, 어느 도구에서 어떤 evidence 가 pass 여야 하는지 묶는 룰, 편집/추가/삭제 가능. Sentinel 패턴과 도구 매처는 각 정책 상세 카드에서 확인할 수 있습니다.",
+  "rules.tab.checks.hint": "Check 는 입력을 받아 판정을 내리는 순수 함수입니다. 빌트인 verifier, 직접 등록한 custom verifier, 정책 안에 인라인으로 작성한 패턴 검사 / 구조 검사 / AI 심사 본문이 모두 한 곳에 모입니다. Read-only, 인라인 체크는 원본 정책을 편집하면 같이 변경됩니다.",
   "rules.tab.evidenceRecords.hint": "Evidence record 는 verifier 가 실행될 때 감사 원장에 남기는 한 줄짜리 기록의 종류입니다. 각 카드는 record id, 출처, payload 스키마, 가능한 판정, 최근 24 시간 발생 건수와 감사 원장 바로가기를 보여줍니다.",
   "rules.summary.policies": "정책 {n}개",
-  "rules.summary.evidence": "{total}개 · 빌트인 {builtin}개 · 정책 참조 {derived}개",
-  "rules.summary.conditions": "{n}개",
   "rules.summary.checks": "총 {total} · 빌트인 {builtin} · 커스텀 {custom} · 인라인 {inline}",
   "rules.summary.evidenceRecords": "총 {total} · 빌트인 {builtin} · 커스텀 {custom} · 인라인 {inline}",
   "rules.newButton": "새 정책 만들기",
   "rules.empty.policies": "정책이 없습니다.",
   "rules.empty.policies.cta": "정책 작성하기",
-  "rules.empty.evidence": "Verifier 가 없습니다.",
-  "rules.empty.conditions": "Condition 이 없습니다, 정책을 만들면 여기 추출됩니다.",
   "rules.empty.checks": "Check 가 없습니다.",
   "rules.empty.evidenceRecords": "Evidence record 종류가 없습니다.",
   "rules.checks.kind.builtin": "빌트인",
   "rules.checks.kind.custom": "커스텀",
-  "rules.checks.kind.inlineRegex": "인라인 regex",
-  "rules.checks.kind.inlineLlmCritic": "인라인 LLM critic",
-  "rules.checks.kind.inlineShacl": "인라인 SHACL",
+  "rules.checks.kind.inlineRegex": "패턴 검사",
+  "rules.checks.kind.inlineLlmCritic": "AI 심사",
+  "rules.checks.kind.inlineShacl": "구조 검사",
   "rules.checks.source": "출처",
   "rules.checks.usedBy": "사용 정책",
   "rules.checks.inline.body": "본문 미리보기",
@@ -384,7 +397,6 @@ const KO_RAW = {
   "rules.evidence.source.builtin": "빌트인",
   "rules.evidence.source.custom": "커스텀",
   "rules.evidence.source.derived": "정책 참조",
-  "rules.evidence.usedBy": "사용 정책",
   "rules.evidence.missing": "미연결",
   "rules.evidence.missingHint": "정책이 이 step 을 요구하지만 연결된 verifier 가 없습니다, runtime 에서 deny 됩니다.",
   /* ── D54: prebuilt policy templates ─────────────────────────── */
@@ -395,12 +407,6 @@ const KO_RAW = {
   "rules.prebuilt.action": "Action",
   "rules.prebuilt.useThis": "Use this",
   "rules.prebuilt.useThis.aria": "{title} 프리빌트 정책을 raw 에디터에서 열기",
-  "rules.condition.kind.sentinel": "Sentinel regex",
-  "rules.condition.kind.tool": "Tool matcher",
-  "rules.condition.kind.regex": "Regex",
-  "rules.condition.kind.llm":   "LLM critic",
-  "rules.condition.kind.shacl": "SHACL shape",
-  "rules.condition.fromPolicy": "정책",
   "rules.newVerifierButton": "새 verifier",
   "rules.verifier.expander.toggle": "세부 정보",
   "rules.verifier.expander.toggleWithStep": "{step} verifier 세부 정보",
@@ -898,35 +904,31 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "presets.spec.inputSchema": "Input schema",
   "presets.spec.notWired": "magi-agent catalog entry (not wired in this runtime). Placeholder for policy IR consumption.",
 
+  /* D56e: tabs are Policies / Checks / Evidence records. See the ko
+   * block (above) for the rationale and the list of surviving legacy
+   * keys (`rules.evidence.source.*`, `rules.evidence.missing*`). */
   "rules.title": "Rules",
   "rules.description": "Policy is the only first-class entity you edit. A verifier is the runtime check; evidence is the record it emits to the {ledger}.",
   "rules.description.ledgerLink": "audit ledger",
   "rules.tab.policies": "Policies",
-  "rules.tab.evidence": "Evidence",
-  "rules.tab.conditions": "Conditions",
   "rules.tab.checks": "Checks",
-  "rules.tab.policies.hint": "Bind a hook event + tool matcher to a required evidence verdict. Edit / add / disable.",
-  "rules.tab.evidence.hint": "A verifier is a function that turns its inputs into a verdict (pass, review, deny, or not applicable). The policy on the Policies tab decides which hook event and tool that verdict binds to, and which action follows (block, ask the user, or just record). Each run writes one line to the audit ledger. Inline checks that live inside a policy (pattern matches, structure checks, AI judges) surface under Conditions. Read-only.",
-  "rules.tab.conditions.hint": "Sentinel patterns and tool matchers extracted from your policies. Read-only, edit the originating policy to change them.",
-  "rules.tab.checks.hint": "A check is a pure function that turns inputs into a verdict. Built-in verifiers, your own custom verifiers, and the inline regex / llm_critic / shacl bodies authored inside policies all show up here. Read-only — inline checks change when you edit the originating policy.",
+  "rules.tab.evidenceRecords": "Evidence records",
+  "rules.tab.policies.hint": "Bind a hook event + tool matcher to a required evidence verdict. Edit / add / disable. Sentinel patterns and tool matchers live on the per-policy detail card.",
+  "rules.tab.checks.hint": "A check is a pure function that turns inputs into a verdict. Built-in verifiers, your own custom verifiers, and the inline pattern / structure / AI-judge bodies authored inside policies all show up here. Read-only, inline checks change when you edit the originating policy.",
   "rules.tab.evidenceRecords.hint": "An evidence record is one row in the audit ledger emitted by a check at runtime. Each card shows the record id, origin, payload schema, possible verdicts, the count of emissions in the last 24 hours, and a deep link into the ledger filtered by that record.",
   "rules.summary.policies": "{n} policies",
-  "rules.summary.evidence": "{total} · {builtin} built-in · {derived} from policies",
-  "rules.summary.conditions": "{n}",
   "rules.summary.checks": "{total} total · {builtin} built-in · {custom} custom · {inline} inline",
   "rules.summary.evidenceRecords": "{total} total · {builtin} built-in · {custom} custom · {inline} inline",
   "rules.newButton": "New policy",
   "rules.empty.policies": "No policies yet.",
   "rules.empty.policies.cta": "Author a policy",
-  "rules.empty.evidence": "No verifiers yet.",
-  "rules.empty.conditions": "No conditions yet. Author a policy and they'll appear here.",
   "rules.empty.checks": "No checks yet.",
   "rules.empty.evidenceRecords": "No evidence record types yet.",
   "rules.checks.kind.builtin": "Built-in",
   "rules.checks.kind.custom": "Custom",
-  "rules.checks.kind.inlineRegex": "Inline regex",
-  "rules.checks.kind.inlineLlmCritic": "Inline LLM critic",
-  "rules.checks.kind.inlineShacl": "Inline SHACL",
+  "rules.checks.kind.inlineRegex": "Pattern match",
+  "rules.checks.kind.inlineLlmCritic": "AI judge",
+  "rules.checks.kind.inlineShacl": "Structure check",
   "rules.checks.source": "Source",
   "rules.checks.usedBy": "Used by",
   "rules.checks.inline.body": "Body preview",
@@ -943,7 +945,6 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.evidence.source.builtin": "Built-in",
   "rules.evidence.source.custom": "Custom",
   "rules.evidence.source.derived": "From policy",
-  "rules.evidence.usedBy": "Used by",
   "rules.evidence.missing": "Unbound",
   "rules.evidence.missingHint": "A policy requires this step but no verifier is wired, the runtime will deny at /verify time.",
   /* D54: prebuilt policy templates. */
@@ -954,12 +955,6 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.action": "Action",
   "rules.prebuilt.useThis": "Use this",
   "rules.prebuilt.useThis.aria": "Open the {title} prebuilt policy in the raw editor",
-  "rules.condition.kind.sentinel": "Sentinel regex",
-  "rules.condition.kind.tool": "Tool matcher",
-  "rules.condition.kind.regex": "Regex",
-  "rules.condition.kind.llm":   "LLM critic",
-  "rules.condition.kind.shacl": "SHACL shape",
-  "rules.condition.fromPolicy": "From policy",
   "rules.newVerifierButton": "New verifier",
   "rules.verifier.expander.toggle": "Details",
   "rules.verifier.expander.toggleWithStep": "{step} verifier details",

@@ -4,12 +4,14 @@ import path from "node:path"
 
 /**
  * D56e: Source-level invariants for the rules page after the
- * three-tab reorganization (Policies / Checks / Evidence).
+ * three-tab reorganization (Policies / Checks / Evidence records).
  *
  * The Verifiers + Conditions tabs collapsed into a single Checks tab.
- * The old `tab=evidence` URL parameter is repurposed for the new
- * Evidence record-types catalog. Legacy `tab=conditions` and
- * `tab=verifiers` URLs redirect to `tab=checks` for bookmark grace.
+ * The new evidence record-types catalog lives under the dedicated
+ * `tab=evidence-types` URL parameter (NOT `tab=evidence`, which used
+ * to render the Verifiers tab pre-D56e and would silently land on a
+ * different page after the rename). Legacy `tab=conditions`,
+ * `tab=verifiers`, and `tab=evidence` URLs redirect for bookmark grace.
  */
 describe("rules page source invariants (D56e)", () => {
   const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
@@ -21,18 +23,20 @@ describe("rules page source invariants (D56e)", () => {
   )
 
   // ── Tab structure ─────────────────────────────────────────────
-  it("declares the three-tab structure: policies, checks, evidence", () => {
-    expect(src).toMatch(/Tab\s*=\s*"policies"\s*\|\s*"checks"\s*\|\s*"evidence"/)
+  it("declares the three-tab structure: policies, checks, evidence-types", () => {
+    expect(src).toMatch(
+      /Tab\s*=\s*"policies"\s*\|\s*"checks"\s*\|\s*"evidence-types"/,
+    )
     expect(src).toContain('"policies"')
     expect(src).toContain('"checks"')
-    expect(src).toContain('"evidence"')
+    expect(src).toContain('"evidence-types"')
   })
 
   it("renders Checks + Evidence tab components and threads page state", () => {
     expect(src).toContain("ChecksTab")
     expect(src).toContain("EvidenceTab")
     expect(src).toContain("tab === \"checks\"")
-    expect(src).toContain("tab === \"evidence\"")
+    expect(src).toContain("tab === \"evidence-types\"")
   })
 
   it("redirects legacy ?tab=conditions and ?tab=verifiers to ?tab=checks", () => {
@@ -40,6 +44,17 @@ describe("rules page source invariants (D56e)", () => {
     expect(src).toContain('searchParams.tab === "verifiers"')
     expect(src).toContain('redirect(`/rules?')
     expect(src).toContain('tab", "checks"')
+  })
+
+  it("redirects legacy ?tab=evidence to a sensible successor", () => {
+    // Pre-D56e the `evidence` slug rendered the Verifiers tab; without
+    // an explicit redirect it would silently land on the unrelated new
+    // evidence-records page. msg=verifier_created (the prior verifier
+    // success URL) routes to ?tab=checks; every other evidence URL
+    // routes to ?tab=evidence-types.
+    expect(src).toContain('searchParams.tab === "evidence"')
+    expect(src).toContain('"verifier_created"')
+    expect(src).toContain('"evidence-types"')
   })
 
   // ── Data plumbing ─────────────────────────────────────────────

@@ -1738,6 +1738,7 @@ def create_app(
     # ── /custom-verifiers: D52b step-only authoring (tenant-scoped) ──
     _attach_custom_verifier_routes(
         app, custom_verifier_store, custom_verifier_lock,
+        verifier_registry=verifier_registry,
     )
 
     # ── /endpoints — P10 endpoint attestation ─────────────────────────
@@ -2841,6 +2842,8 @@ class CreateCustomVerifierReq(BaseModel):
 def _attach_custom_verifier_routes(
     app: FastAPI, store: "CustomVerifierStore",
     custom_verifier_lock: asyncio.Lock,
+    *,
+    verifier_registry: VerifierRegistry | None = None,
 ) -> None:
     """D52b: step-only authoring of custom verifiers.
 
@@ -2884,6 +2887,24 @@ def _attach_custom_verifier_routes(
             )
         except CustomVerifierError as e:
             raise HTTPException(422, str(e))
+        # D56e follow-up: reject any custom-verifier name that collides
+        # with a registered built-in step. The Checks + Evidence catalog
+        # rows are keyed by `id` (verifier step for builtins, name for
+        # custom). A duplicate id surfaces as two rows the dashboard
+        # de-dupes via React keys, silently dropping one. Fail at write
+        # time so the conflict is visible to the operator authoring the
+        # custom verifier instead of disappearing on the next list call.
+        if verifier_registry is not None:
+            try:
+                builtin_steps = {v.step for v in verifier_registry.all()}
+            except Exception:
+                builtin_steps = set()
+            if verifier.name in builtin_steps:
+                raise HTTPException(
+                    409,
+                    f"a built-in verifier step named {verifier.name!r} already "
+                    f"exists; choose a different name to avoid catalog collision",
+                )
         async with custom_verifier_lock:
             try:
                 stored = store.add(tenant_id, verifier)

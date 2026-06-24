@@ -3,10 +3,21 @@
 The Rules page reorganizes into three semantically distinct tabs:
 
   Policies → compositions (PolicyOverride entries the operator edits).
+             Sentinel patterns + tool matchers (the policy *targeting*
+             info the deprecated Conditions tab surfaced) live on each
+             policy's detail card, not here.
   Checks   → pure functions: built-in verifiers, custom verifiers,
              plus inline regex / llm_critic / shacl bodies pulled out
              of policies. This module builds that flat list.
   Evidence → catalog of evidence record types (see evidence_catalog.py).
+
+Scope note: this catalog covers *pure functions* the runtime evaluates
+(verifier bodies + inline check bodies). It deliberately does NOT
+include sentinel_re patterns or tool matchers — those are *policy
+targeting* (which hook event / tool the policy fires on), surfaced on
+the Policies tab per-policy. Merging them under "Checks" would blur the
+distinction between a check (what is verified) and a target (where the
+verification fires).
 
 A "check" is one row on the new Checks tab. Each row carries:
 
@@ -139,8 +150,15 @@ def build_check_catalog(
     # Walk every policy once: stamp used_by on the builtins/customs
     # whose step is referenced, and emit one inline row per inline
     # requires[] entry.
+    #
+    # Dedup: a single policy can declare multiple requires[].step
+    # entries pointing at the same step (e.g. two regex requires of
+    # the same kind, or two separate requires both binding citation_verify
+    # under different verdict conditions). Stamp each policy id at most
+    # once per step so used_by_policies stays a true set — duplicates
+    # leak into JSX `key=` and confuse operators.
     inline_rows: list[dict] = []
-    used_by: dict[str, list[str]] = {}
+    used_by: dict[str, set[str]] = {}
     for entry in policy_store.load():
         policy = entry.policy
         # Skip archetypes that have no `requires` (permission /
@@ -153,7 +171,7 @@ def build_check_catalog(
             if kind == "step":
                 step = getattr(req, "step", "")
                 if step:
-                    used_by.setdefault(step, []).append(policy.id)
+                    used_by.setdefault(step, set()).add(policy.id)
                 continue
             if kind == "regex":
                 body = getattr(req, "pattern", "") or ""
@@ -183,12 +201,14 @@ def build_check_catalog(
                 "body": _truncate(body),
             })
 
-    # Stamp used_by on built-in / custom rows.
+    # Stamp used_by on built-in / custom rows. Sorted for deterministic
+    # output (set iteration is otherwise hash-order). Tests and the
+    # dashboard both prefer stable ordering.
     for row in rows:
         if row["kind"] == "builtin":
-            row["used_by_policies"] = list(used_by.get(row["id"], []))
+            row["used_by_policies"] = sorted(used_by.get(row["id"], set()))
         elif row["kind"] == "custom":
-            row["used_by_policies"] = list(used_by.get(row["id"], []))
+            row["used_by_policies"] = sorted(used_by.get(row["id"], set()))
 
     rows.extend(inline_rows)
     return rows

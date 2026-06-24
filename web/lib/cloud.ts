@@ -624,7 +624,16 @@ export const cloud = {
 
   /** Condition catalog. v1 surfaces sentinel_re patterns + tool
    * matchers extracted from every stored policy. Read-only. entries
-   * change only when the originating policy is edited. */
+   * change only when the originating policy is edited.
+   *
+   * @deprecated D56e: the dashboard's Conditions tab was deleted in
+   *  favour of the merged Checks tab (see {@link listChecks}). The
+   *  cloud-side `/catalog/conditions` route stays live for older
+   *  dashboards still in deployment, but new dashboard code should
+   *  prefer {@link listChecks} and surface sentinel_re / tool_match
+   *  on per-policy detail screens (which is where they belong — they
+   *  are policy *targeting*, not pure checks).
+   */
   listConditions: async (): Promise<ConditionEntry[]> => {
     const d = await _fetch<{ items: ConditionEntry[] }>(
       "/catalog/conditions", { method: "GET", keyType: "api" },
@@ -807,7 +816,11 @@ export type EvidenceTypeEntry = {
 
 /** Pure-derivation catalog row: a condition extracted from a stored
  * policy. v1 covers the two condition shapes the policy IR carries
- * inline today. sentinel_re patterns and tool matchers. */
+ * inline today. sentinel_re patterns and tool matchers.
+ *
+ * @deprecated D56e: see {@link cloud.listConditions}. Prefer
+ *  {@link CheckEntry} for verifier / inline-check rows, and read
+ *  sentinel_re / tool_match off the policy detail screen. */
 export type ConditionEntry = {
   kind: "sentinel_re" | "tool_match" | "regex" | "llm_critic" | "shacl"
   value: string
@@ -850,9 +863,19 @@ export type CheckEntry = {
  *
  *   id              ledger step name (verifier step or `inline_<kind>`)
  *   name            display label
- *   origin          "builtin" | "custom" | "inline"
- *   kind            same as origin today, present for forward-compat
- *                   with future inline subtype splits.
+ *   origin          "builtin" | "custom" | "inline" — high-level
+ *                   bucket. UI uses this to drive origin-badge tone +
+ *                   to hide the aggregated `View in ledger` link on
+ *                   inline rows (the ledger filter cannot narrow to
+ *                   one policy's emissions of an inline kind).
+ *   kind            specific subtype, mirroring {@link CheckEntry.kind}.
+ *                   For built-in / custom rows this matches `origin`.
+ *                   For inline rows it splits further into
+ *                   `inline-regex` / `inline-llm-critic` / `inline-shacl`
+ *                   so the dashboard can route to the right card layout
+ *                   when those subtypes diverge. `origin` and `kind`
+ *                   are therefore NOT synonymous on inline rows; do
+ *                   not use `kind` to drive the origin badge.
  *   description     one-line summary
  *   verdict_set     possible verdicts the writer of this record can emit
  *   payload_schema  the body shape — array of (path, type, description)

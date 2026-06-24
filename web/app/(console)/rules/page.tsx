@@ -29,25 +29,38 @@ export const dynamic = "force-dynamic"
 /**
  * D56e: Rules page reorganized into three semantically distinct tabs:
  *
- *   Policies — compositions the operator edits (today's tab, unchanged).
- *   Checks   — pure functions: built-in verifiers + custom verifiers +
- *              inline regex / llm_critic / shacl bodies pulled from
- *              policies. Replaces the old "Verifiers" + "Conditions"
- *              tabs which split this single concept across two pages.
- *   Evidence — catalog of evidence record types the system can emit,
- *              with payload schema + recent-24h count + jump to /ledger.
+ *   Policies        — compositions the operator edits (today's tab, unchanged).
+ *   Checks          — pure functions: built-in verifiers + custom
+ *                     verifiers + inline regex / llm_critic / shacl
+ *                     bodies pulled from policies. Replaces the old
+ *                     "Verifiers" tab.
+ *   Evidence records — catalog of evidence record types the system can
+ *                      emit, with payload schema + recent-24h count
+ *                      + jump to /ledger.
  *
  * URL params:
- *   ?tab=policies | checks | evidence  (default = policies)
+ *   ?tab=policies | checks | evidence-types  (default = policies)
  *   ?tab=conditions  → redirects to ?tab=checks (legacy bookmark grace).
  *   ?tab=verifiers   → redirects to ?tab=checks (D52a old name).
+ *   ?tab=evidence    → redirects to ?tab=checks when paired with
+ *                      msg=verifier_created (legacy /verifiers/new
+ *                      success URL); otherwise to ?tab=evidence-types
+ *                      (legacy "Verifiers tab" bookmarks land closer
+ *                      to where the evidence shapes now live).
+ *
+ * Note on the rename from `?tab=evidence` to `?tab=evidence-types`:
+ * pre-D56e the `evidence` slug was the Verifiers tab (a `Tab` literal
+ * union of `policies | evidence | conditions`). Reusing the same slug
+ * for the new evidence-records surface would silently change the page
+ * a bookmark resolves to. Distinct slug + a dedicated redirect keeps
+ * every legacy URL pointed at a sensible successor.
  */
 
-type Tab = "policies" | "checks" | "evidence"
-const TABS: readonly Tab[] = ["policies", "checks", "evidence"] as const
+type Tab = "policies" | "checks" | "evidence-types"
+const TABS: readonly Tab[] = ["policies", "checks", "evidence-types"] as const
 
 function parseTab(raw: string | undefined): Tab {
-  if (raw === "checks" || raw === "evidence") return raw
+  if (raw === "checks" || raw === "evidence-types") return raw
   return "policies"
 }
 
@@ -62,6 +75,20 @@ export default async function RulesPage({
   if (searchParams.tab === "conditions" || searchParams.tab === "verifiers") {
     const passthrough = new URLSearchParams()
     passthrough.set("tab", "checks")
+    if (searchParams.msg) passthrough.set("msg", searchParams.msg)
+    if (searchParams.err) passthrough.set("err", searchParams.err)
+    redirect(`/rules?${passthrough.toString()}`)
+  }
+  // D56e follow-up: pre-D56e the `evidence` slug rendered the Verifiers
+  // tab (and /verifiers/new succeeded into `?tab=evidence&msg=verifier_created`).
+  // Bookmark + browser-history grace: the verifier-success URL lands on
+  // the new Checks tab (verifier authoring moved there); every other
+  // `?tab=evidence` URL lands on the new evidence-records tab.
+  if (searchParams.tab === "evidence") {
+    const passthrough = new URLSearchParams()
+    const dest =
+      searchParams.msg === "verifier_created" ? "checks" : "evidence-types"
+    passthrough.set("tab", dest)
     if (searchParams.msg) passthrough.set("msg", searchParams.msg)
     if (searchParams.err) passthrough.set("err", searchParams.err)
     redirect(`/rules?${passthrough.toString()}`)
@@ -114,7 +141,7 @@ export default async function RulesPage({
     }
     catch (e: unknown) { checksErr = codeForError(e) }
   } else {
-    // tab === "evidence"
+    // tab === "evidence-types"
     try {
       evidence = await cloud.listEvidenceRecordTypes()
       try {
@@ -189,7 +216,7 @@ export default async function RulesPage({
           emissionCounts={emissionCounts}
         />
       )}
-      {tab === "evidence" && (
+      {tab === "evidence-types" && (
         <EvidenceTab
           items={evidence}
           err={evidenceErr}
@@ -233,9 +260,9 @@ function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
         {TABS.map((id) => {
           const active = id === tab
           const labelKey =
-            id === "policies" ? "rules.tab.policies" :
-            id === "checks"   ? "rules.tab.checks"   :
-                                "rules.tab.evidence"
+            id === "policies"       ? "rules.tab.policies" :
+            id === "checks"         ? "rules.tab.checks"   :
+                                      "rules.tab.evidenceRecords"
           return (
             <Link
               key={id}

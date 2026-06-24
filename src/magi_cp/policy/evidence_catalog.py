@@ -122,8 +122,15 @@ def build_evidence_catalog(
 
     # Track which builtins / customs / inline kinds are actually
     # referenced by a stored policy so we can stamp used_by_policies.
-    used_by_step: dict[str, list[str]] = {}
-    used_by_inline: dict[str, list[str]] = {}
+    #
+    # Dedup: keep policy-id sets here so a policy with multiple inline
+    # requires entries of the same kind (e.g. two requires[].kind ==
+    # "regex" entries) stamps the inline_<kind> row once, not twice.
+    # The dashboard renders these as React `<span key={pid}>` lists;
+    # duplicates trigger duplicate-key warnings and confuse operators
+    # ("used by p-A, p-A").
+    used_by_step: dict[str, set[str]] = {}
+    used_by_inline: dict[str, set[str]] = {}
     for entry in policy_store.load():
         policy = entry.policy
         requires = getattr(policy, "requires", None) or []
@@ -132,11 +139,11 @@ def build_evidence_catalog(
             if kind == "step":
                 step = getattr(req, "step", "")
                 if step:
-                    used_by_step.setdefault(step, []).append(policy.id)
+                    used_by_step.setdefault(step, set()).add(policy.id)
             elif kind in ("regex", "llm_critic", "shacl"):
                 used_by_inline.setdefault(
-                    f"inline_{kind}", [],
-                ).append(policy.id)
+                    f"inline_{kind}", set(),
+                ).add(policy.id)
 
     # 1) Built-in verifier evidence rows.
     if verifier_registry is not None:
@@ -165,7 +172,7 @@ def build_evidence_catalog(
                 "description": v.description,
                 "verdict_set": verdict_set,
                 "payload_schema": output_evidence,
-                "used_by_policies": list(used_by_step.get(v.step, [])),
+                "used_by_policies": sorted(used_by_step.get(v.step, set())),
                 "preview": False,
             })
 
@@ -183,7 +190,7 @@ def build_evidence_catalog(
                 # — they are preview-only. Surface the common envelope
                 # plus a note so the catalog row is not empty.
                 "payload_schema": list(_COMMON_ENVELOPE),
-                "used_by_policies": list(used_by_step.get(cv.name, [])),
+                "used_by_policies": sorted(used_by_step.get(cv.name, set())),
                 "preview": True,
             })
 
@@ -193,7 +200,7 @@ def build_evidence_catalog(
         if template is None:
             continue
         row = dict(template)
-        row["used_by_policies"] = list(used_by_inline[inline_step])
+        row["used_by_policies"] = sorted(used_by_inline[inline_step])
         rows.append(row)
 
     return rows

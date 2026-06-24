@@ -115,7 +115,12 @@ export function ChecksTab({
                       <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
                         {t("rules.checks.usedBy")}:{" "}
                         {row.used_by_policies.map((pid, i) => (
-                          <span key={pid}>
+                          // Position-aware key: backend dedups but the
+                          // string[] type does not enforce uniqueness;
+                          // a future change that intentionally orders
+                          // duplicates (e.g. fan-in counts) should not
+                          // regress to duplicate React keys.
+                          <span key={`${pid}:${i}`}>
                             {i > 0 && ", "}
                             <Link
                               href={`/policies/${encodeURI(pid)}`}
