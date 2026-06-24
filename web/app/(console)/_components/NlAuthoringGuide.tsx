@@ -65,6 +65,10 @@ interface GuideSection {
 
 const SECTIONS: readonly GuideSection[] = [
   {
+    // D52e follow-up: WHEN absorbs the matcher / fetch-domain scope
+    // refinements that used to sit (incorrectly) under CONDITION. Tool
+    // name match + fetch domain are Trigger.matcher concerns in the IR
+    // (ir.py:53), not EvidenceReq concerns.
     titleKey: "nlGuide.section.when.title",
     subtitleKey: "nlGuide.section.when.subtitle",
     examples: [
@@ -72,11 +76,16 @@ const SECTIONS: readonly GuideSection[] = [
       { tone: "ok", exampleKey: "nlGuide.when.ok2.ex", explainKey: "nlGuide.when.ok2.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.when.ok3.ex", explainKey: "nlGuide.when.ok3.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.when.ok4.ex", explainKey: "nlGuide.when.ok4.ex.explain" },
+      { tone: "ok", exampleKey: "nlGuide.when.ok5.ex", explainKey: "nlGuide.when.ok5.ex.explain" },
+      { tone: "ok", exampleKey: "nlGuide.when.ok6.ex", explainKey: "nlGuide.when.ok6.ex.explain" },
       { tone: "no", exampleKey: "nlGuide.when.no1.ex", explainKey: "nlGuide.when.no1.ex.explain" },
       { tone: "no", exampleKey: "nlGuide.when.no2.ex", explainKey: "nlGuide.when.no2.ex.explain" },
     ],
   },
   {
+    // D52e follow-up: CONDITION is now strictly EvidenceReq prose
+    // (verifier ref / SHACL / LLM critic / regex). Matcher constraints
+    // moved to WHEN; unconditional-audit moved to WHAT.
     titleKey: "nlGuide.section.condition.title",
     subtitleKey: "nlGuide.section.condition.subtitle",
     examples: [
@@ -84,12 +93,11 @@ const SECTIONS: readonly GuideSection[] = [
       { tone: "ok", exampleKey: "nlGuide.condition.ok2.ex", explainKey: "nlGuide.condition.ok2.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.condition.ok3.ex", explainKey: "nlGuide.condition.ok3.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.condition.ok4.ex", explainKey: "nlGuide.condition.ok4.ex.explain" },
-      { tone: "ok", exampleKey: "nlGuide.condition.ok5.ex", explainKey: "nlGuide.condition.ok5.ex.explain" },
-      { tone: "ok", exampleKey: "nlGuide.condition.ok6.ex", explainKey: "nlGuide.condition.ok6.ex.explain" },
-      { tone: "ok", exampleKey: "nlGuide.condition.ok7.ex", explainKey: "nlGuide.condition.ok7.ex.explain" },
     ],
   },
   {
+    // D52e follow-up: WHAT gains the unconditional-audit archetype
+    // (action: audit, requires=[]) that used to sit under CONDITION.
     titleKey: "nlGuide.section.what.title",
     subtitleKey: "nlGuide.section.what.subtitle",
     examples: [
@@ -97,6 +105,7 @@ const SECTIONS: readonly GuideSection[] = [
       { tone: "ok", exampleKey: "nlGuide.what.ok2.ex", explainKey: "nlGuide.what.ok2.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.what.ok3.ex", explainKey: "nlGuide.what.ok3.ex.explain" },
       { tone: "ok", exampleKey: "nlGuide.what.ok4.ex", explainKey: "nlGuide.what.ok4.ex.explain" },
+      { tone: "ok", exampleKey: "nlGuide.what.ok5.ex", explainKey: "nlGuide.what.ok5.ex.explain" },
     ],
   },
 ]
@@ -161,14 +170,28 @@ function writeExpanded(expanded: boolean): void {
   }
 }
 
-/** Find the NL textarea on the page (id="nl") and overwrite its value.
- * Fires an 'input' event so any client island also bound to the field
- * stays in sync. */
-function fillTextarea(targetId: string, text: string): void {
-  if (typeof document === "undefined") return
+/** Outcome of a pill fill attempt. Used by the parent island to flash
+ * a hint when the author's existing draft would otherwise be wiped. */
+type FillOutcome = "filled" | "blocked-nonempty" | "not-found"
+
+/** Find the NL textarea on the page (id="nl") and seed its value with
+ * the example prose ONLY when the field is empty / whitespace-only.
+ * If the author already typed something, return "blocked-nonempty" so
+ * the caller can surface a "clear the field to load an example" hint
+ * instead of silently destroying the draft. Fires an 'input' event so
+ * any client island also bound to the field stays in sync. */
+function fillTextarea(targetId: string, text: string): FillOutcome {
+  if (typeof document === "undefined") return "not-found"
   const el = document.getElementById(targetId)
   if (!el || !(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement)) {
-    return
+    return "not-found"
+  }
+  // D52e follow-up: pill click was destructive. It overwrote any
+  // unsaved prose the author had typed. Treat the textarea as a
+  // single-author surface: only seed when blank.
+  if (el.value.trim().length > 0) {
+    el.focus()
+    return "blocked-nonempty"
   }
   // Use the native value setter to defeat React's controlled input
   // shadow value (the Textarea ships uncontrolled but this stays safe
@@ -191,6 +214,7 @@ function fillTextarea(targetId: string, text: string): void {
   } catch {
     // ignore
   }
+  return "filled"
 }
 
 interface Props {
@@ -202,6 +226,14 @@ interface Props {
 export default function NlAuthoringGuide({ t, targetTextareaId }: Props): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false)
   const [hydrated, setHydrated] = useState<boolean>(false)
+  // D52e follow-up: pill click is non-destructive. When the textarea
+  // already has prose, we surface a small hint instead of overwriting.
+  // The hint auto-clears after a few seconds so it does not stick
+  // around once the author empties the field.
+  const [blockedHint, setBlockedHint] = useState<boolean>(false)
+  const [previewKey, setPreviewKey] = useState<
+    import("@/lib/i18n/dict").TKey | null
+  >(null)
 
   // Hydrate persisted state on mount. We can't read localStorage during
   // SSR so we render closed first and flip on the next tick when the
@@ -221,15 +253,44 @@ export default function NlAuthoringGuide({ t, targetTextareaId }: Props): JSX.El
 
   const onPill = useCallback(
     (fillKey: import("@/lib/i18n/dict").TKey) => {
-      fillTextarea(targetTextareaId, t(fillKey))
+      const outcome = fillTextarea(targetTextareaId, t(fillKey))
+      if (outcome === "blocked-nonempty") {
+        setBlockedHint(true)
+      } else if (outcome === "filled") {
+        setBlockedHint(false)
+      }
     },
     [targetTextareaId, t],
   )
+
+  // Auto-clear the "clear field to load an example" hint after a few
+  // seconds. The hint persists if the author keeps clicking pills
+  // (each click re-arms it).
+  useEffect(() => {
+    if (!blockedHint) return
+    const timer = window.setTimeout(() => setBlockedHint(false), 4000)
+    return () => window.clearTimeout(timer)
+  }, [blockedHint])
 
   const sectionsId = useMemo(
     () => `${targetTextareaId}-authoring-guide-sections`,
     [targetTextareaId],
   )
+  const previewId = `${targetTextareaId}-pill-preview`
+  const hintId = `${targetTextareaId}-pill-hint`
+
+  // D52e follow-up: render the body unconditionally and animate the
+  // open / close via a CSS-only grid-row trick (grid-template-rows
+  // 0fr → 1fr). Mount/unmount used to make the panel snap; this also
+  // keeps `aria-controls={sectionsId}` pointing at a real element in
+  // both states (NVDA + Firefox warn otherwise). We only opt the body
+  // INTO the transition after first hydration so the SSR → CSR flip
+  // for power users (persisted-open) doesn't animate from closed to
+  // open as a jarring late motion.
+  const bodyHidden = !expanded
+  const transitionClass = hydrated
+    ? "transition-[grid-template-rows] duration-200 ease-out"
+    : ""
 
   return (
     <section
@@ -276,57 +337,110 @@ export default function NlAuthoringGuide({ t, targetTextareaId }: Props): JSX.El
         </span>
       </button>
 
-      {expanded && (
-        <div
-          id={sectionsId}
-          data-testid="nl-authoring-guide-body"
-          className="border-t border-black/[0.06] px-4 pb-4 pt-3"
-        >
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {SECTIONS.map((s) => (
-              <NlGuideSection key={s.titleKey} t={t} section={s} />
-            ))}
-          </div>
-
-          <div className="mt-5">
-            <p
-              className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]"
-              id={`${targetTextareaId}-try-one-label`}
-            >
-              {t("nlGuide.tryOne.title")}
-            </p>
-            <ul
-              role="list"
-              aria-labelledby={`${targetTextareaId}-try-one-label`}
-              data-testid="nl-authoring-guide-pills"
-              className="flex flex-wrap gap-2"
-            >
-              {PILLS.map((p) => (
-                <li key={p.labelKey} className="inline-flex">
-                  <NlTryExamplePill
-                    t={t}
-                    pill={p}
-                    onPick={() => onPill(p.fillKey)}
-                  />
-                </li>
+      <div
+        id={sectionsId}
+        data-testid="nl-authoring-guide-body"
+        // Wrap in a grid whose single row transitions between 0fr and
+        // 1fr; the inner child overflows hidden so the content height
+        // animates smoothly. overflow-hidden on the grid track keeps
+        // the panel from leaking pixels in the collapsed state.
+        className={
+          "grid overflow-hidden " +
+          transitionClass +
+          " " +
+          (expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]")
+        }
+        aria-hidden={bodyHidden}
+        // `inert` removes the subtree from focus order + AT when the
+        // panel is collapsed. The attribute is supported across all
+        // modern browsers; older targets simply ignore it (the
+        // aria-hidden + display still gate semantics for SR).
+        // @ts-expect-error inert is a valid HTML attribute (React 19
+        // types add it; older @types/react may not).
+        inert={bodyHidden ? "" : undefined}
+      >
+        <div className="min-h-0">
+          <div className="border-t border-black/[0.06] px-4 pb-4 pt-3">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {SECTIONS.map((s) => (
+                <NlGuideSection key={s.titleKey} t={t} section={s} />
               ))}
-            </ul>
+            </div>
 
-            <div
-              role="note"
-              data-testid="nl-authoring-guide-ambiguity"
-              className="mt-3 rounded-lg border border-amber-400/40 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900"
-            >
-              <p className="m-0 font-semibold">
-                {t("nlGuide.ambiguity.title")}
+            <div className="mt-5">
+              <p
+                className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]"
+                id={`${targetTextareaId}-try-one-label`}
+              >
+                {t("nlGuide.tryOne.title")}
               </p>
-              <p className="m-0 mt-1">
-                {t("nlGuide.ambiguity.body")}
+              <ul
+                role="list"
+                aria-labelledby={`${targetTextareaId}-try-one-label`}
+                data-testid="nl-authoring-guide-pills"
+                className="flex flex-wrap gap-2"
+              >
+                {PILLS.map((p) => (
+                  <li key={p.labelKey} className="inline-flex">
+                    <NlTryExamplePill
+                      t={t}
+                      pill={p}
+                      previewId={previewId}
+                      onPick={() => onPill(p.fillKey)}
+                      onPreview={(open) =>
+                        setPreviewKey(open ? p.fillKey : null)
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+
+              {/* Shared preview slot: the prose that WOULD be seeded
+                  when the author clicks the focused / hovered pill.
+                  Visible on both hover AND focus, so keyboard users
+                  get the same affordance as mouse users (native
+                  `title` does not). */}
+              <p
+                id={previewId}
+                data-testid="nl-authoring-guide-pill-preview"
+                role="status"
+                aria-live="polite"
+                className={
+                  "mt-2 text-[11px] italic leading-snug text-[var(--color-text-tertiary)] transition-opacity " +
+                  (previewKey ? "opacity-100" : "opacity-0")
+                }
+              >
+                {previewKey ? `“${t(previewKey)}”` : " "}
               </p>
+
+              {blockedHint && (
+                <p
+                  id={hintId}
+                  data-testid="nl-authoring-guide-pill-blocked-hint"
+                  role="status"
+                  aria-live="polite"
+                  className="mt-2 text-[11px] leading-snug text-[var(--color-text-secondary)]"
+                >
+                  {t("nlGuide.pill.blockedHint")}
+                </p>
+              )}
+
+              <div
+                role="note"
+                data-testid="nl-authoring-guide-ambiguity"
+                className="mt-3 rounded-lg border border-amber-400/40 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900"
+              >
+                <p className="m-0 font-semibold">
+                  {t("nlGuide.ambiguity.title")}
+                </p>
+                <p className="m-0 mt-1">
+                  {t("nlGuide.ambiguity.body")}
+                </p>
+              </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
     </section>
   )
 }
@@ -403,16 +517,31 @@ function NlGuideExample({
 function NlTryExamplePill({
   t,
   pill,
+  previewId,
   onPick,
+  onPreview,
 }: {
   t: T
   pill: TryPill
+  previewId: string
   onPick: () => void
+  /** Fire `true` on hover / focus enter and `false` on hover / focus
+   * leave so the parent shared-preview slot can render the seed prose
+   * for the currently-active pill. */
+  onPreview: (open: boolean) => void
 }): JSX.Element {
+  // D52e follow-up: replace the native `title` attribute (mouse-only,
+  // delayed, hidden behind cursor) with a hover-AND-focus preview that
+  // routes through the parent's shared preview slot. Keyboard users
+  // get the same preview as mouse users.
   return (
     <button
       type="button"
       onClick={onPick}
+      onMouseEnter={() => onPreview(true)}
+      onMouseLeave={() => onPreview(false)}
+      onFocus={() => onPreview(true)}
+      onBlur={() => onPreview(false)}
       data-testid="nl-try-pill"
       data-tone={pill.tone}
       className={
@@ -420,7 +549,7 @@ function NlTryExamplePill({
         pillClasses(pill.tone)
       }
       aria-label={t(pill.labelKey)}
-      title={t(pill.fillKey)}
+      aria-describedby={previewId}
     >
       {t(pill.labelKey)}
     </button>

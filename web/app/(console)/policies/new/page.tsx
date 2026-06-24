@@ -1247,11 +1247,36 @@ function StepShell({
   )
 }
 
+/** D52e follow-up: optional action-archetype tone matches the
+ * NlAuthoringGuide pill colors so the vocabulary (block=red, ask=amber,
+ * audit=blue, strip=purple) is consistent end-to-end. The accent color
+ * still wins when the card is selected so the "this is the picked one"
+ * affordance reads first. */
+type ActionTone = "block" | "ask" | "audit" | "strip"
+
+function actionCardClasses(tone?: ActionTone): string {
+  // Idle border / hover hue per archetype. Selected state is still
+  // owned by `peer-checked` (accent border + accent tint) below.
+  switch (tone) {
+    case "block":
+      return "border-red-300 hover:border-red-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "ask":
+      return "border-amber-300 hover:border-amber-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "audit":
+      return "border-blue-300 hover:border-blue-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "strip":
+      return "border-purple-300 hover:border-purple-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    default:
+      return "border-black/[0.08] hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+  }
+}
+
 function RadioCard({
-  name, value, defaultChecked, label, sub, badge,
+  name, value, defaultChecked, label, sub, badge, tone,
 }: {
   name: string; value: string; defaultChecked?: boolean
   label: string; sub: string; badge?: { variant: "ok" | "info" | "muted"; text: string }
+  tone?: ActionTone
 }) {
   return (
     <label className="block cursor-pointer">
@@ -1263,7 +1288,13 @@ function RadioCard({
         className="peer sr-only"
         required
       />
-      <span className="block rounded-xl border border-black/[0.08] bg-white p-4 transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]">
+      <span
+        data-action-tone={tone}
+        className={
+          "block rounded-xl border bg-white p-4 transition-colors " +
+          actionCardClasses(tone)
+        }
+      >
         <span className="flex items-center justify-between gap-2 mb-1">
           <span className="text-sm font-semibold text-[var(--color-text-primary)]">{label}</span>
           {badge && <Badge variant={badge.variant}>{badge.text}</Badge>}
@@ -1908,7 +1939,7 @@ function Step4Action({
             return (
               <label key={a} className="block cursor-not-allowed opacity-60">
                 <input type="radio" name="action" value={a} disabled className="peer sr-only" />
-                <span className="block rounded-xl border border-black/[0.08] bg-gray-50 p-4">
+                <span data-action-tone="strip" className="block rounded-xl border border-purple-300 bg-purple-50/40 p-4">
                   <span className="flex items-center justify-between gap-2 mb-1">
                     <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
                     <Badge variant="info">coming soon</Badge>
@@ -1926,6 +1957,7 @@ function Step4Action({
               defaultChecked={defaultPick === a}
               label={labels[a].label}
               sub={labels[a].sub}
+              tone={a}
               badge={a === "block" && lifecycle === "before_tool_use" ? { variant: "ok", text: "recommended" } : undefined}
             />
           )

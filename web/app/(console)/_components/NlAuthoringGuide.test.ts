@@ -41,23 +41,30 @@ describe("NlAuthoringGuide source invariants", () => {
   })
 
   it("renders all three sections (WHEN / CONDITION / WHAT) with the brief-mandated counts", () => {
-    // WHEN: 4 ✓ + 2 ✗.
-    // CONDITION: 7 ✓ (no ✗ in the brief).
-    // WHAT: 4 ✓ (no ✗ in the brief).
+    // D52e follow-up: taxonomy realigned to the IR (D31 action +
+    // ir.py:53 Trigger.matcher).
+    //   WHEN: 6 ✓ + 2 ✗. Tool-name match + fetch-domain match are
+    //     Trigger.matcher concerns (scope refinements), not
+    //     EvidenceReq, so they live under WHEN.
+    //   CONDITION: 4 ✓. Strictly EvidenceReq prose
+    //     (verifier ref / SHACL / LLM critic / regex). No ✗.
+    //   WHAT: 5 ✓. Adds the unconditional-audit archetype
+    //     (action: audit, requires=[]) that used to sit under
+    //     CONDITION as "audit every tool return."
     const whenOks = (src.match(/nlGuide\.when\.ok\d+\.ex"/g) ?? []).length
     const whenNos = (src.match(/nlGuide\.when\.no\d+\.ex"/g) ?? []).length
     // Each example key is referenced once in the exampleKey field and
     // once in the explainKey field (".explain"). The exampleKey form is
     // the bare `.ex"` suffix; the explainKey is `.ex.explain"`. The
     // regex above intentionally matches only the example side.
-    expect(whenOks).toBe(4)
+    expect(whenOks).toBe(6)
     expect(whenNos).toBe(2)
 
     const condOks = (src.match(/nlGuide\.condition\.ok\d+\.ex"/g) ?? []).length
-    expect(condOks).toBe(7)
+    expect(condOks).toBe(4)
 
     const whatOks = (src.match(/nlGuide\.what\.ok\d+\.ex"/g) ?? []).length
-    expect(whatOks).toBe(4)
+    expect(whatOks).toBe(5)
   })
 
   it("renders the six brief-mandated TRY ONE OF THESE pills", () => {
@@ -263,7 +270,10 @@ describe("NlAuthoringGuide i18n key coverage", () => {
     // The brief explicitly rewrote compile.field.placeholder. Lock the
     // new control-plane idioms so a future "tidy up" doesn't roll back
     // to the old "법원 filing" copy.
+    // D52e follow-up: "rewire" was a literal calque of EN→KO that read
+    // like circuit wiring, not a setting toggle. Switched to "switch …
+    // to opt-in" (EN) + "옵트인으로 전환" (KO).
     expect(dictSrc).toContain("deny shell exec")
-    expect(dictSrc).toContain("rewire privilege scan to opt-in")
+    expect(dictSrc).toContain("switch privilege scan to opt-in")
   })
 })
