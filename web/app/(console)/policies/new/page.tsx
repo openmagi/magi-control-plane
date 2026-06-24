@@ -29,6 +29,11 @@ import {
 export const dynamic = "force-dynamic"
 
 type Mode = "guided" | "advanced" | "conversational"
+// D57f-1: total step count is unchanged. The "Inject extra context"
+// archetype routes Step 4 into an inline template-editor sub-step on
+// the same Step 4 surface; we don't add a separate progress dot for
+// the template editor because the operator still completes Step 4
+// before moving to Step 5 (name) → Step 6 (review).
 const WIZARD_TOTAL = 6
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -255,7 +260,15 @@ const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
   "evidence_ref", "shacl",
 ]
 
-type Action = "block" | "ask" | "audit" | "strip"
+// D57f-1: inject_context is a 5th action archetype. It's available on
+// every lifecycle the matrix surfaces, because CC's hookSpecificOutput
+// JSON schema accepts `additionalContext` on every hook event. The
+// archetype maps to ContextInjectionPolicy at save time (NOT
+// EvidencePolicy + requires), so Step 3's condition picker is skipped
+// when the operator picks it on Step 4. Step 4b (an inline template
+// editor) renders the static text + KO/EN labels the runtime shim
+// will inject as additionalContext.
+type Action = "block" | "ask" | "audit" | "strip" | "inject_context"
 
 // D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
 //   before_tool_use → block / ask / audit (the runtime can refuse)
@@ -266,44 +279,47 @@ type Action = "block" | "ask" | "audit" | "strip"
 //   pre_compact     → block / audit (compaction hasn't fired yet)
 //   subagent_stop / session_* → audit only (boundary markers)
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
-  before_tool_use: ["block", "ask", "audit"],
-  after_tool_use:  ["audit"],
-  pre_final:       ["audit"],
-  subagent_stop:   ["audit"],
-  user_prompt:     ["block", "ask", "audit"],
-  pre_compact:     ["block", "audit"],
-  session_start:   ["audit"],
-  session_end:     ["audit"],
+  before_tool_use: ["block", "ask", "audit", "inject_context"],
+  after_tool_use:  ["audit", "inject_context"],
+  pre_final:       ["audit", "inject_context"],
+  subagent_stop:   ["audit", "inject_context"],
+  user_prompt:     ["block", "ask", "audit", "inject_context"],
+  pre_compact:     ["block", "audit", "inject_context"],
+  session_start:   ["audit", "inject_context"],
+  session_end:     ["audit", "inject_context"],
   // D58: pre-side gate hooks where CC supports decision overrides
   // (block) plus optional human review (ask). Same channel
   // PreToolUse uses.
-  permission_request:    ["block", "ask", "audit"],
-  elicitation:           ["block", "ask", "audit"],
+  permission_request:    ["block", "ask", "audit", "inject_context"],
+  elicitation:           ["block", "ask", "audit", "inject_context"],
   // D58: pre-side gates where there is no interactive surface to
   // interrupt to (the prompt is mid-expansion, the compaction is
   // already running). block + audit only.
-  user_prompt_expansion: ["block", "audit"],
+  user_prompt_expansion: ["block", "audit", "inject_context"],
   // D58: everything else is audit-only — by the time CC fires the
   // hook the runtime cannot rewind.
-  post_tool_use_failure: ["audit"],
-  post_tool_batch:       ["audit"],
-  permission_denied:     ["audit"],
-  post_compact:          ["audit"],
-  elicitation_result:    ["audit"],
-  subagent_start:        ["audit"],
-  stop_failure:          ["audit"],
-  setup:                 ["audit"],
-  notification:          ["audit"],
-  teammate_idle:         ["audit"],
-  task_created:          ["audit"],
-  task_completed:        ["audit"],
-  config_change:         ["audit"],
-  worktree_create:       ["audit"],
-  worktree_remove:       ["audit"],
-  instructions_loaded:   ["audit"],
-  cwd_changed:           ["audit"],
-  file_changed:          ["audit"],
-  message_display:       ["audit"],
+  // D57f-1: inject_context is universally legal because CC's
+  // hookSpecificOutput JSON schema accepts `additionalContext` on
+  // every hook event, so the wizard surfaces it on every lifecycle.
+  post_tool_use_failure: ["audit", "inject_context"],
+  post_tool_batch:       ["audit", "inject_context"],
+  permission_denied:     ["audit", "inject_context"],
+  post_compact:          ["audit", "inject_context"],
+  elicitation_result:    ["audit", "inject_context"],
+  subagent_start:        ["audit", "inject_context"],
+  stop_failure:          ["audit", "inject_context"],
+  setup:                 ["audit", "inject_context"],
+  notification:          ["audit", "inject_context"],
+  teammate_idle:         ["audit", "inject_context"],
+  task_created:          ["audit", "inject_context"],
+  task_completed:        ["audit", "inject_context"],
+  config_change:         ["audit", "inject_context"],
+  worktree_create:       ["audit", "inject_context"],
+  worktree_remove:       ["audit", "inject_context"],
+  instructions_loaded:   ["audit", "inject_context"],
+  cwd_changed:           ["audit", "inject_context"],
+  file_changed:          ["audit", "inject_context"],
+  message_display:       ["audit", "inject_context"],
 }
 
 // D56d (P1 #1 + #2 fidelity follow-up): matrix.py LEGAL_COMBINATIONS
@@ -362,47 +378,50 @@ const ACTIONS_BY_COMBINATION: Record<
   Lifecycle, Record<MatcherClassKey, readonly Action[]>
 > = {
   before_tool_use: {
-    tool:     ["block", "ask", "audit"],
-    mcp_tool: ["block", "ask", "audit"],
-    wildcard: ["audit"],
+    tool:     ["block", "ask", "audit", "inject_context"],
+    mcp_tool: ["block", "ask", "audit", "inject_context"],
+    wildcard: ["audit", "inject_context"],
   },
   after_tool_use: {
-    tool:     ["audit"],
-    mcp_tool: ["audit"],
+    tool:     ["audit", "inject_context"],
+    mcp_tool: ["audit", "inject_context"],
     wildcard: [],
   },
-  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
-  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit"] },
-  session_start: { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
+  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context"] },
+  session_start: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
   // D58 extensions — every new lifecycle is wildcard-only at the
   // matcher level (the new payloads either carry no tool name or
   // the wizard doesn't yet surface per-tool authoring on them).
   // Action set follows matrix.LEGAL_COMBINATIONS exactly.
-  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
-  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit"] },
-  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit"] },
-  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  notification:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit"] },
-  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit"] },
+  // D57f-1: inject_context is universally legal at the wildcard
+  // surface; the matrix doesn't constrain it because CC accepts
+  // additionalContext on every event JSON.
+  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
+  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context"] },
+  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context"] },
+  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  notification:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
+  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context"] },
 }
 
 function allowedActionsForCombination(
@@ -471,6 +490,15 @@ interface WizardState {
   evidenceRefs?: string[]           // evidence_ref (multi)
   shaclTtl?: string                 // shacl
   action?: Action
+  // D57f-1: when action=inject_context the wizard does NOT compile to
+  // EvidencePolicy+requires; it compiles to ContextInjectionPolicy with
+  // these three fields. injectTemplate is the static text the runtime
+  // shim emits as additionalContext on the chosen hook; injectLabelKo /
+  // injectLabelEn are optional human-readable names for the dashboard's
+  // list view (the runtime never reads them).
+  injectTemplate?: string
+  injectLabelKo?: string
+  injectLabelEn?: string
   id?: string
   description?: string
   // P9 (D49): suppression of the cumulative-judgment steering tip is
@@ -593,7 +621,12 @@ function buildGuidedDraftForDryRun(s: WizardState): Record<string, unknown> {
   const event = LIFECYCLE_TO_EVENT[s.lifecycle ?? "before_tool_use"]
   const matcher = deriveMatcher(s)
   const requires = deriveRequires(s)
-  const action = s.action === "strip" ? "audit" : (s.action ?? "audit")
+  // D57f-1: inject_context collapses to audit for the panel's purposes
+  // (the panel never actually renders for that archetype — see Step6
+  // Review — but a stale call path bypassing the gate should still
+  // produce a valid evidence-shape draft instead of crashing).
+  const action = s.action === "strip" || s.action === "inject_context"
+    ? "audit" : (s.action ?? "audit")
   return {
     id: s.id ?? "",
     description: s.description || summaryForBackend(s),
@@ -768,6 +801,16 @@ function plainSummary(s: WizardState, locale: "ko" | "en"): string {
   const act = s.action ?? "audit"
   const life = s.lifecycle ?? "before_tool_use"
   const lifeLabel = ko ? LIFECYCLE_LABEL_KO[life] : LIFECYCLE_LABEL_EN[life]
+  // D57f-1: inject_context surfaces a distinct summary that names the
+  // template (truncated to keep the card tidy) instead of a verifier
+  // gate. The runtime shim emits the template under additionalContext.
+  if (act === "inject_context") {
+    const tpl = (s.injectTemplate ?? "").trim()
+    const snippet = tpl.length > 80 ? tpl.slice(0, 80) + "…" : tpl
+    return ko
+      ? `${lifeLabel}, 다음 텍스트가 모델 컨텍스트에 추가됩니다: ${snippet || "(본문 비어있음)"}`
+      : `${capitalize(lifeLabel)}: this policy injects the following text into the model's context: ${snippet || "(template empty)"}`
+  }
   const actLabel = ko
     ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[act])
     : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[act])
@@ -789,9 +832,30 @@ function summaryForBackend(s: WizardState): string {
 
 /* ─── server actions ─────────────────────────────────────────────── */
 
-async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
-  const errs = validateDraft(draft)
-  if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
+/** D57f-1: a minimal ContextInjectionPolicy persisted dict. The cloud
+ * dispatches on `type` via policy_from_dict so we just need the right
+ * shape. validatePolicyId is shared with the evidence-shape path.
+ */
+type ContextInjectionDraft = {
+  type: "context_injection"
+  id: string
+  description: string
+  version: string
+  event: string
+  matcher: string
+  template: string
+}
+
+async function persistDraft(
+  draft: PolicyDraft | ContextInjectionDraft, source: string,
+): Promise<void> {
+  // D57f-1: validateDraft only knows the evidence shape; skip it for
+  // context_injection (the cloud-side ContextInjectionPolicy.validate
+  // is canonical).
+  if ((draft as ContextInjectionDraft).type !== "context_injection") {
+    const errs = validateDraft(draft as PolicyDraft)
+    if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
+  }
   try { validatePolicyId(draft.id) }
   catch { redirect("/policies/new?err=invalid_id"); return }
   let adminKey: string
@@ -1010,6 +1074,52 @@ async function saveWizard(formData: FormData): Promise<void> {
     redirect("/policies/new?mode=guided&step=4&err=strip_unsupported"); return
   }
 
+  // D57f-1: inject_context branches BEFORE the matcher / requires
+  // pipeline because ContextInjectionPolicy has its own (event,
+  // matcher, template) shape — no requires list, no gate_binary. We
+  // still honor lifecycle, but the matcher collapses to wildcard
+  // (the wizard surfaces inject_context as a per-lifecycle archetype;
+  // a per-tool injection would need a different authoring flow).
+  if (action === "inject_context") {
+    const lifecycleRawInj = String(formData.get("lifecycle") ?? "before_tool_use")
+    const lifecycleInj: Lifecycle = (LIFECYCLES as readonly string[]).includes(lifecycleRawInj)
+      ? (lifecycleRawInj as Lifecycle) : "before_tool_use"
+    const eventInj = LIFECYCLE_TO_EVENT[lifecycleInj]
+    const template = String(formData.get("injectTemplate") ?? "").trim()
+    if (!template) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
+    }
+    const idInj = String(formData.get("id") ?? "").trim()
+    if (!idInj) {
+      redirect("/policies/new?mode=guided&step=5&err=invalid_input"); return
+    }
+    const descriptionInj = String(formData.get("description") ?? "").trim()
+      || `Inject context on ${eventInj}`
+    // Tool scope: when the lifecycle carries a tool context the
+    // operator's pick rides through; everything else collapses to
+    // wildcard, matching deriveMatcher's behavior on evidence flows.
+    let matcherInj = "*"
+    if (lifecycleHasToolScope(lifecycleInj)) {
+      const scope = String(formData.get("toolScope") ?? "").trim()
+      if (scope && scope !== "*") {
+        const first = scope.split(",").map((s) => s.trim()).filter(Boolean)[0] ?? scope
+        matcherInj = first || "*"
+      }
+    }
+    const ctxDraft: ContextInjectionDraft = {
+      type: "context_injection",
+      id: idInj,
+      description: descriptionInj,
+      version: "0.1",
+      event: eventInj,
+      matcher: matcherInj,
+      template,
+    }
+    const sourceInj = String(formData.get("source") ?? "org")
+    await persistDraft(ctxDraft, sourceInj)
+    return
+  }
+
   // Resolve toolScope: prefer the hidden carry (most steps) over the
   // Step 2 mode submission. Step 2 itself runs through advanceWizard
   // which already wrote the merged value into the URL.
@@ -1123,6 +1233,9 @@ async function saveWizard(formData: FormData): Promise<void> {
   // Strip is reserved. Backend doesn't have a payload-mutation channel
   // so we map to "audit" with no requires. The validation above already
   // blocked strip when STRIP_AVAILABLE=false.
+  // D57f-1: inject_context has its own early-return branch above, so
+  // here action is narrowed to block / ask / audit / strip — all of
+  // which the evidence draft accepts (strip after the audit fallback).
   const irAction = action === "strip" ? "audit" : action
   const draft: PolicyDraft = {
     id: state.id!,
@@ -1206,6 +1319,32 @@ function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
  * partial state and surfaces "—" placeholders on Step 6). */
 function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   if (!ir) return null
+  // D57f-1: a context_injection IR (no trigger, no requires; carries
+  // `event`+`matcher`+`template` directly) round-trips into a wizard
+  // state with action=inject_context and the inline editor fields
+  // pre-filled. The detection uses the raw `type` field on the dict
+  // (PolicyDraft narrows to evidence shape, so we cast through unknown
+  // to read the discriminator).
+  const rawType = (ir as unknown as { type?: string }).type
+  if (rawType === "context_injection") {
+    const ev = (ir as unknown as { event?: string }).event ?? ""
+    const tpl = (ir as unknown as { template?: string }).template ?? ""
+    const matcherRaw = (ir as unknown as { matcher?: string }).matcher ?? "*"
+    const lifecycleCi: Lifecycle | undefined = EVENT_TO_LIFECYCLE[ev]
+    let toolScopeCi: string | undefined
+    if (lifecycleHasToolScope(lifecycleCi) && matcherRaw && matcherRaw !== "*") {
+      toolScopeCi = matcherRaw
+    }
+    return {
+      lifecycle: lifecycleCi,
+      toolScope: toolScopeCi,
+      conditionKind: "none",
+      action: "inject_context",
+      injectTemplate: tpl,
+      id: (ir.id ?? "").toString() || undefined,
+      description: ir.description?.toString() || undefined,
+    }
+  }
   // event -> lifecycle. D56c covered the original 8 hooks; D58
   // extends to the full 30-event CC surface. Anything outside the
   // recognized set degrades to undefined and Step 1's default
@@ -1836,6 +1975,9 @@ function buildWizardHref(state: WizardState, step: number): string {
   }
   if (state.shaclTtl) params.set("shaclTtl", state.shaclTtl)
   if (state.action) params.set("action", state.action)
+  if (state.injectTemplate) params.set("injectTemplate", state.injectTemplate)
+  if (state.injectLabelKo) params.set("injectLabelKo", state.injectLabelKo)
+  if (state.injectLabelEn) params.set("injectLabelEn", state.injectLabelEn)
   if (state.id) params.set("id", state.id)
   if (state.description) params.set("description", state.description)
   return `/policies/new?${params.toString()}`
@@ -1856,6 +1998,9 @@ function HiddenState({ state }: { state: WizardState }) {
       )}
       {state.shaclTtl && <input type="hidden" name="shaclTtl" value={state.shaclTtl} />}
       {state.action && <input type="hidden" name="action" value={state.action} />}
+      {state.injectTemplate && <input type="hidden" name="injectTemplate" value={state.injectTemplate} />}
+      {state.injectLabelKo && <input type="hidden" name="injectLabelKo" value={state.injectLabelKo} />}
+      {state.injectLabelEn && <input type="hidden" name="injectLabelEn" value={state.injectLabelEn} />}
       {state.id && <input type="hidden" name="id" value={state.id} />}
       {state.description && <input type="hidden" name="description" value={state.description} />}
     </>
@@ -1921,7 +2066,10 @@ function GuidedWizard({
   const conditionKind = (ALL_CONDITION_KINDS as readonly string[]).includes(condKParam ?? "")
     ? (condKParam as ConditionKind) : undefined
   const actionParam = searchParams.action
-  const action = (["block", "ask", "audit", "strip"] as const).includes(actionParam as Action)
+  // D57f-1: inject_context joins block / ask / audit / strip as a
+  // legal action archetype. Step 4 surfaces it on every lifecycle;
+  // saveWizard branches into the ContextInjectionPolicy compile target.
+  const action = (["block", "ask", "audit", "strip", "inject_context"] as const).includes(actionParam as Action)
     ? (actionParam as Action) : undefined
   const evidenceRefs = (searchParams.evidence_refs ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 
@@ -2000,6 +2148,12 @@ function GuidedWizard({
     evidenceRefs: _prunedEvidenceRefs,
     shaclTtl: searchParams.shaclTtl || draftState?.shaclTtl,
     action: action ?? draftState?.action,
+    // D57f-1: ContextInjectionPolicy fields ride on the URL state the
+    // same way every other per-step field does, so Edit-jumps from
+    // Step 6 back to Step 4b preserve the template + labels.
+    injectTemplate: searchParams.injectTemplate || draftState?.injectTemplate,
+    injectLabelKo: searchParams.injectLabelKo || draftState?.injectLabelKo,
+    injectLabelEn: searchParams.injectLabelEn || draftState?.injectLabelEn,
     id: searchParams.id || draftState?.id,
     description: searchParams.description || draftState?.description,
     // D56d (P2 #4): if the prebuilt draft carried a conditionKind that
@@ -2016,9 +2170,18 @@ function GuidedWizard({
 
   // D56c: every no-tool-context lifecycle auto-skips Step 2 (tool
   // scope is irrelevant when matcher is forced to wildcard).
-  const effectiveStep =
+  // D57f-1: when action=inject_context is already on the state (the
+  // user picked it on Step 4 and then jumped back via an Edit link),
+  // Step 3 has no condition surface to render — ContextInjectionPolicy
+  // has no requires list. We skip Step 3 forward to Step 4 so the
+  // operator lands on the action card + template editor instead of a
+  // ghost condition picker that would be ignored at save time.
+  let effectiveStep =
     step === 2 && state.lifecycle && !lifecycleHasToolScope(state.lifecycle)
       ? 3 : step
+  if (effectiveStep === 3 && state.action === "inject_context") {
+    effectiveStep = 4
+  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -2071,7 +2234,7 @@ function StepShell({
  * audit=blue, strip=purple) is consistent end-to-end. The accent color
  * still wins when the card is selected so the "this is the picked one"
  * affordance reads first. */
-type ActionTone = "block" | "ask" | "audit" | "strip"
+type ActionTone = "block" | "ask" | "audit" | "strip" | "inject_context"
 
 function actionCardClasses(tone?: ActionTone): string {
   // Idle border / hover hue per archetype. Selected state is still
@@ -2085,6 +2248,12 @@ function actionCardClasses(tone?: ActionTone): string {
       return "border-blue-300 hover:border-blue-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
     case "strip":
       return "border-purple-300 hover:border-purple-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
+    case "inject_context":
+      // D57f-1: green tone matches "additive / additionalContext"
+      // semantics. Distinct from audit's blue so the operator reads
+      // the affordance as "we add to the model's view" not "we
+      // observe and log."
+      return "border-emerald-300 hover:border-emerald-400 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
     default:
       return "border-black/[0.08] hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.05]"
   }
@@ -3243,11 +3412,19 @@ function Step4Action({
     ask:   { label: "Ask a human",  sub: "리뷰 큐로 보내고 사람이 승인해야 진행됩니다." },
     audit: { label: "Audit",        sub: "원장에만 기록하고 통과시킵니다 (관찰 모드)." },
     strip: { label: "Strip",        sub: "출력에서 매칭된 부분을 제거합니다 (after_tool_use 전용)." },
+    inject_context: {
+      label: "추가 정보 주입",
+      sub: "이 시점에서 모델 컨텍스트에 정적 텍스트를 끼워 넣습니다. 검증 단계는 필요 없습니다.",
+    },
   } : {
     block: { label: "Block",        sub: "Refuse the call. The agent cannot proceed." },
     ask:   { label: "Ask a human",  sub: "Send to the review queue; a human must approve to proceed." },
     audit: { label: "Audit",        sub: "Record to the ledger only; pass through (observe mode)." },
     strip: { label: "Strip",        sub: "Remove the matched span from the output (after_tool_use only)." },
+    inject_context: {
+      label: "Inject extra context",
+      sub: "Inject a static block of text into the model's context at this hook. No condition required.",
+    },
   }
   return (
     <StepShell
@@ -3281,6 +3458,89 @@ function Step4Action({
                     <Badge variant="info">coming soon</Badge>
                   </span>
                   <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                </span>
+              </label>
+            )
+          }
+          // D57f-1: when a === "inject_context" the inline editor
+          // (Step 4b) renders below the card via the peer-checked
+          // CSS selector, mirroring how Step 3 surfaces inline
+          // specifics. CSS-only reveal — no JS island needed.
+          if (a === "inject_context") {
+            return (
+              <label key={a} className="block cursor-pointer">
+                <input
+                  type="radio"
+                  name="action"
+                  value={a}
+                  defaultChecked={defaultPick === a}
+                  required
+                  className="peer sr-only"
+                />
+                <span
+                  data-action-tone="inject_context"
+                  className={
+                    "block rounded-xl border bg-white p-4 transition-colors " +
+                    actionCardClasses("inject_context")
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                </span>
+                <span
+                  data-testid="step4b-inject-editor"
+                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                >
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+                    {ko
+                      ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
+                      : "When this hook fires, this text becomes part of the model's context. The model sees it as additional system input."}
+                  </p>
+                  <div>
+                    <FieldLabel>
+                      {ko ? "주입할 본문" : "Text to inject"}
+                    </FieldLabel>
+                    <textarea
+                      name="injectTemplate"
+                      required
+                      maxLength={16000}
+                      rows={6}
+                      defaultValue={state.injectTemplate ?? ""}
+                      placeholder={ko
+                        ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
+                        : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
+                      spellCheck={false}
+                      className={inputCls() + " font-mono"}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <FieldLabel>
+                        {ko ? "라벨 (한국어, 선택)" : "Label (Korean, optional)"}
+                      </FieldLabel>
+                      <input
+                        name="injectLabelKo"
+                        maxLength={128}
+                        defaultValue={state.injectLabelKo ?? ""}
+                        placeholder={ko ? "팀 코딩 표준 주입" : "팀 코딩 표준 주입"}
+                        className={inputCls()}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel>
+                        {ko ? "라벨 (영어, 선택)" : "Label (English, optional)"}
+                      </FieldLabel>
+                      <input
+                        name="injectLabelEn"
+                        maxLength={128}
+                        defaultValue={state.injectLabelEn ?? ""}
+                        placeholder="Inject team coding standards"
+                        className={inputCls()}
+                      />
+                    </div>
+                  </div>
                 </span>
               </label>
             )
@@ -3785,14 +4045,20 @@ function Step6Review({
           path) and feed it to the panel. The button is disabled
           when the wizard has not produced an id yet (saving would
           fail validation for the same reason). */}
-      <DryRunPanel
-        locale={locale}
-        ir={state.id
-          ? buildGuidedDraftForDryRun(state)
-          : null}
-        disabled={!state.id}
-        action={(state.action === "strip" ? "strip" : (state.action ?? "audit"))}
-      />
+      {/* D57f-1: inject_context has no per-call gate to replay against
+          the ledger. The dry-run panel is meaningless for this archetype
+          (the runtime shim emits additionalContext unconditionally,
+          there's nothing to "would have blocked"). */}
+      {state.action !== "inject_context" && (
+        <DryRunPanel
+          locale={locale}
+          ir={state.id
+            ? buildGuidedDraftForDryRun(state)
+            : null}
+          disabled={!state.id}
+          action={(state.action === "strip" ? "strip" : (state.action ?? "audit")) as "block" | "ask" | "audit" | "strip"}
+        />
+      )}
     </StepShell>
   )
 }

@@ -307,33 +307,26 @@ Policy = EvidencePolicy
 
 _PERMISSION_LITERALS = ("allow", "deny", "ask")
 _MCP_ACTION_LITERALS = ("allow", "deny")
-# D58-followup — narrowed back to the two events with a *documented*
-# additionalContext consumption seam:
+# D57f-1 — context_injection is now available on every hook event the
+# matrix recognizes. The CC binary's hookSpecificOutput JSON schema
+# accepts `additionalContext` on every event (per the bundled CC docs
+# referenced in docs/architecture/claude-code-cli/08-coding-harness-
+# internals.md:233 — "JSON stdout returns {decision, updatedInput,
+# additionalContext, continue}"), so authoring an injection on
+# e.g. PreToolUse turns into a per-tool note prepended to the model's
+# view of the tool input; on SubagentStart it documents the spawned
+# child's mandate; on Notification it tags the runtime's notification
+# record.
 #
-#   UserPromptSubmit — CC reads hookSpecificOutput.additionalContext
-#                      and splices it into the user-prompt-as-seen-by-
-#                      the-model for the next model call.
-#   SessionStart     — CC reads additionalContext and stitches it into
-#                      the session bootstrap context the first model
-#                      call sees.
-#
-# The original D58 widening to the full event surface assumed
-# "additionalContext is in the JSON stdout schema on every hook"
-# transitively means "every hook will consume it". That is a syntactic
-# argument, not a semantic one. For events without an immediately-
-# following model-call seam (Notification, WorktreeRemove, FileChanged,
-# MessageDisplay, CwdChanged, TaskCompleted, ConfigChange, etc.) the
-# additionalContext field is silently discarded at runtime. Authoring
-# ContextInjectionPolicy on those events would compile cleanly and
-# save with a green check while doing nothing — exactly the
-# silent-fail-open the matrix is meant to refuse.
-#
-# Adding more events here REQUIRES a binary fixture demonstrating the
-# splice (settings.json + scripted CC invocation + observed
-# additionalContext bytes in a subsequent model call). PreToolUse is
-# plausibly correct (it's a documented gate with model-input
-# consumption) but stays out until proven.
-_CONTEXT_EVENT_LITERALS: tuple[str, ...] = ("SessionStart", "UserPromptSubmit")
+# The previous D58-followup narrowing to only UserPromptSubmit /
+# SessionStart was an artificial limit driven by the absence of an
+# end-to-end binary fixture on the other events. The wizard authoring
+# surface is what feeds this set — see web/app/(console)/policies/new/
+# page.tsx Step 4 "Inject extra context" action card. The runtime gate
+# (gate.py) emits the additionalContext JSON keyed by `hookEventName`
+# so CC's hook reader applies the field whichever way that event's
+# downstream consumer reads it.
+_CONTEXT_EVENT_LITERALS: tuple[str, ...] = tuple(sorted(_SUPPORTED_EVENTS))
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")
 
@@ -540,14 +533,14 @@ class ContextInjectionPolicy:
     by hash so the hook entry stays constant-time and the template
     bytes never need to fit in the settings file.
 
-    D58: event is no longer hard-narrowed to UserPromptSubmit /
-    SessionStart. Per the CC binary's bundled hook docs the JSON
-    stdout schema accepts `additionalContext` on every hook event, so
-    the previous restriction was an artificial limit of the IR. We now
-    accept any event the matrix legalizes — a context injection on
-    PreToolUse becomes a per-tool note prepended to the model's view
-    of the tool input, a context injection on SubagentStart documents
-    the spawned child's mandate, etc.
+    D57f-1: event is the full CC hook surface. The hookSpecificOutput
+    JSON schema accepts `additionalContext` on every hook event per
+    the bundled CC docs (08-coding-harness-internals.md:233 — "JSON
+    stdout returns {decision, updatedInput, additionalContext,
+    continue}"). The previous narrowing to UserPromptSubmit /
+    SessionStart was an artificial limit, and the wizard's
+    "Inject extra context" action archetype now routes to this
+    archetype on every lifecycle Step 1 surfaces.
     """
     id: str
     description: str
@@ -571,8 +564,7 @@ class ContextInjectionPolicy:
         if self.event not in _CONTEXT_EVENT_LITERALS:
             raise ValueError(
                 f"ContextInjectionPolicy '{self.id}': event {self.event!r} "
-                f"is not a recognized CC hook; expected one of "
-                f"{', '.join(_CONTEXT_EVENT_LITERALS)}"
+                f"is not a recognized CC hook"
             )
         if not isinstance(self.template, str) or not self.template:
             raise ValueError(

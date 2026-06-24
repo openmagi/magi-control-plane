@@ -111,15 +111,28 @@ Archetypes (set `type` accordingly):
         "action": "allow|deny"}}
     Examples: "disable the github MCP server fleet-wide".
 
-  type=context_injection — inject static text on UserPromptSubmit/SessionStart.
+  type=context_injection — inject static text into the model's context
+    at a chosen CC hook. CC's hookSpecificOutput JSON schema accepts
+    `additionalContext` on every hook event, so this archetype is
+    available on the full hook surface (UserPromptSubmit, SessionStart,
+    PreToolUse, SubagentStart, Notification, FileChanged, etc.).
+    Pick the event that matches WHEN the operator wants the text to
+    appear in context.
     Schema:
       {{"type": "context_injection", "id": "<id>", "version": "0.1",
         "description": "...",
-        "event": "UserPromptSubmit|SessionStart",
+        "event": "<CC hook event>",
         "matcher": "*",
         "template": "<text injected as additionalContext>"}}
-    Examples: "inject team coding standards into every prompt" / "add a
-    safety reminder at session start".
+    Examples:
+      "inject team coding standards into every prompt"
+        → event=UserPromptSubmit
+      "add a safety reminder at session start"
+        → event=SessionStart
+      "add a warning before every Bash command"
+        → event=PreToolUse, matcher="Bash"
+      "document the spawned child's mandate on subagent start"
+        → event=SubagentStart
 
   type=evidence    — gate that runs a verifier (or inline regex / SHACL /
                      LLM critic) at hook time. Use this when the rule

@@ -519,6 +519,128 @@ def cli() -> int:  # pragma: no cover (CLI entry)
     return 0   # unreachable; evaluate exits
 
 
+def _context_templates_dir() -> str:
+    """Resolve the sidecar directory where the compiler writes
+    `<sha256>.txt` template bytes.
+
+    The compiler writes them next to managed-settings.json under
+    `context-templates/`. Operators with a custom managed-settings
+    layout override the dir explicitly via
+    `MAGI_CP_CONTEXT_TEMPLATES_DIR`.
+    """
+    env = os.environ.get("MAGI_CP_CONTEXT_TEMPLATES_DIR")
+    if env:
+        return env
+    return os.path.join(
+        os.path.dirname(_managed_settings_path()),
+        "context-templates",
+    )
+
+
+# Sha256 hex chars only — refuses path-traversal / ELOOP attempts on the
+# `--id` argument fed in by the compiler-emitted command line. The
+# compiler always passes a 64-hex sha; anything else means a tampered
+# managed-settings.json.
+_CONTEXT_ID_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
+# Every event name the IR recognizes (D57f-1: the full surface). A
+# `--event` argument outside this set means a stale managed-settings
+# bundle authored against a newer CC build; we still emit the JSON, but
+# the empty hookEventName guard below catches an obvious typo.
+_CONTEXT_EVENT_HEX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
+def _emit_additional_context(event: str, template: str) -> None:
+    """Print the CC-canonical hookSpecificOutput JSON carrying the
+    template under `additionalContext` and exit 0.
+
+    D57f-1: keyed on the actual `hookEventName` — CC's hook reader
+    dispatches the additionalContext field per-event. UserPromptSubmit
+    splices it into the next user prompt; SessionStart stitches it
+    into the boot context; every other event records it on the
+    downstream consumer the runtime exposes for that event.
+
+    Single emission path so each event kind produces byte-identical
+    JSON (modulo the event name + template). The compiler-emitted
+    command line is the only caller, so we don't need to deal with
+    multi-line splits.
+    """
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": template,
+        }
+    }, ensure_ascii=False))
+    sys.exit(0)
+
+
+def context_write_cli() -> int:
+    """`magi-cp-context-write` entry point.
+
+    D57f-1: the compiler emits a hook entry of the shape
+    `magi-cp-context-write --event <Event> --id <sha256>` for every
+    ContextInjectionPolicy. The shim resolves the sha back into the
+    template bytes from the sidecar directory and emits the
+    additionalContext JSON keyed on the event.
+
+    Failure modes (all exit-0 + empty stdout, so a missing template
+    cannot brick CC: empty JSON output means CC continues with no
+    injected context):
+      - sidecar dir missing
+      - sidecar file missing
+      - sidecar file empty / unreadable
+      - malformed CLI args
+
+    Args are parsed without argparse so a single missing flag does
+    not raise SystemExit-2 (which CC would surface as a hook error).
+    """
+    argv = sys.argv[1:]
+    event = ""
+    tpl_id = ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--event" and i + 1 < len(argv):
+            event = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--id" and i + 1 < len(argv):
+            tpl_id = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    if not event or not _CONTEXT_EVENT_HEX_RE.match(event):
+        return 0
+    if not tpl_id or not _CONTEXT_ID_RE.match(tpl_id):
+        return 0
+    side_dir = _context_templates_dir()
+    path = os.path.join(side_dir, f"{tpl_id}.txt")
+    try:
+        # O_NOFOLLOW so a swapped symlink in the sidecar dir cannot
+        # redirect us to a different file. The compiler writes the
+        # sidecar files itself; a swap is the only way a different
+        # template lands on disk.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except (FileNotFoundError, OSError):
+        return 0
+    try:
+        data = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        os.close(fd)
+    if not data:
+        return 0
+    try:
+        template = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return 0
+    _emit_additional_context(event, template)
+    return 0   # unreachable; _emit_additional_context exits
+
+
 def heartbeat_cli() -> int:  # pragma: no cover (CLI entry)
     """Standalone heartbeat poster. Wire into cron / launchd /
     systemd-timer to fire every ~5 minutes. Silent on failure (exit 0

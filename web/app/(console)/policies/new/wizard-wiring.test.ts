@@ -303,17 +303,26 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // pre_final + subagent_stop + session_start + session_end are
       // audit-only per matrix.LEGAL_COMBINATIONS. Saving with block
       // on one of those must be refused before the round-trip.
+      // D57f-1: inject_context is a 5th archetype universally legal
+      // on every lifecycle (CC accepts additionalContext on every
+      // hook event). The pin shifts from "audit-only" to "block
+      // refused, inject_context allowed."
       const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
       expect(m).not.toBeNull()
       const body = m![1]
-      expect(body).toMatch(/pre_final:\s*\[\s*"audit"\s*\]/)
-      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit"\s*\]/)
-      expect(body).toMatch(/session_start:\s*\[\s*"audit"\s*\]/)
-      expect(body).toMatch(/session_end:\s*\[\s*"audit"\s*\]/)
-      // user_prompt has the full pre-event action set.
-      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit"\s*\]/)
-      // pre_compact has block + audit (matrix admits both).
-      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit"\s*\]/)
+      expect(body).toMatch(/pre_final:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
+      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
+      expect(body).toMatch(/session_start:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
+      expect(body).toMatch(/session_end:\s*\[\s*"audit",\s*"inject_context"\s*\]/)
+      // user_prompt has the full pre-event action set + inject_context.
+      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit",\s*"inject_context"\s*\]/)
+      // pre_compact has block + audit + inject_context.
+      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit",\s*"inject_context"\s*\]/)
+      // D57f-1: block / ask are still NOT legal on the audit-only
+      // lifecycles — the new archetype rides alongside audit, it
+      // doesn't loosen the block/ask gates.
+      expect(body).not.toMatch(/pre_final:\s*\[\s*"block"/)
+      expect(body).not.toMatch(/session_start:\s*\[\s*"block"/)
     })
 
     it("saveWizard refuses matrix-illegal action choices", () => {
@@ -324,9 +333,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // (PreToolUse, wildcard, block) — lifecycle-legal but matrix-
       // illegal — gets caught here. Pin the combination helper instead
       // of the now-superseded lifecycle-only lookup.
+      // D57f-1: slice widened to 6500 chars because the inject_context
+      // early-return branch sits above the matrix-action gate now.
       const start = src.indexOf("async function saveWizard")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 4000)
+      const body = src.slice(start, start + 6500)
       expect(body).toMatch(/allowedActionsForCombination\(lifecycle,\s*toolScope\)/)
       expect(body).toMatch(/!allowedActions\.includes\(action\)/)
       // D56d (P1 #2): also rejects matrix-illegal matcher classes
@@ -539,9 +550,12 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // The IR mapper must detect `|` in the inbound matcher, split,
       // collapse to first, AND stash the original on droppedAlternation
       // so Step 2 can render the banner.
+      // D57f-1: slice widened to 4500 chars because the
+      // context_injection discriminator branch sits above the
+      // evidence-shape mapper.
       const start = src.indexOf("function _irToWizardState")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 2500)
+      const body = src.slice(start, start + 4500)
       expect(body).toMatch(/droppedAlternation/)
       expect(body).toMatch(/matcher\.includes\("\|"\)/)
     })
@@ -756,6 +770,130 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // out, so the operator sees the context relevant to their
       // policy without losing the cross-lifecycle picture.
       expect(src).toMatch(/VerifierFieldChecks[\s\S]{0,400}lifecycle=\{ccEvent\}/)
+    })
+  })
+
+  /* D57f-1 — `inject_context` action archetype.
+   *
+   * The wizard's 5th action archetype maps to a ContextInjectionPolicy
+   * instead of an EvidencePolicy. The CC hookSpecificOutput JSON schema
+   * accepts `additionalContext` on every hook event, so the archetype
+   * is universally legal at the wizard's authoring surface; the
+   * runtime gate emits the additionalContext JSON keyed on the chosen
+   * event so CC applies it whichever way that event's downstream
+   * consumer reads it.
+   */
+  describe("D57f-1 — inject_context archetype", () => {
+    it("Action type includes inject_context as a 5th archetype", () => {
+      expect(src).toMatch(
+        /type Action = "block" \| "ask" \| "audit" \| "strip" \| "inject_context"/,
+      )
+    })
+
+    it("ACTIONS_BY_LIFECYCLE legalizes inject_context on every lifecycle", () => {
+      const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      // Every lifecycle row must include inject_context. We pin a
+      // sample across the 5 family bands the matrix recognizes so a
+      // future narrowing landing on only a subset is loud.
+      expect(body).toMatch(/before_tool_use:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      expect(body).toMatch(/after_tool_use:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      expect(body).toMatch(/user_prompt:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      expect(body).toMatch(/session_start:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      expect(body).toMatch(/notification:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      expect(body).toMatch(/file_changed:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+    })
+
+    it("WizardState carries inject template + KO/EN label fields", () => {
+      const m = src.match(/interface WizardState\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      expect(body).toMatch(/injectTemplate\?:\s*string/)
+      expect(body).toMatch(/injectLabelKo\?:\s*string/)
+      expect(body).toMatch(/injectLabelEn\?:\s*string/)
+    })
+
+    it("Step 4 renders the inline template editor for inject_context", () => {
+      // The CSS-only peer-checked reveal sits in a <span> tagged with
+      // data-testid="step4b-inject-editor" so the operator can assert
+      // the editor in browser-driven tests.
+      expect(src).toContain("step4b-inject-editor")
+      // The editor must include the template textarea + two label
+      // inputs (ko + en).
+      expect(src).toMatch(/name="injectTemplate"/)
+      expect(src).toMatch(/name="injectLabelKo"/)
+      expect(src).toMatch(/name="injectLabelEn"/)
+    })
+
+    it("Step 4 helper copy matches the brief's UX text", () => {
+      // "When this hook fires, this text becomes part of the model's
+      // context. The model sees it as additional system input."
+      expect(src).toContain("becomes part of the model's context")
+      expect(src).toContain("Inject extra context")
+      // Korean copy: "추가 정보 주입"
+      expect(src).toContain("추가 정보 주입")
+    })
+
+    it("GuidedWizard skips Step 3 forward to Step 4 when action=inject_context", () => {
+      // Skipping condition picker is the brief: "Verifier picker on
+      // Step 3: context_injection has no verifier requirement; Step 3
+      // is skipped when action = inject_context." We jump effectiveStep
+      // forward.
+      const start = src.indexOf("function GuidedWizard")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(
+        /effectiveStep === 3 && state\.action === "inject_context"/,
+      )
+    })
+
+    it("saveWizard branches into ContextInjectionDraft for inject_context", () => {
+      // The branch must early-return BEFORE the matrix-action guard +
+      // the requires-derivation pipeline, so its draft uses the
+      // type=context_injection discriminator and POSTs to the same
+      // /policies/{id} surface evidence policies use.
+      const start = src.indexOf("async function saveWizard")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 6500)
+      expect(body).toMatch(/action === "inject_context"/)
+      expect(body).toMatch(/type: "context_injection"/)
+      expect(body).toMatch(/template/)
+      expect(body).toMatch(/injectTemplate/)
+    })
+
+    it("_irToWizardState recognizes a context_injection IR discriminator", () => {
+      // A prebuilt or saved context_injection round-trips into a
+      // WizardState with action=inject_context and the template
+      // pre-filled. The mapper detects the `type` field on the raw
+      // dict (PolicyDraft only narrows the evidence shape).
+      const start = src.indexOf("function _irToWizardState")
+      expect(start).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 4500)
+      expect(body).toMatch(/rawType === "context_injection"/)
+      expect(body).toMatch(/action:\s*"inject_context"/)
+    })
+
+    it("Step 6 review summary names the injected template snippet", () => {
+      // plainSummary surfaces "this policy injects the following text
+      // into the model's context: ..." for inject_context. The
+      // truncation cap (80 chars) keeps the card tidy.
+      const start = src.indexOf("function plainSummary")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(/act === "inject_context"/)
+      expect(body).toMatch(/injectTemplate/)
+      expect(body).toMatch(/injects the following text/)
+    })
+
+    it("Step 6 DryRunPanel is hidden when action=inject_context", () => {
+      // The dry-run panel replays the last 24h of ledger rows through
+      // the gate. inject_context has no gate to replay against, so the
+      // panel is meaningless for the archetype.
+      const start = src.indexOf("function Step6Review")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      expect(body).toMatch(/state\.action !== "inject_context"/)
     })
   })
 })

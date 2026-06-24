@@ -253,11 +253,9 @@ def test_context_injection_emits_command_hook_and_sidecar():
 
 
 def test_context_injection_rejects_unknown_event():
-    """ContextInjectionPolicy rejects events outside its narrowed
-    consumption seam. The seam covers only events with a documented
-    additionalContext consumer in CC (UserPromptSubmit + SessionStart);
-    every other name (including matrix-legal but unverified events,
-    and bogus names) refuses."""
+    """ContextInjectionPolicy rejects events the IR does not recognize.
+    The recognized surface is the full CC hook event set per
+    `_SUPPORTED_EVENTS`; only outright bogus names refuse."""
     with pytest.raises(ValueError, match="not a recognized CC hook"):
         ContextInjectionPolicy(
             id="bad/v1", description="",
@@ -266,67 +264,35 @@ def test_context_injection_rejects_unknown_event():
         )
 
 
-def test_context_injection_refuses_events_without_documented_consumer():
-    """D58-followup: ContextInjectionPolicy refuses events whose
-    hookSpecificOutput shape does not name `additionalContext` as
-    the consumed channel, OR for which CC has no model-call seam to
-    splice into (Notification, WorktreeRemove, FileChanged,
-    MessageDisplay, etc. fire for observability and discard
-    additionalContext). The matrix is the floor for what's
-    *authorable*; this validator is a second gate so a silent
-    fail-open ("policy saved, never injects") cannot land.
+def test_context_injection_accepts_full_cc_hook_surface():
+    """D57f-1: ContextInjectionPolicy accepts every hook event the
+    matrix recognizes. The CC hookSpecificOutput JSON schema accepts
+    `additionalContext` on every event (per
+    docs/architecture/claude-code-cli/08-coding-harness-internals.md:233
+    — "JSON stdout returns {decision, updatedInput, additionalContext,
+    continue}"), so the wizard's "Inject extra context" archetype
+    routes here on every Step-1 lifecycle.
 
-    Events that pass this gate today: UserPromptSubmit, SessionStart.
-    Adding more REQUIRES a binary fixture proving the splice."""
-    refused_events = (
-        # Tool-context — model-call seam exists for PreToolUse but
-        # the consumption side is not yet binary-verified.
-        "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
-        # Specialized hookSpecificOutput shapes per the bundled CC
-        # docs — these don't name additionalContext as the consumed
-        # channel at all:
-        "Elicitation",        # decline/accept channel
-        "ElicitationResult",  # override action/content channel
-        "WorktreeCreate",     # worktreePath return channel
-        "MessageDisplay",     # display-only delta replacement
-        # Observability hooks with no immediately-following model
-        # call to inject into:
-        "Notification", "WorktreeRemove", "FileChanged", "CwdChanged",
-        "TaskCreated", "TaskCompleted", "ConfigChange",
-        "SubagentStart", "SubagentStop", "StopFailure",
-        "Setup", "TeammateIdle", "InstructionsLoaded",
-        # Mid-flow events: pre-side gates without a documented
-        # additionalContext consumer.
-        "UserPromptExpansion", "PreCompact", "PostCompact",
-        "PermissionRequest", "PermissionDenied",
-        "SessionEnd", "Stop",
-    )
-    for ev in refused_events:
-        with pytest.raises(ValueError, match="not a recognized CC hook"):
-            ContextInjectionPolicy(
-                id=f"ctx-{ev.lower()}/v1",
-                description=f"context on {ev}",
-                event=ev,  # type: ignore[arg-type]
-                template="hello",
-            )
+    Every event round-trips through compile_to_managed_settings into
+    a hooks.<event>[] command entry naming the magi-cp-context-write
+    shim — byte-identical shape across events so the shim path
+    works the same for each kind."""
+    from magi_cp.policy.ir import _SUPPORTED_EVENTS
 
-
-def test_context_injection_accepts_documented_consumer_events():
-    """The two events with a documented additionalContext splice into
-    a subsequent model call still authorize cleanly and round-trip
-    through the compiler."""
-    for ev in ("UserPromptSubmit", "SessionStart"):
+    for ev in sorted(_SUPPORTED_EVENTS):
         p = ContextInjectionPolicy(
             id=f"ctx-{ev.lower()}/v1",
             description=f"context on {ev}",
             event=ev,  # type: ignore[arg-type]
-            template="hello",
+            template=f"hello from {ev}",
         )
         ms = compile_to_managed_settings([p])
         hooks = ms["hooks"][ev]
         assert len(hooks) == 1
-        assert hooks[0]["hooks"][0]["type"] == "command"
-        assert f"--event {ev}" in hooks[0]["hooks"][0]["command"]
+        entry = hooks[0]["hooks"][0]
+        assert entry["type"] == "command"
+        assert entry["command"].startswith("/usr/local/bin/magi-cp-context-write")
+        assert f"--event {ev}" in entry["command"]
 
 
 # ── EvidencePolicy backward compat ───────────────────────────────────
