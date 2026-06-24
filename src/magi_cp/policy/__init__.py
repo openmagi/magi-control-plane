@@ -8,7 +8,7 @@ from .ir import (
 from .compiler import compile_to_managed_settings, compile_files
 from .matrix import (
     LEGAL_COMBINATIONS, MatcherClass,
-    matcher_class_of, validate_combination, supported_events,
+    matcher_class_of, matcher_covers, validate_combination, supported_events,
 )
 from .precedence import (
     LooseningError, PolicySource, SOURCE_PRECEDENCE, is_loosening,
@@ -28,7 +28,8 @@ __all__ = [
     "policy_from_dict", "policy_to_dict",
     "compile_to_managed_settings", "compile_files",
     "LEGAL_COMBINATIONS", "MatcherClass",
-    "matcher_class_of", "validate_combination", "supported_events",
+    "matcher_class_of", "matcher_covers", "validate_combination",
+    "supported_events",
     "PolicySource", "SOURCE_PRECEDENCE", "source_rank", "more_authoritative",
     "resolve_by_id", "tighten_against", "is_loosening", "LooseningError",
     "PolicyOverride", "ResolvedPolicy", "ResolvedPolicySet",

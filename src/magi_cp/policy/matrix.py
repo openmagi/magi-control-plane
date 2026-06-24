@@ -279,3 +279,39 @@ def validate_combination(event: str, matcher: str, decision: str) -> None:
             f"illegal combination: event={event!r} matcher={matcher!r}"
             f" (class={kls.value}) decision={decision!r}"
         )
+
+
+def matcher_covers(matcher: str, tool_name: str) -> bool:
+    """Predicate: does `matcher` cover `tool_name`?
+
+    Single source of truth for the runtime "this hook fired for this
+    tool" comparison. Built on `matcher_class_of` so any future matcher
+    class (wildcard variants, regex matchers, ...) lands here once
+    instead of being re-implemented at every call site.
+
+    Semantics per matcher class:
+      - wildcard ("*")     → True for any tool_name. Disallowed for
+        input_rewrite at authoring time; defensive callers should
+        refuse this BEFORE calling matcher_covers if a wildcard rewrite
+        would be a corrupted store row.
+      - tool / mcp_tool    → exact string equality.
+      - tool_alt           → tool_name is one of the `|`-separated
+        parts.
+
+    Returns False on any classification error (unknown matcher shape)
+    rather than raising — the runtime endpoint's contract is "soft
+    fail to no-op", and a corrupted matcher should not crash the
+    request handler. Authoring-time validation is the place to refuse.
+    """
+    try:
+        kls = matcher_class_of(matcher)
+    except ValueError:
+        return False
+    if kls is MatcherClass.wildcard:
+        return True
+    if kls is MatcherClass.tool_alt:
+        return tool_name in {
+            p.strip() for p in matcher.split("|") if p.strip()
+        }
+    # tool / mcp_tool → exact string match.
+    return matcher == tool_name

@@ -1218,16 +1218,31 @@ async function saveWizard(formData: FormData): Promise<void> {
   // rewriter spec) shape. The cloud's validate() is the canonical
   // gate; we surface its 4xx via the redirect path.
   if (action === "input_rewrite") {
-    if (!allowedActionsForCombination(lifecycle, undefined).includes("input_rewrite")) {
-      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
-    }
-    // Tool scope is mandatory for input_rewrite (wildcard is refused
-    // both client-side and by the cloud — rewriters target a specific
-    // tool's input field name).
+    // P0 follow-up: read the toolScope FIRST so the matrix legality
+    // check sees the right matcher class. The previous code passed
+    // `undefined` as the scope, which `matcherClassForToolScope`
+    // resolves to `"wildcard"` — and the matrix intentionally does
+    // NOT legalize input_rewrite on the wildcard column (rewriters
+    // target a specific field of a specific tool family). Result:
+    // every guided submission of input_rewrite, including the
+    // legitimate (before_tool_use, Bash, prefix_strip) happy path,
+    // was bounced to Step 4 with `err=invalid_input` and never
+    // reached `persistDraft`. The inject_context branch above gets
+    // away with the same `undefined` shape only because
+    // inject_context IS in the wildcard column.
+    //
+    // The downstream "wildcard is refused" guard at the
+    // `!matcherIr || matcherIr === "*"` line is the right place to
+    // refuse a missing scope; the matrix check just needs the real
+    // scope so the action is judged against the matcher class the
+    // operator actually picked.
     const rawScope = String(formData.get("toolScope") ?? "").trim()
     let matcherIr = rawScope
     if (rawScope.includes(",")) {
       matcherIr = rawScope.split(",").map((s) => s.trim()).filter(Boolean)[0] ?? ""
+    }
+    if (!allowedActionsForCombination(lifecycle, matcherIr).includes("input_rewrite")) {
+      redirect("/policies/new?mode=guided&step=4&err=invalid_input"); return
     }
     if (!matcherIr || matcherIr === "*") {
       redirect("/policies/new?mode=guided&step=2&err=invalid_input"); return

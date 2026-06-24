@@ -36,6 +36,7 @@ from ..policy import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
     McpGatingPolicy, PermissionPolicy, PolicyOverride,
     SubagentPolicy, apply_rewriter, compile_to_managed_settings,
+    matcher_covers,
 )
 from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
                         verify_document)
@@ -2060,12 +2061,48 @@ class PatchEnabledReq(BaseModel):
 
 class InputRewriteReq(BaseModel):
     """D57f-2 — request body for the `magi-cp-input-rewrite` shim's
-    POST /policies/input_rewrite call."""
+    POST /policies/input_rewrite call.
+
+    P2 follow-up: per-field length cap on `tool_input` values. The
+    middleware body cap (`MAX_REQUEST_BYTES`, 256KB) is the ambient
+    ceiling, but a single string field inside `tool_input` can still
+    be ~250KB at that level, which is the amplification factor for
+    the regex_substitute ReDoS lane. We cap individual string values
+    fed to the rewriter; oversize values are silently rejected
+    (validation maps to 422) so a crafted blob can't burn CPU on
+    `re.sub` even when the matcher does cover the tool_name.
+    """
     model_config = {"extra": "forbid"}
     policy_id: str = Field(..., min_length=1, max_length=128,
                             pattern=_POLICY_ID_PATTERN)
     tool_name: str = Field(..., min_length=1, max_length=128)
     tool_input: dict
+
+    @field_validator("tool_input")
+    @classmethod
+    def _cap_field_value_lengths(cls, v: dict) -> dict:
+        # Match the `_MAX_REWRITE_INPUT_LEN` cap in rewriters.py. Any
+        # single value larger than the cap is outside the rewriter's
+        # safe operating envelope; refusing at the boundary closes the
+        # amplification surface BEFORE we walk policy lookup or regex
+        # engine. We only cap top-level string values; nested dicts
+        # are rare in CC PreToolUse payloads and would otherwise let
+        # an attacker hide a blow-up inside `tool_input["nested"]`.
+        # `apply_rewriter` already gates against the same cap as
+        # defense in depth.
+        _MAX = 64 * 1024
+        for k, val in v.items():
+            if isinstance(val, str) and len(val) > _MAX:
+                raise ValueError(
+                    f"tool_input[{k!r}] exceeds {_MAX}-byte cap"
+                )
+            if isinstance(val, (dict, list)) and len(
+                str(val)
+            ) > _MAX * 2:
+                raise ValueError(
+                    f"tool_input[{k!r}] nested value too large"
+                )
+        return v
 
 
 _RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
@@ -2260,14 +2297,28 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         return {"items": all_prebuilt_policies()}
 
     # D57f-2 — input-rewrite verdict endpoint. Called by the
-    # `magi-cp-input-rewrite` shim at PreToolUse time. Stays open
-    # (no auth) for the same reason `/pubkey` does: the local gate has
-    # no tenant credential by default, and the only side effect is a
-    # tool-input rewrite the gate's own admin already authored. Routed
-    # BEFORE the `/policies/{policy_id:path}` catch-all so the literal
+    # `magi-cp-input-rewrite` shim at PreToolUse time. Routed BEFORE
+    # the `/policies/{policy_id:path}` catch-all so the literal
     # `input_rewrite` segment is not parsed as a policy id.
+    #
+    # P1 follow-up: optional `X-Api-Key` gating. The original D57f-2
+    # justification (parallel to `/pubkey`) doesn't survive scrutiny:
+    # `/pubkey` returns a constant public artifact, while this route
+    # accepts attacker-supplied (policy_id, tool_name, tool_input) and
+    # leaks `rewrote: true/false` plus the mutated dict — a remote
+    # oracle on policy id existence + rewriter semantics. When the
+    # operator has set `MAGI_CP_API_KEY` (the same env the shim
+    # forwards on every call after the heartbeat path was wired), the
+    # endpoint requires it; absent the env (loopback dev loop with no
+    # tenant credential), the endpoint remains open so the dev path
+    # the original justification described still works. The shim's
+    # forwarding lives at gate.input_rewrite_cli — see the X-Api-Key
+    # header construction there.
     @app.post("/policies/input_rewrite")
-    async def policies_input_rewrite(req: InputRewriteReq) -> dict:
+    async def policies_input_rewrite(
+        req: InputRewriteReq,
+        x_api_key: str | None = Header(default=None),
+    ) -> dict:
         """Apply an `InputRewritePolicy` to a PreToolUse payload.
 
         The shim sends the policy id + tool_name + raw tool_input dict;
@@ -2282,7 +2333,21 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
           - policy is not an `InputRewritePolicy`
           - matcher does not cover `tool_name`
           - rewriter is a no-op against the payload
+
+        Auth: optional. When the cloud has `MAGI_CP_API_KEY` set, the
+        request must carry a matching `X-Api-Key` header (the shim
+        forwards it from the same env). When unset (default dev loop),
+        the endpoint accepts anonymous calls so the local gate without
+        a tenant credential still works.
         """
+        import hmac as _hmac
+        expected_key = os.environ.get("MAGI_CP_API_KEY")
+        if expected_key:
+            if not x_api_key or not _hmac.compare_digest(
+                x_api_key, expected_key,
+            ):
+                raise HTTPException(401, "invalid or missing api key")
+
         target_id = req.policy_id
         match: AnyPolicy | None = None
         match_enabled = False
@@ -2296,15 +2361,18 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             return {"rewrote": False}
         if not isinstance(match, InputRewritePolicy):
             return {"rewrote": False}
-        # Matcher coverage: tool / mcp_tool exact, tool_alt any-of.
+        # Matcher coverage: defer to the single matrix.py predicate so
+        # the runtime check stays in lock-step with the matcher
+        # classifier the authoring-time validators use. Defensive
+        # wildcard refusal stays explicit because a wildcard rewriter
+        # row in the store is a corrupted state — authoring rejects
+        # it, but a downgrade attack on the on-disk schema could land
+        # one and we want a visible refusal lane rather than silently
+        # rewriting every tool's input field of the same name.
         matcher = match.trigger.matcher
         if matcher == "*":
-            # Disallowed at authoring time; refuse defensively.
             return {"rewrote": False}
-        if "|" in matcher:
-            if req.tool_name not in {p.strip() for p in matcher.split("|") if p.strip()}:
-                return {"rewrote": False}
-        elif matcher != req.tool_name:
+        if not matcher_covers(matcher, req.tool_name):
             return {"rewrote": False}
         try:
             new_input = apply_rewriter(match.rewriter, req.tool_input)

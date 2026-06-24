@@ -762,6 +762,11 @@ def test_input_rewrite_runtime_endpoint_returns_updated_input(client_with_regist
 
     rr = client_with_registry.post(
         "/policies/input_rewrite",
+        # P1 follow-up: the autouse `_env` fixture sets MAGI_CP_API_KEY,
+        # which now activates the optional auth on the endpoint. Pass
+        # the same value as the shim would; the no-env path is covered
+        # by `test_input_rewrite_endpoint_open_when_api_key_env_unset`.
+        headers={"X-Api-Key": API_KEY},
         json={
             "policy_id": pid,
             "tool_name": "Bash",
@@ -792,6 +797,7 @@ def test_input_rewrite_endpoint_refuses_wrong_tool(client_with_registry):
     assert _put(client_with_registry, pid, body).status_code == 200
     rr = client_with_registry.post(
         "/policies/input_rewrite",
+        headers={"X-Api-Key": API_KEY},
         json={
             "policy_id": pid,
             "tool_name": "Edit",
@@ -805,6 +811,7 @@ def test_input_rewrite_endpoint_refuses_wrong_tool(client_with_registry):
 def test_input_rewrite_endpoint_unknown_policy_id(client_with_registry):
     rr = client_with_registry.post(
         "/policies/input_rewrite",
+        headers={"X-Api-Key": API_KEY},
         json={
             "policy_id": "does-not-exist/v1",
             "tool_name": "Bash",
@@ -813,6 +820,123 @@ def test_input_rewrite_endpoint_unknown_policy_id(client_with_registry):
     )
     assert rr.status_code == 200
     assert rr.json() == {"rewrote": False}
+
+
+def test_input_rewrite_endpoint_caps_oversize_tool_input_value(client_with_registry):
+    """A 64KB+ string value inside `tool_input` must be refused at
+    the boundary so the regex engine never sees a pathological
+    target. Returns 422 (FastAPI / pydantic validation)."""
+    pid = "cap-strip/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    assert _put(client_with_registry, pid, body).status_code == 200
+    huge = "x" * (64 * 1024 + 1)
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        headers={"X-Api-Key": API_KEY},
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": huge},
+        },
+    )
+    # pydantic's `field_validator` raise → FastAPI returns 422.
+    assert rr.status_code == 422
+
+
+def test_input_rewrite_endpoint_optional_auth_when_env_set(
+    client_with_registry, monkeypatch,
+):
+    """When `MAGI_CP_API_KEY` is set, the endpoint requires a
+    matching `X-Api-Key` header. Closes the unauthenticated probe
+    surface that leaked policy id existence + rewriter semantics."""
+    monkeypatch.setenv("MAGI_CP_API_KEY", "right-key")
+    pid = "auth-required/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    assert _put(client_with_registry, pid, body).status_code == 200
+    # No header → 401.
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo ls"},
+        },
+    )
+    assert rr.status_code == 401
+    # Wrong header → 401.
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        headers={"X-Api-Key": "wrong"},
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo ls"},
+        },
+    )
+    assert rr.status_code == 401
+    # Correct header → 200 + rewrite happens.
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        headers={"X-Api-Key": "right-key"},
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo ls"},
+        },
+    )
+    assert rr.status_code == 200
+    assert rr.json()["rewrote"] is True
+
+
+def test_input_rewrite_endpoint_open_when_api_key_env_unset(
+    client_with_registry, monkeypatch,
+):
+    """Defaults: env unset → endpoint accepts anonymous calls so the
+    local-gate loopback dev loop still works."""
+    monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
+    pid = "open-anon/v1"
+    body = {
+        "type": "input_rewrite",
+        "id": pid,
+        "description": "",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                     "matcher": "Bash"},
+        "rewriter": {
+            "kind": "prefix_strip",
+            "config": {"field": "command", "prefix": "sudo "},
+        },
+    }
+    assert _put(client_with_registry, pid, body).status_code == 200
+    rr = client_with_registry.post(
+        "/policies/input_rewrite",
+        json={
+            "policy_id": pid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo ls"},
+        },
+    )
+    assert rr.status_code == 200
+    assert rr.json()["rewrote"] is True
 
 
 def test_put_input_rewrite_rejects_post_tool_use(client_with_registry):

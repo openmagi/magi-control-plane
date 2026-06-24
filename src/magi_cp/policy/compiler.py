@@ -160,6 +160,29 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
             # does NOT bake the rewriter config into the hook command
             # line — only the policy id — so a leaked managed-settings
             # file leaks the WIRING but not the rewriter operation.
+            #
+            # Concurrent-hook reconciliation note (P2 follow-up):
+            #   When the SAME (event=PreToolUse, matcher) pair carries
+            #   BOTH an InputRewritePolicy AND an EvidencePolicy
+            #   (action=block), CC will fire both hook entries in
+            #   parallel. The rewriter emits
+            #   `{permissionDecision: "allow", updatedInput: ...}`;
+            #   the evidence gate may emit
+            #   `{permissionDecision: "deny", permissionDecisionReason: ...}`.
+            #   CC reconciles by taking the strictest decision (deny
+            #   wins over allow on PreToolUse), so the deny lane still
+            #   blocks. HOWEVER: the EvidencePolicy gate reads the
+            #   PRE-rewrite `tool_input` from its own stdin — the
+            #   rewriter doesn't write back into CC's payload bus
+            #   before the deny path evaluates. If the operator
+            #   intended "first strip sudo, then re-evaluate the
+            #   sentinel", that layering is NOT realized today.
+            #   Authors stacking both archetypes on the same (event,
+            #   matcher) should rely on the deny path being honest
+            #   about the original input, not the rewritten one. A
+            #   single combined shim (rewrite + evidence in one
+            #   process) would close the layering gap; tracked as a
+            #   follow-up under [[project_customize_determinism_redesign]].
             hooks.setdefault(p.trigger.event, []).append({
                 "matcher": p.trigger.matcher,
                 "hooks": [{

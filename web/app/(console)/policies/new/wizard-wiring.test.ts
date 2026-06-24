@@ -919,4 +919,62 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).toMatch(/state\.action !== "inject_context"/)
     })
   })
+
+  /* D57f-2 follow-up — input_rewrite saveWizard branch.
+   *
+   * The original D57f-2 commit's input_rewrite branch passed
+   * `undefined` as the scope to `allowedActionsForCombination`, which
+   * `matcherClassForToolScope` resolves to `"wildcard"`. The matrix
+   * intentionally does NOT legalize input_rewrite on the wildcard
+   * column, so EVERY guided-wizard submission of action=input_rewrite
+   * was bounced to Step 4 with err=invalid_input and never reached
+   * `persistDraft`. The fix reads the toolScope first and passes it
+   * to the legality check so the matrix sees the real matcher class.
+   */
+  describe("D57f-2 follow-up — input_rewrite save path uses real toolScope", () => {
+    it("matrix-action gate reads rawScope before the input_rewrite legality check", () => {
+      // The input_rewrite branch must (a) read `formData.get("toolScope")`
+      // BEFORE the `allowedActionsForCombination(...)` call, (b) pass the
+      // parsed scope to that call. The previous `(lifecycle, undefined)`
+      // shape is the bug we're closing — pin against its re-introduction.
+      const start = src.indexOf("if (action === \"input_rewrite\")")
+      expect(start).toBeGreaterThan(-1)
+      // Reuse the same 1500-char slice the inject_context tests use.
+      const body = src.slice(start, start + 1500)
+      // rawScope read happens BEFORE the matrix check.
+      const rawScopeIdx = body.indexOf("formData.get(\"toolScope\")")
+      const matrixIdx = body.indexOf(
+        "allowedActionsForCombination(lifecycle, matcherIr)",
+      )
+      expect(rawScopeIdx).toBeGreaterThan(-1)
+      expect(matrixIdx).toBeGreaterThan(-1)
+      expect(rawScopeIdx).toBeLessThan(matrixIdx)
+      // Negative pin: the legality check must NOT pass `undefined`.
+      expect(body).not.toMatch(
+        /allowedActionsForCombination\(lifecycle,\s*undefined\)\.includes\("input_rewrite"\)/,
+      )
+    })
+
+    it("ACTIONS_BY_COMBINATION legalizes input_rewrite on (before_tool_use, tool)", () => {
+      // The matrix legality table must list input_rewrite on the tool
+      // and mcp_tool columns under before_tool_use; the wildcard column
+      // intentionally omits it. We pin both the positive and negative
+      // rows so a future widening of input_rewrite onto wildcard is
+      // loud (the cloud's IR validator would refuse, but the wizard
+      // must not preview an option the cloud cannot honor).
+      const m = src.match(/const ACTIONS_BY_COMBINATION[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      // Sub-block under before_tool_use.
+      const btuStart = body.indexOf("before_tool_use:")
+      const btuEnd = body.indexOf("after_tool_use:", btuStart)
+      const btu = body.slice(btuStart, btuEnd)
+      expect(btu).toMatch(/tool:[^\]]*"input_rewrite"/)
+      expect(btu).toMatch(/mcp_tool:[^\]]*"input_rewrite"/)
+      // wildcard line must NOT carry input_rewrite.
+      const wildcardLine = btu.match(/wildcard:\s*\[([^\]]*)\]/)
+      expect(wildcardLine).not.toBeNull()
+      expect(wildcardLine![1]).not.toContain("input_rewrite")
+    })
+  })
 })

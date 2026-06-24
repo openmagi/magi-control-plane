@@ -724,10 +724,24 @@ def _emit_updated_input(updated_input: dict) -> None:
     byte-identical JSON (modulo the dict body). CC consumes the
     `updatedInput` field on PreToolUse only — the matrix + policy
     validator already pin event=PreToolUse.
+
+    P1 follow-up: emit `permissionDecision: "allow"` alongside
+    `updatedInput`. The doc'd CC contract is
+    `{decision, updatedInput, additionalContext, continue}` (see
+    docs/architecture/claude-code-cli/08-coding-harness-internals.md);
+    a hookSpecificOutput WITHOUT a permission stance is version-
+    dependent — some builds parse the `updatedInput` but leave the
+    permission flow to a downstream hook, others ignore the field
+    entirely. Pairing the rewrite with an explicit `allow` makes the
+    intent unambiguous across CC builds: "apply the rewrite and
+    approve this tool call". Downstream EvidencePolicy gates remain
+    the place to deny — they fire on their own hook entry and their
+    `deny` overrides this `allow`.
     """
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
             "updatedInput": updated_input,
         }
     }, ensure_ascii=False))
@@ -777,6 +791,22 @@ def input_rewrite_cli() -> int:
         return 0
     tool_name = payload.get("tool_name")
     if not isinstance(tool_name, str) or not tool_name:
+        # P2 follow-up: surface an unfamiliar payload shape to stderr so
+        # the operator sees the rewriter going silent during early rollout.
+        # The matrix + policy validator only enable input_rewrite on
+        # PreToolUse, where CC's real payload includes `tool_name` (snake
+        # case in the bundled coreTypes.ts; the docstring at the top of
+        # this module pins Claude Code 2.1.170). A missing key here means
+        # either CC changed its payload shape on this version or a
+        # downstream caller fed the shim a non-PreToolUse JSON. We exit 0
+        # so the tool call still proceeds (fail-soft per the rewriter
+        # contract), but the stderr line is the only signal the operator
+        # has that the rewrite never fired.
+        sys.stderr.write(
+            "magi-cp-input-rewrite: payload missing `tool_name`; "
+            "rewrite skipped (no-op). PreToolUse payload shape may have "
+            "changed; verify against the CC version in use.\n"
+        )
         return 0
 
     cloud = _cloud_url()
@@ -789,11 +819,24 @@ def input_rewrite_cli() -> int:
         "tool_name": tool_name,
         "tool_input": tool_input,
     }, ensure_ascii=False).encode("utf-8")
+    # P1 follow-up: forward MAGI_CP_API_KEY (the same env the heartbeat
+    # path uses at gate.py:462) as `X-Api-Key`. The cloud-side route
+    # accepts the call without a header for backwards compatibility
+    # (the local-gate loopback dev loop has no tenant credential by
+    # default), but when an operator HAS set the env we want to bind
+    # this remote rewrite verdict to the gate's identity so a third
+    # party can't poll the endpoint to enumerate policy ids / probe
+    # rewriter behaviour. The shim doesn't fail if the key is unset;
+    # the cloud-side dependency does the matching enforcement decision.
+    req_headers = {"Content-Type": "application/json"}
+    forwarded_key = os.environ.get("MAGI_CP_API_KEY")
+    if forwarded_key:
+        req_headers["X-Api-Key"] = forwarded_key
     req = urllib.request.Request(
         cloud + "/policies/input_rewrite",
         method="POST",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=req_headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as r:

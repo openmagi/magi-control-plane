@@ -87,6 +87,50 @@ _MAX_FIELD_LEN = 64
 # delivers in tool_input (command, url, file_path, content, ...).
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
+# ReDoS hardening (P1 follow-up).
+#
+# Python's stdlib `re` engine is backtracking and has no per-call
+# deadline. A 2000-char operator-authored pattern with nested or
+# overlapping quantifiers (`(a+)+`, `(a|a)*b`, `(a*)+$`, ...) against a
+# crafted 250KB `tool_input` field will pin the FastAPI event loop for
+# tens of seconds. Two layers of defense in depth, neither of which
+# adds a new runtime dependency (per AGENTS.md "no new deps without
+# ask"):
+#
+#   1. At application time we refuse to feed `re.sub` an input longer
+#      than `_MAX_REWRITE_INPUT_LEN`. Typical legitimate Bash commands,
+#      URLs, file paths, and edit payloads are well under this cap;
+#      anything bigger is more likely an attacker probing for blow-up
+#      than a real rewrite target. The cap is intentionally LOWER than
+#      the 256KB cloud body cap so the regex stage cannot be made the
+#      slowest stage. The cap is for `regex_substitute` only because
+#      `prefix_strip` and `scheme_force` are linear-time literal ops.
+#
+#   2. At authoring time `validate_rewriter_spec` runs a conservative
+#      lint that refuses patterns containing a quantifier
+#      (`*`, `+`, `{...}`) DIRECTLY adjacent to a group that itself
+#      contains a quantifier — the classic catastrophic-backtracking
+#      trigger. This is a heuristic, not a guarantee; the runtime cap
+#      above is the actual ceiling. The lint exists to make
+#      pathological patterns fail loudly at PUT time so the operator
+#      sees the explanation before the policy hits prod.
+#
+# A future cycle CAN swap the engine for `google-re2` (linear-time by
+# construction) and drop both defenses, but that needs a new wheel
+# dependency and the build tooling to accept it.
+_MAX_REWRITE_INPUT_LEN = 64 * 1024
+
+# Conservative ReDoS lint: a quantifier `*`, `+`, or `{...}` that
+# follows a group `(...)` whose body contains another quantifier
+# anywhere. `re.compile` already accepted the pattern (so it parses)
+# but the structural shape (`(...quantifier...)quantifier`) is the
+# canonical nested-quantifier ReDoS trigger. We deliberately stay
+# narrow — broader checks reject too many legitimate patterns and the
+# runtime length cap is the actual safety net.
+_REDOS_NESTED_QUANT_RE = re.compile(
+    r"\((?:[^()\\]|\\.)*[*+?{}](?:[^()\\]|\\.)*\)[*+{]"
+)
+
 
 def validate_rewriter_spec(spec: dict) -> None:
     """Validate a rewriter spec at authoring time.
@@ -152,6 +196,19 @@ def validate_rewriter_spec(spec: dict) -> None:
             raise ValueError(
                 f"regex_substitute pattern does not compile: {e}"
             ) from e
+        # ReDoS lint (heuristic). The runtime input-length cap in
+        # `apply_rewriter` is the actual ceiling; this just makes the
+        # most obvious nested-quantifier patterns fail loudly at PUT
+        # time so the operator gets a usable error instead of a
+        # cloud-side timeout in prod. See module docstring for the
+        # broader threat model.
+        if _REDOS_NESTED_QUANT_RE.search(pattern):
+            raise ValueError(
+                "regex_substitute pattern contains nested quantifiers "
+                "(e.g. (a+)+, (a|a)*b) which can trigger catastrophic "
+                "backtracking; rewrite the pattern without an outer "
+                "quantifier on a group whose body is itself quantified"
+            )
         if not isinstance(replacement, str):
             raise ValueError("regex_substitute replacement must be a string")
         if len(replacement) > _MAX_REPLACEMENT_LEN:
@@ -212,6 +269,16 @@ def apply_rewriter(spec: dict, tool_input: dict[str, Any]) -> dict[str, Any]:
         pattern: str = cfg["pattern"]
         replacement: str = cfg.get("replacement", "")
         count: int = int(cfg.get("count", 0))
+        # ReDoS hardening: cap the input fed to `re.sub`. Python's stdlib
+        # engine is backtracking and has no per-call deadline, so an
+        # operator-authored pattern with nested quantifiers against a
+        # 250KB tool_input field can pin the event loop. Validation has
+        # already heuristically rejected the most obvious pathological
+        # patterns; this cap is the actual ceiling. Refusing to touch
+        # oversize values is fail-soft (no `updatedInput` emitted) per
+        # the rewriter's "errors degrade to no-op" contract.
+        if len(original) > _MAX_REWRITE_INPUT_LEN:
+            return tool_input
         try:
             new_value = re.sub(pattern, replacement, original, count=count)
         except re.error:
