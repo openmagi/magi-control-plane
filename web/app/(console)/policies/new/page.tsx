@@ -737,7 +737,7 @@ export default async function NewPolicyPage({
                 localStorage. Lives only on the NL compose mode: the
                 Guided wizard and Raw IR PolicyBuilder are structured
                 already and don't need this scaffolding. */}
-            <NlAuthoringGuide t={t} targetTextareaId="nl" />
+            <NlAuthoringGuide locale={locale} targetTextareaId="nl" />
             <form action={compileNL}>
               <Textarea
                 id="nl"

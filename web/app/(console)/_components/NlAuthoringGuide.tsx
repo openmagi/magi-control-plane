@@ -37,11 +37,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { translate, type Locale, type TKey } from "@/lib/i18n/dict"
 
 const LOCAL_STORAGE_KEY = "magi_cp.nl_authoring_guide.expanded"
 
 type T = (
-  k: import("@/lib/i18n/dict").TKey,
+  k: TKey,
   v?: Record<string, string | number>,
 ) => string
 
@@ -218,12 +219,20 @@ function fillTextarea(targetId: string, text: string): FillOutcome {
 }
 
 interface Props {
-  t: T
+  /** Resolved locale from the server. The client rebuilds `t` locally
+   * via the pure `translate()` exported from dict.ts so we do not
+   * pass the closure across the server/client boundary (Next.js 14
+   * RSC forbids passing functions to client components). */
+  locale: Locale
   /** id of the NL <textarea> that pills should fill. */
   targetTextareaId: string
 }
 
-export default function NlAuthoringGuide({ t, targetTextareaId }: Props): JSX.Element {
+export default function NlAuthoringGuide({ locale, targetTextareaId }: Props): JSX.Element {
+  const t: T = useCallback(
+    (key, vars) => translate(locale, key, vars),
+    [locale],
+  )
   const [expanded, setExpanded] = useState<boolean>(false)
   const [hydrated, setHydrated] = useState<boolean>(false)
   // D52e follow-up: pill click is non-destructive. When the textarea
