@@ -106,6 +106,58 @@ def test_evidence_types_surfaces_policy_derived_step_as_missing(client):
     assert derived["used_by_policies"] == ["custom-step/v1"]
 
 
+def test_evidence_types_injects_inline_kinds_for_policies_that_use_them(client):
+    """D52c follow-up: a policy using kind=regex / llm_critic / shacl
+    in its `requires` produces synthetic `inline_<kind>` catalog rows
+    so the chip selector + emissions widget can surface those entries.
+
+    Without this, /verify_inline writes `body['step'] = inline_regex`
+    to the ledger but the catalog has no row → the chip selector
+    can't filter to it and the rules-tab widget can't count it.
+    """
+    body = _valid_policy(
+        id="inline-regex/v1",
+        requires=[
+            {"kind": "regex", "pattern": "^FOO_", "verdict": "pass"},
+        ],
+    )
+    r = _save_policy(client, body)
+    assert r.status_code == 200, r.text
+    items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
+    inline = next((i for i in items if i["step"] == "inline_regex"), None)
+    assert inline is not None, f"inline_regex not in catalog: {[i['step'] for i in items]}"
+    assert inline["source"] == "policy-derived"
+    assert inline["enforcement"] == "enforcing"
+    assert inline["used_by_policies"] == ["inline-regex/v1"]
+
+
+def test_evidence_types_skips_inline_kinds_with_no_policy_consumers(client):
+    # When no policy uses an inline kind, the synthetic row is NOT
+    # emitted (keeps the catalog focused on what's actually live).
+    _save_policy(client, _valid_policy())
+    items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
+    inline_steps = [i["step"] for i in items if i["step"].startswith("inline_")]
+    assert inline_steps == []
+
+
+def test_evidence_types_does_not_emit_empty_step_rows(client):
+    # Inline-kind requires (kind=regex etc.) carry step="" in the IR
+    # but used_by[""] must not produce a `step=""` policy-derived row
+    # (was a dead chip and React key-collision risk; now skipped
+    # explicitly at the catalog producer).
+    body = _valid_policy(
+        id="inline-only/v1",
+        requires=[
+            {"kind": "llm_critic", "criterion": "no PII", "verdict": "pass"},
+        ],
+    )
+    r = _save_policy(client, body)
+    assert r.status_code == 200, r.text
+    items = client.get("/catalog/evidence-types", headers=HDR_API).json()["items"]
+    assert all(i["step"] for i in items), \
+        f"empty-step row leaked: {items}"
+
+
 def test_put_with_bare_unwired_step_returns_422_no_catalog_pollution(client):
     """P8: a bare (no `preview:` prefix) reference to an unwired step is
     rejected at PUT time so the catalog never has to surface a "missing"

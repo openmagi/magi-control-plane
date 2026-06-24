@@ -126,6 +126,10 @@ export type LedgerEntry = {
 export type LedgerPage = {
   chain_ok: boolean
   next_since_id: number
+  /** D52c follow-up: true when the server trimmed an over-fetched row,
+   * meaning more pages exist beyond `next_since_id`. Optional so older
+   * cloud versions that don't yet emit the field keep deserializing. */
+  has_more?: boolean
   entries: LedgerEntry[]
 }
 
@@ -273,10 +277,14 @@ export const cloud = {
 
   /** D52c: count of ledger entries matching the given verifier filter.
    *
-   * Used by the Rules → Verifiers expander to render a "Recent emissions
-   * (last 24h)" widget. Cheap (no body decode, no token verify) so the
-   * server component can fetch one per row in parallel without padding
-   * the page latency. */
+   * Used by the Rules → Verifiers expander to render a "Recent
+   * emissions (last 24h)" widget. The cloud side now uses a SQL
+   * COUNT(*) (no body decode, no token verify) so this stays cheap
+   * even on a large chain.
+   *
+   * D52c follow-up: prefer `ledgerCounts(steps, sinceSecs)` for the
+   * dashboard fan-out (one HTTP call + one GROUP BY query instead
+   * of K calls + K full-table walks). */
   ledgerCount: (
     verifier?: string,
     sinceSecs?: number,
@@ -292,6 +300,37 @@ export const cloud = {
       { method: "GET", keyType: "api" },
     )
   },
+
+  /** D52c follow-up: batched per-step count. One HTTP round-trip + one
+   * SQL GROUP BY for every verifier on the Rules → Verifiers tab.
+   *
+   * Returns `{counts: {step: n}}`. Steps with zero emissions in the
+   * window still appear (value 0) so the dashboard can render dashes
+   * for "no emissions" without a follow-up call. */
+  ledgerCounts: (
+    verifiers: string[],
+    sinceSecs?: number,
+  ): Promise<{ counts: Record<string, number> }> => {
+    const params = new URLSearchParams()
+    for (const v of verifiers) if (v) params.append("verifier", v)
+    if (typeof sinceSecs === "number" && sinceSecs > 0) {
+      params.set("since_secs", String(Math.floor(sinceSecs)))
+    }
+    const qs = params.toString()
+    return _fetch<{ counts: Record<string, number> }>(
+      `/ledger/counts${qs ? `?${qs}` : ""}`,
+      { method: "GET", keyType: "api" },
+    )
+  },
+
+  /** D52c follow-up: dedicated chain-integrity endpoint. The
+   * dashboard can poll this at low frequency for the chain-ok badge
+   * so paginated `/ledger` reads stay cheap (the `/ledger` route
+   * skips the chain re-walk when `since_id > 0`). */
+  ledgerIntegrity: (): Promise<{ chain_ok: boolean }> =>
+    _fetch<{ chain_ok: boolean }>(
+      "/ledger/integrity", { method: "GET", keyType: "api" },
+    ),
 
   listPolicies: (): Promise<PolicyListItem[]> =>
     _fetch<PolicyListResp>("/policies", { method: "GET", keyType: "admin" })

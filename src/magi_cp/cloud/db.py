@@ -79,7 +79,17 @@ class LedgerEntry(Base):
     body: Mapped[dict] = mapped_column(JsonCol, nullable=False)
     token: Mapped[str] = mapped_column(Text, nullable=False)
     h: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    __table_args__ = (UniqueConstraint("prev", name="uq_ledger_prev"),)
+    # D52c follow-up: composite (tenant_id, id) covers the paginated
+    # tenant-scoped read path (`WHERE tenant_id = :t AND id > :sid
+    # ORDER BY id LIMIT :n`); composite (tenant_id, ts) covers the
+    # since_secs window on /ledger/count. The standalone tenant_id
+    # index above is kept for back-compat with existing dashboards
+    # that still call list_by_tenant() without a cursor.
+    __table_args__ = (
+        UniqueConstraint("prev", name="uq_ledger_prev"),
+        Index("ix_ledger_tenant_id_id", "tenant_id", "id"),
+        Index("ix_ledger_tenant_id_ts", "tenant_id", "ts"),
+    )
 
 
 class EndpointHeartbeat(Base):
@@ -382,6 +392,174 @@ class LedgerRepo:
             for r in rows: s.expunge(r)
             return rows
 
+    def list_by_tenant_page(
+        self,
+        tenant_id: str,
+        *,
+        since_id: int = 0,
+        limit: int = 100,
+        verifier: list[str] | None = None,
+    ) -> list[LedgerEntry]:
+        """D52c follow-up: paginated per-tenant ledger read.
+
+        Pushes `since_id`, `verifier`-filter and `LIMIT` into the SQL
+        layer so the database does the skipping. Old code path scanned
+        every tenant row into Python on each request; this method
+        scans only the page-sized window via the `(tenant_id, id)`
+        index.
+
+        `verifier` filter on `body['step']`: Postgres uses the JSONB
+        text path operator (`body->>'step'`); SQLite uses
+        `json_extract(body, '$.step')`. The fallback for non-PG/
+        non-SQLite dialects is the in-Python filter on the
+        already-paginated rows (correct but defeats the index).
+        """
+        wanted = [v for v in (verifier or []) if v]
+        with Session(self.engine) as s:
+            stmt = select(LedgerEntry).where(
+                LedgerEntry.tenant_id == tenant_id,
+                LedgerEntry.id > since_id,
+            )
+            dialect = self.engine.dialect.name
+            if wanted:
+                stmt = self._apply_step_filter(stmt, wanted, dialect)
+            stmt = stmt.order_by(LedgerEntry.id).limit(limit)
+            rows = list(s.scalars(stmt))
+            for r in rows: s.expunge(r)
+            if wanted and dialect not in ("postgresql", "sqlite"):
+                # Fallback: filter in Python when dialect lacks a JSON
+                # path operator. Correctness > index efficiency here.
+                wanted_set = set(wanted)
+                rows = [
+                    r for r in rows
+                    if isinstance(r.body, dict)
+                    and r.body.get("step") in wanted_set
+                ]
+            return rows
+
+    def count_by_tenant(
+        self,
+        tenant_id: str,
+        *,
+        verifier: list[str] | None = None,
+        since_ts: int | None = None,
+    ) -> int:
+        """D52c follow-up: COUNT(*) for the verifier-emissions widget.
+
+        Replaces the body-hydrating `list_by_tenant` scan with a
+        single `SELECT COUNT(*)` so the dashboard fan-out is cheap.
+        """
+        from sqlalchemy import func
+        with Session(self.engine) as s:
+            stmt = select(func.count(LedgerEntry.id)).where(
+                LedgerEntry.tenant_id == tenant_id,
+            )
+            if since_ts is not None:
+                stmt = stmt.where(LedgerEntry.ts >= since_ts)
+            wanted = [v for v in (verifier or []) if v]
+            dialect = self.engine.dialect.name
+            if wanted and dialect in ("postgresql", "sqlite"):
+                stmt = self._apply_step_filter(stmt, wanted, dialect)
+                return int(s.scalar(stmt) or 0)
+            if not wanted:
+                return int(s.scalar(stmt) or 0)
+            # Dialect lacks a JSON path operator. Fall back to
+            # hydrating + Python-filtering. Keeps correctness on
+            # MySQL etc.; the supported dev/test/prod targets
+            # (sqlite/postgres) take the indexed fast path above.
+            rows = list(s.scalars(
+                select(LedgerEntry).where(
+                    LedgerEntry.tenant_id == tenant_id,
+                )
+            ))
+            wanted_set = set(wanted)
+            return sum(
+                1 for r in rows
+                if (since_ts is None or r.ts >= since_ts)
+                and isinstance(r.body, dict)
+                and r.body.get("step") in wanted_set
+            )
+
+    def counts_by_step(
+        self,
+        tenant_id: str,
+        *,
+        steps: list[str],
+        since_ts: int | None = None,
+    ) -> dict[str, int]:
+        """D52c follow-up: batched per-step count for the dashboard
+        fan-out on the Rules → Verifiers tab.
+
+        Single GROUP BY query returns {step: count} for every step in
+        `steps` (missing keys → 0 added by the caller). The previous
+        fan-out issued one /ledger/count HTTP call per verifier; this
+        method does it in one SQL round-trip.
+        """
+        if not steps:
+            return {}
+        from sqlalchemy import func
+        out: dict[str, int] = {s_: 0 for s_ in steps if s_}
+        if not out:
+            return {}
+        wanted = list(out.keys())
+        dialect = self.engine.dialect.name
+        with Session(self.engine) as sess:
+            if dialect == "postgresql":
+                from sqlalchemy import literal_column
+                step_expr = LedgerEntry.body["step"].astext  # type: ignore[index]
+            elif dialect == "sqlite":
+                from sqlalchemy import literal_column
+                step_expr = func.json_extract(LedgerEntry.body, "$.step")
+            else:
+                # Fallback: hydrate + python aggregate. Single pass.
+                stmt = select(LedgerEntry).where(
+                    LedgerEntry.tenant_id == tenant_id,
+                )
+                if since_ts is not None:
+                    stmt = stmt.where(LedgerEntry.ts >= since_ts)
+                rows = list(sess.scalars(stmt))
+                wanted_set = set(wanted)
+                for r in rows:
+                    if not isinstance(r.body, dict):
+                        continue
+                    step = r.body.get("step")
+                    if step in wanted_set:
+                        out[step] = out.get(step, 0) + 1
+                return out
+            stmt = (
+                select(step_expr, func.count(LedgerEntry.id))
+                .where(
+                    LedgerEntry.tenant_id == tenant_id,
+                    step_expr.in_(wanted),
+                )
+                .group_by(step_expr)
+            )
+            if since_ts is not None:
+                stmt = stmt.where(LedgerEntry.ts >= since_ts)
+            for step, n in sess.execute(stmt).all():
+                if isinstance(step, str):
+                    out[step] = int(n)
+        return out
+
+    @staticmethod
+    def _apply_step_filter(stmt, wanted: list[str], dialect: str):
+        """Push `body['step'] IN (...)` into SQL.
+
+        Postgres → `body->>'step'` (JSONB text accessor).
+        SQLite   → `json_extract(body, '$.step')`.
+        Other dialects fall back to in-Python filtering at the call site.
+        """
+        from sqlalchemy import func
+        if dialect == "postgresql":
+            return stmt.where(
+                LedgerEntry.body["step"].astext.in_(wanted)  # type: ignore[index]
+            )
+        if dialect == "sqlite":
+            return stmt.where(
+                func.json_extract(LedgerEntry.body, "$.step").in_(wanted)
+            )
+        return stmt
+
     def list_by_subject(self, subject: str) -> list[LedgerEntry]:
         """PR4 canonical name. The underlying DB column is still `matter`
         (deeper rename deferred) — this method queries it under the
@@ -395,13 +573,23 @@ class LedgerRepo:
             return rows
 
     def verify_chain(self) -> bool:
+        """Walk the global hash chain.
+
+        Streamed iteration via the ORM (no `list_all()` materialisation)
+        so verify on a large chain stays bounded in memory. Order is
+        primary-key ascending; first mismatch returns False immediately.
+        """
         prev = ""
-        for entry in self.list_all():
-            if entry.prev != prev:
-                return False
-            if entry.h != _chain_hash(entry.prev, entry.body, entry.token):
-                return False
-            prev = entry.h
+        with Session(self.engine) as s:
+            rows = s.scalars(
+                select(LedgerEntry).order_by(LedgerEntry.id)
+            )
+            for entry in rows:
+                if entry.prev != prev:
+                    return False
+                if entry.h != _chain_hash(entry.prev, entry.body, entry.token):
+                    return False
+                prev = entry.h
         return True
 
 

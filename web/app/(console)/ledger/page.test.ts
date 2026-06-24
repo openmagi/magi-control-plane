@@ -24,9 +24,13 @@ describe("ledger page source invariants (D52c)", () => {
 
   it("parses `?verifier=` as a multi-value URL state", () => {
     // Repeated query param → string[] from Next.js. The page must
-    // accept both string and string[] shapes.
+    // accept both string and string[] shapes. D52c follow-up moved
+    // the parser + URL builder to `@/lib/ledger-url` so the
+    // VerifierExpander's View-in-ledger link reuses the same
+    // contract (was: hand-rolled `encodeURIComponent` divergence).
     expect(src).toMatch(/verifier\?:\s*string\s*\|\s*string\[\]/)
     expect(src).toContain("parseVerifierParam")
+    expect(src).toContain('from "@/lib/ledger-url"')
   })
 
   it("threads the verifier filter into cloud.ledger()", () => {
@@ -63,6 +67,42 @@ describe("ledger page source invariants (D52c)", () => {
     expect(src).toMatch(/selected\.length\s*>\s*0/)
     expect(src).toContain("verifier-filter-clear")
     expect(src).toContain("ledger.filter.clear")
+  })
+
+  it("D52c follow-up: chip toggle preserves the `since` cursor", () => {
+    // Was: chip toggle silently dropped `since`, bouncing the user
+    // back to page 1 every time they added or removed a filter.
+    // Now: the toggle href threads `since` through unchanged so the
+    // user stays on the page they were reading.
+    expect(src).toMatch(
+      /ledgerHref\(\{\s*since:\s*since\s*>\s*0\s*\?\s*since\s*:\s*undefined/,
+    )
+  })
+
+  it("D52c follow-up: chip selector drops empty-step rows", () => {
+    // A catalog row with step="" used to render a visually-empty
+    // clickable chip + `?verifier=` dead link + a React key
+    // collision risk. The selector now filters them out.
+    expect(src).toMatch(/row\.step\s*&&\s*row\.step\.length\s*>\s*0/)
+  })
+
+  it("D52c follow-up: per-source visual treatment", () => {
+    // builtin / custom / policy-derived must look distinct at a
+    // glance so an operator can tell whether a 0-count chip is "no
+    // emissions" (builtin) or "no runtime binding" (custom /
+    // missing). Reuses the EnforcementBadge palette.
+    expect(src).toContain("chipClasses")
+    expect(src).toContain("data-source={row.source}")
+    expect(src).toContain("data-enforcement={row.enforcement}")
+  })
+
+  it("D52c follow-up: deep-linked filter has an escape even when catalog fails", () => {
+    // Was: catalog fetch failure + active `?verifier=` filter left
+    // the user with no chips, no Clear-link, no visible cue. Now we
+    // render a degraded card with the active-badge + Clear-link.
+    expect(src).toContain("VerifierFilterDegradedCard")
+    expect(src).toContain("verifier-filter-chips-degraded")
+    expect(src).toContain("ledger.filter.catalogUnavailable")
   })
 
   it("pagination Links preserve the verifier filter (next page)", () => {

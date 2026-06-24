@@ -60,20 +60,24 @@ export default async function RulesPage({
   } else if (tab === "evidence") {
     try {
       evidence = await cloud.listEvidenceTypes()
-      // Fan out the 24h emission counts in parallel. We swallow per-row
-      // errors here so a flaky cloud only mutes the widget, not the
-      // whole tab (the verifier rows themselves render from the
-      // already-fetched `evidence` list).
+      // D52c follow-up: single batched `/ledger/counts` call replaces
+      // the per-row fan-out (was: `Promise.all(evidence.map(...))`
+      // → K HTTP round-trips + K full-tenant SQL scans, scaling as
+      // O(V * N_tenant_rows) per render). The cloud now does one
+      // GROUP BY query and returns `{step: count}` for every step.
+      // Per-row errors here only mute the widget, not the tab.
       const SINCE_24H = 24 * 60 * 60
-      const results = await Promise.all(evidence.map(async (e) => {
-        try {
-          const r = await cloud.ledgerCount(e.step, SINCE_24H)
-          return [e.step, r.count] as const
-        } catch {
-          return null
+      try {
+        const steps = evidence.map((e) => e.step).filter(Boolean)
+        if (steps.length > 0) {
+          const r = await cloud.ledgerCounts(steps, SINCE_24H)
+          emissionCounts = r.counts
         }
-      }))
-      for (const r of results) if (r) emissionCounts[r[0]] = r[1]
+      } catch {
+        // Leave emissionCounts as `{}` so each row renders the
+        // unavailable-dash. Same shape as before, one swallowed
+        // call instead of K.
+      }
     }
     catch (e: unknown) { evidenceErr = codeForError(e) }
   } else {
@@ -370,6 +374,14 @@ function EvidenceTab({
                       : null
                   }
                   nfFormat={nfFormat}
+                  // D52c follow-up: pass `source` so the expander can
+                  // mark custom-source rows as "preview, not bound to
+                  // runtime" so a count of 0 there is structural (no
+                  // runtime path), not "no usage". `policy-derived`
+                  // with enforcement=missing gets the same treatment
+                  // (the policy references a step nothing implements).
+                  source={row.source}
+                  enforcement={row.enforcement}
                 />
               </div>
             ))}

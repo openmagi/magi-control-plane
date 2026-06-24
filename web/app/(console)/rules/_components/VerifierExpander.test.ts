@@ -116,10 +116,15 @@ describe("VerifierExpander source invariants", () => {
     expect(panelIdx).toBeGreaterThan(Math.min(ternaryEnd, ternaryNext))
   })
 
-  it("D52c: View-in-ledger link jumps to /ledger?verifier=<step>", () => {
+  it("D52c: View-in-ledger link routed through shared ledgerHref", () => {
     // The hosted ledger filter contract is `?verifier=<step>`; the
-    // chip selector reads the same key.
-    expect(src).toMatch(/\/ledger\?verifier=\$\{encodeURIComponent\(step\)\}/)
+    // chip selector reads the same key. D52c follow-up routes both
+    // sides through `web/lib/ledger-url.ts::ledgerHref` so the URL
+    // encoding is byte-identical (was: hand-rolled
+    // encodeURIComponent here, URLSearchParams there → `%20` vs `+`
+    // divergence on space).
+    expect(src).toMatch(/ledgerHref\(\{\s*verifiers:\s*\[step\]\s*\}\)/)
+    expect(src).toContain('from "@/lib/ledger-url"')
     expect(src).toContain("rules.verifier.expander.viewInLedger")
     expect(src).toContain("verifier-expander-ledger-link")
   })

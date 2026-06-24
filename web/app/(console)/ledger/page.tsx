@@ -2,6 +2,7 @@ import Link from "next/link"
 import { cloud, type EvidenceTypeEntry } from "@/lib/cloud"
 import { fmtUtc, clampNonNegInt, LEDGER_PAGE_SIZE } from "@/lib/format"
 import { getIntl, getT } from "@/lib/i18n/server"
+import { ledgerHref, parseVerifierParam } from "@/lib/ledger-url"
 import {
   Badge, Card, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
@@ -13,30 +14,6 @@ function errMsg(e: unknown): string {
 }
 
 type TFunc = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
-
-/** D52c: normalize `?verifier=...` into a clean string[].
- *
- * Next.js delivers a repeated query param as `string[]` (e.g.
- * `?verifier=a&verifier=b`) and a single occurrence as `string`. We
- * also strip empty values so `?verifier=` (no value) is treated as
- * "no filter" (matches the backend's `if v` filter).
- */
-function parseVerifierParam(raw: string | string[] | undefined): string[] {
-  if (raw == null) return []
-  const arr = Array.isArray(raw) ? raw : [raw]
-  // Dedupe with Set to keep the URL stable when a chip is clicked twice
-  // in a row (browsers often submit duplicate params on hash collisions).
-  return Array.from(new Set(arr.filter(Boolean)))
-}
-
-/** Build a `/ledger?...` href with the given verifier filter applied. */
-function ledgerHref(opts: { since?: number; verifiers?: string[] }): string {
-  const params = new URLSearchParams()
-  if (opts.since && opts.since > 0) params.set("since", String(opts.since))
-  for (const v of opts.verifiers ?? []) params.append("verifier", v)
-  const qs = params.toString()
-  return qs ? `/ledger?${qs}` : "/ledger"
-}
 
 export default async function LedgerPage({
   searchParams,
@@ -74,14 +51,23 @@ export default async function LedgerPage({
           card so the operator sees the filter context before the data.
           Catalog comes from /catalog/evidence-types (same source as the
           Rules → Verifiers tab) so the chip set stays in sync with the
-          policy authoring view. */}
-      {catalog.length > 0 && (
+          policy authoring view.
+
+          D52c follow-up: when the catalog fetch fails AND a filter is
+          active in the URL, we render a degraded card with only the
+          active-badge + Clear-filter link so a deep-linked URL always
+          has a one-click escape (was: filter applied silently with no
+          chips to toggle off and no Clear affordance). */}
+      {catalog.length > 0 ? (
         <VerifierFilterChips
           catalog={catalog}
           selected={verifierFilter}
+          since={since}
           t={t}
         />
-      )}
+      ) : verifierFilter.length > 0 ? (
+        <VerifierFilterDegradedCard selected={verifierFilter} t={t} />
+      ) : null}
 
       {err && (
         <ErrorState
@@ -190,12 +176,25 @@ export default async function LedgerPage({
  * catalog (built-in + custom + policy-derived) so a verifier that
  * cannot fire (`enforcement: "missing"`) is still pickable. Useful
  * for diagnosing why a policy isn't producing emissions.
+ *
+ * D52c follow-up:
+ *   - empty-step catalog rows are dropped (was: rendered as
+ *     visually-empty clickable chips that navigated to `?verifier=`,
+ *     i.e. unfiltered (defeating the operator's intent),
+ *   - `since` cursor is preserved through chip toggles (was:
+ *     silently reset to page 1 on every click. The backend
+ *     tolerates a stale cursor under the new filter; `e.id > since`
+ *     simply continues from there),
+ *   - per-source visual treatment so a `missing` chip is
+ *     distinguishable at a glance from a built-in enforcing chip
+ *     (aligns with the EnforcementBadge mapping on the Rules tab).
  */
 function VerifierFilterChips({
-  catalog, selected, t,
+  catalog, selected, since, t,
 }: {
   catalog: EvidenceTypeEntry[]
   selected: string[]
+  since: number
   t: TFunc
 }) {
   const selectedSet = new Set(selected)
@@ -204,15 +203,23 @@ function VerifierFilterChips({
   const sourceRank: Record<EvidenceTypeEntry["source"], number> = {
     builtin: 0, custom: 1, "policy-derived": 2,
   }
-  const sorted = [...catalog].sort((a, b) => {
-    const ra = sourceRank[a.source] ?? 99
-    const rb = sourceRank[b.source] ?? 99
-    if (ra !== rb) return ra - rb
-    return a.step.localeCompare(b.step)
-  })
-  // Resetting filters always returns to page 1: since the chain
-  // changes shape when the filter changes, a cursor from one filter
-  // view is meaningless against another.
+  // D52c follow-up: drop empty-step rows. They produced visually-blank
+  // clickable chips and a /ledger?verifier= dead link (the backend
+  // treats empty values as "no filter"); React would also key-collide
+  // if more than one such row leaked through. The catalog producer at
+  // app.py now skips empty-step requires too, but the dashboard guard
+  // stays as defence-in-depth.
+  const sorted = catalog
+    .filter((row) => row.step && row.step.length > 0)
+    .sort((a, b) => {
+      const ra = sourceRank[a.source] ?? 99
+      const rb = sourceRank[b.source] ?? 99
+      if (ra !== rb) return ra - rb
+      return a.step.localeCompare(b.step)
+    })
+  // Clearing filters always returns to page 1: with no filter on the
+  // URL the operator wants the freshest view, not a cursor inherited
+  // from a narrower one.
   const clearHref = `/ledger`
   return (
     <Card className="mb-4" data-testid="verifier-filter-chips">
@@ -244,12 +251,18 @@ function VerifierFilterChips({
         {sorted.map((row) => {
           const isOn = selectedSet.has(row.step)
           // Toggle: if on → drop it from the set; if off → add it.
-          // Page cursor `since` is dropped on chip toggle because it
-          // points into a different filter view (see clearHref note).
+          // D52c follow-up: preserve `since` across the toggle so a
+          // user widening / narrowing the filter on page 3 isn't
+          // yanked back to page 1. The backend tolerates a stale
+          // cursor (entries continue from `e.id > since` under the
+          // new filter view).
           const nextVerifiers = isOn
             ? selected.filter((s) => s !== row.step)
             : [...selected, row.step]
-          const href = ledgerHref({ verifiers: nextVerifiers })
+          const href = ledgerHref({
+            since: since > 0 ? since : undefined,
+            verifiers: nextVerifiers,
+          })
           return (
             <Link
               key={row.step}
@@ -258,16 +271,97 @@ function VerifierFilterChips({
               aria-pressed={isOn}
               data-step={row.step}
               data-on={isOn ? "true" : "false"}
-              className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-mono transition-colors ${
-                isOn
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)] hover:bg-black/[0.06]"
-              }`}
+              data-source={row.source}
+              data-enforcement={row.enforcement}
+              className={chipClasses(row, isOn)}
+              title={chipTitle(row, t)}
             >
               {row.step}
             </Link>
           )
         })}
+      </div>
+    </Card>
+  )
+}
+
+/** Per-source visual treatment for the chip. Reuses the same accent
+ * tones as the EnforcementBadge palette on the Rules tab so an
+ * operator's eye can correlate the two views at a glance.
+ *
+ *   - builtin / enforcing → solid accent when ON, neutral when OFF
+ *   - custom              → dashed outline when OFF (preview source)
+ *   - policy-derived      → dashed outline + muted tone when OFF
+ *     (inline-kind rows live here too; the kind is encoded in the
+ *      step prefix `inline_*`)
+ */
+function chipClasses(row: EvidenceTypeEntry, isOn: boolean): string {
+  const base =
+    "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] " +
+    "font-mono transition-colors"
+  if (isOn) {
+    return `${base} bg-[var(--color-accent)] text-white`
+  }
+  if (row.source === "builtin") {
+    return (
+      `${base} bg-[var(--color-muted-bg,#f3f4f6)] ` +
+      "text-[var(--color-muted-fg,#374151)] hover:bg-black/[0.06]"
+    )
+  }
+  // custom + policy-derived share the dashed-outline treatment so the
+  // operator can see at a glance "this is not an authored built-in".
+  return (
+    `${base} border border-dashed border-black/[0.18] ` +
+    "bg-white text-[var(--color-muted-fg,#374151)] hover:bg-black/[0.04]"
+  )
+}
+
+/** Hover tooltip: explains the source bucket so the visual treatment
+ * is self-documenting. Reuses existing dictionary keys from the
+ * Rules → Verifiers tab. */
+function chipTitle(row: EvidenceTypeEntry, t: TFunc): string {
+  if (row.source === "builtin") return t("rules.evidence.source.builtin")
+  if (row.source === "custom") return t("rules.evidence.source.custom")
+  return t("rules.evidence.source.derived")
+}
+
+/** D52c follow-up: degraded chip card.
+ *
+ * Rendered when `/catalog/evidence-types` is unreachable but the user
+ * deep-linked into a filtered view. We can't show the chips (no
+ * catalog) but we can still surface the active-badge + Clear-filter
+ * link so the URL has a one-click escape regardless of catalog
+ * availability. Was: filter applied silently with no UI signal.
+ */
+function VerifierFilterDegradedCard({
+  selected, t,
+}: {
+  selected: string[]
+  t: TFunc
+}) {
+  return (
+    <Card className="mb-4" data-testid="verifier-filter-chips-degraded">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            {t("ledger.filter.title")}
+          </span>
+          <span className="text-[11px] text-[var(--color-text-tertiary)]">
+            {t("ledger.filter.catalogUnavailable")}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="info">
+            {t("ledger.filter.activeBadge", { n: selected.length })}
+          </Badge>
+          <Link
+            href={`/ledger`}
+            data-testid="verifier-filter-clear"
+            className="text-xs font-medium text-[var(--color-accent-light)] hover:underline"
+          >
+            {t("ledger.filter.clear")}
+          </Link>
+        </div>
       </div>
     </Card>
   )

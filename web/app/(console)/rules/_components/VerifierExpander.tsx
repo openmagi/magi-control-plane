@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { ledgerHref } from "@/lib/ledger-url"
 import { availableFields, type FieldDescriptor as PayloadFieldDescriptor } from "@/lib/payload-schemas"
 import {
   getVerifierDescriptor,
@@ -31,7 +32,7 @@ import { Code } from "@/components/ui"
 type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
 export function VerifierExpander({
-  step, t, recentEmissions24h, nfFormat,
+  step, t, recentEmissions24h, nfFormat, source, enforcement,
 }: {
   step: string
   t: T
@@ -40,6 +41,14 @@ export function VerifierExpander({
    * operators don't misread a transient outage as "no emissions"). */
   recentEmissions24h?: number | null
   nfFormat?: (n: number) => string
+  /** D52c follow-up: catalog source bucket. `custom` verifiers
+   * (authored via /verifiers/new) have NO runtime binding today, so
+   * the count will always be 0, which we explain inline instead of
+   * silently mis-signalling "no usage". `policy-derived` rows with
+   * enforcement=missing get the same treatment (the policy
+   * references a step name nothing implements). */
+  source?: "builtin" | "custom" | "policy-derived"
+  enforcement?: "enforcing" | "always-on" | "preview" | "missing"
 }) {
   const descriptor = getVerifierDescriptor(step)
   // Distinct accessible name per row so a SR user scanning the list
@@ -93,6 +102,8 @@ export function VerifierExpander({
           step={step}
           count={recentEmissions24h ?? null}
           nfFormat={nfFormat}
+          source={source}
+          enforcement={enforcement}
           t={t}
         />
       </div>
@@ -101,18 +112,43 @@ export function VerifierExpander({
 }
 
 function RecentEmissionsPanel({
-  step, count, nfFormat, t,
+  step, count, nfFormat, source, enforcement, t,
 }: {
   step: string
   count: number | null
   nfFormat?: (n: number) => string
+  source?: "builtin" | "custom" | "policy-derived"
+  enforcement?: "enforcing" | "always-on" | "preview" | "missing"
   t: T
 }) {
+  // D52c follow-up: a `custom` verifier has no runtime binding today
+  // (D52b authored at /verifiers/new but POST /verify/{name} returns
+  // 404), so a count of 0 is structural, not "no usage". Same for
+  // `policy-derived` rows that the cloud labels `enforcement:
+  // missing` (a policy references a step name nothing implements).
+  // We surface a tiny status note so an operator does not chase a
+  // non-bug; the jump-link to /ledger stays available so they can
+  // confirm the empty filter view themselves.
+  const noRuntimeBinding =
+    source === "custom" || (source === "policy-derived" && enforcement === "missing")
+  const noteKey: keyof typeof RECENT_NOTE_KEYS | null = noRuntimeBinding
+    ? (source === "custom"
+        ? "custom"
+        : "missing")
+    : null
   const formatted = count === null
     ? t("rules.verifier.expander.recentEmissionsUnavailable")
     : (nfFormat ? nfFormat(count) : String(count))
-  // Mirror the chip selector contract on /ledger: `?verifier=<step>`.
-  const href = `/ledger?verifier=${encodeURIComponent(step)}`
+  // D52c follow-up: route the jump-link through the same `ledgerHref`
+  // builder the chip selector uses, so the URL is byte-identical to
+  // the one the chip selector emits after the user navigates and
+  // re-clicks the chip (back-button history collapses cleanly). Was:
+  // hand-rolled `encodeURIComponent` here + `URLSearchParams` there,
+  // which differed on `%20` vs `+` for any verifier step that ever
+  // contained a space (step names are alphanumeric+underscore today
+  // so no regression observed; the foot-gun was the duplicated
+  // contract, fixed at the source).
+  const href = ledgerHref({ verifiers: [step] })
   return (
     <div data-testid="verifier-expander-recent-emissions">
       <PanelHeader>
@@ -136,9 +172,23 @@ function RecentEmissionsPanel({
           {t("rules.verifier.expander.viewInLedger")}
         </Link>
       </div>
+      {noteKey && (
+        <p
+          data-testid="verifier-expander-no-runtime-binding"
+          className="mt-1.5 text-[11px] italic text-[var(--color-text-tertiary)] leading-relaxed"
+        >
+          {t(RECENT_NOTE_KEYS[noteKey])}
+        </p>
+      )}
     </div>
   )
 }
+
+/** D52c follow-up: dictionary keys for the no-runtime-binding note. */
+const RECENT_NOTE_KEYS = {
+  custom: "rules.verifier.expander.recentEmissionsNoRuntimeCustom",
+  missing: "rules.verifier.expander.recentEmissionsNoRuntimeMissing",
+} as const
 
 function PanelHeader({ children }: { children: React.ReactNode }) {
   return (

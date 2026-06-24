@@ -352,6 +352,8 @@ const KO_RAW = {
   "rules.verifier.expander.recentEmissionsWindow": "최근 24시간",
   "rules.verifier.expander.recentEmissionsUnavailable": "-",
   "rules.verifier.expander.viewInLedger": "감사 원장에서 보기 →",
+  "rules.verifier.expander.recentEmissionsNoRuntimeCustom": "preview 전용: /verifiers/new 로 등록되었지만 런타임 바인딩이 아직 없습니다. 카운트가 0 인 것은 사용량이 아니라 런타임 미연결을 의미합니다.",
+  "rules.verifier.expander.recentEmissionsNoRuntimeMissing": "정책에서 참조되지만 등록된 verifier 가 없습니다 (enforcement: missing). 런타임은 no-verifier-registered 로 거부합니다.",
 
   /* ── ledger filter chips (D52c) ───────────────────────────────── */
   "ledger.filter.title": "Verifier 로 필터",
@@ -359,6 +361,7 @@ const KO_RAW = {
   "ledger.filter.clear": "필터 해제",
   "ledger.filter.empty": "필터에 해당하는 기록이 없습니다.",
   "ledger.filter.activeBadge": "{n} 개 필터 적용 중",
+  "ledger.filter.catalogUnavailable": "Verifier 목록을 불러올 수 없습니다. 적용된 필터는 해제 가능합니다.",
 
   /* ── verifiers/new (D52b authoring page) ──────────────────────── */
   "verifiers.new.title": "새 verifier",
@@ -814,12 +817,15 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.verifier.expander.recentEmissionsWindow": "last 24h",
   "rules.verifier.expander.recentEmissionsUnavailable": "-",
   "rules.verifier.expander.viewInLedger": "View in ledger →",
+  "rules.verifier.expander.recentEmissionsNoRuntimeCustom": "Preview only: authored via /verifiers/new but not yet bound to a runtime check. A count of 0 means no runtime binding, not no usage.",
+  "rules.verifier.expander.recentEmissionsNoRuntimeMissing": "Referenced by a policy with no registered verifier (enforcement: missing). The runtime denies with no-verifier-registered.",
 
   "ledger.filter.title": "Filter by verifier",
   "ledger.filter.hint": "Show only records emitted by the selected verifier(s). Multi-select.",
   "ledger.filter.clear": "Clear filter",
   "ledger.filter.empty": "No ledger entries match the filter.",
   "ledger.filter.activeBadge": "{n} filter(s) active",
+  "ledger.filter.catalogUnavailable": "Verifier catalog is unavailable. The active filter can still be cleared.",
 
   "verifiers.new.title": "New verifier",
   "verifiers.new.description.page": "Register a step-kind custom verifier (the runtime check). Inline regex / llm_critic / shacl checks stay in their owning policy.",

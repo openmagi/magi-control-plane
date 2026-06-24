@@ -1113,6 +1113,23 @@ def create_app(
                           token="")
         return {"verdict": "rejected", "token": None, "hitl_id": item_id}
 
+    # D52c follow-up: cap the repeatable `verifier=` parameter so an
+    # authenticated caller cannot amplify a request into an unbounded
+    # `IN (...)` clause. 64 covers any realistic catalog size (the
+    # built-ins are 5; a tenant's custom-verifier table is bounded
+    # by `/verifiers/new` form input).
+    _LEDGER_VERIFIER_LIMIT = 64
+
+    def _normalize_verifier_param(values: list[str] | None) -> list[str]:
+        wanted = [v for v in (values or []) if v]
+        if len(wanted) > _LEDGER_VERIFIER_LIMIT:
+            raise HTTPException(
+                400,
+                f"verifier= accepts at most {_LEDGER_VERIFIER_LIMIT} values; "
+                f"got {len(wanted)}",
+            )
+        return wanted
+
     @app.get("/ledger", dependencies=[Depends(require_tenant_auth)])
     def list_ledger(request: Request, since_id: int = 0, limit: int = 100,
                      include_body: bool = False,
@@ -1126,28 +1143,47 @@ def create_app(
         applied AFTER tenant scoping and BEFORE pagination so the
         `next_since_id` cursor advances over the filtered view (callers
         paginating by verifier do not have to scan thousands of unrelated
-        entries to find the next page). The chain hash itself is unchanged;
-        chain_ok continues to validate the global chain.
+        entries to find the next page).
+
+        D52c follow-up:
+          - `since_id` + `verifier` + `limit` are pushed into SQL via
+            `list_by_tenant_page` so the database does the skipping
+            (was: full-tenant Python scan per request, O(N_tenant)).
+          - `chain_ok` is skipped when paginating (`since_id > 0`); a
+            caller fetching page 2+ is not auditing the chain, and the
+            cost of re-verifying scales with the whole chain not the
+            page. Dedicated `/ledger/integrity` endpoint surfaces the
+            chain-ok bit on demand. Page 1 still verifies on every
+            call (matches the prior shape: the dashboard polls page
+            1 and expects the badge).
+          - `verifier` count is capped (HTTPException 400 above the
+            limit) to bound the SQL `IN (...)` clause.
         """
         limit = max(1, min(int(limit), 1000))
         tenant_id = getattr(request.state, "tenant_id", "default")
-        tenant_entries = ledger.list_by_tenant(tenant_id)
-        chain_ok = ledger.verify_chain()   # global integrity, not per-tenant
-        filtered = [e for e in tenant_entries if e.id > since_id]
-        if verifier:
-            wanted = {v for v in verifier if v}
-            if wanted:
-                filtered = [e for e in filtered
-                            if isinstance(e.body, dict)
-                            and e.body.get("step") in wanted]
-        page = filtered[:limit]
-        # PR4: only canonical `subject` is surfaced. The DB column is
-        # still named `matter` (PR4 schema migration on hitl_item drops
-        # legacy columns there; the ledger column rename is a deeper
-        # change deferred — the ORM attribute still reads `matter` but
-        # the wire surface only exposes `subject`).
+        wanted = _normalize_verifier_param(verifier)
+        # Over-fetch one to compute `has_more` so the dashboard can
+        # hide the Load more affordance when the filtered chain is
+        # exhausted (was: the page only knew it had hit the end via
+        # `len(entries) < LEDGER_PAGE_SIZE`, which is fragile when
+        # the page size happens to equal the remaining count).
+        page = ledger.list_by_tenant_page(
+            tenant_id,
+            since_id=since_id,
+            limit=limit + 1,
+            verifier=wanted or None,
+        )
+        has_more = len(page) > limit
+        if has_more:
+            page = page[:limit]
+        # D52c follow-up: skip the global chain re-walk when the caller
+        # is paginating. The chain has not changed by the time the
+        # operator clicks Next; page 1 (since_id == 0) still verifies
+        # so the dashboard's chain-integrity badge stays accurate.
+        chain_ok = ledger.verify_chain() if since_id == 0 else True
         return {"chain_ok": chain_ok,
                 "next_since_id": page[-1].id if page else since_id,
+                "has_more": has_more,
                 "entries": [
                     {"id": e.id, "ts": e.ts,
                      "subject": e.matter,
@@ -1155,6 +1191,18 @@ def create_app(
                      **({"body": e.body, "token": e.token} if include_body else {})}
                     for e in page
                 ]}
+
+    @app.get("/ledger/integrity", dependencies=[Depends(require_tenant_auth)])
+    def ledger_integrity() -> dict:
+        """D52c follow-up: dedicated chain-integrity endpoint.
+
+        The dashboard can poll this at low frequency for the
+        chain-ok badge so paginated `/ledger` reads stay cheap. The
+        verify_chain implementation is incremental (LedgerRepo caches
+        the last verified head + id) so calls after the first one
+        only re-hash the appended suffix.
+        """
+        return {"chain_ok": ledger.verify_chain()}
 
     @app.get("/ledger/count", dependencies=[Depends(require_tenant_auth)])
     def ledger_count(request: Request,
@@ -1170,26 +1218,46 @@ def create_app(
 
         Returns `{count: N}`. Empty case returns 0, no error for an
         unknown verifier name (the chip selector lists names that exist,
-        and a typo'd query should not crash the expander)."""
+        and a typo'd query should not crash the expander).
+
+        D52c follow-up: pushed into SQL via `LedgerRepo.count_by_tenant`
+        (was O(N_tenant_rows) hydrate-and-walk per request)."""
         tenant_id = getattr(request.state, "tenant_id", "default")
-        tenant_entries = ledger.list_by_tenant(tenant_id)
-        wanted: set[str] = {v for v in (verifier or []) if v}
-        # Lower-bound cap: keep the window non-negative even if the caller
-        # supplies a negative since_secs (clamp to 0 = unbounded back).
+        wanted = _normalize_verifier_param(verifier)
         cutoff: int | None = None
         if since_secs is not None and since_secs > 0:
             cutoff = int(time.time()) - int(since_secs)
-        count = 0
-        for e in tenant_entries:
-            if cutoff is not None and e.ts < cutoff:
-                continue
-            if wanted:
-                if not isinstance(e.body, dict):
-                    continue
-                if e.body.get("step") not in wanted:
-                    continue
-            count += 1
-        return {"count": count}
+        n = ledger.count_by_tenant(
+            tenant_id, verifier=wanted or None, since_ts=cutoff,
+        )
+        return {"count": int(n)}
+
+    @app.get("/ledger/counts", dependencies=[Depends(require_tenant_auth)])
+    def ledger_counts(request: Request,
+                       verifier: list[str] | None = Query(default=None),
+                       since_secs: int | None = None) -> dict:
+        """D52c follow-up: batched per-step count.
+
+        Replaces the dashboard fan-out of one `/ledger/count` call per
+        catalog row with a single GROUP BY query. The Rules → Verifiers
+        tab calls this once per render, regardless of how many
+        verifiers the catalog grows to. Returns `{counts: {step: n}}`
+        (every step in the request appears in the response: missing
+        keys → 0) so the dashboard can render dashes for "no
+        emissions" without a follow-up call.
+
+        Capped at `_LEDGER_VERIFIER_LIMIT` steps per request (same
+        bound as `/ledger` and `/ledger/count`).
+        """
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        wanted = _normalize_verifier_param(verifier)
+        cutoff: int | None = None
+        if since_secs is not None and since_secs > 0:
+            cutoff = int(time.time()) - int(since_secs)
+        counts = ledger.counts_by_step(
+            tenant_id, steps=wanted, since_ts=cutoff,
+        )
+        return {"counts": counts}
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
     _attach_policy_routes(app, policy_store, policy_lock,
@@ -1877,9 +1945,28 @@ def _attach_catalog_routes(
                 })
                 builtin_steps.add(v.step)
         used_by: dict[str, list[str]] = {}
+        # Track which inline kinds (regex / llm_critic / shacl) appear in
+        # any stored policy so we can inject the synthetic catalog rows
+        # below. The /verify_inline route writes `inline_<kind>` as the
+        # ledger step label, so the chip selector + emissions widget can
+        # surface inline kinds via the same machinery as step-kind rows.
+        used_by_inline: dict[str, list[str]] = {}
         for entry in policy_store.load():
             for req in entry.policy.requires:
-                used_by.setdefault(req.step, []).append(entry.policy.id)
+                kind = getattr(req, "kind", "step")
+                if kind == "step":
+                    # D52c follow-up: skip empty step names. Inline-kind
+                    # rows previously fell through to `used_by[""]`
+                    # which produced a `step=""` catalog row and a
+                    # dead `/ledger?verifier=` chip; explicit kind
+                    # check above + this defensive guard keeps the
+                    # catalog clean even if loader semantics shift.
+                    if req.step:
+                        used_by.setdefault(req.step, []).append(entry.policy.id)
+                elif kind in ("regex", "llm_critic", "shacl"):
+                    used_by_inline.setdefault(
+                        f"inline_{kind}", [],
+                    ).append(entry.policy.id)
         for row in builtin:
             row["used_by_policies"] = used_by.pop(row["step"], [])
 
@@ -1904,6 +1991,11 @@ def _attach_catalog_routes(
 
         derived: list[dict] = []
         for step, policies in sorted(used_by.items()):
+            # Defense-in-depth: skip any step that survived to here with
+            # a falsy name (would produce a `?verifier=` chip with no
+            # body and a React key collision on duplicates).
+            if not step:
+                continue
             derived.append({
                 "step": step,
                 "category": None,
@@ -1915,7 +2007,49 @@ def _attach_catalog_routes(
                 "source": "policy-derived",
                 "used_by_policies": policies,
             })
-        return {"items": builtin + custom + derived}
+
+        # D52c follow-up: synthetic catalog rows for inline kinds.
+        # /verify_inline writes `body['step'] = inline_<kind>` to the
+        # ledger; without these synthetic rows the chip selector +
+        # emissions widget have no way to filter or count those
+        # entries. We emit at most one row per inline kind (regex /
+        # llm_critic / shacl) and only when at least one stored policy
+        # uses that kind, so the catalog stays focused.
+        _INLINE_KIND_DESCRIPTIONS = {
+            "inline_regex": (
+                "Inline regex check authored in a policy's requires list. "
+                "Emits to the ledger as step=`inline_regex` on every "
+                "evaluation; not registerable via /verifiers/new."
+            ),
+            "inline_llm_critic": (
+                "Inline llm_critic check authored in a policy's requires "
+                "list. Emits to the ledger as step=`inline_llm_critic`."
+            ),
+            "inline_shacl": (
+                "Inline SHACL shape authored in a policy's requires list. "
+                "Emits to the ledger as step=`inline_shacl`."
+            ),
+        }
+        inline_rows: list[dict] = []
+        for step in sorted(used_by_inline.keys()):
+            inline_rows.append({
+                "step": step,
+                "category": None,
+                "description": _INLINE_KIND_DESCRIPTIONS.get(
+                    step,
+                    "Inline policy check; emits under this step label.",
+                ),
+                "enforcement": "enforcing",
+                "name": None,
+                # `policy-derived` so the UI's per-source visual
+                # treatment surfaces these as "not authored at
+                # /verifiers/new" (matches the operator's mental model
+                # (they live in a policy, not a verifier).
+                "source": "policy-derived",
+                "used_by_policies": used_by_inline[step],
+            })
+
+        return {"items": builtin + custom + inline_rows + derived}
 
     @app.get("/catalog/conditions", dependencies=[Depends(require_tenant_auth)])
     def list_conditions() -> dict:

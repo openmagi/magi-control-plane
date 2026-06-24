@@ -482,6 +482,149 @@ class TestLedgerCount:
         assert client.get("/ledger/count").status_code == 401
 
 
+class TestLedgerCountsBatch:
+    """D52c follow-up: /ledger/counts batched per-step count.
+
+    Used by the Rules → Verifiers tab to fetch every verifier's 24h
+    emission count in a single round-trip + single SQL GROUP BY
+    (replaces the K-call fan-out)."""
+
+    def _seed_inline_regex(self, client, n):
+        for i in range(n):
+            client.post("/verify_inline", json={
+                "kind": "regex", "pattern": "foo",
+                "payload": {"text": f"foo {i}", "session_id": f"s_{i}"},
+            }, headers=HEADERS)
+
+    def _seed_citation(self, client, n):
+        for i in range(n):
+            client.post("/citation_verify", json={
+                "subject": "S1", "payload_hash": f"B{i}",
+                "citations": [VALID_CITE],
+                "corpus_override": {"2018도13694": SRC_307},
+            }, headers=HEADERS)
+
+    def test_counts_returns_map_of_step_to_count(self, client):
+        self._seed_inline_regex(client, n=4)
+        self._seed_citation(client, n=2)
+        r = client.get(
+            "/ledger/counts?verifier=inline_regex&verifier=citation_verify",
+            headers=HEADERS,
+        ).json()
+        assert r == {"counts": {"inline_regex": 4, "citation_verify": 2}}
+
+    def test_counts_missing_step_is_zero(self, client):
+        # Steps with no emissions appear in the response as 0 (the
+        # dashboard relies on this so it can render dashes for
+        # genuinely-empty rows without a second call).
+        self._seed_inline_regex(client, n=3)
+        r = client.get(
+            "/ledger/counts?verifier=inline_regex&verifier=does_not_exist",
+            headers=HEADERS,
+        ).json()
+        assert r == {"counts": {"inline_regex": 3, "does_not_exist": 0}}
+
+    def test_counts_empty_filter_returns_empty_map(self, client):
+        self._seed_inline_regex(client, n=2)
+        r = client.get("/ledger/counts", headers=HEADERS).json()
+        assert r == {"counts": {}}
+
+    def test_counts_window_applies(self, client):
+        self._seed_inline_regex(client, n=2)
+        r = client.get(
+            "/ledger/counts?verifier=inline_regex&since_secs=86400",
+            headers=HEADERS,
+        ).json()
+        assert r == {"counts": {"inline_regex": 2}}
+
+    def test_counts_requires_api_key(self, client):
+        assert client.get("/ledger/counts").status_code == 401
+
+    def test_counts_caps_verifier_list(self, client):
+        # Many repeated verifier= values must be rejected with 400 so
+        # the SQL IN(...) clause stays bounded.
+        params = "&".join(f"verifier=v{i}" for i in range(200))
+        r = client.get(f"/ledger/counts?{params}", headers=HEADERS)
+        assert r.status_code == 400
+
+
+class TestLedgerHasMore:
+    """D52c follow-up: /ledger emits has_more so the dashboard can hide
+    Next-page when the filtered chain is exhausted."""
+
+    def _seed(self, client, n):
+        for i in range(n):
+            client.post("/citation_verify", json={
+                "subject": "S1", "payload_hash": f"H{i}",
+                "citations": [VALID_CITE],
+                "corpus_override": {"2018도13694": SRC_307},
+            }, headers=HEADERS)
+
+    def test_has_more_true_when_page_is_full_and_more_exist(self, client):
+        self._seed(client, n=5)
+        r = client.get("/ledger?limit=2", headers=HEADERS).json()
+        assert r["has_more"] is True
+        assert len(r["entries"]) == 2
+
+    def test_has_more_false_when_page_exhausts_chain(self, client):
+        self._seed(client, n=2)
+        r = client.get("/ledger?limit=10", headers=HEADERS).json()
+        assert r["has_more"] is False
+        assert len(r["entries"]) == 2
+
+
+class TestLedgerIntegrityEndpoint:
+    """D52c follow-up: dedicated /ledger/integrity endpoint.
+
+    The dashboard polls this for the chain-ok badge so paginated
+    /ledger reads can skip the global re-walk."""
+
+    def _seed(self, client, n=2):
+        for i in range(n):
+            client.post("/citation_verify", json={
+                "subject": "S1", "payload_hash": f"I{i}",
+                "citations": [VALID_CITE],
+                "corpus_override": {"2018도13694": SRC_307},
+            }, headers=HEADERS)
+
+    def test_integrity_returns_chain_ok(self, client):
+        self._seed(client, n=3)
+        r = client.get("/ledger/integrity", headers=HEADERS).json()
+        assert r == {"chain_ok": True}
+
+    def test_integrity_requires_api_key(self, client):
+        assert client.get("/ledger/integrity").status_code == 401
+
+    def test_paginated_ledger_skips_chain_walk(self, client):
+        # Paginated /ledger (since_id > 0) does NOT verify the chain
+        # (perf optimisation: paginating callers aren't auditing).
+        # We assert chain_ok remains True for both first-page and
+        # paginated requests against a clean chain. The test does not
+        # try to assert the implementation skipped work (that's an
+        # internal concern), only that the contract holds.
+        self._seed(client, n=3)
+        first = client.get("/ledger?limit=2", headers=HEADERS).json()
+        cursor = first["next_since_id"]
+        second = client.get(
+            f"/ledger?since_id={cursor}&limit=10", headers=HEADERS,
+        ).json()
+        assert second["chain_ok"] is True
+
+
+class TestLedgerVerifierCap:
+    """D52c follow-up: bound the repeatable verifier= param."""
+
+    def test_ledger_rejects_excess_verifier_values(self, client):
+        params = "&".join(f"verifier=v{i}" for i in range(200))
+        r = client.get(f"/ledger?{params}", headers=HEADERS)
+        assert r.status_code == 400
+
+    def test_count_rejects_excess_verifier_values(self, client):
+        params = "&".join(f"verifier=v{i}" for i in range(200))
+        r = client.get(f"/ledger/count?{params}", headers=HEADERS)
+        assert r.status_code == 400
+
+
 class TestTokenKid:
     """M4: tokens carry kid; /pubkey advertises kid for rotation."""
 

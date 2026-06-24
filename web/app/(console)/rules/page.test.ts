@@ -46,20 +46,23 @@ describe("rules page source invariants", () => {
   })
 
   it("D52c: passes recent emissions count + nf formatter to the expander", () => {
-    // Server component fans out /ledger/count?verifier=<step>&since_secs
-    // and threads the result through `recentEmissions24h`. nfFormat
-    // localizes the rendered number on the dashboard.
+    // Server component calls the batched /ledger/counts endpoint
+    // (D52c follow-up) and threads the result through
+    // `recentEmissions24h`. nfFormat localizes the rendered number on
+    // the dashboard.
     expect(src).toMatch(/recentEmissions24h=/)
     expect(src).toMatch(/nfFormat=\{nfFormat\}/)
-    expect(src).toContain("cloud.ledgerCount")
+    expect(src).toContain("cloud.ledgerCounts")
   })
 
-  it("D52c: fan-out resilient, null marks unreachable count", () => {
-    // Per-row count failures must not collapse the tab. The map
-    // returns null on catch and the prop renders as a dash (per the
-    // VerifierExpander branch). Assert the swallow path + the null
-    // sentinel landing in the prop.
-    expect(src).toMatch(/return null/)
+  it("D52c follow-up: batched, fall through to dash on unreachable count", () => {
+    // The single batched call replaces K-per-row fan-out. A failure
+    // of the batched call must leave `emissionCounts` empty so each
+    // row falls through to the unavailable dash via the
+    // hasOwnProperty branch (was: `return null` from inner
+    // Promise.all swallow; now a single try/catch around the batch).
+    // Assert the batched call landing + the dash branch staying.
+    expect(src).toContain("cloud.ledgerCounts")
     expect(src).toMatch(/\? emissionCounts\[row\.step\]\s*:\s*null/)
   })
 })
