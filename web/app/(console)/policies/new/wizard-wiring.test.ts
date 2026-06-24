@@ -1143,23 +1143,23 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
   })
 
-  /* D62 — Step 3 → Step 4 advance validates conditionKind specifics.
+  /* D62: Step 3 to Step 4 advance validates conditionKind specifics.
    *
    * Recurring live-verification problem: the operator picks a
    * conditionKind on Step 3 (e.g. llm_critic) but leaves the
    * criterion blank, hits Next, and the wizard happily lands them on
-   * Step 4 (action picker) — then bounces them on Step 5 with a
-   * generic "Invalid input" banner with NO inline pointer. They
-   * cannot tell what was wrong.
+   * Step 4 (action picker). Step 5 then bounces them with a generic
+   * "Invalid input" banner with NO inline pointer. They cannot tell
+   * what was wrong.
    *
-   * Fix: advanceWizard now refuses the Step 3 → Step 4 advance when
+   * Fix: advanceWizard now refuses the Step 3 to Step 4 advance when
    * the chosen conditionKind's specifics are empty, redirecting back
    * to step=3 with a precise err code. Step 3 renders an inline
-   * banner + per-input red ring + helper copy that names exactly
-   * what's missing, replacing the generic "Invalid input" page-level
-   * flash.
+   * banner plus per-input red ring plus helper copy that names
+   * exactly what's missing, replacing the generic "Invalid input"
+   * page-level flash.
    */
-  describe("D62 — Step 3 advance refuses empty conditionKind specifics", () => {
+  describe("D62: Step 3 advance refuses empty conditionKind specifics", () => {
     it("validateStep3Specifics gates each conditionKind on its required field", () => {
       // Pin the per-kind specifics gate. The function is private (no
       // export) but the wizard-wiring tests are source-inspection-
@@ -1179,7 +1179,7 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).toMatch(/case "llm_critic":\s*\n[\s\S]*?"missing_criterion"/)
       expect(body).toMatch(/case "evidence_ref":\s*\n[\s\S]*?"missing_evidence"/)
       expect(body).toMatch(/case "shacl":\s*\n[\s\S]*?"missing_shacl"/)
-      // "none" passes through (no specifics to check) — pin the
+      // "none" passes through (no specifics to check); pin the
       // explicit `case "none": return null` so a refactor that drops
       // the early-return is loud.
       expect(body).toMatch(/case "none":\s*\n\s*return null/)
@@ -1200,15 +1200,18 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).toMatch(/params\.set\("err",\s*stepThreeErr\)/)
     })
 
-    it("ERR_CODES carries the D62 per-kind missing-* codes", () => {
-      // Pin in lib/flash.ts so resolveFlash maps each code to a
-      // top-of-page banner — replaces the previous generic
-      // "Invalid input" rendering for these cases.
+    it("STEP3_ERR_CODES enumerates every D62 per-kind code in lib/flash.ts", () => {
+      // D62 follow-up: the seven codes intentionally do NOT appear in
+      // ERR_CODES (resolveFlash would render an English top-of-page
+      // banner stacked above the localized inline banner, regressing
+      // locale parity). Pin the canonical STEP3_ERR_CODES export
+      // instead so the wizard, dict, and per-kind helpers stay in
+      // lockstep without duplicating copy across page-level + inline.
       const flashSrc = readFileSync(
         path.join(__dirname, "..", "..", "..", "..", "lib", "flash.ts"),
         "utf-8",
       )
-      for (const code of [
+      const codes = [
         "pick_condition",
         "missing_criterion",
         "missing_pattern",
@@ -1216,9 +1219,22 @@ describe("policies/new wizard — P9 steering wiring", () => {
         "missing_domain",
         "missing_allowlist",
         "missing_evidence",
-      ]) {
-        const re = new RegExp(`\\b${code}:\\s*"`)
-        expect(flashSrc).toMatch(re)
+      ]
+      // STEP3_ERR_CODES literal exists.
+      expect(flashSrc).toMatch(/export const STEP3_ERR_CODES\s*=\s*\[/)
+      for (const code of codes) {
+        expect(flashSrc).toMatch(new RegExp(`"${code}"`))
+      }
+      // Negative pin: each code must NOT appear inside ERR_CODES so
+      // resolveFlash returns null for it (the inline localized banner
+      // is the single source of truth for the operator-facing copy).
+      const errCodesMatch = flashSrc.match(
+        /const ERR_CODES[\s\S]*?=\s*\{([\s\S]+?)\n\}/,
+      )
+      expect(errCodesMatch).not.toBeNull()
+      const errCodesBody = errCodesMatch![1]
+      for (const code of codes) {
+        expect(errCodesBody).not.toMatch(new RegExp(`\\b${code}:`))
       }
     })
 
@@ -1286,7 +1302,7 @@ describe("policies/new wizard — P9 steering wiring", () => {
     it("redirect target carries step=3 with the precise err code per kind", () => {
       // The advanceWizard gate writes `step=3` and `err=<code>`
       // together. Pin both writes plus the conditional that fires
-      // them — a refactor that lands one of these out of sync is the
+      // them; a refactor that lands one of these out of sync is the
       // exact silent-pass-through bug D62 closes.
       const start = src.indexOf("async function advanceWizard")
       const body = src.slice(start, start + 8000)
@@ -1323,8 +1339,200 @@ describe("policies/new wizard — P9 steering wiring", () => {
         "missing_shacl",
       ]
       for (const code of expected) expect(body).toContain(`"${code}"`)
-      // The gate must NOT short-circuit to "invalid_input" — that
+      // The gate must NOT short-circuit to "invalid_input"; that
       // was the original silent-pass-through-to-Step-5 bug.
+      expect(body).not.toContain("\"invalid_input\"")
+    })
+
+    /* D62 follow-up: exhaustiveness over ConditionKind.
+     *
+     * Review found the previous gate ended in `default: return
+     * "pick_condition"` over the ConditionKind switch. Adding a new
+     * member to `ALL_CONDITION_KINDS` without a `case` row would
+     * silently fall through to "pick_condition" and strand the
+     * operator (they DID pick the new kind, the gate just does not
+     * know its required-field name). We now (a) iterate every kind in
+     * `ALL_CONDITION_KINDS` and assert the gate body has a `case
+     * "<kind>":` row, and (b) assert the `default` branch carries the
+     * type-exhaustive `never`-guard so tsc --noEmit fails on a
+     * missing case.
+     */
+    it("validateStep3Specifics has a `case` row for every ConditionKind", () => {
+      const start = src.indexOf("function validateStep3Specifics")
+      expect(start).toBeGreaterThan(-1)
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      // Read ALL_CONDITION_KINDS literal from the file. Hardcoding
+      // the slugs here would let a future widening of the union skip
+      // this assertion silently.
+      const allMatch = src.match(
+        /const ALL_CONDITION_KINDS:\s*readonly ConditionKind\[\]\s*=\s*\[([^\]]+)\]/,
+      )
+      expect(allMatch).not.toBeNull()
+      const kinds = (allMatch![1].match(/"([^"]+)"/g) ?? [])
+        .map((s) => s.replace(/"/g, ""))
+      expect(kinds.length).toBeGreaterThan(0)
+      for (const k of kinds) {
+        const re = new RegExp(`case "${k}":`)
+        expect(body).toMatch(re)
+      }
+    })
+
+    it("validateStep3Specifics default branch is type-exhaustive (never-guard)", () => {
+      const start = src.indexOf("function validateStep3Specifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      // The `never`-guard pattern: `const _exhaustive: never = kind`
+      // (where `kind` is the narrowed switch discriminator). Pin the
+      // shape so tsc --noEmit fails on a future widening of
+      // ConditionKind without a new case.
+      expect(body).toMatch(/const _exhaustive:\s*never\s*=/)
+    })
+
+    /* D62 follow-up: per-kind UI surface keyed by ConditionKind.
+     *
+     * Review caught that `ERR_TO_KIND`, `ERR_TO_TKEY`, and the
+     * per-kind render blocks were parallel hand-maintained tables. A
+     * new conditionKind without a `step3-<kind>-helper` block would
+     * silently render nothing (the inline guard `step3ErrHelper && …`
+     * is quiet). Pin one testid per non-"none" kind so adding a new
+     * kind without a per-kind helper card fails the wire test.
+     */
+    it("Step3Condition renders a step3-*-helper testid for every non-'none' kind", () => {
+      const allMatch = src.match(
+        /const ALL_CONDITION_KINDS:\s*readonly ConditionKind\[\]\s*=\s*\[([^\]]+)\]/,
+      )
+      const kinds = (allMatch![1].match(/"([^"]+)"/g) ?? [])
+        .map((s) => s.replace(/"/g, ""))
+        .filter((k) => k !== "none")
+      const start = src.indexOf("function Step3Condition")
+      const end = src.indexOf("\nfunction Step4Action", start)
+      const body = src.slice(start, end)
+      // The testid slug is not always a kebab-cased ConditionKind: a
+      // few inputs use a tighter slug (`step3-allowlist-helper`
+      // instead of `step3-domain-allowlist-helper`). Pin one testid
+      // per kind explicitly so a new kind without a per-kind helper
+      // card has to add a row here AND in Step3Condition.
+      const TESTID_FOR_KIND: Record<string, string> = {
+        fetch_domain: "step3-fetch-domain-helper",
+        domain_allowlist: "step3-allowlist-helper",
+        regex: "step3-regex-helper",
+        llm_critic: "step3-llm-critic-helper",
+        evidence_ref: "step3-evidence-ref-helper",
+        shacl: "step3-shacl-helper",
+      }
+      for (const k of kinds) {
+        const id = TESTID_FOR_KIND[k]
+        expect(id, `missing testid mapping for kind '${k}'`).toBeDefined()
+        expect(body).toContain(id)
+      }
+    })
+
+    /* D62 follow-up: i18n drift gate.
+     *
+     * The previous helper-copy test hardcoded the seven dict keys and
+     * only checked they appeared at least twice (KO + EN). A future
+     * code that lacks a dict entry would render `t(undefined as
+     * TKey)` and the inline banner would vanish. Drive the test from
+     * the err codes the gate actually emits so adding a code without
+     * dict copy fails loud.
+     */
+    it("every Step3 err code has a localized dict entry (KO + EN)", () => {
+      const dictSrc = readFileSync(
+        path.join(__dirname, "..", "..", "..", "..", "lib", "i18n", "dict.ts"),
+        "utf-8",
+      )
+      // Grep ALL string-literal returns out of the gate body (the
+      // bare `return "pick_condition"` early-return as well as the
+      // ternary `X ? null : "missing_*"` returns). A future code that
+      // forgets a localized dict entry would otherwise render an
+      // empty inline helper and a silent banner regression.
+      const start = src.indexOf("function validateStep3Specifics")
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      const codes = Array.from(
+        new Set(
+          (body.match(/"((?:pick|missing)_[a-z_]+)"/g) ?? [])
+            .map((s) => s.replace(/"/g, "")),
+        ),
+      )
+      // Sanity: gate emits at least the seven D62 codes.
+      expect(codes).toContain("pick_condition")
+      expect(codes).toContain("missing_pattern")
+      expect(codes).toContain("missing_criterion")
+      expect(codes).toContain("missing_evidence")
+      for (const code of codes) {
+        // camelCase the snake_case code: pick_condition -> pickCondition.
+        const camel = code.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+        const key = `newPolicy.wizard.step3.err.${camel}`
+        const occurrences = dictSrc.split(`"${key}"`).length - 1
+        // KO + EN block: each key MUST appear in both.
+        expect(
+          occurrences,
+          `dict missing key for code '${code}' (expected '${key}')`,
+        ).toBeGreaterThanOrEqual(2)
+      }
+    })
+
+    /* D62 follow-up: behavioural sanity on the gate's param-key
+     * contract.
+     *
+     * Source-pin tests only assert the (case, code) pair; a refactor
+     * that read `params.get("fetch_domain")` (snake) instead of
+     * `params.get("fetchDomain")` (camelCase, matching the wizard
+     * inputs) would still pass every regex assertion but always
+     * return `missing_domain` even when the operator filled the
+     * field. Pin the param-key the gate reads against the input
+     * `name` attribute the form renders, so the two cannot drift.
+     */
+    it("validateStep3Specifics reads the same param key the Step 3 input emits", () => {
+      const start = src.indexOf("function validateStep3Specifics")
+      const end = src.indexOf("\n}\n", start)
+      const gateBody = src.slice(start, end)
+      const s3Start = src.indexOf("function Step3Condition")
+      const s3End = src.indexOf("\nfunction Step4Action", s3Start)
+      const s3Body = src.slice(s3Start, s3End)
+      // (gate param key, input name attribute) pairs.
+      const pairs: Array<[string, string]> = [
+        ["fetchDomain", "fetchDomain"],
+        ["allowlist", "allowlist"],
+        ["pattern", "pattern"],
+        ["llmCriterion", "llmCriterion"],
+        ["shaclTtl", "shaclTtl"],
+      ]
+      for (const [gateKey, inputName] of pairs) {
+        expect(gateBody).toMatch(
+          new RegExp(`params\\.get\\(\\s*"${gateKey}"\\s*\\)`),
+        )
+        expect(s3Body).toMatch(new RegExp(`name="${inputName}"`))
+      }
+      // evidence_ref reads the merged list, not a URL key, so pin
+      // that instead.
+      expect(gateBody).toMatch(/evMerged\.length/)
+      expect(s3Body).toMatch(/name="evidence_ref"/)
+    })
+
+    /* D62 follow-up: save-seam defense-in-depth.
+     *
+     * Review caught that `validateSpecifics` (saveWizard's gate at
+     * Step 5 / Step 6) still returned the generic "invalid_input"
+     * code for every empty-specifics case. An operator who reached
+     * saveWizard with empty specifics (deep link, browser back-
+     * forward, a future flow that bypasses Step 3) would hit the
+     * exact silent-pass-through bug D62 was built to close. The fix
+     * delegates to `validateStep3Specifics` so the save seam returns
+     * the same per-kind codes as the advance gate.
+     */
+    it("validateSpecifics delegates to validateStep3Specifics for precise codes", () => {
+      const start = src.indexOf("function validateSpecifics")
+      expect(start).toBeGreaterThan(-1)
+      const end = src.indexOf("\n}\n", start)
+      const body = src.slice(start, end)
+      // Delegates to the shared gate so the save seam returns the
+      // same precise code (no more generic "invalid_input" at Step 5).
+      expect(body).toMatch(/validateStep3Specifics\(/)
+      // Negative pin: the save-seam gate must NOT emit
+      // "invalid_input" anymore.
       expect(body).not.toContain("\"invalid_input\"")
     })
   })

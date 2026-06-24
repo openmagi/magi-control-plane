@@ -12,7 +12,7 @@ import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
-import { codeForError, resolveFlash } from "@/lib/flash"
+import { codeForError, resolveFlash, type Step3ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
   validateDraft, type PolicyDraft,
@@ -1246,16 +1246,24 @@ async function advanceWizard(formData: FormData): Promise<void> {
  *  when the advance is safe. Each err code is rendered by
  *  Step3Condition as a localized inline highlight next to the empty
  *  input (red ring + helper copy), replacing the previous generic
- *  "Invalid input" banner that fired at Step 5 with no pointer. */
+ *  "Invalid input" banner that fired at Step 5 with no pointer.
+ *
+ *  D62 follow-up: the `default` branch is now type-exhaustive via a
+ *  `never`-guard so adding a new ConditionKind without a case is a
+ *  build-time error instead of silently falling through to a
+ *  `pick_condition` verdict (which would strand an operator who
+ *  picked the new kind but the gate did not know its required
+ *  field). */
 function validateStep3Specifics(
   kindRaw: string | null,
   params: URLSearchParams,
   evMerged: string[],
-): string | null {
+): Step3ErrCode | null {
   if (!kindRaw || !(ALL_CONDITION_KINDS as readonly string[]).includes(kindRaw)) {
     return "pick_condition"
   }
-  switch (kindRaw as ConditionKind) {
+  const kind = kindRaw as ConditionKind
+  switch (kind) {
     case "none":
       return null
     case "fetch_domain":
@@ -1272,8 +1280,10 @@ function validateStep3Specifics(
       return evMerged.length > 0 ? null : "missing_evidence"
     case "shacl":
       return (params.get("shaclTtl") ?? "").trim() ? null : "missing_shacl"
-    default:
-      return "pick_condition"
+    default: {
+      const _exhaustive: never = kind
+      return _exhaustive
+    }
   }
 }
 
@@ -1640,31 +1650,27 @@ async function saveWizard(formData: FormData): Promise<void> {
   await persistDraft(draft, source)
 }
 
-function validateSpecifics(s: WizardState): string | null {
-  switch (s.conditionKind) {
-    case "none":
-      return null
-    case "fetch_domain":
-      if (!s.fetchDomain) return "invalid_input"
-      return null
-    case "domain_allowlist":
-      if (!s.allowlist || parseCsv(s.allowlist).length === 0) return "invalid_input"
-      return null
-    case "regex":
-      if (!s.pattern) return "invalid_input"
-      return null
-    case "llm_critic":
-      if (!s.llmCriterion) return "invalid_input"
-      return null
-    case "evidence_ref":
-      if (!s.evidenceRefs || s.evidenceRefs.length === 0) return "invalid_input"
-      return null
-    case "shacl":
-      if (!s.shaclTtl) return "invalid_input"
-      return null
-    default:
-      return "invalid_input"
-  }
+/** D62 follow-up: defense-in-depth at the save seam. Operators who
+ *  reach saveWizard with empty specifics (e.g., via a deep link, a
+ *  browser back-forward, or any future flow that bypasses Step 3's
+ *  advance gate) previously hit the generic "invalid_input" banner
+ *  with no inline pointer. We now delegate to validateStep3Specifics
+ *  so the precise per-kind code is returned and the Step 3 redirect
+ *  surfaces the same inline localized banner the advance gate uses.
+ *  Single source of truth: both gates share the same per-kind switch.
+ */
+function validateSpecifics(s: WizardState): Step3ErrCode | null {
+  const params = new URLSearchParams()
+  if (s.fetchDomain) params.set("fetchDomain", s.fetchDomain)
+  if (s.allowlist) params.set("allowlist", s.allowlist)
+  if (s.pattern) params.set("pattern", s.pattern)
+  if (s.llmCriterion) params.set("llmCriterion", s.llmCriterion)
+  if (s.shaclTtl) params.set("shaclTtl", s.shaclTtl)
+  return validateStep3Specifics(
+    s.conditionKind ?? null,
+    params,
+    s.evidenceRefs ?? [],
+  )
 }
 
 /* ─── decoders for compile result ─────────────────────────────────── */
@@ -3551,14 +3557,19 @@ function Step3Condition({
     : LIFECYCLE_LABEL_EN[lifecycle]
 
   // D62: precise per-kind inline highlight. `wizardErr` is the err
-  // code advanceWizard sets when refusing the Step 3 → Step 4 advance
+  // code advanceWizard sets when refusing the Step 3 to Step 4 advance
   // on empty specifics. The map below names WHICH conditionKind's
   // input is empty (so we can target the inline highlight to the
   // right card) and looks up the localized helper copy that replaces
   // the generic "Invalid input" banner. Keep the keys in sync with
-  // validateStep3Specifics; ERR_CODES (lib/flash.ts) renders the
-  // page-level banner copy, this table renders the in-card pointer.
-  const ERR_TO_KIND: Record<string, ConditionKind | "any"> = {
+  // validateStep3Specifics; the inline banner replaces the page-level
+  // ErrorState for these codes (resolveFlash returns null on them so
+  // we do not render a duplicate English banner above the localized
+  // inline copy).
+  //
+  // D62 follow-up: tables typed by `Step3ErrCode` so adding a new
+  // code to the gate forces both tables to grow at compile time.
+  const ERR_TO_KIND: Record<Step3ErrCode, ConditionKind | "any"> = {
     pick_condition: "any",
     missing_criterion: "llm_critic",
     missing_pattern: "regex",
@@ -3567,7 +3578,7 @@ function Step3Condition({
     missing_allowlist: "domain_allowlist",
     missing_evidence: "evidence_ref",
   }
-  const ERR_TO_TKEY: Record<string, import("@/lib/i18n/dict").TKey> = {
+  const ERR_TO_TKEY: Record<Step3ErrCode, import("@/lib/i18n/dict").TKey> = {
     pick_condition: "newPolicy.wizard.step3.err.pickCondition",
     missing_criterion: "newPolicy.wizard.step3.err.missingCriterion",
     missing_pattern: "newPolicy.wizard.step3.err.missingPattern",
@@ -3576,15 +3587,22 @@ function Step3Condition({
     missing_allowlist: "newPolicy.wizard.step3.err.missingAllowlist",
     missing_evidence: "newPolicy.wizard.step3.err.missingEvidence",
   }
-  const step3ErrKind = wizardErr ? ERR_TO_KIND[wizardErr] : undefined
-  const step3ErrHelperKey = wizardErr ? ERR_TO_TKEY[wizardErr] : undefined
+  const isStep3ErrCode = (s: string | undefined): s is Step3ErrCode =>
+    s !== undefined && s in ERR_TO_KIND
+  const step3ErrCode = isStep3ErrCode(wizardErr) ? wizardErr : undefined
+  const step3ErrKind = step3ErrCode ? ERR_TO_KIND[step3ErrCode] : undefined
+  const step3ErrHelperKey = step3ErrCode ? ERR_TO_TKEY[step3ErrCode] : undefined
   const step3ErrHelper = step3ErrHelperKey ? t(step3ErrHelperKey) : undefined
   // The red-ring class is applied to the per-kind input only when the
   // err code points at that kind. `pick_condition` does not target a
-  // specific input — it surfaces as a top banner instead.
+  // specific input; it surfaces as a top banner instead.
+  //
+  // D62 follow-up: `errRingFor` returns the class with a leading
+  // space already attached when set, so call sites concatenate
+  // without leaving a trailing space on the no-error branch.
   const errRingCls = "ring-2 ring-red-400 border-red-400"
-  const inputErrCls = (k: ConditionKind): string =>
-    step3ErrKind === k ? errRingCls : ""
+  const errRingFor = (k: ConditionKind): string =>
+    step3ErrKind === k ? " " + errRingCls : ""
 
   return (
     <StepShell
@@ -3717,7 +3735,7 @@ function Step3Condition({
                       placeholder="example.com"
                       spellCheck={false}
                       autoComplete="off"
-                      className={inputCls() + " font-mono " + inputErrCls("fetch_domain")}
+                      className={inputCls() + " font-mono" + errRingFor("fetch_domain")}
                     />
                     {step3ErrKind === "fetch_domain" && step3ErrHelper && (
                       <p
@@ -3739,7 +3757,7 @@ function Step3Condition({
                       placeholder="api.openai.com, github.com, npmjs.com"
                       spellCheck={false}
                       autoComplete="off"
-                      className={inputCls() + " font-mono " + inputErrCls("domain_allowlist")}
+                      className={inputCls() + " font-mono" + errRingFor("domain_allowlist")}
                     />
                     {step3ErrKind === "domain_allowlist" && step3ErrHelper && (
                       <p
@@ -3769,7 +3787,7 @@ function Step3Condition({
                       baseSwitchPreFinalHref={baseSwitchPreFinalHref}
                       inputId="w-regex-pattern"
                       initialValue={state.pattern ?? ""}
-                      className={fieldInputCls + " " + inputErrCls("regex")}
+                      className={fieldInputCls + errRingFor("regex")}
                       fieldElement="input"
                       name="pattern"
                       placeholder="AKIA[A-Z0-9]{16}"
@@ -3807,7 +3825,7 @@ function Step3Condition({
                       baseSwitchPreFinalHref={baseSwitchPreFinalHref}
                       inputId={`w-llm-${k}`}
                       initialValue={state.llmCriterion ?? ""}
-                      className={fieldInputCls + " " + inputErrCls("llm_critic")}
+                      className={fieldInputCls + errRingFor("llm_critic")}
                       fieldElement="textarea"
                       rows={3}
                       name="llmCriterion"
@@ -3827,7 +3845,7 @@ function Step3Condition({
                   </div>
                 )}
                 {k === "evidence_ref" && (
-                  <div className={"space-y-2 " + (step3ErrKind === "evidence_ref" ? "rounded-md ring-2 ring-red-400 p-1" : "")}>
+                  <div className="space-y-2">
                     <FieldLabel>{ko ? "참조할 verifier (1개 이상)" : "Verifier(s) to reference"}</FieldLabel>
                     {step3ErrKind === "evidence_ref" && step3ErrHelper && (
                       <p
@@ -3912,7 +3930,14 @@ function Step3Condition({
                         </>
                       )
                     })()}
-                    <div className="space-y-2">
+                    <div
+                      className={
+                        "space-y-2" +
+                        (step3ErrKind === "evidence_ref"
+                          ? " rounded-md ring-2 ring-red-400 p-1"
+                          : "")
+                      }
+                    >
                       {wiredSteps
                         .filter((w) => verifierFiresOnLifecycle(w.step, ccEvent))
                         .map((w) => {
@@ -3989,7 +4014,7 @@ function Step3Condition({
                       baseSwitchPreFinalHref={baseSwitchPreFinalHref}
                       inputId="w-shacl"
                       initialValue={state.shaclTtl ?? ""}
-                      className={fieldInputCls + " " + inputErrCls("shacl")}
+                      className={fieldInputCls + errRingFor("shacl")}
                       fieldElement="textarea"
                       rows={6}
                       name="shaclTtl"

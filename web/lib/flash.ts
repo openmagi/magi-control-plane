@@ -26,18 +26,36 @@ const ERR_CODES: Record<string, string> = {
   conflict: "Action conflicted with current state.",
   template_too_long: "Inject template is too long (max 16000 chars).",
   strip_unsupported: "Strip action is not available for this lifecycle.",
-  // D62: Step 3 specifics validation. Each code points the operator
-  // back to the empty input on Step 3 with an inline highlight; the
-  // banner copy is intentionally generic so the inline helper copy
-  // (KO+EN) does the per-kind heavy lifting.
-  pick_condition: "Pick a condition before continuing.",
-  missing_criterion: "Enter the LLM critic criterion before continuing.",
-  missing_pattern: "Enter a regex pattern before continuing.",
-  missing_shacl: "Enter the SHACL shape before continuing.",
-  missing_domain: "Enter the fetch domain before continuing.",
-  missing_allowlist: "Enter at least one allowed domain before continuing.",
-  missing_evidence: "Pick at least one verifier before continuing.",
+  // D62 follow-up: the seven Step 3 specifics codes (pick_condition,
+  // missing_criterion, missing_pattern, missing_shacl, missing_domain,
+  // missing_allowlist, missing_evidence) DELIBERATELY do not appear
+  // here. Step3Condition renders a localized inline banner with
+  // role="alert" plus a per-input red-ring helper for each code,
+  // which is the natural focus location and is fully KO+EN. If we
+  // also mapped them in ERR_CODES, resolveFlash would render a
+  // duplicate English page-level banner above the localized inline
+  // copy, regressing locale parity (a Korean operator would see one
+  // English banner stacked above one Korean banner). The codes are
+  // covered by the lib/i18n/dict.ts step3.err.* keys instead. See
+  // STEP3_ERR_CODES in this file for the canonical list (still
+  // exported so wizard-wiring tests can pin the mapping).
+  // D62 codes intentionally omitted from ERR_CODES; see comment above.
 }
+
+/** D62 follow-up: canonical Step 3 specifics err codes. Exported so
+ *  the wizard-wiring test can iterate them and assert every code
+ *  emitted by validateStep3Specifics has a corresponding dict key
+ *  (closes the i18n-drift gap reported in the D62 review). */
+export const STEP3_ERR_CODES = [
+  "pick_condition",
+  "missing_criterion",
+  "missing_pattern",
+  "missing_shacl",
+  "missing_domain",
+  "missing_allowlist",
+  "missing_evidence",
+] as const
+export type Step3ErrCode = (typeof STEP3_ERR_CODES)[number]
 
 export function resolveFlash(
   msg: string | undefined,
