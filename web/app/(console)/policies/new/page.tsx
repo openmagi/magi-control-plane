@@ -2719,14 +2719,37 @@ function suggestPolicyId(state: WizardState): string {
   // a single-tool policy id. GuidedWizard already normalizes
   // state.toolScope at the state-build seam, so deriveMatcher returns
   // the canonical form here too.
+  //
+  // D57d: append the chosen action archetype as a third segment so
+  // the auto-suggested id reflects WHAT the policy does, not just
+  // WHEN + WHICH TOOL. Format:
+  //   {lifecycle-kebab}-{toolScope-kebab-or-any}-{action}/v1
+  // - When the matcher is wildcard, the tool segment is skipped so a
+  //   no-tool-context lifecycle reads cleanly (e.g. `stop-block/v1`).
+  // - When action is undefined (still on Step 4 or earlier), the
+  //   action segment is skipped which keeps back-compat with pre-D57d
+  //   auto-suggestions.
   const matcher = deriveMatcher(state)
-  const tail = matcher && matcher !== "*"
-    ? matcher.toLowerCase().replace(/[^a-z0-9]+/g, "-")
-    : state.fetchDomain
-      ? state.fetchDomain.replace(/[^a-z0-9]+/g, "-")
-      : state.conditionKind || "any"
-  const cleaned = tail.replace(/^-+|-+$/g, "").slice(0, 24) || "any"
-  return `${lifeSlug}-${cleaned}/v1`
+  const action = state.action
+  let toolPart = ""
+  if (matcher && matcher !== "*") {
+    toolPart = matcher.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  } else if (!action) {
+    // Pre-D57d back-compat: when no action is picked yet, fall back to
+    // fetchDomain / conditionKind so the suggestion still differentiates
+    // wildcard policies. Once the operator picks an action, the action
+    // segment carries that signal and the tool segment can be skipped.
+    if (state.fetchDomain) {
+      toolPart = state.fetchDomain.replace(/[^a-z0-9]+/g, "-")
+    } else if (state.conditionKind) {
+      toolPart = state.conditionKind
+    } else {
+      toolPart = "any"
+    }
+  }
+  const toolCleaned = toolPart.replace(/^-+|-+$/g, "").slice(0, 24)
+  const segments = [lifeSlug, toolCleaned, action ?? ""].filter(Boolean)
+  return `${segments.join("-")}/v1`
 }
 
 function Step5Naming({

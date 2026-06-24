@@ -549,10 +549,43 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // string. deriveMatcher(state) is the canonical seam.
       const start = src.indexOf("function suggestPolicyId")
       expect(start).toBeGreaterThan(-1)
-      const body = src.slice(start, start + 800)
+      const body = src.slice(start, start + 1400)
       expect(body).toMatch(/deriveMatcher\(state\)/)
       // No more direct slugify of state.toolScope
       expect(body).not.toMatch(/state\.toolScope\.toLowerCase/)
+    })
+
+    it("suggestPolicyId appends the action archetype as a third segment (D57d)", () => {
+      // D57d: the auto-suggested id surfaces WHAT the policy does
+      // alongside WHEN and WHICH TOOL. Format is
+      // `{lifecycle-kebab}-{tool-kebab-or-skipped}-{action}/v1`.
+      // We pin the source-level shape because the function isn't
+      // exported and the test file is source-inspection-only (the
+      // wizard-wiring tests above all follow the same pattern).
+      const start = src.indexOf("function suggestPolicyId")
+      const body = src.slice(start, start + 2200)
+      // The action archetype must be read off state.action and
+      // composed into the id segments. A bare regex pinning the
+      // identifier is enough — refactoring the join can keep the
+      // identifier but rename the local variable.
+      expect(body).toMatch(/state\.action/)
+      // Segments join with "-" and the suffix is "/v1".
+      expect(body).toMatch(/segments\.join\("-"\)[\s\S]*\/v1/)
+      // The behavioural contract from the brief (mirrored as comment
+      // markers so a refactor that drops a case is loud):
+      //   suggestPolicyId({lifecycle: "before_tool_use",
+      //                    toolScope:"Bash", action:"block"})
+      //     -> "pre-tool-use-bash-block/v1"
+      //   suggestPolicyId({lifecycle:"pre_final",
+      //                    action:"block"})
+      //     -> wildcard skips the tool segment -> "pre-final-block/v1"
+      //   suggestPolicyId({lifecycle:"after_tool_use",
+      //                    toolScope:"Grep"})
+      //     -> action undefined -> back-compat
+      //        "after-tool-use-grep/v1"
+      // Pin the D57d marker so future edits to the helper land here
+      // with an explicit intent.
+      expect(body).toContain("D57d")
     })
 
     it("Step 2 surfaces the _droppedAlternation banner", () => {
