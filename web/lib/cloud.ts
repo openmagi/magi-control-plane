@@ -282,6 +282,33 @@ export type CompiledManagedSettings = {
   sha256: string
 }
 
+/** D54: prebuilt policy templates returned by GET /policies/prebuilt.
+ *
+ * A prebuilt is a (verifier, event, matcher, action) tuple the operator
+ * REVIEWS and then saves via the regular /policies POST. Nothing is
+ * auto-installed. The "Use this" button on the Policies tab links to
+ * /policies/new?mode=advanced&draft=<encoded JSON of `ir`> so the
+ * PolicyBuilder picks the prefill up like any other draft.
+ *
+ *   id              : short stable slug. Used as the React key + the
+ *                     draft id suggestion; the operator can edit before
+ *                     save.
+ *   title           : short label rendered on the prebuilt card.
+ *   summary         : one-sentence "what this does in practice", in
+ *                     plain English (verifier + event + matcher + action).
+ *   verifier_step   : the step name of the underlying verifier. Useful
+ *                     for cross-linking back to the Verifiers tab.
+ *   ir              : the policy IR, ready to feed the PolicyBuilder
+ *                     draft prefill. Same shape as PolicyBody.
+ */
+export type PrebuiltPolicyEntry = {
+  id: string
+  title: string
+  summary: string
+  verifier_step: string
+  ir: PolicyBody
+}
+
 type HitlListResp = { items: HitlItem[] }
 type DecideResp = { verdict?: string; token?: string | null; hitl_id?: number }
 type PolicyListResp = { items: PolicyListItem[] }
@@ -415,6 +442,20 @@ export const cloud = {
   listPolicies: (): Promise<PolicyListItem[]> =>
     _fetch<PolicyListResp>("/policies", { method: "GET", keyType: "admin" })
       .then(d => d.items),
+
+  /** D54: 5 prebuilt policy templates (one per built-in verifier).
+   * Static catalog; the cloud computes it from
+   * src/magi_cp/policy/prebuilt.py on every request.
+   *
+   * The dashboard renders these in a "Prebuilt" section above the
+   * tenant's own policies on the Policies tab. Each row's `ir` is the
+   * draft prefill the "Use this" button passes to /policies/new?mode=
+   * advanced&draft=... and nothing here is auto-installed; the operator
+   * reviews and saves through the normal PolicyBuilder flow. */
+  listPrebuiltPolicies: (): Promise<PrebuiltPolicyEntry[]> =>
+    _fetch<{ items: PrebuiltPolicyEntry[] }>(
+      "/policies/prebuilt", { method: "GET", keyType: "admin" },
+    ).then(d => d.items),
 
   getPolicy: (id: string): Promise<PolicyDetail> =>
     _fetch<PolicyDetail>(`/policies/${_encId(id)}`, { method: "GET", keyType: "admin" }),

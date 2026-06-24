@@ -1984,6 +1984,22 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             items.append(entry)
         return {"items": items}
 
+    # D54: prebuilt policy templates. The 5 built-in verifiers each
+    # ship with an implicit sensible-default policy (which event,
+    # matcher, action they typically pair with). Pre-D54 that
+    # information was crammed onto the Verifiers tab as policy-decision
+    # language on each verifier card; D54 moves it here so the
+    # verifier=function vs policy=composition distinction stays clean
+    # in the dashboard. Operators review the prebuilt and save it via
+    # the regular /policies POST — nothing here is auto-installed.
+    #
+    # Routed BEFORE the `/policies/{policy_id:path}` catch-all so the
+    # literal `prebuilt` path doesn't get swallowed as a policy id.
+    @app.get("/policies/prebuilt", dependencies=[Depends(require_admin_key)])
+    def list_prebuilt_policies() -> dict:
+        from ..policy.prebuilt import all_prebuilt_policies
+        return {"items": all_prebuilt_policies()}
+
     # Order matters: more specific (/compiled, /enabled) before the catch-all
     # {policy_id:path} so FastAPI matches them first.
     @app.get("/policies/{policy_id:path}/compiled",

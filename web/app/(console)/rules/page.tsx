@@ -4,6 +4,7 @@ import {
   type ConditionEntry,
   type EvidenceTypeEntry,
   type PolicyListItem,
+  type PrebuiltPolicyEntry,
 } from "@/lib/cloud"
 import { resolveFlash, codeForError } from "@/lib/flash"
 import { getIntl, getT } from "@/lib/i18n/server"
@@ -43,6 +44,10 @@ export default async function RulesPage({
 
   let policies: PolicyListItem[] = []
   let policiesErr: string | null = null
+  let prebuilt: PrebuiltPolicyEntry[] = []
+  // D54: prebuilt fetch failures are silent. The section is a nice-to-
+  // have catalog, not the operator's own data. We hide the section
+  // when the call fails rather than blocking the Policies tab on it.
   let evidence: EvidenceTypeEntry[] = []
   let evidenceErr: string | null = null
   let conditions: ConditionEntry[] = []
@@ -57,6 +62,13 @@ export default async function RulesPage({
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
+    // D54: prebuilt catalog. Fetched in parallel-ish with listPolicies
+    // (the await above already settled by the time we get here; this
+    // is the simplest reliable shape and keeps the failure paths
+    // separated). A prebuilt-fetch error doesn't surface a banner;
+    // the section just hides, since it carries no operator data.
+    try { prebuilt = await cloud.listPrebuiltPolicies() }
+    catch { /* silent: see comment on `prebuilt` decl */ }
   } else if (tab === "evidence") {
     try {
       evidence = await cloud.listEvidenceTypes()
@@ -129,6 +141,7 @@ export default async function RulesPage({
         <PoliciesTab
           items={policies}
           err={policiesErr}
+          prebuilt={prebuilt}
           nfFormat={nf.format.bind(nf)}
           t={t}
         />
@@ -209,10 +222,14 @@ function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
 }
 
 function PoliciesTab({
-  items, err, nfFormat, t,
+  items, err, prebuilt, nfFormat, t,
 }: {
   items: PolicyListItem[]
   err: string | null
+  /** D54: prebuilt catalog. Empty list = the cloud call failed (silent
+   * hide) OR the cloud returned no entries. Either way the section is
+   * omitted; we never render an empty prebuilt header. */
+  prebuilt: PrebuiltPolicyEntry[]
   nfFormat: (n: number) => string
   t: TFunc
 }) {
@@ -221,6 +238,9 @@ function PoliciesTab({
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
         {t("rules.tab.policies.hint")}
       </p>
+      {prebuilt.length > 0 && (
+        <PrebuiltSection items={prebuilt} t={t} />
+      )}
       {err && (
         <ErrorState
           title={t("common.cloudUnreachable")}
@@ -284,6 +304,104 @@ function PoliciesTab({
       )}
     </section>
   )
+}
+
+/** D54: prebuilt policy templates. Rendered above the operator's own
+ * policies so the "this is what the verifier does in practice" mental
+ * model lives next to where the operator authors policies (not on the
+ * Verifiers tab, which sticks to verifier=algorithm post-D54).
+ *
+ * Each card has a "Use this" link to /policies/new?mode=advanced&draft=
+ * <encoded JSON of the prebuilt IR>. PolicyBuilder picks the draft up
+ * via the existing `_parseDraftQuery` path; nothing here calls a
+ * dedicated install endpoint. The operator reviews the prefilled
+ * advanced editor (id, description, trigger, requires, action) and
+ * saves through the normal PUT /policies path. */
+function PrebuiltSection({
+  items, t,
+}: {
+  items: PrebuiltPolicyEntry[]
+  t: TFunc
+}) {
+  return (
+    <div className="mb-6 rounded-2xl border border-black/[0.06] bg-[var(--color-surface-1,#f9fafb)]/40 p-4">
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          {t("rules.prebuilt.title")}
+        </h2>
+        <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+          {t("rules.prebuilt.hint")}
+        </p>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+        {items.map((p) => (
+          <Card key={p.id} className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
+                {t("rules.prebuilt.badge")}
+              </span>
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                {p.title}
+              </span>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+              {p.summary}
+            </p>
+            <div className="text-[11px] text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
+              <span>
+                {t("rules.prebuilt.verifier")}: <Code>{p.verifier_step}</Code>
+              </span>
+              {p.ir.trigger ? (
+                <span>
+                  {t("policies.trigger")}:{" "}
+                  <Code>{p.ir.trigger.event}</Code>{" · "}
+                  <Code>{p.ir.trigger.matcher}</Code>
+                </span>
+              ) : null}
+              {p.ir.action ? (
+                <span>
+                  {t("rules.prebuilt.action")}: <Code>{p.ir.action}</Code>
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1">
+              <Link
+                href={prebuiltDraftHref(p)}
+                aria-label={t("rules.prebuilt.useThis.aria", { title: p.title })}
+              >
+                <Button variant="secondary" size="sm">
+                  {t("rules.prebuilt.useThis")}
+                </Button>
+              </Link>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** D54: build the /policies/new prefill URL for one prebuilt entry.
+ *
+ * The PolicyBuilder's `_parseDraftQuery` (web/app/(console)/policies/new/
+ * page.tsx) does a `decodeURIComponent` on the `draft` query value before
+ * `JSON.parse`. Next.js `searchParams` already decodes URL-encoded query
+ * values once, so the value the builder receives must STILL carry one
+ * level of encoding when it lands in the URL. We therefore encode twice:
+ *
+ *   raw JSON  -> encodeURIComponent (sits in the URL as `%7B...%7D`)
+ *             -> encodeURIComponent (sits in the URL as `%257B...%257D`)
+ *
+ * Next.js decodes once (`%25` -> `%`), the builder decodes again
+ * (`%7B` -> `{`), then `JSON.parse` succeeds. The existing
+ * saveWizard fallback path (see same file, ~line 434) mirrors this
+ * double-encode by going through URLSearchParams.set on a value that
+ * was already encodeURIComponent'd; we hand-build the query so the
+ * shape is auditable in one place. */
+function prebuiltDraftHref(p: PrebuiltPolicyEntry): string {
+  const draftJson = JSON.stringify(p.ir)
+  const doubleEncoded = encodeURIComponent(encodeURIComponent(draftJson))
+  return `/policies/new?mode=advanced&draft=${doubleEncoded}`
 }
 
 function EvidenceTab({
@@ -361,9 +479,15 @@ function EvidenceTab({
                       </div>
                     )}
                   </div>
-                  <div className="pt-0.5">
-                    <EnforcementBadge kind={row.enforcement} />
-                  </div>
+                  {/* D54: drop the "enforcing" pill on verifier cards.
+                      Enforcement is a POLICY-level attribute (the same
+                      verifier can back one policy with action=block and
+                      another with action=audit); rendering it here
+                      conflated verifier with policy. The BUILT-IN /
+                      CUSTOM source badge above already carries the only
+                      catalog-level signal an operator needs. The
+                      EnforcementBadge component itself stays for use on
+                      the Policies tab / policy detail / ledger. */}
                 </div>
                 <VerifierExpander
                   step={row.step}

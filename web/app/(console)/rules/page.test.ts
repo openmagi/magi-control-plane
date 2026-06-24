@@ -65,4 +65,44 @@ describe("rules page source invariants", () => {
     expect(src).toContain("cloud.ledgerCounts")
     expect(src).toMatch(/\? emissionCounts\[row\.step\]\s*:\s*null/)
   })
+
+  it("D54: verifier card no longer renders an EnforcementBadge inside the evidence row", () => {
+    // The pill conflated verifier (function) with policy
+    // (composition). The component itself is still imported for the
+    // Policies tab card, but the EvidenceTab (`row.enforcement` is
+    // the row variable name there) must not mount it.
+    expect(src).not.toMatch(/<EnforcementBadge[^>]*kind=\{row\.enforcement\}/)
+  })
+
+  it("D54: PoliciesTab accepts and renders a Prebuilt section above the user's policies", () => {
+    // The dashboard fetches `listPrebuiltPolicies()` on the Policies
+    // tab and passes the array down to PoliciesTab as `prebuilt`.
+    // The PrebuiltSection component renders the catalog of 5 (cloud
+    // returns them) above the operator's own policies.
+    expect(src).toContain("cloud.listPrebuiltPolicies")
+    expect(src).toContain("PrebuiltSection")
+    expect(src).toMatch(/prebuilt=\{prebuilt\}/)
+  })
+
+  it("D54: prebuiltDraftHref encodes draft twice and uses mode=advanced", () => {
+    // The PolicyBuilder's _parseDraftQuery does a decodeURIComponent
+    // before JSON.parse. Next.js searchParams already decodes once,
+    // so we must encode twice: once for URL transport, once so the
+    // builder's decode reveals raw JSON.
+    expect(src).toContain("prebuiltDraftHref")
+    expect(src).toMatch(/encodeURIComponent\(encodeURIComponent\(/)
+    expect(src).toContain("mode=advanced")
+    expect(src).toContain("&draft=")
+  })
+
+  it("D54: PrebuiltSection renders a Use this Link to /policies/new", () => {
+    // The "Use this" button is a Link that hands the operator the
+    // raw editor prefilled with the prebuilt IR. We pin the link
+    // target shape so a refactor of the new-policy URL surface
+    // surfaces in CI instead of silently breaking the handoff.
+    expect(src).toContain("rules.prebuilt.useThis")
+    // Anchor on the function name rather than the rendered URL
+    // string, since the URL is built by `prebuiltDraftHref`.
+    expect(src).toMatch(/href=\{prebuiltDraftHref\(/)
+  })
 })

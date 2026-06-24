@@ -52,9 +52,14 @@ class PrivilegeScanVerifier:
     category = "SECURITY"
     enforcement = Enforcement.enforcing
     description = (
-        "Detect attorney-client privileged / work-product markers and "
-        "Korean RRN (주민등록번호) patterns before a filing leaves the gate. "
-        "Deterministic regex only — no LLM."
+        "Scans the caller-assembled `text` field for attorney-client "
+        "privilege markers, work-product flags, and Korean RRN "
+        "(주민등록번호) patterns via fixed regex. The caller routes the "
+        "right CC stdin surface into `text` (tool_input.command / "
+        "tool_input.new_string / tool_input.content on PreToolUse, "
+        "final_message on Stop). Verdict mapping: any hard marker or "
+        "RRN hit returns deny; a soft confidentiality marker with no "
+        "hard hit returns review; no hit returns pass."
     )
     input_schema = {
         "type": "object",
@@ -86,8 +91,12 @@ class SourceAllowlistVerifier:
     category = "RESEARCH"
     enforcement = Enforcement.enforcing
     description = (
-        "Only sources whose hostname matches (or is a subdomain of) an entry "
-        "in `allowlist` may pass. Malformed URLs and missing hosts deny."
+        "Walks every URL in `sources`, parses each into a host (or rejects "
+        "as malformed), and suffix-matches the host against the configured "
+        "`allowlist` (an entry covers itself and its subdomains). Verdict "
+        "mapping: every source host suffix-matches an allowlist entry "
+        "returns pass. Any malformed URL or any host not covered by the "
+        "allowlist returns deny. An empty `sources` list returns pass."
     )
     input_schema = {
         "type": "object",
@@ -232,9 +241,13 @@ class StructuredOutputVerifier:
     category = "OUTPUT"
     enforcement = Enforcement.enforcing
     description = (
-        "Validate a JSON payload (or already-parsed dict) against a small "
-        "JSON-Schema subset (type/required/enum/properties/items). Catches "
-        "wrong-shape filings before the gate signs."
+        "Reads the payload from `data` (already-parsed dict) or `json` "
+        "(JSON-encoded string, parsed at runtime). Validates the result "
+        "against the configured small JSON-Schema subset (type / "
+        "required / enum / properties / items; unknown keywords are "
+        "rejected at the boundary). Verdict mapping: schema validation "
+        "passes returns pass. JSON parse failure, unsupported schema "
+        "keyword, missing payload, or any validation error returns deny."
     )
     input_schema = {
         "type": "object",
@@ -292,9 +305,12 @@ class PromptInjectionScreenVerifier:
     category = "SECURITY"
     enforcement = Enforcement.enforcing
     description = (
-        "Screen retrieved source text for prompt-injection ATTEMPTS "
-        "(override verbs, role-tag injection, jailbreak markers). "
-        "Detects attempts, not topical mentions."
+        "Scans the caller-assembled `text` field for override verbs "
+        "(\"ignore previous instructions\"), role-tag injection (system "
+        "/ assistant / user tag patterns), and known jailbreak markers "
+        "via fixed regex. Hit semantics target an injection attempt, "
+        "not a topical mention. Verdict mapping: any pattern hit "
+        "returns deny. No hit returns pass."
     )
     input_schema = {
         "type": "object",
@@ -327,9 +343,14 @@ class CitationVerifierAdapter:
     category = "FACT"
     enforcement = Enforcement.enforcing
     description = (
-        "Verify legal citations against a source corpus. Existence is a hard "
-        "gate (deny on missing case); verbatim quote match is advisory and "
-        "downgrades to review on mismatch."
+        "Walks each entry in `citations[]` ({quote, ref}). Resolves the "
+        "ref through `corpus_override` (if supplied) or the default "
+        "SourceResolver. For each resolved ref, runs verbatim + NLI "
+        "match between the quote and the source body. Verdict mapping: "
+        "every entry resolved and matched returns pass. Any resolution "
+        "failure returns deny. Resolved but verbatim / NLI mismatch on "
+        "any entry returns review. A missing or empty `corpus_override` "
+        "with no default resolver returns review (defer to HITL)."
     )
     input_schema = {
         "type": "object",
