@@ -345,6 +345,21 @@ const KO_RAW = {
   "hitl.detail.why": "리뷰가 필요한 이유",
   "hitl.detail.ledgerContext": "matter {matter}의 감사 컨텍스트",
   "hitl.detail.ledgerHint": "이 matter의 감사 원장 항목 (오래된 → 최신). 본 HITL 항목을 만든 리뷰 항목이 강조됩니다.",
+  /* PR3: canonical-subject variants of ledgerContext/Hint. The detail page
+     picks these for PR3+ rows (subject populated); the legacy variants
+     above stay in use for pre-PR3 rows so reviewers still see "matter". */
+  "hitl.detail.ledgerContextSubject": "{subject}의 감사 컨텍스트",
+  "hitl.detail.ledgerHintSubject": "이 subject의 감사 원장 항목 (오래된 → 최신). 본 HITL 항목을 만든 리뷰 항목이 강조됩니다.",
+  /* PR3: column labels — `subject`/`payload` for PR3+ rows, `matter`/`doc`
+     for legacy rows. Inline elsewhere they read as English code identifiers
+     ("subject:", "matter:") — these keys exist so the wider UI shell stays
+     localisable without forcing every column-header to flip to natural-
+     language phrasing. */
+  "hitl.col.subject": "subject",
+  "hitl.col.matter": "matter",
+  "hitl.col.payload": "payload",
+  "hitl.col.doc": "doc",
+  "hitl.detail.legacyBadge": "(legacy)",
   "hitl.invalidId": "유효하지 않은 ID",
   "hitl.notFound": "리뷰 항목을 찾을 수 없습니다",
   "hitl.recorded": "기록됨: {what}",
@@ -742,6 +757,14 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "hitl.detail.why": "Why this is in review",
   "hitl.detail.ledgerContext": "Ledger context for matter {matter}",
   "hitl.detail.ledgerHint": "All ledger entries for this matter, oldest → newest. The review entry that produced this HITL item is highlighted.",
+  /* PR3: canonical-subject variants. See KO comment for selection rule. */
+  "hitl.detail.ledgerContextSubject": "Ledger context for {subject}",
+  "hitl.detail.ledgerHintSubject": "All ledger entries for this subject, oldest → newest. The review entry that produced this HITL item is highlighted.",
+  "hitl.col.subject": "subject",
+  "hitl.col.matter": "matter",
+  "hitl.col.payload": "payload",
+  "hitl.col.doc": "doc",
+  "hitl.detail.legacyBadge": "(legacy)",
   "hitl.invalidId": "Invalid id",
   "hitl.notFound": "Review item not found",
   "hitl.recorded": "Recorded: {what}",

@@ -1,5 +1,8 @@
 import Link from "next/link"
-import { cloud, type HitlItem } from "@/lib/cloud"
+import {
+  cloud, displayPayloadHash, displaySubject, isLegacyHitlRow,
+  type HitlItem,
+} from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
 import { revalidatePath, revalidateTag } from "next/cache"
 import { redirect } from "next/navigation"
@@ -88,14 +91,29 @@ function ItemCard({
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   const cites = item.payload?.citations ?? []
+  // PR3: prefer canonical subject/payload_hash over legacy matter/doc_id.
+  // Rows written pre-PR3 have only matter/doc_id populated — show those
+  // under the "matter" label so reviewers see they're legacy.
+  const subj = displaySubject(item)
+  const phash = displayPayloadHash(item)
+  const legacy = isLegacyHitlRow(item)
+  // Pick the label based on which column the value came from. The
+  // typical PR3+ row reports "subject"; a pre-PR3 row reports "matter".
+  // Routed through t() so KO + EN both localise (issue #6 follow-on).
+  const subjLabel = t(legacy ? "hitl.col.matter" : "hitl.col.subject")
+  const phashLabel = t(legacy ? "hitl.col.doc" : "hitl.col.payload")
   return (
     <Card className="space-y-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         <Link href={`/hitl/${item.id}`} className="font-medium">
           #{item.id}
         </Link>
-        <span>matter: <Code>{item.matter}</Code></span>
-        <span>doc: <Code>{item.doc_id}</Code></span>
+        {subj && (
+          <span>{subjLabel}: <Code>{subj}</Code></span>
+        )}
+        {phash && (
+          <span>{phashLabel}: <Code>{phash}</Code></span>
+        )}
         <span className="text-xs text-[var(--color-text-tertiary)]">
           {item.reason} · {fmtUtc(item.ts_created)}
         </span>

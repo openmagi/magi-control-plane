@@ -449,6 +449,158 @@ class TestNliIntegration:
         assert "nli_label" not in target["payload"]["citations"][0]
 
 
+class TestPr3HitlKeyingSurface:
+    """PR3: HITL endpoints surface both canonical (subject/payload_hash)
+    and legacy (matter/doc_id) names. The schema PR3 adds canonical
+    columns to the table — the API previously echoed `matter` into
+    `subject` (PR2 alias); now each pair comes from its own column.
+    """
+
+    def test_list_returns_subject_and_matter_for_pr3_row(self, client):
+        # New row goes via /citation_verify which calls hitl.enqueue with
+        # subject + payload_hash (post-PR3). Both columns get the same value.
+        r = client.post("/citation_verify", json={
+            "subject": "session_pr3", "payload_hash": "a" * 32, "document": "",
+            "citations": [MISQUOTE_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        hitl_id = r.json()["hitl_id"]
+        items = client.get("/hitl", headers=HITL_HEADERS).json()["items"]
+        target = next(i for i in items if i["id"] == hitl_id)
+        assert target["subject"] == "session_pr3"
+        assert target["payload_hash"] == "a" * 32
+        # Legacy fields mirror the same value (double-write).
+        assert target["matter"] == "session_pr3"
+        assert target["doc_id"] == "a" * 32
+
+    def test_detail_returns_subject_and_matter_for_pr3_row(self, client):
+        r = client.post("/citation_verify", json={
+            "subject": "session_detail", "payload_hash": "b" * 32, "document": "",
+            "citations": [MISQUOTE_CITE],
+            "corpus_override": {"2018도13694": SRC_307},
+        }, headers=HEADERS)
+        hitl_id = r.json()["hitl_id"]
+        d = client.get(f"/hitl/{hitl_id}/detail", headers=HITL_HEADERS).json()
+        assert d["subject"] == "session_detail"
+        assert d["payload_hash"] == "b" * 32
+        assert d["matter"] == "session_detail"
+        assert d["doc_id"] == "b" * 32
+
+    def test_detail_falls_back_to_legacy_when_subject_null(self, app, client):
+        """A row written before PR3 has subject NULL but matter populated.
+        The detail endpoint surfaces the legacy values verbatim under
+        matter/doc_id (subject/payload_hash are NULL — dashboards detect
+        this and label "(legacy)").
+        """
+        from magi_cp.cloud.db import HitlItem
+        from sqlalchemy.orm import Session
+        with Session(app.state.engine) as s:
+            legacy = HitlItem(
+                ts_created=0, tenant_id="default",
+                matter="LEG_M", doc_id="LEG_D",
+                subject=None, payload_hash=None,
+                reason="legacy_test", payload={"citations": []},
+            )
+            s.add(legacy); s.commit(); s.refresh(legacy)
+            row_id = legacy.id
+        d = client.get(f"/hitl/{row_id}/detail", headers=HITL_HEADERS).json()
+        assert d["matter"] == "LEG_M"
+        assert d["doc_id"] == "LEG_D"
+        assert d["subject"] is None
+        assert d["payload_hash"] is None
+
+    def test_approve_resolves_keying_for_legacy_row(self, app, client):
+        """Approve of a legacy row issues a token bound to the legacy
+        matter/doc_id values (since subject is NULL, fall back kicks in)."""
+        from magi_cp.cloud.db import HitlItem
+        from sqlalchemy.orm import Session
+        with Session(app.state.engine) as s:
+            legacy = HitlItem(
+                ts_created=0, tenant_id="default",
+                matter="LEG_APPROVE", doc_id="LEG_DOC",
+                subject=None, payload_hash=None,
+                reason="legacy", payload={"citations": []},
+            )
+            s.add(legacy); s.commit(); s.refresh(legacy)
+            row_id = legacy.id
+        a = client.post(f"/hitl/{row_id}/approve",
+                         json={"approver": "partner@firm.example", "note": "OK"},
+                         headers=HITL_HEADERS)
+        assert a.status_code == 200
+        # Token issued with the legacy keying values.
+        body = verify_token(
+            a.json()["token"],
+            KeyStore(dir=app.state.keystore.dir).load_public(),
+        )
+        assert body["matter"] == "LEG_APPROVE"
+        assert body["doc_hash"] == "LEG_DOC"
+        # And PR2 canonical mirror.
+        assert body["subject"] == "LEG_APPROVE"
+        assert body["payload_hash"] == "LEG_DOC"
+
+    def test_list_falls_back_to_legacy_when_subject_null(self, app, client):
+        """Regression for issue #10: the GET /hitl list endpoint is what
+        the dashboard hits first. A pre-PR3 row (subject NULL, matter set)
+        must surface as `{subject: null, matter: <leg>, payload_hash: null,
+        doc_id: <leg>}` so the dashboard's `displaySubject` helper falls
+        through to the legacy column. Detail endpoint already has this
+        coverage; the list endpoint did not."""
+        from magi_cp.cloud.db import HitlItem
+        from sqlalchemy.orm import Session
+        with Session(app.state.engine) as s:
+            legacy = HitlItem(
+                ts_created=0, tenant_id="default",
+                matter="LEG_LIST", doc_id="LEG_LIST_DOC",
+                subject=None, payload_hash=None,
+                reason="legacy_list", payload={"citations": []},
+            )
+            s.add(legacy); s.commit(); s.refresh(legacy)
+            row_id = legacy.id
+        items = client.get("/hitl", headers=HITL_HEADERS).json()["items"]
+        target = next(i for i in items if i["id"] == row_id)
+        assert target["matter"] == "LEG_LIST"
+        assert target["doc_id"] == "LEG_LIST_DOC"
+        assert target["subject"] is None
+        assert target["payload_hash"] is None
+
+    def test_reject_resolves_keying_for_legacy_row(self, app, client):
+        """Regression for issue #11: reject() also calls
+        hitl_display_subject / hitl_display_payload_hash and writes a
+        ledger entry. If anyone drops the fallback on the reject branch
+        the silent regression slips through — pin it with a test.
+        """
+        from magi_cp.cloud.db import HitlItem, LedgerRepo
+        from sqlalchemy.orm import Session
+        with Session(app.state.engine) as s:
+            legacy = HitlItem(
+                ts_created=0, tenant_id="default",
+                matter="LEG_REJECT", doc_id="LEG_REJECT_DOC",
+                subject=None, payload_hash=None,
+                reason="legacy", payload={"citations": []},
+            )
+            s.add(legacy); s.commit(); s.refresh(legacy)
+            row_id = legacy.id
+        r = client.post(f"/hitl/{row_id}/reject",
+                         json={"approver": "partner@firm.example",
+                               "note": "no good"},
+                         headers=HITL_HEADERS)
+        assert r.status_code == 200
+        assert r.json()["verdict"] == "rejected"
+        # Ledger entry carries the legacy keying via the display fallback.
+        led = LedgerRepo(app.state.engine)
+        entries = [e for e in led.list_all()
+                   if e.body.get("step") == "hitl_decision"
+                       and e.body.get("hitl_id") == row_id]
+        assert len(entries) == 1
+        body = entries[0].body
+        # Legacy columns echoed verbatim, canonical fields resolved from
+        # the legacy values via `hitl_display_subject`.
+        assert body["matter"] == "LEG_REJECT"
+        assert body["doc_id"] == "LEG_REJECT_DOC"
+        assert body["subject"] == "LEG_REJECT"
+        assert body["payload_hash"] == "LEG_REJECT_DOC"
+
+
 class TestExtraDisjoint:
     """L2: HITL extra cannot clobber protected token fields."""
 

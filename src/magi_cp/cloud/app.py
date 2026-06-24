@@ -39,7 +39,11 @@ from ..verifier import (Citation, EntailmentClassifier, score_review_citations,
 from ..verifier.protocol import VerifierRegistry
 from ..verifier.sources import DictResolver
 from .policy_store import PolicyStore, _evidence_req_to_dict
-from .db import HitlRepo, HitlStatus, LedgerRepo, init_schema, make_engine
+from .db import (
+    HitlRepo, HitlStatus, LedgerRepo,
+    hitl_display_payload_hash, hitl_display_subject,
+    init_schema, make_engine,
+)
 from .keys import KeyStore
 from .presets_catalog import vendor_catalog
 
@@ -932,11 +936,15 @@ def create_app(
                     if s.nli_label is not None:
                         review_payload[i]["nli_label"] = s.nli_label
                         review_payload[i]["nli_score"] = s.nli_score
-            # PR3 will widen the HITL table to carry subject/payload_hash; for
-            # now we still write `matter`/`doc_id` columns (schema names) with
-            # the canonical subject/payload_hash values.
+            # PR3: HITL table now carries both canonical (subject/payload_hash)
+            # and legacy (matter/doc_id) columns. HitlRepo.enqueue
+            # double-writes both pairs during the PR3→PR4 transition. PR4
+            # will drop the legacy columns once all readers prefer the
+            # canonical pair.
             item = hitl.enqueue(
-                matter=subj, doc_id=phash, reason="citation_review",
+                subject=subj, payload_hash=phash,
+                matter=subj, doc_id=phash,
+                reason="citation_review",
                 payload={"citations": review_payload},
                 tenant_id=tenant_id,
             )
@@ -964,23 +972,32 @@ def create_app(
         item = hitl.get(item_id)
         if item is None:
             raise HTTPException(404, f"hitl item {item_id} not found")
+        # PR3: prefer canonical subject/payload_hash; fall back to legacy
+        # matter/doc_id for rows written before the backfill.
+        subj = hitl_display_subject(item)
+        phash = hitl_display_payload_hash(item)
         # Pull ledger entries for this matter so reviewers see context (the
         # citation_verify=review entry + neighbors). Body redacted by default
         # for general /ledger; here we include because the reviewer is gated.
+        # The ledger still stores the value under the `matter` column —
+        # use the resolved canonical value (subject when present, matter
+        # otherwise) to query.
         ctx_entries = []
-        for e in ledger.list_by_matter(item.matter):
-            ctx_entries.append({
-                "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
-                "body": e.body,
-            })
-        # PR2: surface both legacy (matter/doc_id) and canonical
-        # (subject/payload_hash) names. PR3 will widen the underlying
-        # column; until then the DB stores the canonical value in the
-        # `matter`/`doc_id` columns.
+        ledger_lookup = subj or item.matter
+        if ledger_lookup is not None:
+            for e in ledger.list_by_matter(ledger_lookup):
+                ctx_entries.append({
+                    "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
+                    "body": e.body,
+                })
+        # PR3: surface both legacy (matter/doc_id) and canonical
+        # (subject/payload_hash) names. Each pair holds the value from its
+        # respective column so dashboards can detect legacy-only rows
+        # (subject NULL but matter present).
         return {
             "id": item.id,
             "matter": item.matter, "doc_id": item.doc_id,
-            "subject": item.matter, "payload_hash": item.doc_id,
+            "subject": item.subject, "payload_hash": item.payload_hash,
             "reason": item.reason, "payload": item.payload,
             "status": item.status.value,
             "approver": item.approver, "note": item.note,
@@ -990,10 +1007,13 @@ def create_app(
 
     @app.get("/hitl", dependencies=[Depends(require_hitl_key)])
     def list_hitl() -> dict:
+        # PR3: surface both column pairs as-stored. Dashboards prefer
+        # subject/payload_hash and fall back to matter/doc_id for legacy
+        # rows (subject NULL).
         return {"items": [
             {"id": i.id,
              "matter": i.matter, "doc_id": i.doc_id,
-             "subject": i.matter, "payload_hash": i.doc_id,
+             "subject": i.subject, "payload_hash": i.payload_hash,
              "reason": i.reason, "payload": i.payload,
              "ts_created": i.ts_created}
             for i in hitl.list_pending()
@@ -1008,10 +1028,15 @@ def create_app(
             hitl.approve(item_id, approver=body.approver, note=body.note)
         except ValueError as e:
             raise HTTPException(409, str(e))
+        # PR3: prefer canonical subject/payload_hash; fall back to legacy
+        # matter/doc_id for rows written before the backfill.
+        subj = hitl_display_subject(item)
+        phash = hitl_display_payload_hash(item)
+        if subj is None or phash is None:
+            # Should be unreachable: rows always have at least one pair.
+            raise HTTPException(500, f"hitl item {item_id} missing key fields")
         async with chain_lock:
-            # item.matter / item.doc_id are the schema names; semantically
-            # these hold (subject, payload_hash) post-PR2.
-            return _issue_token(item.matter, item.doc_id, "pass",
+            return _issue_token(subj, phash, "pass",
                                 ledger=ledger, keystore=ks, kid=kid,
                                 extra={"hitl_id": item_id, "approver": body.approver})
 
@@ -1024,13 +1049,17 @@ def create_app(
             hitl.reject(item_id, approver=body.approver, note=body.note)
         except ValueError as e:
             raise HTTPException(409, str(e))
+        # PR3: prefer canonical subject/payload_hash; fall back to legacy
+        # matter/doc_id for rows written before the backfill.
+        subj = hitl_display_subject(item)
+        phash = hitl_display_payload_hash(item)
         async with chain_lock:
-            ledger.append(matter=item.matter,
+            ledger.append(matter=subj or "",
                           body={"step": "hitl_decision", "decision": "rejected",
                                 # legacy mirror + PR2 canonical
                                 "matter": item.matter, "doc_id": item.doc_id,
-                                "subject": item.matter,
-                                "payload_hash": item.doc_id,
+                                "subject": subj,
+                                "payload_hash": phash,
                                 "hitl_id": item_id,
                                 "approver": body.approver},
                           token="")

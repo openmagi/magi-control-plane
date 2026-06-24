@@ -86,8 +86,38 @@ class HitlItem(Base):
     tenant_id: Mapped[str] = mapped_column(
         String(64), index=True, nullable=False, default="default",
     )
-    matter: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # PR3: legacy keying — now nullable. Existing rows keep their values.
+    # New rows during the transition window double-write into matter/doc_id
+    # AND subject/payload_hash so PR4 can drop these columns without
+    # breaking any straggler readers. PR4 removes matter / doc_id columns
+    # outright via DROP COLUMN migration; until then this is the bridge.
+    #
+    # NOTE on nullability: the ORM declaration here only takes effect for
+    # fresh `create_all` runs. On already-deployed Postgres instances the
+    # live DDL still carries the original NOT NULL — `_pr3_apply_migrations`
+    # in `init_schema` issues the matching `ALTER COLUMN … DROP NOT NULL`
+    # to bring them in line. SQLite cannot DROP NOT NULL without a table
+    # rebuild; dev / single-node SQLite paths typically go through fresh
+    # create_all (so the new declaration takes effect directly), and the
+    # double-write in HitlRepo.enqueue keeps `matter`/`doc_id` populated
+    # for any existing deployment until PR4.
+    matter: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    doc_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # PR3: canonical keying. `subject` is a generic subject identifier
+    # (e.g. "session_abc", "req_xyz", or for legal verticals a matter id);
+    # `payload_hash` is sha256 of the canonical tool payload (or for legal:
+    # doc_id). Both nullable so legacy rows that were written under the
+    # matter/doc_id schema still load — the backfill script populates them.
+    #
+    # Width: 128 (not 64) so callers can use either a bare 64-char hex
+    # digest OR a prefixed form (`sha256-<64hex>` = 71 chars) without
+    # silent truncation. Subject is similarly widened so synthesised
+    # `session:<uuid>` / `request:<long-token>` shapes have headroom — the
+    # request-time validators in `cloud/app.py` still pin the wire shape
+    # to 64 chars via pydantic, this is the storage ceiling. PR4 may
+    # narrow once a wire format is finalised.
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JsonCol, nullable=False)
     # native_enum=False: store as VARCHAR + CHECK so future status additions
@@ -98,7 +128,10 @@ class HitlItem(Base):
     approver: Mapped[str | None] = mapped_column(String(256), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     __mapper_args__ = {"version_id_col": version}   # optimistic lock on concurrent decide
-    __table_args__ = (Index("ix_hitl_matter_status", "matter", "status"),)
+    __table_args__ = (
+        Index("ix_hitl_matter_status", "matter", "status"),
+        Index("ix_hitl_subject_status", "subject", "status"),
+    )
 
 
 # ── engine ───────────────────────────────────────────────────────────
@@ -129,6 +162,76 @@ def init_schema(engine: Engine) -> None:
     # init_schema would only create ledger_entry + hitl_item.
     from . import tenants as _tenants_module  # noqa: F401
     Base.metadata.create_all(engine)
+    # PR3: idempotent in-place DDL upgrade for already-deployed instances.
+    # `create_all` is `CREATE TABLE IF NOT EXISTS` only — it never adds new
+    # columns/indexes to an existing table. Without this step, any pre-PR3
+    # deployment that pulls PR3 code keeps the old schema (missing the
+    # `subject`/`payload_hash` columns + `ix_hitl_subject_status` index)
+    # and the first /hitl read crashes with `no such column: subject`.
+    _pr3_apply_migrations(engine)
+
+
+def _pr3_apply_migrations(engine: Engine) -> None:
+    """Idempotently bring a pre-PR3 `hitl_item` table up to the PR3 shape.
+
+    Three steps, all skipped when already applied:
+
+      1. ADD COLUMN `subject` VARCHAR(128) NULL
+      2. ADD COLUMN `payload_hash` VARCHAR(128) NULL
+      3. CREATE INDEX `ix_hitl_subject_status` ON hitl_item(subject, status)
+
+    Plus, on Postgres only:
+
+      4. ALTER COLUMN `matter` DROP NOT NULL
+      5. ALTER COLUMN `doc_id` DROP NOT NULL
+
+    SQLite cannot DROP NOT NULL without a table rebuild — but SQLite paths
+    almost always create fresh via `create_all`, which already declares the
+    columns nullable in step 1's wake. Existing SQLite deployments that
+    pre-date PR3 keep the NOT NULL constraint at the DB level; the
+    double-write in `HitlRepo.enqueue` keeps both columns populated, so
+    inserts succeed even on the old SQLite schema. PR4 (which drops the
+    legacy columns entirely) will run a table rebuild on SQLite at that
+    point.
+
+    Designed to be safe to call on every app startup — every operation is
+    `IF NOT EXISTS`-shaped at the dialect level, or guarded by an
+    `inspect(engine)` lookup beforehand.
+    """
+    from sqlalchemy import inspect as _inspect
+    insp = _inspect(engine)
+    if "hitl_item" not in insp.get_table_names():
+        # Fresh DB — create_all just built the table from the PR3-shape
+        # ORM declaration, nothing to migrate.
+        return
+    existing_cols = {c["name"] for c in insp.get_columns("hitl_item")}
+    existing_idx = {ix["name"] for ix in insp.get_indexes("hitl_item")}
+    dialect = engine.dialect.name
+
+    with engine.begin() as conn:
+        if "subject" not in existing_cols:
+            conn.execute(text(
+                "ALTER TABLE hitl_item ADD COLUMN subject VARCHAR(128)"
+            ))
+        if "payload_hash" not in existing_cols:
+            conn.execute(text(
+                "ALTER TABLE hitl_item ADD COLUMN payload_hash VARCHAR(128)"
+            ))
+        if "ix_hitl_subject_status" not in existing_idx:
+            # Both SQLite and Postgres accept the IF NOT EXISTS form.
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_hitl_subject_status "
+                "ON hitl_item (subject, status)"
+            ))
+        if dialect == "postgresql":
+            # Drop NOT NULL on legacy columns so PR4 callers can supply
+            # only the canonical pair. No-op when already nullable. SQLite
+            # cannot DROP NOT NULL without a table rebuild; deferred to PR4.
+            for legacy_col in ("matter", "doc_id"):
+                conn.execute(text(
+                    f"ALTER TABLE hitl_item "
+                    f"ALTER COLUMN {legacy_col} DROP NOT NULL"
+                ))
 
 
 # ── ledger ───────────────────────────────────────────────────────────
@@ -221,23 +324,78 @@ class LedgerRepo:
 
 
 # ── HITL queue ───────────────────────────────────────────────────────
+def hitl_display_subject(item: "HitlItem") -> str | None:
+    """Read helper: prefer `subject` (PR3 canonical) over `matter` (legacy).
+
+    Returns None only if both are NULL — a future state once PR4 has
+    dropped the legacy columns AND the row was written before subject
+    was populated (should not happen if backfill ran)."""
+    if item.subject:
+        return item.subject
+    return item.matter
+
+
+def hitl_display_payload_hash(item: "HitlItem") -> str | None:
+    """Read helper: prefer `payload_hash` (PR3 canonical) over `doc_id`
+    (legacy). See `hitl_display_subject` for semantics."""
+    if item.payload_hash:
+        return item.payload_hash
+    return item.doc_id
+
+
 class HitlRepo:
     def __init__(self, engine: Engine):
         self.engine = engine
 
-    def enqueue(self, *, matter: str, doc_id: str, reason: str, payload: dict,
+    def enqueue(self, *,
+                reason: str, payload: dict,
+                subject: str | None = None,
+                payload_hash: str | None = None,
+                matter: str | None = None,
+                doc_id: str | None = None,
                 tenant_id: str = "default") -> HitlItem:
+        """Enqueue a HITL review item.
+
+        PR3: callers can pass EITHER (subject, payload_hash) OR legacy
+        (matter, doc_id). Whichever the caller provides, this method
+        double-writes into both columns during the PR3→PR4 transition
+        window so that:
+
+          - readers that still look at the legacy `matter`/`doc_id`
+            columns keep working (no fail-open due to NULL); and
+          - readers that prefer the canonical `subject`/`payload_hash`
+            columns can rely on them being populated.
+
+        If a caller supplies only one pair, the other pair is mirrored
+        from it. If neither pair is supplied, ValueError — we never
+        silently insert with NULL for both, that would defeat the
+        index and confuse audit lookups.
+        """
+        # Choose canonical pair. Prefer the explicit (subject, payload_hash)
+        # input when both pairs disagree — caller's intent is the new shape.
+        subj = subject if subject is not None else matter
+        phash = payload_hash if payload_hash is not None else doc_id
+        if subj is None or phash is None:
+            raise ValueError(
+                "HitlRepo.enqueue requires subject+payload_hash "
+                "(or legacy matter+doc_id)"
+            )
         # Mirror tenant_id into the payload too — the dashboard reads the
         # payload to render and our HITL detail endpoint already returns
         # the payload verbatim, so this gives reviewer dashboards a stable
         # filter key without an API change.
         scoped_payload = {**payload, "tenant_id": tenant_id}
         with Session(self.engine) as s:
-            item = HitlItem(ts_created=int(time.time()),
-                            tenant_id=tenant_id,
-                            matter=matter, doc_id=doc_id,
-                            reason=reason, payload=scoped_payload,
-                            status=HitlStatus.pending)
+            item = HitlItem(
+                ts_created=int(time.time()),
+                tenant_id=tenant_id,
+                # Legacy columns — double-write during PR3 transition.
+                matter=subj, doc_id=phash,
+                # PR3 canonical columns.
+                subject=subj, payload_hash=phash,
+                reason=reason, payload=scoped_payload,
+                status=HitlStatus.pending,
+            )
             s.add(item); s.commit(); s.refresh(item); s.expunge(item)
             return item
 

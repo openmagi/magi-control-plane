@@ -1,5 +1,8 @@
 import Link from "next/link"
-import { cloud, type HitlDetail } from "@/lib/cloud"
+import {
+  cloud, displayPayloadHash, displaySubject, isLegacyHitlRow,
+  type HitlDetail,
+} from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
 import { fmtUtc } from "@/lib/format"
 import { getT } from "@/lib/i18n/server"
@@ -103,16 +106,46 @@ export default async function HitlDetailPage({
       </p>
       <PageHeader title={t("hitl.detail.title", { id: detail.id })} />
 
+      {/* PR3: prefer canonical subject/payload_hash over legacy matter/doc_id.
+          When the row was written pre-PR3 (subject NULL but matter populated),
+          show "matter / doc" labels; otherwise show "subject / payload".
+          NEVER render empty-string legacy values as "(empty)" — hide them.
+          Column header strings + the "(legacy)" badge route through t() so
+          KO + EN both localise. */}
       <Card className="mb-6">
         <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm m-0">
-          <div>
-            <dt className="inline text-[var(--color-text-tertiary)]">matter: </dt>
-            <dd className="inline"><Code>{detail.matter}</Code></dd>
-          </div>
-          <div>
-            <dt className="inline text-[var(--color-text-tertiary)]">doc: </dt>
-            <dd className="inline"><Code>{detail.doc_id}</Code></dd>
-          </div>
+          {(() => {
+            const subj = displaySubject(detail)
+            const phash = displayPayloadHash(detail)
+            const legacy = isLegacyHitlRow(detail)
+            const subjLabel = t(legacy ? "hitl.col.matter" : "hitl.col.subject")
+            const phashLabel = t(legacy ? "hitl.col.doc" : "hitl.col.payload")
+            return <>
+              {subj && (
+                <div>
+                  <dt className="inline text-[var(--color-text-tertiary)]">
+                    {subjLabel}:{" "}
+                  </dt>
+                  <dd className="inline">
+                    <Code>{subj}</Code>
+                    {legacy && (
+                      <span className="ml-2 text-xs text-[var(--color-text-tertiary)]">
+                        {t("hitl.detail.legacyBadge")}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              )}
+              {phash && (
+                <div>
+                  <dt className="inline text-[var(--color-text-tertiary)]">
+                    {phashLabel}:{" "}
+                  </dt>
+                  <dd className="inline"><Code>{phash}</Code></dd>
+                </div>
+              )}
+            </>
+          })()}
           <div>
             <dt className="inline text-[var(--color-text-tertiary)]">reason: </dt>
             <dd className="inline">{detail.reason}</dd>
@@ -171,12 +204,29 @@ export default async function HitlDetailPage({
         </Card>
       )}
 
-      <h2 className="text-md font-semibold m-0 mb-2">
-        {t("hitl.detail.ledgerContext", { matter: detail.matter })}
-      </h2>
-      <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
-        {t("hitl.detail.ledgerHint")}
-      </p>
+      {/* PR3: heading + hint pick the canonical-subject variant for PR3+
+          rows ("Ledger context for <subject>") and the legacy variant for
+          pre-PR3 rows ("Ledger context for matter <matter>"). Both branches
+          are hidden when neither key is present — a row with no usable
+          identifier (degenerate orphan, post-PR4 stragglers) would render
+          a trailing-space "Ledger context for matter " otherwise. */}
+      {(() => {
+        const subj = displaySubject(detail)
+        if (!subj) return null
+        const legacy = isLegacyHitlRow(detail)
+        return <>
+          <h2 className="text-md font-semibold m-0 mb-2">
+            {legacy
+              ? t("hitl.detail.ledgerContext", { matter: subj })
+              : t("hitl.detail.ledgerContextSubject", { subject: subj })}
+          </h2>
+          <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+            {legacy
+              ? t("hitl.detail.ledgerHint")
+              : t("hitl.detail.ledgerHintSubject")}
+          </p>
+        </>
+      })()}
       <Card noPadding className="overflow-x-auto">
         <table>
           <thead>

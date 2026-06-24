@@ -77,8 +77,13 @@ async function _fetch<T>(
 
 export type HitlDetail = {
   id: number
-  matter: string
-  doc_id: string
+  // PR3: matter/doc_id are nullable on the wire — legacy rows (pre-PR3)
+  // have them populated and subject/payload_hash NULL; PR3+ rows have
+  // both pairs populated to the same value (double-write window).
+  matter: string | null
+  doc_id: string | null
+  subject: string | null
+  payload_hash: string | null
   reason: string
   payload: HitlItem["payload"]
   status: "pending" | "approved" | "rejected"
@@ -94,8 +99,11 @@ export type HitlDetail = {
 
 export type HitlItem = {
   id: number
-  matter: string
-  doc_id: string
+  // PR3: see HitlDetail.matter for the nullability rationale.
+  matter: string | null
+  doc_id: string | null
+  subject: string | null
+  payload_hash: string | null
   reason: string
   payload: { citations?: Array<{
     ref: string
@@ -105,6 +113,31 @@ export type HitlItem = {
     nli_score?: number
   }> }
   ts_created: number
+}
+
+/** PR3: prefer the canonical `subject` column over legacy `matter`.
+ * Returns null only when both are NULL (shouldn't happen for live rows). */
+export function displaySubject(
+  row: { subject?: string | null; matter?: string | null },
+): string | null {
+  return row.subject ?? row.matter ?? null
+}
+
+/** PR3: prefer the canonical `payload_hash` column over legacy `doc_id`. */
+export function displayPayloadHash(
+  row: { payload_hash?: string | null; doc_id?: string | null },
+): string | null {
+  return row.payload_hash ?? row.doc_id ?? null
+}
+
+/** PR3: true if the row was written before PR3 (canonical columns NULL,
+ * legacy populated). Lets the UI label the row "(legacy)" so reviewers
+ * know the subject string is a legal-vertical matter id, not a generic
+ * subject identifier. */
+export function isLegacyHitlRow(
+  row: { subject?: string | null; matter?: string | null },
+): boolean {
+  return (row.subject == null) && (row.matter != null)
 }
 
 export type LedgerEntry = {
