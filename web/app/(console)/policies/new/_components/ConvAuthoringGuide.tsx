@@ -203,14 +203,12 @@ export default function ConvAuthoringGuide({
     [locale],
   )
   const [expanded, setExpanded] = useState<boolean>(false)
-  const [hydrated, setHydrated] = useState<boolean>(false)
 
   // Hydrate persisted state on mount. We can't read localStorage during
   // SSR so we render closed first and flip on the next tick when the
   // key is set.
   useEffect(() => {
     setExpanded(readExpanded())
-    setHydrated(true)
   }, [])
 
   const onToggle = useCallback(() => {
@@ -234,18 +232,12 @@ export default function ConvAuthoringGuide({
   return (
     <section
       data-testid="conv-authoring-guide"
-      // suppressHydrationWarning: the persisted-expanded state can
-      // diverge between SSR (always closed) and client (read from
-      // localStorage). We accept the one-tick flicker because hiding
-      // the panel until hydrate would mean the affordance is invisible
-      // on the slower paint.
-      suppressHydrationWarning
       className="mb-3 rounded-xl border border-black/[0.08] bg-white shadow-sm"
     >
       <button
         type="button"
         onClick={onToggle}
-        aria-expanded={hydrated ? expanded : false}
+        aria-expanded={expanded}
         aria-controls={bodyId}
         data-testid="conv-authoring-guide-toggle"
         className={
