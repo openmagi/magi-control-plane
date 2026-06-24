@@ -137,4 +137,17 @@ describe("VerifierExpander source invariants", () => {
     expect(src).toContain("rules.verifier.expander.recentEmissionsUnavailable")
     expect(src).toMatch(/nfFormat\s*\?\s*nfFormat\(count\)/)
   })
+
+  /* ─── D52d: field_checks tree panel ───────────────────────────── */
+  it("D52d: renders the per-field check tree panel", () => {
+    expect(src).toContain("verifier-expander-field-checks")
+    expect(src).toContain("rules.verifier.expander.fieldChecks")
+  })
+
+  it("D52d: shares the VerifierFieldChecks component with the wizard picker", () => {
+    expect(src).toContain("VerifierFieldChecks")
+    // The component lives in the console-wide _components dir so the
+    // catalog expander + wizard picker both consume the same source.
+    expect(src).toMatch(/from ".+_components\/VerifierFieldChecks"/)
+  })
 })

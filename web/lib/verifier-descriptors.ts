@@ -52,6 +52,21 @@ export type InputField = {
   example?: string
 }
 
+/** D52d: one (CC stdin path, check description) pair the verifier
+ * runs on each fire. Rendered as a tree in the catalog expander and
+ * inline below the wizard's verifier picker:
+ *
+ *   tool_input.url       -> hostname is in allowlist
+ *   tool_response.output -> cited IDs exist in source corpus
+ *
+ * `path` is a CC stdin payload path (NOT the verifier's own input
+ * dict key; for that, see `InputField` above). `check_description` is
+ * human-readable prose (max 200 chars; the catalog cell budget). */
+export type FieldCheck = {
+  path: string
+  check_description: string
+}
+
 export type VerifierDescriptor = {
   step: string
   triggers: TriggerSpec[]
@@ -63,6 +78,10 @@ export type VerifierDescriptor = {
   input_fields?: InputField[]
   verdict_set: VerdictStatus[]
   output_evidence: EvidenceField[]
+  /** D52d: per-field check semantics. Empty list (or missing key on
+   * an older mirror copy) is a structural signal the dashboard renders
+   * as "this verifier is in preview mode" instead of an empty tree. */
+  field_checks?: FieldCheck[]
 }
 
 const COMMON_OUTPUT_FIELDS: EvidenceField[] = [
@@ -147,6 +166,20 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
         description: "Per-citation verdict from the NLI pipeline.",
       },
     ],
+    field_checks: [
+      {
+        path: "tool_input.url",
+        check_description: "hostname is in allowlist",
+      },
+      {
+        path: "tool_response.output",
+        check_description: "cited IDs exist in source corpus",
+      },
+      {
+        path: "transcript_path",
+        check_description: "verbatim quotes match",
+      },
+    ],
   },
   privilege_scan: {
     step: "privilege_scan",
@@ -173,6 +206,17 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     verdict_set: ["pass", "review", "deny"],
     output_evidence: COMMON_OUTPUT_FIELDS,
+    field_checks: [
+      {
+        path: "tool_input.command",
+        check_description: "matches privileged-marker regex",
+      },
+      {
+        path: "tool_response.output",
+        check_description:
+          "contains attorney-client / work-product / Korean RRN patterns",
+      },
+    ],
   },
   source_allowlist: {
     step: "source_allowlist",
@@ -205,6 +249,12 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     verdict_set: ["pass", "deny"],
     output_evidence: COMMON_OUTPUT_FIELDS,
+    field_checks: [
+      {
+        path: "tool_input.url",
+        check_description: "hostname or parent-domain is in allowlist",
+      },
+    ],
   },
   structured_output: {
     step: "structured_output",
@@ -241,6 +291,13 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     verdict_set: ["pass", "deny"],
     output_evidence: COMMON_OUTPUT_FIELDS,
+    field_checks: [
+      {
+        path: "tool_response.output",
+        check_description:
+          "matches the JSON schema (type/required/enum/properties/items)",
+      },
+    ],
   },
   prompt_injection_screen: {
     step: "prompt_injection_screen",
@@ -267,6 +324,13 @@ const REGISTRY: Record<string, VerifierDescriptor> = {
     ],
     verdict_set: ["pass", "deny"],
     output_evidence: COMMON_OUTPUT_FIELDS,
+    field_checks: [
+      {
+        path: "tool_response.output",
+        check_description:
+          "scans for override verbs / role-tag injection / jailbreak markers",
+      },
+    ],
   },
 }
 

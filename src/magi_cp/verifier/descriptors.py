@@ -68,6 +68,34 @@ class InputField(TypedDict, total=False):
     example: str
 
 
+class FieldCheck(TypedDict):
+    """D52d: one (CC stdin path, check description) pair the verifier
+    runs on each fire. The dashboard renders these as a tree:
+
+        path                   description
+        tool_input.url      -> hostname is in allowlist
+        tool_response.output -> cited IDs exist in source corpus
+
+    Why this is separate from `input_payload_paths`:
+
+      - `input_payload_paths` describes the verifier's OWN input dict
+        keys (the JSON body posted to /verify/{step}). It is the
+        verifier-side contract.
+      - `field_checks` describes the CC stdin paths the verifier reads
+        from when bound to a (event, matcher) trigger. It is the
+        author-side contract: "if I bind this verifier, what fields
+        does it actually look at?"
+
+    Authoring the catalog of field_checks gives the policy wizard's
+    verifier picker something concrete to surface when the author picks
+    a step kind: "this verifier checks tool_input.url against an
+    allowlist" beats "this verifier emits a verdict".
+    """
+
+    path: str
+    check_description: str
+
+
 class VerifierDescriptor(TypedDict):
     """The four-facet expander record for one verifier.
 
@@ -90,6 +118,11 @@ class VerifierDescriptor(TypedDict):
     input_fields: list[InputField]
     verdict_set: list[VerdictStatus]
     output_evidence: list[EvidenceField]
+    # D52d: per-field check semantics. Empty list is a structural
+    # signal. The verifier has no documented field-level check (e.g. a
+    # custom preview verifier with no implementation). The dashboard
+    # falls back to its "preview mode" note in that case.
+    field_checks: list[FieldCheck]
 
 
 # ── shared evidence-record envelope ─────────────────────────────────
@@ -179,6 +212,24 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
                 "description": "Per-citation verdict from the NLI pipeline.",
             },
         ],
+        # D52d: citation_verify is a final-answer / post-fetch check.
+        # It reads research / fetch tool URLs (allowlist sanity), the
+        # cited corpus body the tool returned, and the agent's
+        # transcript for verbatim quote matching.
+        "field_checks": [
+            {
+                "path": "tool_input.url",
+                "check_description": "hostname is in allowlist",
+            },
+            {
+                "path": "tool_response.output",
+                "check_description": "cited IDs exist in source corpus",
+            },
+            {
+                "path": "transcript_path",
+                "check_description": "verbatim quotes match",
+            },
+        ],
     },
     "privilege_scan": {
         "step": "privilege_scan",
@@ -207,6 +258,19 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "review", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
+        # D52d: privilege_scan walks two CC stdin surfaces depending on
+        # the trigger: Bash command text (Pre) or the agent's final
+        # message body (Stop). Both routes hit the same regex set.
+        "field_checks": [
+            {
+                "path": "tool_input.command",
+                "check_description": "matches privileged-marker regex",
+            },
+            {
+                "path": "tool_response.output",
+                "check_description": "contains attorney-client / work-product / Korean RRN patterns",
+            },
+        ],
     },
     "source_allowlist": {
         "step": "source_allowlist",
@@ -242,6 +306,16 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
+        # D52d: source_allowlist checks the URL the tool is about to
+        # fetch (Pre) or the URL the response carries (Post). Either
+        # way the host is suffix-matched against the configured
+        # allowlist; subdomains pass when the parent does.
+        "field_checks": [
+            {
+                "path": "tool_input.url",
+                "check_description": "hostname or parent-domain is in allowlist",
+            },
+        ],
     },
     "structured_output": {
         "step": "structured_output",
@@ -282,6 +356,15 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
+        # D52d: structured_output validates a JSON payload against a
+        # JSON-Schema subset. The payload comes from the tool response
+        # (PostToolUse) or the agent's final answer (Stop).
+        "field_checks": [
+            {
+                "path": "tool_response.output",
+                "check_description": "matches the JSON schema (type/required/enum/properties/items)",
+            },
+        ],
     },
     "prompt_injection_screen": {
         "step": "prompt_injection_screen",
@@ -310,6 +393,15 @@ _DESCRIPTORS: dict[str, VerifierDescriptor] = {
         ],
         "verdict_set": ["pass", "deny"],
         "output_evidence": _COMMON_OUTPUT_FIELDS,
+        # D52d: prompt_injection_screen scans retrieved source text
+        # (PostToolUse on fetch tools) or the incoming user prompt
+        # (UserPromptSubmit) for jailbreak / override markers.
+        "field_checks": [
+            {
+                "path": "tool_response.output",
+                "check_description": "scans for override verbs / role-tag injection / jailbreak markers",
+            },
+        ],
     },
 }
 
@@ -349,11 +441,55 @@ def _assert_input_fields_cover_paths() -> None:
                 )
 
 
+def _assert_field_checks_shape() -> None:
+    """D52d: enforce field_checks invariants at import time.
+
+    Each built-in descriptor must declare at least one field_check, and
+    every row must carry a non-empty `path` plus a non-empty
+    `check_description` (max 200 chars to bound dashboard cell width
+    and to match the custom-verifier authoring cap downstream).
+
+    Empty field_checks is allowed for custom / preview descriptors (the
+    runtime has no implementation to document) but every built-in has a
+    runtime body so we hard-fail when the catalog row is empty. The
+    dashboard would otherwise render the "preview mode" notice for a
+    real verifier and mislead the operator.
+    """
+    for step, d in _DESCRIPTORS.items():
+        fcs = d.get("field_checks", [])
+        if not isinstance(fcs, list) or len(fcs) == 0:
+            raise AssertionError(
+                f"descriptor {step!r}: field_checks must list >= 1 row "
+                f"for a built-in verifier",
+            )
+        for i, fc in enumerate(fcs):
+            path = fc.get("path", "")
+            desc = fc.get("check_description", "")
+            if not isinstance(path, str) or not path.strip():
+                raise AssertionError(
+                    f"descriptor {step!r}: field_checks[{i}].path is "
+                    f"required and must be a non-empty string",
+                )
+            if not isinstance(desc, str) or not desc.strip():
+                raise AssertionError(
+                    f"descriptor {step!r}: field_checks[{i}]."
+                    f"check_description is required and must be "
+                    f"a non-empty string",
+                )
+            if len(desc) > 200:
+                raise AssertionError(
+                    f"descriptor {step!r}: field_checks[{i}]."
+                    f"check_description must be <= 200 chars",
+                )
+
+
 _assert_input_fields_cover_paths()
+_assert_field_checks_shape()
 
 
 __all__ = [
     "EvidenceField",
+    "FieldCheck",
     "InputField",
     "TriggerSpec",
     "VerifierDescriptor",

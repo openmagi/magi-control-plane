@@ -54,6 +54,14 @@ _ALLOWED_BODY_TYPES: set[BodyType] = {"preview"}
 # list / serialize stay cheap and a misuse (e.g. 10k duplicated triggers
 # under the 256KB body cap) cannot silently inflate disk reads.
 _MAX_TRIGGERS = 32
+# D52d: per-row caps for field_checks. `_MAX_FIELD_CHECKS` mirrors
+# `_MAX_TRIGGERS` so a single verifier cannot inflate disk reads
+# beyond a few KB; `_MAX_FIELD_CHECK_PATH_LEN` and
+# `_MAX_FIELD_CHECK_DESC_LEN` match the dashboard cell budgets so the
+# tree render stays predictable.
+_MAX_FIELD_CHECKS = 32
+_MAX_FIELD_CHECK_PATH_LEN = 128
+_MAX_FIELD_CHECK_DESC_LEN = 200
 
 
 def _allowed_events() -> set[str]:
@@ -91,6 +99,24 @@ class CustomVerifierTrigger:
 
 
 @dataclass(frozen=True)
+class CustomVerifierFieldCheck:
+    """D52d: one (path, check_description) pair documenting what this
+    verifier inspects on each fire. Same shape as the catalog
+    descriptor `FieldCheck` so the dashboard can reuse a single render
+    component across built-in + custom rows.
+
+    `path` is a CC stdin payload path (e.g. `tool_input.url`);
+    `check_description` is human-readable prose. Both are persisted as
+    plain strings. The runtime does not interpret them today (custom
+    verifiers are preview-only), but the catalog surface uses them
+    immediately.
+    """
+
+    path: str
+    check_description: str
+
+
+@dataclass(frozen=True)
 class CustomVerifier:
     """Persisted custom verifier definition.
 
@@ -109,6 +135,10 @@ class CustomVerifier:
     # Optional tenant binding for cross-tenant audit. Default-empty so the
     # in-memory dataclass round-trips identically for single-tenant tests.
     tenant_id: str = ""
+    # D52d: per-field check rows. Empty default so older on-disk JSON
+    # round-trips through deserialize() without crashing; the REST POST
+    # path requires >=1 row.
+    field_checks: tuple[CustomVerifierFieldCheck, ...] = field(default_factory=tuple)
 
 
 def validate_name(name: str) -> None:
@@ -188,6 +218,65 @@ def validate_verdict_set(verdict_set: list[str]) -> tuple[VerdictStatus, ...]:
     return tuple(seen)
 
 
+def validate_field_checks(
+    field_checks: list[dict],
+) -> tuple[CustomVerifierFieldCheck, ...]:
+    """D52d: validate the field_checks rows on a /custom-verifiers POST.
+
+    Requires >=1 row (the dashboard tree needs something to render and
+    a verifier that documents nothing is useless to authors); caps row
+    count and per-row string lengths to bound disk + render budgets.
+
+    Duplicate (path, check_description) pairs are silently deduped,
+    same intent as `validate_triggers` for (event, matcher_class).
+    """
+    if not isinstance(field_checks, list) or len(field_checks) == 0:
+        raise CustomVerifierError(
+            "at least one field_check is required",
+        )
+    if len(field_checks) > _MAX_FIELD_CHECKS:
+        raise CustomVerifierError(
+            f"at most {_MAX_FIELD_CHECKS} field_checks per verifier",
+        )
+    seen: set[tuple[str, str]] = set()
+    out: list[CustomVerifierFieldCheck] = []
+    for i, raw in enumerate(field_checks):
+        if not isinstance(raw, dict):
+            raise CustomVerifierError(
+                f"field_checks[{i}]: must be an object",
+            )
+        path = raw.get("path")
+        desc = raw.get("check_description")
+        if not isinstance(path, str) or not path.strip():
+            raise CustomVerifierError(
+                f"field_checks[{i}].path: required string",
+            )
+        if len(path) > _MAX_FIELD_CHECK_PATH_LEN:
+            raise CustomVerifierError(
+                f"field_checks[{i}].path: must be <= "
+                f"{_MAX_FIELD_CHECK_PATH_LEN} chars",
+            )
+        if not isinstance(desc, str) or not desc.strip():
+            raise CustomVerifierError(
+                f"field_checks[{i}].check_description: required string",
+            )
+        if len(desc) > _MAX_FIELD_CHECK_DESC_LEN:
+            raise CustomVerifierError(
+                f"field_checks[{i}].check_description: must be <= "
+                f"{_MAX_FIELD_CHECK_DESC_LEN} chars",
+            )
+        path_clean = path.strip()
+        desc_clean = desc.strip()
+        key = (path_clean, desc_clean)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(CustomVerifierFieldCheck(
+            path=path_clean, check_description=desc_clean,
+        ))
+    return tuple(out)
+
+
 def validate_body_type(body_type: str) -> BodyType:
     if body_type not in _ALLOWED_BODY_TYPES:
         raise CustomVerifierError(
@@ -217,11 +306,13 @@ def build_from_dict(raw: dict, *, tenant_id: str = "") -> CustomVerifier:
     triggers = raw.get("triggers") or []
     verdict_set = raw.get("verdict_set") or []
     body_type = raw.get("body_type") or "preview"
+    field_checks = raw.get("field_checks") or []
     validate_name(name)
     validate_description(description)
     triggers_t = validate_triggers(triggers)
     verdicts_t = validate_verdict_set(verdict_set)
     body_type_t = validate_body_type(body_type)
+    field_checks_t = validate_field_checks(field_checks)
     return CustomVerifier(
         id=_gen_id(),
         name=name,
@@ -231,6 +322,7 @@ def build_from_dict(raw: dict, *, tenant_id: str = "") -> CustomVerifier:
         body_type=body_type_t,
         created_at=int(time.time()),
         tenant_id=tenant_id,
+        field_checks=field_checks_t,
     )
 
 
@@ -247,6 +339,10 @@ def serialize(v: CustomVerifier) -> dict:
         "body_type": v.body_type,
         "created_at": v.created_at,
         "tenant_id": v.tenant_id,
+        "field_checks": [
+            {"path": fc.path, "check_description": fc.check_description}
+            for fc in v.field_checks
+        ],
     }
 
 
@@ -277,6 +373,21 @@ def deserialize(raw: dict) -> CustomVerifier:
         )
     except (KeyError, TypeError) as e:
         raise CustomVerifierError(f"verifier row has malformed trigger: {e}") from e
+    # D52d: tolerate legacy on-disk rows that lack field_checks. The
+    # POST path requires >=1; rows persisted before D52d will round-
+    # trip with an empty tuple, the dashboard renders the preview note.
+    try:
+        field_checks = tuple(
+            CustomVerifierFieldCheck(
+                path=fc["path"],
+                check_description=fc["check_description"],
+            )
+            for fc in raw.get("field_checks", [])
+        )
+    except (KeyError, TypeError) as e:
+        raise CustomVerifierError(
+            f"verifier row has malformed field_check: {e}",
+        ) from e
     return CustomVerifier(
         id=rid,
         name=rname,
@@ -286,6 +397,7 @@ def deserialize(raw: dict) -> CustomVerifier:
         body_type=raw.get("body_type", "preview"),
         created_at=int(raw.get("created_at", 0)),
         tenant_id=raw.get("tenant_id", ""),
+        field_checks=field_checks,
     )
 
 
@@ -353,6 +465,7 @@ class CustomVerifierStore:
             body_type=verifier.body_type,
             created_at=verifier.created_at,
             tenant_id=tenant_id,
+            field_checks=verifier.field_checks,
         )
         bucket["verifiers"].append(serialize(stamped))
         self._save_raw(raw)
@@ -385,6 +498,7 @@ __all__ = [
     "CustomVerifier",
     "CustomVerifierConflict",
     "CustomVerifierError",
+    "CustomVerifierFieldCheck",
     "CustomVerifierStore",
     "CustomVerifierTrigger",
     "build_from_dict",
@@ -392,6 +506,7 @@ __all__ = [
     "serialize",
     "validate_body_type",
     "validate_description",
+    "validate_field_checks",
     "validate_name",
     "validate_triggers",
     "validate_verdict_set",

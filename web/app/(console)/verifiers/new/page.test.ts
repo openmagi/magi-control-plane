@@ -55,4 +55,21 @@ describe("verifiers/new page source invariants", () => {
     expect(src).toContain("VerifierFormClient")
     expect(src).toMatch(/action=\{createVerifierAction\}/)
   })
+
+  // ── D52d: field_checks parsing + validation ────────────────────
+  it("D52d: parses field_checks array off the incoming JSON payload", () => {
+    expect(src).toContain("field_checks")
+    expect(src).toMatch(/MAX_FIELD_CHECK_PATH_LEN\s*=\s*128/)
+    expect(src).toMatch(/MAX_FIELD_CHECK_DESC_LEN\s*=\s*200/)
+  })
+
+  it("D52d: validateLocally rejects empty field_checks + overlong fields", () => {
+    expect(src).toMatch(/p\.field_checks\.length === 0/)
+    expect(src).toContain("MAX_FIELD_CHECK_DESC_LEN")
+  })
+
+  it("D52d: forwards field_checks-related labels to the client island", () => {
+    expect(src).toContain("verifiers.new.fieldChecks")
+    expect(src).toContain("verifiers.new.err.fieldChecks")
+  })
 })

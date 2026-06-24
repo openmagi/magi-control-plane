@@ -354,6 +354,11 @@ const KO_RAW = {
   "rules.verifier.expander.viewInLedger": "감사 원장에서 보기 →",
   "rules.verifier.expander.recentEmissionsNoRuntimeCustom": "preview 전용: /verifiers/new 로 등록되었지만 런타임 바인딩이 아직 없습니다. 카운트가 0 인 것은 사용량이 아니라 런타임 미연결을 의미합니다.",
   "rules.verifier.expander.recentEmissionsNoRuntimeMissing": "정책에서 참조되지만 등록된 verifier 가 없습니다 (enforcement: missing). 런타임은 no-verifier-registered 로 거부합니다.",
+  "rules.verifier.expander.fieldChecks": "각 입력 필드별 검사",
+  "rules.verifier.fieldChecks.preview": "이 verifier 는 preview 모드입니다, 런타임 검사 동작이 등록되어 있지 않습니다.",
+  "rules.verifier.fieldChecks.verdicts": "verdicts:",
+  "rules.verifier.fieldChecks.emits": "emits:",
+  "newPolicy.wizard.verifier.checksLabel": "이 verifier 가 검사하는 항목",
 
   /* ── ledger filter chips (D52c) ───────────────────────────────── */
   "ledger.filter.title": "Verifier 로 필터",
@@ -388,6 +393,13 @@ const KO_RAW = {
   "verifiers.new.err.description": "설명이 필요합니다, 500 자 이내.",
   "verifiers.new.err.triggers": "최소 한 개의 (이벤트, matcher) 트리거가 필요합니다.",
   "verifiers.new.err.verdicts": "최소 한 개의 판정을 선택하세요.",
+  "verifiers.new.fieldChecks": "각 입력 필드별 검사",
+  "verifiers.new.fieldChecks.helper": "이 verifier 가 매 발동마다 무엇을 검사하는지. 경로 + 사람이 읽을 수 있는 설명. 최소 1 개.",
+  "verifiers.new.fieldChecks.path": "경로 (예: tool_input.url)",
+  "verifiers.new.fieldChecks.description": "검사 내용 (200 자 이내)",
+  "verifiers.new.fieldChecks.add": "+ 검사 추가",
+  "verifiers.new.fieldChecks.remove": "이 검사 제거",
+  "verifiers.new.err.fieldChecks": "최소 한 개의 (경로, 설명) 검사를 추가하세요, 설명은 200 자 이내.",
 
   /* ── hitl ────────────────────────────────────────────────────── */
   "hitl.title": "리뷰 대기 ({n}건)",
@@ -819,6 +831,11 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.verifier.expander.viewInLedger": "View in ledger →",
   "rules.verifier.expander.recentEmissionsNoRuntimeCustom": "Preview only: authored via /verifiers/new but not yet bound to a runtime check. A count of 0 means no runtime binding, not no usage.",
   "rules.verifier.expander.recentEmissionsNoRuntimeMissing": "Referenced by a policy with no registered verifier (enforcement: missing). The runtime denies with no-verifier-registered.",
+  "rules.verifier.expander.fieldChecks": "Per-field checks",
+  "rules.verifier.fieldChecks.preview": "This verifier is in preview mode; no runtime check is registered.",
+  "rules.verifier.fieldChecks.verdicts": "verdicts:",
+  "rules.verifier.fieldChecks.emits": "emits:",
+  "newPolicy.wizard.verifier.checksLabel": "What this verifier checks",
 
   "ledger.filter.title": "Filter by verifier",
   "ledger.filter.hint": "Show only records emitted by the selected verifier(s). Multi-select.",
@@ -851,6 +868,13 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "verifiers.new.err.description": "Description is required, max 500 chars.",
   "verifiers.new.err.triggers": "At least one (event, matcher) trigger is required.",
   "verifiers.new.err.verdicts": "Pick at least one verdict.",
+  "verifiers.new.fieldChecks": "What does this verifier check on each input?",
+  "verifiers.new.fieldChecks.helper": "Per-field check rows: each row is (CC stdin path, human-readable check description). At least one.",
+  "verifiers.new.fieldChecks.path": "Path (e.g. tool_input.url)",
+  "verifiers.new.fieldChecks.description": "Check description (max 200 chars)",
+  "verifiers.new.fieldChecks.add": "+ Add check",
+  "verifiers.new.fieldChecks.remove": "Remove this check",
+  "verifiers.new.err.fieldChecks": "Add at least one (path, description) check. Description must be <= 200 chars.",
 
   "hitl.title": "Pending review ({n})",
   "hitl.empty": "No items pending review.",

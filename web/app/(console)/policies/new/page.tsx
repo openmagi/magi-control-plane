@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon } from "@heroicons/react/24/outline"
+import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import { codeForError, resolveFlash } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -1752,14 +1753,31 @@ function Step3Condition({
                     )}
                     <div className="space-y-2">
                       {wiredSteps.map((w) => (
-                        <CheckboxCard
-                          key={w.step}
-                          name="evidence_ref"
-                          value={w.step}
-                          defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
-                          label={w.step}
-                          sub={w.description}
-                        />
+                        <div key={w.step} className="space-y-1.5">
+                          <CheckboxCard
+                            name="evidence_ref"
+                            value={w.step}
+                            defaultChecked={state.evidenceRefs?.includes(w.step) ?? false}
+                            label={w.step}
+                            sub={w.description}
+                          />
+                          {/* D52d: surface the same field_checks tree
+                              the catalog expander uses, inline below
+                              the picker so the author sees what each
+                              verifier actually inspects (path → check
+                              description) before saving the policy.
+                              No extra click; render on mount. */}
+                          <div className="ml-3 rounded-lg border border-black/[0.05] bg-[var(--color-surface-1,#f9fafb)]/40 px-3 py-2">
+                            <p className="mb-1.5 text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                              {t("newPolicy.wizard.verifier.checksLabel")}
+                            </p>
+                            <VerifierFieldChecks
+                              step={w.step}
+                              t={t}
+                              showFooter
+                            />
+                          </div>
+                        </div>
                       ))}
                     </div>
                   </div>

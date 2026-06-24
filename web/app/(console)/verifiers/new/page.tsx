@@ -5,7 +5,10 @@ import { codeForError, resolveFlash } from "@/lib/flash"
 import { CloudConfigError } from "@/lib/cloud"
 import { getT } from "@/lib/i18n/server"
 import { Card, ErrorState, PageHeader } from "@/components/ui"
-import VerifierFormClient, { type TriggerRow } from "./_components/VerifierFormClient"
+import VerifierFormClient, {
+  type TriggerRow,
+  type FieldCheckRow,
+} from "./_components/VerifierFormClient"
 
 export const dynamic = "force-dynamic"
 
@@ -45,7 +48,13 @@ type CreateVerifierPayload = {
   triggers: TriggerRow[]
   verdict_set: string[]
   body_type: "preview"
+  // D52d: per-field check rows (>=1). Each row is a (path, description)
+  // pair documenting what this verifier inspects on each fire.
+  field_checks: FieldCheckRow[]
 }
+
+const MAX_FIELD_CHECK_PATH_LEN = 128
+const MAX_FIELD_CHECK_DESC_LEN = 200
 
 function parseDraftPayload(raw: unknown): CreateVerifierPayload | null {
   if (typeof raw !== "string" || !raw) return null
@@ -77,7 +86,24 @@ function parseDraftPayload(raw: unknown): CreateVerifierPayload | null {
       if (!ALLOWED_VERDICTS.includes(s)) return null
       verdict_set.push(s)
     }
-    return { name, description, triggers, verdict_set, body_type: "preview" }
+    // D52d: parse field_checks rows. >=1 required at validateLocally.
+    const fieldChecksRaw = (parsed as Record<string, unknown>).field_checks
+    if (!Array.isArray(fieldChecksRaw)) return null
+    const field_checks: FieldCheckRow[] = []
+    for (const fc of fieldChecksRaw) {
+      if (!fc || typeof fc !== "object") return null
+      const path = String((fc as Record<string, unknown>).path ?? "").trim()
+      const desc = String(
+        (fc as Record<string, unknown>).check_description ?? "",
+      ).trim()
+      if (!path || path.length > MAX_FIELD_CHECK_PATH_LEN) return null
+      if (!desc || desc.length > MAX_FIELD_CHECK_DESC_LEN) return null
+      field_checks.push({ path, check_description: desc })
+    }
+    return {
+      name, description, triggers, verdict_set,
+      body_type: "preview", field_checks,
+    }
   } catch {
     return null
   }
@@ -91,6 +117,12 @@ function validateLocally(p: CreateVerifierPayload): string | null {
   if (p.description.length > MAX_DESCRIPTION_LEN) return "invalid_input"
   if (p.triggers.length === 0) return "invalid_input"
   if (p.verdict_set.length === 0) return "invalid_input"
+  if (p.field_checks.length === 0) return "invalid_input"
+  for (const fc of p.field_checks) {
+    if (!fc.path || fc.path.length > MAX_FIELD_CHECK_PATH_LEN) return "invalid_input"
+    if (!fc.check_description) return "invalid_input"
+    if (fc.check_description.length > MAX_FIELD_CHECK_DESC_LEN) return "invalid_input"
+  }
   return null
 }
 
@@ -173,6 +205,13 @@ export default async function NewCustomVerifierPage({
     errDescription: t("verifiers.new.err.description"),
     errTriggers: t("verifiers.new.err.triggers"),
     errVerdicts: t("verifiers.new.err.verdicts"),
+    fieldChecks: t("verifiers.new.fieldChecks"),
+    fieldChecksHelper: t("verifiers.new.fieldChecks.helper"),
+    fieldCheckPath: t("verifiers.new.fieldChecks.path"),
+    fieldCheckDescription: t("verifiers.new.fieldChecks.description"),
+    fieldCheckAdd: t("verifiers.new.fieldChecks.add"),
+    fieldCheckRemove: t("verifiers.new.fieldChecks.remove"),
+    errFieldChecks: t("verifiers.new.err.fieldChecks"),
   }
 
   return (

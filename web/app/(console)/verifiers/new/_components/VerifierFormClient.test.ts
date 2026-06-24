@@ -139,4 +139,33 @@ describe("VerifierFormClient source invariants", () => {
     expect(src).toMatch(/var\(--color-review-bg/)
     expect(src).not.toMatch(/bg-amber-50/)
   })
+
+  // ── D52d: field_checks editor ────────────────────────────────────
+  it("D52d: serializes field_checks into the payload", () => {
+    expect(src).toContain("field_checks: fieldChecks.map")
+    // path + check_description are the only persisted keys; _id is
+    // client-only and must be stripped (same pattern as triggers).
+    expect(src).toMatch(/path: path\.trim\(\)/)
+    expect(src).toMatch(/check_description: check_description\.trim\(\)/)
+  })
+
+  it("D52d: seeds at least one (empty) field_check row", () => {
+    expect(src).toMatch(/path: ""[,\s]+check_description: ""/)
+  })
+
+  it("D52d: blocks submit when field_checks are invalid", () => {
+    expect(src).toMatch(/fieldChecksError/)
+    expect(src).toMatch(/canSubmit[\s\S]*!fieldChecksError/)
+  })
+
+  it("D52d: enforces description max-length 200 + path max-length 128", () => {
+    expect(src).toMatch(/MAX_FIELD_CHECK_PATH_LEN\s*=\s*128/)
+    expect(src).toMatch(/MAX_FIELD_CHECK_DESC_LEN\s*=\s*200/)
+  })
+
+  it("D52d: each field_check row has add + remove + per-row aria labels", () => {
+    expect(src).toContain("labels.fieldCheckAdd")
+    expect(src).toContain("labels.fieldCheckRemove")
+    expect(src).toContain("data-testid=\"field-check-row\"")
+  })
 })

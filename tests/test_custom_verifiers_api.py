@@ -50,6 +50,14 @@ def _valid_body(**override):
         ],
         "verdict_set": ["pass", "fail"],
         "body_type": "preview",
+        # D52d: at least one field_check is required by the wire model
+        # so a canonical valid body must carry one.
+        "field_checks": [
+            {
+                "path": "tool_input.command",
+                "check_description": "matches a custom pattern",
+            },
+        ],
     }
     base.update(override)
     return base
@@ -128,12 +136,17 @@ class TestStoreValidators:
             "triggers": [{"event": "Stop", "matcher_class": "final"}],
             "verdict_set": ["pass"],
             "body_type": "preview",
+            "field_checks": [
+                {"path": "tool_input.command", "check_description": "x"},
+            ],
         })
         assert v.name == "x"
         assert v.description == "y"
         assert v.triggers[0].event == "Stop"
         assert v.verdict_set == ("pass",)
         assert v.body_type == "preview"
+        assert len(v.field_checks) == 1
+        assert v.field_checks[0].path == "tool_input.command"
         # server-issued id, not from input
         assert v.id and isinstance(v.id, str)
         assert len(v.id) == 16  # 8 bytes hex
@@ -147,6 +160,9 @@ class TestStorePersistence:
             "triggers": [{"event": "Stop", "matcher_class": "final"}],
             "verdict_set": ["pass"],
             "body_type": "preview",
+            "field_checks": [
+                {"path": "tool_input.command", "check_description": "x"},
+            ],
         })
         stored = store.add("tenant-a", v)
         assert stored.tenant_id == "tenant-a"
@@ -166,6 +182,9 @@ class TestStorePersistence:
             "triggers": [{"event": "Stop", "matcher_class": "final"}],
             "verdict_set": ["pass"],
             "body_type": "preview",
+            "field_checks": [
+                {"path": "tool_input.command", "check_description": "x"},
+            ],
         })
         stored = store.add("tenant-a", v)
         assert store.get("tenant-b", stored.id) is None
@@ -179,6 +198,9 @@ class TestStorePersistence:
                 "triggers": [{"event": "Stop", "matcher_class": "final"}],
                 "verdict_set": ["pass"],
                 "body_type": "preview",
+                "field_checks": [
+                    {"path": "tool_input.command", "check_description": "x"},
+                ],
             })
             store.add(tenant, v)
         a = store.list_for_tenant("tenant-a")
@@ -263,6 +285,68 @@ class TestPostCustomVerifier:
         )
         assert r.status_code == 422
 
+    # ── D52d field_checks ──────────────────────────────────────────
+    def test_accepts_field_checks(self, client):
+        # _valid_body already supplies one; round-trip the row back.
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(field_checks=[
+                {"path": "tool_input.url",
+                 "check_description": "hostname is in allowlist"},
+                {"path": "tool_response.output",
+                 "check_description": "matches some pattern"},
+            ]),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["field_checks"]) == 2
+        assert body["field_checks"][0]["path"] == "tool_input.url"
+        assert (
+            body["field_checks"][0]["check_description"]
+            == "hostname is in allowlist"
+        )
+
+    def test_rejects_missing_field_checks(self, client):
+        # field_checks is required (>=1 row).
+        body = _valid_body()
+        body.pop("field_checks", None)
+        r = client.post(
+            "/custom-verifiers",
+            json=body,
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_empty_field_checks(self, client):
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(field_checks=[]),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_field_check_missing_path(self, client):
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(field_checks=[
+                {"check_description": "no path here"},
+            ]),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
+    def test_rejects_field_check_overlong_description(self, client):
+        r = client.post(
+            "/custom-verifiers",
+            json=_valid_body(field_checks=[
+                {"path": "tool_input.url",
+                 "check_description": "x" * 201},
+            ]),
+            headers={"X-Api-Key": API_KEY},
+        )
+        assert r.status_code == 422
+
 
 class TestGetCustomVerifier:
     def test_round_trip(self, client):
@@ -340,6 +424,63 @@ class TestVerifierDescriptors:
             field_paths = {f["path"] for f in d.get("input_fields", [])}
             for p in d["input_payload_paths"]:
                 assert p in field_paths, (d["step"], p, field_paths)
+
+    # ── D52d ──────────────────────────────────────────────────────
+    def test_every_builtin_has_field_checks(self, client):
+        """Every built-in descriptor must declare >= 1 field_check row.
+        The dashboard's catalog expander + wizard picker both render off
+        this list, so an empty list misleads the operator into the
+        "preview mode" branch for a verifier that actually has a
+        runtime body."""
+        r = client.get("/verifier-descriptors")
+        assert r.status_code == 200
+        for d in r.json()["descriptors"]:
+            fcs = d.get("field_checks") or []
+            assert len(fcs) >= 1, d["step"]
+            for i, fc in enumerate(fcs):
+                assert fc.get("path"), (d["step"], i)
+                assert fc.get("check_description"), (d["step"], i)
+                assert len(fc["check_description"]) <= 200, (d["step"], i)
+
+    def test_citation_verify_field_checks_shape(self, client):
+        """Spot-check one descriptor end-to-end: brief calls out three
+        rows for citation_verify (url / response / transcript)."""
+        r = client.get("/verifier-descriptors/citation_verify")
+        assert r.status_code == 200
+        d = r.json()
+        paths = [fc["path"] for fc in d["field_checks"]]
+        assert "tool_input.url" in paths
+        assert "tool_response.output" in paths
+        assert "transcript_path" in paths
+
+
+# ── D52d module-level descriptor invariants ────────────────────────
+class TestDescriptorFieldChecksModule:
+    """Hits the Python module directly (no HTTP) so the assertion-shaped
+    schema enforcement (`_assert_field_checks_shape`) is part of the
+    standard pytest run, not just an import-time side effect."""
+
+    def test_module_imports_clean(self):
+        # If `_assert_field_checks_shape` failed at import time the test
+        # process would have died before reaching here. This test is a
+        # smoke-level guard for future contributors.
+        from magi_cp.verifier.descriptors import (
+            all_descriptors, get_descriptor,
+        )
+        ds = all_descriptors()
+        assert len(ds) == 5
+        for d in ds:
+            assert get_descriptor(d["step"]) is d
+
+    def test_descriptor_field_checks_export(self):
+        from magi_cp.verifier.descriptors import all_descriptors
+        for d in all_descriptors():
+            assert "field_checks" in d
+            assert len(d["field_checks"]) >= 1
+            for fc in d["field_checks"]:
+                assert isinstance(fc["path"], str) and fc["path"]
+                assert isinstance(fc["check_description"], str)
+                assert fc["check_description"]
 
 
 # ── fix-cycle: catalog / verifiers merge tenant-scoped customs ─────

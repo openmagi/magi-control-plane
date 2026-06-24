@@ -71,4 +71,19 @@ describe("policies/new wizard — P9 steering wiring", () => {
       /import SteeringAwareField from "\.\/_components\/SteeringAwareField"/,
     )
   })
+
+  // ── D52d ──────────────────────────────────────────────────────
+  it("D52d: imports VerifierFieldChecks from the shared console component", () => {
+    expect(src).toMatch(
+      /import \{\s*VerifierFieldChecks\s*\} from ".+VerifierFieldChecks"/,
+    )
+  })
+
+  it("D52d: surfaces the field_checks tree inline for each verifier in the evidence_ref picker", () => {
+    // The component is rendered inside the wiredSteps.map iteration so
+    // every author-visible verifier card gets its own tree.
+    expect(src).toMatch(
+      /wiredSteps\.map\([\s\S]*?VerifierFieldChecks[\s\S]*?showFooter/,
+    )
+  })
 })

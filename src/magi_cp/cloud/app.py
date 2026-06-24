@@ -2186,6 +2186,25 @@ class CustomVerifierTriggerIn(BaseModel):
     matcher_class: str = Field(..., pattern=r"^(tool|no_tool|final)$")
 
 
+class CustomVerifierFieldCheckIn(BaseModel):
+    """D52d: one (path, check_description) pair on a /custom-verifiers
+    POST body. Mirrors the catalog descriptor `FieldCheck` shape so the
+    dashboard renderer can reuse the same component over both data
+    sources (built-in catalog + authored custom row).
+
+    `path` is a free-form string today (e.g. `tool_input.url`); we do
+    NOT enforce the CC payload-schema vocabulary at this boundary so an
+    operator authoring a verifier for a domain-specific MCP tool can
+    describe paths the cloud has no schema for yet. `check_description`
+    is bounded at 200 chars to match the catalog cell budget and to
+    keep the dashboard's tree rendering predictable.
+    """
+    model_config = {"extra": "forbid"}
+
+    path: str = Field(..., min_length=1, max_length=128)
+    check_description: str = Field(..., min_length=1, max_length=200)
+
+
 class CreateCustomVerifierReq(BaseModel):
     """Request body for POST /custom-verifiers.
 
@@ -2204,6 +2223,12 @@ class CreateCustomVerifierReq(BaseModel):
     triggers: list[CustomVerifierTriggerIn] = Field(..., min_length=1, max_length=32)
     verdict_set: list[str] = Field(..., min_length=1, max_length=8)
     body_type: str = Field(..., pattern=r"^preview$")
+    # D52d: per-field check rows (>=1). The store re-validates the same
+    # invariants; the Pydantic body keeps a per-field 422 path for the
+    # dashboard error renderer.
+    field_checks: list[CustomVerifierFieldCheckIn] = Field(
+        ..., min_length=1, max_length=32,
+    )
 
 
 def _attach_custom_verifier_routes(

@@ -64,10 +64,21 @@ const NAME_RE = /^[a-z][a-z0-9_]*$/
 
 export type TriggerRow = { event: string; matcher_class: "tool" | "no_tool" | "final" }
 
+/** D52d: one (path, check_description) pair the operator adds in the
+ * field_checks editor. Mirrors `FieldCheck` in the catalog descriptor +
+ * `CustomVerifierFieldCheck` server-side. */
+export type FieldCheckRow = { path: string; check_description: string }
+
 /** Internal row carries a stable id so React identity + DOM ids are
  * tied to the row content, not its position in the array. Stripped
  * before serializing into the payload (`event` + `matcher_class` only). */
 type InternalTriggerRow = TriggerRow & { _id: string }
+
+/** D52d: internal row id mirrors InternalTriggerRow. */
+type InternalFieldCheckRow = FieldCheckRow & { _id: string }
+
+const MAX_FIELD_CHECK_PATH_LEN = 128
+const MAX_FIELD_CHECK_DESC_LEN = 200
 
 interface Props {
   labels: {
@@ -92,12 +103,21 @@ interface Props {
     errDescription: string
     errTriggers: string
     errVerdicts: string
+    // D52d: field_checks editor labels.
+    fieldChecks: string
+    fieldChecksHelper: string
+    fieldCheckPath: string
+    fieldCheckDescription: string
+    fieldCheckAdd: string
+    fieldCheckRemove: string
+    errFieldChecks: string
   }
   initial?: {
     name?: string
     description?: string
     triggers?: TriggerRow[]
     verdict_set?: ReadonlyArray<string>
+    field_checks?: FieldCheckRow[]
   }
 }
 
@@ -116,6 +136,17 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     return new Set(seed.filter((v) => (ALLOWED_VERDICTS as ReadonlyArray<string>).includes(v)))
   }, [initial?.verdict_set])
   const [verdicts, setVerdicts] = useState<Set<string>>(initialVerdicts)
+  // D52d: field_checks state. Seed to one empty row so the operator
+  // sees the editor immediately; the row is "incomplete" until the
+  // path + description are filled in, and the submit button stays
+  // disabled until at least one row is complete.
+  const [fieldChecks, setFieldChecks] = useState<InternalFieldCheckRow[]>(() => {
+    const seed: FieldCheckRow[] =
+      initial?.field_checks && initial.field_checks.length > 0
+        ? [...initial.field_checks]
+        : [{ path: "", check_description: "" }]
+    return seed.map((r) => ({ ...r, _id: _genRowId() }))
+  })
 
   // Touched state: only show "X is required" once the operator has
   // engaged with the field (focus → blur OR first edit) or has
@@ -134,6 +165,11 @@ export default function VerifierFormClient({ labels, initial }: Props) {
   // model the name + description follow.
   const showTriggersError = submitAttempted
   const showVerdictsError = submitAttempted
+  // D52d: field_checks seeds to one empty row, so its error is
+  // structurally "incomplete row" rather than "missing array", gate
+  // visibility behind submitAttempted so the operator does not see a
+  // red error the moment they open the page.
+  const showFieldChecksError = submitAttempted
 
   // Live validation. The server action re-runs these; surfacing them in
   // the client keeps the operator from round-tripping a doomed POST.
@@ -166,7 +202,21 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     [verdicts, labels],
   )
 
-  const canSubmit = !nameError && !descriptionError && !triggersError && !verdictError
+  // D52d: validate the field_checks rows. Server enforces the same
+  // contract (>=1 row, non-empty path, non-empty + <=200 char desc).
+  const fieldChecksError = useMemo(() => {
+    if (fieldChecks.length === 0) return labels.errFieldChecks
+    for (const fc of fieldChecks) {
+      const path = fc.path.trim()
+      const desc = fc.check_description.trim()
+      if (!path || path.length > MAX_FIELD_CHECK_PATH_LEN) return labels.errFieldChecks
+      if (!desc || desc.length > MAX_FIELD_CHECK_DESC_LEN) return labels.errFieldChecks
+    }
+    return null
+  }, [fieldChecks, labels])
+
+  const canSubmit = !nameError && !descriptionError && !triggersError
+    && !verdictError && !fieldChecksError
 
   const payload = JSON.stringify({
     name,
@@ -177,6 +227,12 @@ export default function VerifierFormClient({ labels, initial }: Props) {
     triggers: triggers.map(({ event, matcher_class }) => ({ event, matcher_class })),
     verdict_set: ALLOWED_VERDICTS.filter((v) => verdicts.has(v)),
     body_type: "preview",
+    // D52d: strip _id, trim path/desc, but keep the row order the
+    // operator authored. Server re-validates and dedupes.
+    field_checks: fieldChecks.map(({ path, check_description }) => ({
+      path: path.trim(),
+      check_description: check_description.trim(),
+    })),
   })
 
   return (
@@ -448,6 +504,125 @@ export default function VerifierFormClient({ labels, initial }: Props) {
             className="text-[11px] text-[var(--color-deny-fg)]"
           >
             {verdictError}
+          </p>
+        )}
+      </div>
+
+      {/* D52d: field_checks editor.
+          Multi-add rows: [path] [check description]. >=1 required.
+          Path placeholder hints at the CC stdin vocabulary
+          (tool_input.url, tool_response.output, transcript_path); the
+          backend does NOT enforce a path enum so the operator can
+          describe domain-specific MCP tool paths. */}
+      <div
+        className="space-y-1.5"
+        data-testid="field-checks-section"
+        role="group"
+        aria-labelledby="field-checks-label"
+        aria-describedby={[
+          "field-checks-helper",
+          showFieldChecksError && fieldChecksError ? "field-checks-error" : null,
+        ].filter(Boolean).join(" ")}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <span
+            id="field-checks-label"
+            className="block text-xs font-semibold text-[var(--color-text-secondary)]"
+          >
+            {labels.fieldChecks}
+            <span aria-hidden className="ml-1 text-[var(--color-deny-fg)]">*</span>
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              setFieldChecks((rows) => [
+                ...rows,
+                { path: "", check_description: "", _id: _genRowId() },
+              ])
+            }
+            className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
+          >
+            {labels.fieldCheckAdd}
+          </button>
+        </div>
+        <p id="field-checks-helper" className="text-[11px] text-[var(--color-text-tertiary)]">
+          {labels.fieldChecksHelper}
+        </p>
+        <div className="space-y-2">
+          {fieldChecks.map((fc) => (
+            <div
+              key={fc._id}
+              data-testid="field-check-row"
+              className="flex flex-wrap items-end gap-2 rounded-md border border-black/[0.06] bg-[var(--color-surface-1,#fafafa)]/40 p-2"
+            >
+              <div className="flex-1 min-w-[180px]">
+                <label
+                  htmlFor={`field-check-path-${fc._id}`}
+                  className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                >
+                  {labels.fieldCheckPath}
+                </label>
+                <input
+                  id={`field-check-path-${fc._id}`}
+                  type="text"
+                  value={fc.path}
+                  maxLength={MAX_FIELD_CHECK_PATH_LEN}
+                  placeholder="tool_input.url"
+                  onChange={(e) =>
+                    setFieldChecks((rows) =>
+                      rows.map((r) =>
+                        r._id === fc._id ? { ...r, path: e.target.value } : r,
+                      ),
+                    )
+                  }
+                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                />
+              </div>
+              <div className="flex-[2] min-w-[220px]">
+                <label
+                  htmlFor={`field-check-desc-${fc._id}`}
+                  className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                >
+                  {labels.fieldCheckDescription}
+                </label>
+                <input
+                  id={`field-check-desc-${fc._id}`}
+                  type="text"
+                  value={fc.check_description}
+                  maxLength={MAX_FIELD_CHECK_DESC_LEN}
+                  placeholder="hostname is in allowlist"
+                  onChange={(e) =>
+                    setFieldChecks((rows) =>
+                      rows.map((r) =>
+                        r._id === fc._id
+                          ? { ...r, check_description: e.target.value }
+                          : r,
+                      ),
+                    )
+                  }
+                  className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
+                />
+              </div>
+              {fieldChecks.length > 1 && (
+                <button
+                  type="button"
+                  aria-label={labels.fieldCheckRemove}
+                  onClick={() => setFieldChecks((rows) => rows.filter((r) => r._id !== fc._id))}
+                  className="rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {showFieldChecksError && fieldChecksError && (
+          <p
+            id="field-checks-error"
+            role="alert"
+            className="text-[11px] text-[var(--color-deny-fg)]"
+          >
+            {fieldChecksError}
           </p>
         )}
       </div>

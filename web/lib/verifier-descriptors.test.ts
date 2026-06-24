@@ -65,6 +65,24 @@ describe("verifier descriptors mirror", () => {
       }
     }
   })
+
+  // D52d
+  it("every built-in descriptor declares >= 1 field_check row", () => {
+    for (const d of allVerifierDescriptors()) {
+      const fcs = d.field_checks ?? []
+      expect(fcs.length, `field_checks empty on ${d.step}`).toBeGreaterThan(0)
+    }
+  })
+
+  it("every field_check row carries a non-empty path + <= 200-char description", () => {
+    for (const d of allVerifierDescriptors()) {
+      for (const fc of d.field_checks ?? []) {
+        expect(fc.path).toBeTruthy()
+        expect(fc.check_description).toBeTruthy()
+        expect(fc.check_description.length).toBeLessThanOrEqual(200)
+      }
+    }
+  })
 })
 
 

@@ -8,6 +8,7 @@ import {
   type TriggerSpec,
 } from "@/lib/verifier-descriptors"
 import { Code } from "@/components/ui"
+import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 
 /**
  * D52b: per-verifier expander rendered on the Rules → Verifiers tab.
@@ -83,6 +84,7 @@ export function VerifierExpander({
         ) : (
           <>
             <TriggersPanel triggers={descriptor.triggers} t={t} />
+            <FieldChecksPanel step={step} t={t} />
             <InputPathsPanel
               step={step}
               paths={descriptor.input_payload_paths}
@@ -195,6 +197,22 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
     <h4 className="mt-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
       {children}
     </h4>
+  )
+}
+
+/** D52d: per-field check tree. Renders the new `path -> check
+ * description` tree the brief asks for, between the Triggers panel and
+ * the existing Input panel (which keeps showing the verifier-side
+ * input schema; field_checks is the CC-stdin-side contract, so the two
+ * panels do not duplicate). */
+function FieldChecksPanel({ step, t }: { step: string; t: T }) {
+  return (
+    <div data-testid="verifier-expander-field-checks">
+      <PanelHeader>
+        {t("rules.verifier.expander.fieldChecks")}
+      </PanelHeader>
+      <VerifierFieldChecks step={step} t={t} />
+    </div>
   )
 }
 
