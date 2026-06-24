@@ -348,6 +348,17 @@ const KO_RAW = {
   "rules.verifier.expander.evidence.path": "경로",
   "rules.verifier.expander.evidence.type": "타입",
   "rules.verifier.expander.evidence.description": "설명",
+  "rules.verifier.expander.recentEmissions": "최근 발생",
+  "rules.verifier.expander.recentEmissionsWindow": "최근 24시간",
+  "rules.verifier.expander.recentEmissionsUnavailable": "-",
+  "rules.verifier.expander.viewInLedger": "감사 원장에서 보기 →",
+
+  /* ── ledger filter chips (D52c) ───────────────────────────────── */
+  "ledger.filter.title": "Verifier 로 필터",
+  "ledger.filter.hint": "선택한 verifier 가 발행한 기록만 표시합니다. 다중 선택 가능.",
+  "ledger.filter.clear": "필터 해제",
+  "ledger.filter.empty": "필터에 해당하는 기록이 없습니다.",
+  "ledger.filter.activeBadge": "{n} 개 필터 적용 중",
 
   /* ── verifiers/new (D52b authoring page) ──────────────────────── */
   "verifiers.new.title": "새 verifier",
@@ -799,6 +810,16 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.verifier.expander.evidence.path": "Path",
   "rules.verifier.expander.evidence.type": "Type",
   "rules.verifier.expander.evidence.description": "Description",
+  "rules.verifier.expander.recentEmissions": "Recent emissions",
+  "rules.verifier.expander.recentEmissionsWindow": "last 24h",
+  "rules.verifier.expander.recentEmissionsUnavailable": "-",
+  "rules.verifier.expander.viewInLedger": "View in ledger →",
+
+  "ledger.filter.title": "Filter by verifier",
+  "ledger.filter.hint": "Show only records emitted by the selected verifier(s). Multi-select.",
+  "ledger.filter.clear": "Clear filter",
+  "ledger.filter.empty": "No ledger entries match the filter.",
+  "ledger.filter.activeBadge": "{n} filter(s) active",
 
   "verifiers.new.title": "New verifier",
   "verifiers.new.description.page": "Register a step-kind custom verifier (the runtime check). Inline regex / llm_critic / shacl checks stay in their owning policy.",

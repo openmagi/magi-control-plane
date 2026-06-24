@@ -48,11 +48,33 @@ export default async function RulesPage({
   let conditions: ConditionEntry[] = []
   let conditionsErr: string | null = null
 
+  // D52c: per-row "Recent emissions (last 24h)" counts on the Verifiers
+  // tab. Map step → 24h count. Filled in parallel below; missing keys
+  // render a dash instead of a fake 0 (a 0 means the cloud answered; a
+  // dash means we couldn't reach it).
+  let emissionCounts: Record<string, number> = {}
+
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
   } else if (tab === "evidence") {
-    try { evidence = await cloud.listEvidenceTypes() }
+    try {
+      evidence = await cloud.listEvidenceTypes()
+      // Fan out the 24h emission counts in parallel. We swallow per-row
+      // errors here so a flaky cloud only mutes the widget, not the
+      // whole tab (the verifier rows themselves render from the
+      // already-fetched `evidence` list).
+      const SINCE_24H = 24 * 60 * 60
+      const results = await Promise.all(evidence.map(async (e) => {
+        try {
+          const r = await cloud.ledgerCount(e.step, SINCE_24H)
+          return [e.step, r.count] as const
+        } catch {
+          return null
+        }
+      }))
+      for (const r of results) if (r) emissionCounts[r[0]] = r[1]
+    }
     catch (e: unknown) { evidenceErr = codeForError(e) }
   } else {
     try { conditions = await cloud.listConditions() }
@@ -113,6 +135,7 @@ export default async function RulesPage({
           err={evidenceErr}
           nfFormat={nf.format.bind(nf)}
           t={t}
+          emissionCounts={emissionCounts}
         />
       )}
       {tab === "conditions" && (
@@ -260,12 +283,15 @@ function PoliciesTab({
 }
 
 function EvidenceTab({
-  items, err, nfFormat, t,
+  items, err, nfFormat, t, emissionCounts,
 }: {
   items: EvidenceTypeEntry[]
   err: string | null
   nfFormat: (n: number) => string
   t: TFunc
+  // D52c: undefined value = the cloud call failed (render dash). 0 =
+  // cloud answered, no emissions in window.
+  emissionCounts: Record<string, number>
 }) {
   const builtin = items.filter((i) => i.source === "builtin").length
   const derived = items.length - builtin
@@ -335,7 +361,16 @@ function EvidenceTab({
                     <EnforcementBadge kind={row.enforcement} />
                   </div>
                 </div>
-                <VerifierExpander step={row.step} t={t} />
+                <VerifierExpander
+                  step={row.step}
+                  t={t}
+                  recentEmissions24h={
+                    Object.prototype.hasOwnProperty.call(emissionCounts, row.step)
+                      ? emissionCounts[row.step]
+                      : null
+                  }
+                  nfFormat={nfFormat}
+                />
               </div>
             ))}
           </div>

@@ -334,6 +334,154 @@ class TestLedgerHardening:
         assert all(e["id"] > cursor for e in r2["entries"])
 
 
+class TestLedgerVerifierFilter:
+    """D52c: /ledger?verifier=<step> filters records by body['step'].
+
+    Mixed-step seeding uses citation_verify (writes step="citation_verify"
+    rows) plus /verify_inline kind=regex (writes step="inline_regex" rows
+    on pass/deny). The catalog chip selector / expander widget on the
+    dashboard rely on these queries returning a clean subset; an
+    accidental "AND" of an empty filter or a typo'd query should not
+    crash the route or return the full chain."""
+
+    def _seed_citation(self, client, n=2):
+        for i in range(n):
+            client.post("/citation_verify", json={
+                "subject": "S1", "payload_hash": f"C{i}",
+                "citations": [VALID_CITE],
+                "corpus_override": {"2018도13694": SRC_307},
+            }, headers=HEADERS)
+
+    def _seed_inline_regex(self, client, n=2, match=True):
+        # /verify_inline kind=regex writes body['step'] = "inline_regex"
+        # (pass or deny depending on whether the pattern hits the text).
+        for i in range(n):
+            client.post("/verify_inline", json={
+                "kind": "regex",
+                "pattern": "foo" if match else "neverHits_xyz123",
+                "payload": {"text": f"foo {i}" if match else f"bar {i}",
+                            "session_id": f"sess_{i}"},
+            }, headers=HEADERS)
+
+    def test_filter_by_verifier_returns_subset(self, client):
+        self._seed_citation(client, n=2)
+        self._seed_inline_regex(client, n=3, match=True)
+        all_entries = client.get("/ledger?include_body=true",
+                                  headers=HEADERS).json()["entries"]
+        # 2 citation + 3 inline_regex rows expected.
+        assert len(all_entries) == 5
+        cit_only = client.get(
+            "/ledger?include_body=true&verifier=citation_verify",
+            headers=HEADERS,
+        ).json()["entries"]
+        assert len(cit_only) == 2
+        assert all(e["body"]["step"] == "citation_verify" for e in cit_only)
+        reg_only = client.get(
+            "/ledger?include_body=true&verifier=inline_regex",
+            headers=HEADERS,
+        ).json()["entries"]
+        assert len(reg_only) == 3
+        assert all(e["body"]["step"] == "inline_regex" for e in reg_only)
+
+    def test_filter_supports_multiple_verifiers(self, client):
+        self._seed_citation(client, n=2)
+        self._seed_inline_regex(client, n=3, match=True)
+        both = client.get(
+            "/ledger?include_body=true"
+            "&verifier=citation_verify&verifier=inline_regex",
+            headers=HEADERS,
+        ).json()["entries"]
+        assert len(both) == 5
+
+    def test_filter_unknown_verifier_returns_empty(self, client):
+        self._seed_citation(client, n=2)
+        r = client.get("/ledger?verifier=does_not_exist",
+                        headers=HEADERS).json()
+        assert r["entries"] == []
+        # chain_ok still validates the GLOBAL chain (citation_verify rows
+        # are still on disk; an empty filter view does NOT mean a broken
+        # chain).
+        assert r["chain_ok"] is True
+
+    def test_empty_filter_param_falls_back_to_full_view(self, client):
+        self._seed_citation(client, n=2)
+        # `verifier=` with no value (empty string) is treated as "no
+        # filter", same as omitting the query.
+        r = client.get("/ledger?verifier=", headers=HEADERS).json()
+        assert len(r["entries"]) == 2
+
+
+class TestLedgerCount:
+    """D52c: GET /ledger/count?verifier=<step>&since_secs=86400.
+
+    Powers the "Recent emissions (last 24h)" widget on the Rules →
+    Verifiers expander. Cheap to call (no body decode, no token
+    verification); returns just {count: N}."""
+
+    def _seed_inline_regex(self, client, n):
+        for i in range(n):
+            client.post("/verify_inline", json={
+                "kind": "regex", "pattern": "foo",
+                "payload": {"text": f"foo {i}", "session_id": f"s_{i}"},
+            }, headers=HEADERS)
+
+    def test_count_filters_by_verifier(self, client):
+        self._seed_inline_regex(client, n=4)
+        r = client.get("/ledger/count?verifier=inline_regex",
+                        headers=HEADERS).json()
+        assert r == {"count": 4}
+
+    def test_count_unknown_verifier_returns_zero_not_error(self, client):
+        self._seed_inline_regex(client, n=2)
+        r = client.get("/ledger/count?verifier=nope", headers=HEADERS)
+        assert r.status_code == 200
+        assert r.json() == {"count": 0}
+
+    def test_count_empty_ledger_returns_zero(self, client):
+        r = client.get("/ledger/count?verifier=inline_regex",
+                        headers=HEADERS)
+        assert r.status_code == 200
+        assert r.json() == {"count": 0}
+
+    def test_count_without_filter_counts_all_tenant_entries(self, client):
+        self._seed_inline_regex(client, n=3)
+        r = client.get("/ledger/count", headers=HEADERS).json()
+        assert r == {"count": 3}
+
+    def test_count_supports_multiple_verifiers(self, client):
+        # Seed two distinct steps and confirm the multi-value filter
+        # ORs them together (mirrors the chip selector's multi-pick).
+        self._seed_inline_regex(client, n=2)
+        for i in range(3):
+            client.post("/citation_verify", json={
+                "subject": "S1", "payload_hash": f"X{i}",
+                "citations": [VALID_CITE],
+                "corpus_override": {"2018도13694": SRC_307},
+            }, headers=HEADERS)
+        r = client.get(
+            "/ledger/count?verifier=inline_regex&verifier=citation_verify",
+            headers=HEADERS,
+        ).json()
+        assert r == {"count": 5}
+
+    def test_count_since_secs_window(self, client):
+        # With a positive `since_secs`, only entries with ts >= now -
+        # since_secs are counted. Seeded entries are all "now", so a
+        # generous window (24h) includes them and a tiny non-positive
+        # window includes them too (cap at 0 = unbounded back).
+        self._seed_inline_regex(client, n=2)
+        r = client.get(
+            "/ledger/count?verifier=inline_regex&since_secs=86400",
+            headers=HEADERS,
+        ).json()
+        assert r == {"count": 2}
+
+    def test_count_requires_api_key(self, client):
+        # Same fail-closed posture as /ledger. Without the API key, the
+        # widget should not be able to leak counts to an anonymous caller.
+        assert client.get("/ledger/count").status_code == 401
+
+
 class TestTokenKid:
     """M4: tokens carry kid; /pubkey advertises kid for rotation."""
 

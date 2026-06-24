@@ -250,9 +250,48 @@ export const cloud = {
       body: JSON.stringify({ approver, note }),
     }),
 
-  ledger: (sinceId: number = 0, limit: number = 100): Promise<LedgerPage> =>
-    _fetch<LedgerPage>(`/ledger?since_id=${sinceId}&limit=${limit}`,
-                       { method: "GET", keyType: "api" }),
+  ledger: (
+    sinceId: number = 0,
+    limit: number = 100,
+    verifier?: string[],
+  ): Promise<LedgerPage> => {
+    // D52c: `verifier=<step>` (repeatable) filters the chain to records
+    // emitted by the named verifier(s). Empty/undefined → no filter,
+    // mirroring the URL state on the /ledger page (zero chips picked =
+    // full view).
+    const params = new URLSearchParams()
+    params.set("since_id", String(sinceId))
+    params.set("limit", String(limit))
+    if (verifier && verifier.length > 0) {
+      for (const v of verifier) {
+        if (v) params.append("verifier", v)
+      }
+    }
+    return _fetch<LedgerPage>(`/ledger?${params.toString()}`,
+                               { method: "GET", keyType: "api" })
+  },
+
+  /** D52c: count of ledger entries matching the given verifier filter.
+   *
+   * Used by the Rules → Verifiers expander to render a "Recent emissions
+   * (last 24h)" widget. Cheap (no body decode, no token verify) so the
+   * server component can fetch one per row in parallel without padding
+   * the page latency. */
+  ledgerCount: (
+    verifier?: string,
+    sinceSecs?: number,
+  ): Promise<{ count: number }> => {
+    const params = new URLSearchParams()
+    if (verifier) params.set("verifier", verifier)
+    if (typeof sinceSecs === "number" && sinceSecs > 0) {
+      params.set("since_secs", String(Math.floor(sinceSecs)))
+    }
+    const qs = params.toString()
+    return _fetch<{ count: number }>(
+      `/ledger/count${qs ? `?${qs}` : ""}`,
+      { method: "GET", keyType: "api" },
+    )
+  },
 
   listPolicies: (): Promise<PolicyListItem[]> =>
     _fetch<PolicyListResp>("/policies", { method: "GET", keyType: "admin" })

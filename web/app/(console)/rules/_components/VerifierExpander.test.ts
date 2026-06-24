@@ -84,4 +84,52 @@ describe("VerifierExpander source invariants", () => {
     expect(src).toContain("rules.verifier.expander.evidence.type")
     expect(src).toContain("rules.verifier.expander.evidence.description")
   })
+
+  /* ─── D52c: recent emissions widget ──────────────────────────── */
+  it("D52c: renders the recent emissions panel for every verifier", () => {
+    // Same data-testid pattern as the other panels for parity.
+    expect(src).toContain("verifier-expander-recent-emissions")
+    expect(src).toContain("rules.verifier.expander.recentEmissions")
+    expect(src).toContain("rules.verifier.expander.recentEmissionsWindow")
+  })
+
+  it("D52c: recent-emissions panel renders for unknown-descriptor steps too", () => {
+    // Operators of a derived / policy-only step still need the jump-
+    // to-ledger affordance. The panel must live OUTSIDE the
+    // `descriptor === null` early-return branch.
+    // We assert this structurally: the closing JSX paren of the
+    // ternary (`)}`) is followed by the recent-emissions panel
+    // call (not by `</div>`, which would put it inside).
+    expect(src).toContain("verifier-expander-recent-emissions")
+    // Find the ternary closing and confirm <RecentEmissionsPanel comes
+    // before the wrapping div closes. A precise structural check
+    // (without React DOM) is brittle; pattern below requires only
+    // that the panel appears between the `)}` end-of-ternary and the
+    // outer `</details>` close.
+    const ternaryEnd = src.indexOf(")}")
+    const ternaryNext = src.indexOf(")}", ternaryEnd + 1)
+    const panelIdx = src.indexOf("<RecentEmissionsPanel")
+    const detailsClose = src.indexOf("</details>")
+    expect(panelIdx).toBeGreaterThan(0)
+    expect(detailsClose).toBeGreaterThan(panelIdx)
+    // panel must come AFTER one of the ternary-end markers, not before.
+    expect(panelIdx).toBeGreaterThan(Math.min(ternaryEnd, ternaryNext))
+  })
+
+  it("D52c: View-in-ledger link jumps to /ledger?verifier=<step>", () => {
+    // The hosted ledger filter contract is `?verifier=<step>`; the
+    // chip selector reads the same key.
+    expect(src).toMatch(/\/ledger\?verifier=\$\{encodeURIComponent\(step\)\}/)
+    expect(src).toContain("rules.verifier.expander.viewInLedger")
+    expect(src).toContain("verifier-expander-ledger-link")
+  })
+
+  it("D52c: null count renders dash, number renders nf-formatted", () => {
+    // `recentEmissions24h === null` → render the "unavailable" string
+    // (a transient cloud outage must not look like "no emissions").
+    // Otherwise the number is formatted through the optional nfFormat
+    // so locale-aware separators apply.
+    expect(src).toContain("rules.verifier.expander.recentEmissionsUnavailable")
+    expect(src).toMatch(/nfFormat\s*\?\s*nfFormat\(count\)/)
+  })
 })

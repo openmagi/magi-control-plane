@@ -24,7 +24,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FPath
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -1115,15 +1115,32 @@ def create_app(
 
     @app.get("/ledger", dependencies=[Depends(require_tenant_auth)])
     def list_ledger(request: Request, since_id: int = 0, limit: int = 100,
-                     include_body: bool = False) -> dict:
+                     include_body: bool = False,
+                     verifier: list[str] | None = Query(default=None)) -> dict:
         """Per-tenant ledger view. chain_ok validates the GLOBAL chain (so
         cross-tenant tampering is still detectable), but `entries` is scoped
-        to the requesting tenant."""
+        to the requesting tenant.
+
+        D52c: `verifier=<step>` (repeatable) filters entries to those whose
+        `body['step']` matches one of the supplied names. The filter is
+        applied AFTER tenant scoping and BEFORE pagination so the
+        `next_since_id` cursor advances over the filtered view (callers
+        paginating by verifier do not have to scan thousands of unrelated
+        entries to find the next page). The chain hash itself is unchanged;
+        chain_ok continues to validate the global chain.
+        """
         limit = max(1, min(int(limit), 1000))
         tenant_id = getattr(request.state, "tenant_id", "default")
         tenant_entries = ledger.list_by_tenant(tenant_id)
         chain_ok = ledger.verify_chain()   # global integrity, not per-tenant
-        page = [e for e in tenant_entries if e.id > since_id][:limit]
+        filtered = [e for e in tenant_entries if e.id > since_id]
+        if verifier:
+            wanted = {v for v in verifier if v}
+            if wanted:
+                filtered = [e for e in filtered
+                            if isinstance(e.body, dict)
+                            and e.body.get("step") in wanted]
+        page = filtered[:limit]
         # PR4: only canonical `subject` is surfaced. The DB column is
         # still named `matter` (PR4 schema migration on hitl_item drops
         # legacy columns there; the ledger column rename is a deeper
@@ -1138,6 +1155,41 @@ def create_app(
                      **({"body": e.body, "token": e.token} if include_body else {})}
                     for e in page
                 ]}
+
+    @app.get("/ledger/count", dependencies=[Depends(require_tenant_auth)])
+    def ledger_count(request: Request,
+                      verifier: list[str] | None = Query(default=None),
+                      since_secs: int | None = None) -> dict:
+        """D52c: count of ledger entries matching the given filter(s).
+
+        Used by the Rules → Verifiers expander to render a "Recent emissions
+        (last 24h)" widget without paging through the entire chain. The
+        `verifier=<step>` query is repeatable (multi-select on the
+        dashboard); `since_secs=<int>` bounds the window to entries with
+        `ts >= now - since_secs` (24h = 86400).
+
+        Returns `{count: N}`. Empty case returns 0, no error for an
+        unknown verifier name (the chip selector lists names that exist,
+        and a typo'd query should not crash the expander)."""
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        tenant_entries = ledger.list_by_tenant(tenant_id)
+        wanted: set[str] = {v for v in (verifier or []) if v}
+        # Lower-bound cap: keep the window non-negative even if the caller
+        # supplies a negative since_secs (clamp to 0 = unbounded back).
+        cutoff: int | None = None
+        if since_secs is not None and since_secs > 0:
+            cutoff = int(time.time()) - int(since_secs)
+        count = 0
+        for e in tenant_entries:
+            if cutoff is not None and e.ts < cutoff:
+                continue
+            if wanted:
+                if not isinstance(e.body, dict):
+                    continue
+                if e.body.get("step") not in wanted:
+                    continue
+            count += 1
+        return {"count": count}
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
     _attach_policy_routes(app, policy_store, policy_lock,

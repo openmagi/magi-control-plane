@@ -32,6 +32,76 @@ describe("cloud client", () => {
     expect(captured.init.headers.get("X-Api-Key")).toBe("api-test")
   })
 
+  // ── D52c: verifier filter on /ledger + /ledger/count ──────────────
+  it("ledger appends repeated `verifier=` params when filter provided", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({
+        chain_ok: true, next_since_id: 0, entries: [],
+      }), { status: 200 }) as any
+    })
+    await cloud.ledger(0, 50, ["citation_verify", "privilege_scan"])
+    const u = new URL(String(captured.url))
+    expect(u.pathname).toBe("/ledger")
+    expect(u.searchParams.get("since_id")).toBe("0")
+    expect(u.searchParams.get("limit")).toBe("50")
+    expect(u.searchParams.getAll("verifier")).toEqual([
+      "citation_verify", "privilege_scan",
+    ])
+  })
+
+  it("ledger omits the verifier param when filter is empty or undefined", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({
+        chain_ok: true, next_since_id: 0, entries: [],
+      }), { status: 200 }) as any
+    })
+    await cloud.ledger(0, 50, [])
+    const u = new URL(String(captured.url))
+    // Empty filter array -> no verifier params (server treats as
+    // "no filter" same as omitting the query).
+    expect(u.searchParams.getAll("verifier")).toEqual([])
+  })
+
+  it("ledgerCount hits /ledger/count with the given filter + window", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ count: 7 }), { status: 200 }) as any
+    })
+    const r = await cloud.ledgerCount("citation_verify", 24 * 60 * 60)
+    const u = new URL(String(captured.url))
+    expect(u.pathname).toBe("/ledger/count")
+    expect(u.searchParams.get("verifier")).toBe("citation_verify")
+    expect(u.searchParams.get("since_secs")).toBe("86400")
+    expect(captured.init.headers.get("X-Api-Key")).toBe("api-test")
+    expect(r).toEqual({ count: 7 })
+  })
+
+  it("ledgerCount drops non-positive since_secs", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ count: 0 }), { status: 200 }) as any
+    })
+    await cloud.ledgerCount("nope", 0)
+    const u = new URL(String(captured.url))
+    expect(u.searchParams.get("since_secs")).toBeNull()
+  })
+
+  it("ledgerCount with no args hits the bare endpoint", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ count: 0 }), { status: 200 }) as any
+    })
+    await cloud.ledgerCount()
+    expect(String(captured.url)).toBe("http://test/ledger/count")
+  })
+
   it("throws on non-200 with redacted message (no body leak)", async () => {
     global.fetch = vi.fn(async () => new Response("internal token leaked", { status: 401 }) as any)
     try {

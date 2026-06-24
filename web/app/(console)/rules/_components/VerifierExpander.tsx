@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { availableFields, type FieldDescriptor as PayloadFieldDescriptor } from "@/lib/payload-schemas"
 import {
   getVerifierDescriptor,
@@ -29,7 +30,17 @@ import { Code } from "@/components/ui"
 
 type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
-export function VerifierExpander({ step, t }: { step: string; t: T }) {
+export function VerifierExpander({
+  step, t, recentEmissions24h, nfFormat,
+}: {
+  step: string
+  t: T
+  /** D52c: count of ledger entries emitted by this verifier in the last
+   * 24h. `null` = cloud unreachable for the count (render dash so
+   * operators don't misread a transient outage as "no emissions"). */
+  recentEmissions24h?: number | null
+  nfFormat?: (n: number) => string
+}) {
   const descriptor = getVerifierDescriptor(step)
   // Distinct accessible name per row so a SR user scanning the list
   // hears "details, citation_verify" instead of five "details"s in a row.
@@ -74,8 +85,58 @@ export function VerifierExpander({ step, t }: { step: string; t: T }) {
             <EvidencePanel evidence={descriptor.output_evidence} t={t} />
           </>
         )}
+        {/* D52c: recent emissions widget. Rendered for EVERY verifier
+            (descriptor null or not) so operators of an unknown / derived
+            step can still jump straight to the ledger view filtered to
+            that step. */}
+        <RecentEmissionsPanel
+          step={step}
+          count={recentEmissions24h ?? null}
+          nfFormat={nfFormat}
+          t={t}
+        />
       </div>
     </details>
+  )
+}
+
+function RecentEmissionsPanel({
+  step, count, nfFormat, t,
+}: {
+  step: string
+  count: number | null
+  nfFormat?: (n: number) => string
+  t: T
+}) {
+  const formatted = count === null
+    ? t("rules.verifier.expander.recentEmissionsUnavailable")
+    : (nfFormat ? nfFormat(count) : String(count))
+  // Mirror the chip selector contract on /ledger: `?verifier=<step>`.
+  const href = `/ledger?verifier=${encodeURIComponent(step)}`
+  return (
+    <div data-testid="verifier-expander-recent-emissions">
+      <PanelHeader>
+        {t("rules.verifier.expander.recentEmissions")}
+      </PanelHeader>
+      <div className="flex flex-wrap items-baseline gap-3 text-xs">
+        <span
+          data-testid="verifier-expander-recent-emissions-count"
+          className="font-mono text-sm font-semibold text-[var(--color-text-primary)]"
+        >
+          {formatted}
+        </span>
+        <span className="text-[var(--color-text-tertiary)]">
+          {t("rules.verifier.expander.recentEmissionsWindow")}
+        </span>
+        <Link
+          href={href}
+          data-testid="verifier-expander-ledger-link"
+          className="ml-auto font-medium text-[var(--color-accent-light)] hover:underline"
+        >
+          {t("rules.verifier.expander.viewInLedger")}
+        </Link>
+      </div>
+    </div>
   )
 }
 
