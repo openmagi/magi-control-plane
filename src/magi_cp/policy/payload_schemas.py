@@ -135,12 +135,141 @@ class FieldDescriptor(TypedDict, total=False):
     # of new field tables don't have to repeat the obvious mapping.
     sh_datatype: ShaclDatatype
     sh_kind: ShaclKind
+    # D64: friendly display label (filled by `_with_display_label()` from
+    # the `_DISPLAY_LABELS` table at registry-resolution time). UI surfaces
+    # render this as the primary chip text; raw `path` stays in the title
+    # attribute + aria-label + click-to-insert behaviour so authoring still
+    # works with the literal field path. An UNKNOWN path falls back to
+    # showing the raw path verbatim (back-compat).
+    display_label_ko: str
+    display_label_en: str
 
 
 class PayloadSchema(TypedDict):
     event: str
     matcher_class: MatcherClassLiteral
     fields: list[FieldDescriptor]
+
+
+# ── D64: friendly display labels ──────────────────────────────────────
+# Operator-friendly names for the raw payload paths above. The raw path
+# stays the truth source (every authoring affordance keeps inserting the
+# raw path verbatim, every SHACL anchor still resolves to
+# `magi:<rawpath>`); the display label only changes what the UI SHOWS on
+# top of the chip / row, with the raw path moving to the title= tooltip
+# and the aria-label so screen reader users still hear it.
+#
+# Per the D64 brief: an UNKNOWN path falls back to showing the raw path
+# verbatim — operator-typed custom paths (e.g. an MCP tool slug) won't
+# appear here, and surfacing the raw path is the right "honest" default.
+_DISPLAY_LABELS_EN: dict[str, str] = {
+    # tool_input.* — what the model is asking the tool to do
+    "tool_input.command": "Bash command",
+    "tool_input.cwd": "Command working directory",
+    "tool_input.timeout": "Command timeout (ms)",
+    "tool_input.description": "Command description",
+    "tool_input.url": "Fetched URL",
+    "tool_input.prompt": "Fetch follow-up prompt",
+    "tool_input.file_path": "File path",
+    "tool_input.old_string": "Replaced text",
+    "tool_input.new_string": "Replacement text",
+    "tool_input.content": "File content",
+    "tool_input.offset": "Read line offset",
+    "tool_input.limit": "Read line limit",
+    "tool_input": "Tool input",
+    # tool_response.* — what the tool returned
+    "tool_response.output": "Tool output",
+    "tool_response.is_error": "Tool error flag",
+    "tool_response.duration_ms": "Tool duration (ms)",
+    # envelope fields
+    "session_id": "Session ID",
+    "transcript_path": "Conversation transcript path",
+    "transcript": "Recent conversation turns",
+    "tool_name": "Tool name",
+    "tool_use_id": "Tool call ID",
+    "cwd": "Session working directory",
+    # Stop / SubagentStop
+    "final_message": "Agent final answer",
+    # UserPromptSubmit
+    "prompt": "User prompt",
+    # citation_verify-style nested fields (operator-typed; surfaced here
+    # so a verifier field_checks row picked from a custom verifier still
+    # gets a friendly name on the catalog).
+    "citations[].quote": "Cited quote",
+    "citations[].ref": "Citation reference id",
+}
+
+_DISPLAY_LABELS_KO: dict[str, str] = {
+    "tool_input.command": "Bash 명령어",
+    "tool_input.cwd": "명령 작업 디렉터리",
+    "tool_input.timeout": "명령 타임아웃(ms)",
+    "tool_input.description": "명령 설명",
+    "tool_input.url": "요청 URL",
+    "tool_input.prompt": "Fetch 후속 프롬프트",
+    "tool_input.file_path": "파일 경로",
+    "tool_input.old_string": "치환 대상 텍스트",
+    "tool_input.new_string": "치환할 텍스트",
+    "tool_input.content": "파일 내용",
+    "tool_input.offset": "읽기 시작 라인",
+    "tool_input.limit": "읽기 최대 라인 수",
+    "tool_input": "도구 입력",
+    "tool_response.output": "도구 출력",
+    "tool_response.is_error": "도구 오류 여부",
+    "tool_response.duration_ms": "도구 실행 시간(ms)",
+    "session_id": "세션 ID",
+    "transcript_path": "대화 기록 경로",
+    "transcript": "최근 대화 턴",
+    "tool_name": "도구 이름",
+    "tool_use_id": "도구 호출 ID",
+    "cwd": "세션 작업 디렉터리",
+    "final_message": "에이전트 최종 답변",
+    "prompt": "사용자 입력",
+    "citations[].quote": "인용 본문",
+    "citations[].ref": "인용 ref id",
+}
+
+
+def get_display_label(path: str, locale: str = "en") -> str:
+    """Friendly display label for a raw payload path.
+
+    Returns the localized label when the path is in the registry. An
+    UNKNOWN path falls back to the raw path verbatim — operator-typed
+    custom paths (MCP tool slugs, citation_verify nested keys without a
+    matching entry) display the literal path so the UI never claims a
+    friendly name it doesn't have.
+
+    Locale falls back to English when an unsupported locale is passed,
+    so a future widening (e.g. "ja") doesn't crash the chip renderer.
+    """
+    if not path:
+        return path
+    if locale == "ko":
+        label = _DISPLAY_LABELS_KO.get(path)
+        if label:
+            return label
+    label = _DISPLAY_LABELS_EN.get(path)
+    if label:
+        return label
+    return path
+
+
+def _with_display_label(fields: list[FieldDescriptor]) -> list[FieldDescriptor]:
+    """Auto-fill `display_label_ko` + `display_label_en` for the given
+    field descriptors. UNKNOWN paths get the raw path as their label so
+    UI rendering can read the key unconditionally."""
+    out: list[FieldDescriptor] = []
+    for f in fields:
+        path = f.get("path")
+        if not path:
+            out.append(f)
+            continue
+        new: FieldDescriptor = dict(f)  # type: ignore[assignment]
+        if "display_label_ko" not in new:
+            new["display_label_ko"] = get_display_label(path, "ko")
+        if "display_label_en" not in new:
+            new["display_label_en"] = get_display_label(path, "en")
+        out.append(new)
+    return out
 
 
 def _with_sh_hints(fields: list[FieldDescriptor]) -> list[FieldDescriptor]:
@@ -597,7 +726,7 @@ def available_fields(event: str, matcher: str | None = None) -> list[FieldDescri
         schema = next(iter(bucket.values()))
     if cls == "tool" and matcher:
         schema = _enrich_with_tool_specific(schema, matcher)
-    return _with_sh_hints(list(schema["fields"]))
+    return _with_display_label(_with_sh_hints(list(schema["fields"])))
 
 
 def all_schemas() -> list[PayloadSchema]:
@@ -609,7 +738,9 @@ def all_schemas() -> list[PayloadSchema]:
             out.append({
                 "event": schema["event"],
                 "matcher_class": schema["matcher_class"],
-                "fields": _with_sh_hints(list(schema["fields"])),
+                "fields": _with_display_label(
+                    _with_sh_hints(list(schema["fields"]))
+                ),
             })
     return out
 

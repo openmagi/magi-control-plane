@@ -4,6 +4,7 @@ import {
   type FieldCheck,
   type FieldChecksByLifecycle,
 } from "@/lib/verifier-descriptors"
+import { getDisplayLabel } from "@/lib/payload-schemas"
 import { Code } from "@/components/ui"
 
 /**
@@ -65,9 +66,16 @@ export function VerifierFieldChecks({
   className,
   fieldChecksOverride,
   lifecycle,
+  locale,
 }: {
   step: string
   t: T
+  /** D64: locale used to resolve friendly display labels for raw
+   * payload paths (`tool_input.command` → "Bash command" / "Bash
+   * 명령어"). Defaults to `en` so callers that have not yet been
+   * threaded through (e.g. wizard inline picker) still render the
+   * English label. UNKNOWN paths fall back to the raw path verbatim. */
+  locale?: import("@/lib/i18n/dict").Locale
   /** When true, surface the verdicts + emits rows under the tree (used
    * by the policy wizard picker; the catalog expander already has
    * dedicated Verdicts + Output Evidence panels). */
@@ -152,6 +160,8 @@ export function VerifierFieldChecks({
   const evidencePaths = (descriptor?.output_evidence ?? []).map((e) => e.path)
   const renderFooter = showFooter && descriptor !== null
 
+  const effectiveLocale: import("@/lib/i18n/dict").Locale = locale ?? "en"
+
   if (isSingleUnlabeled) {
     const rows = (groups as { _: FieldCheck[] })._
     return (
@@ -159,7 +169,7 @@ export function VerifierFieldChecks({
         data-testid="verifier-field-checks-tree"
         className={(className ?? "") + " text-xs"}
       >
-        <FieldCheckRows rows={rows} />
+        <FieldCheckRows rows={rows} locale={effectiveLocale} />
         {renderFooter && (
           <FieldChecksFooter
             verdicts={verdicts}
@@ -221,7 +231,10 @@ export function VerifierFieldChecks({
               )}
             </summary>
             <div className="mt-1.5">
-              <FieldCheckRows rows={(groups as FieldChecksByLifecycle)[event]} />
+              <FieldCheckRows
+                rows={(groups as FieldChecksByLifecycle)[event]}
+                locale={effectiveLocale}
+              />
             </div>
           </details>
         )
@@ -268,7 +281,16 @@ function lifecycleTooltip(event: string, t: T): string {
   )
 }
 
-function FieldCheckRows({ rows }: { rows: FieldCheck[] }) {
+function FieldCheckRows({
+  rows,
+  locale,
+}: {
+  rows: FieldCheck[]
+  /** D64: passed through to the row renderer so the friendly display
+   * label resolves in the operator's locale. UNKNOWN paths fall back
+   * to the raw path verbatim. */
+  locale: import("@/lib/i18n/dict").Locale
+}) {
   return (
     <dl
       role="list"
@@ -282,6 +304,7 @@ function FieldCheckRows({ rows }: { rows: FieldCheck[] }) {
             path={fc.path}
             description={fc.check_description}
             isLast={isLast}
+            locale={locale}
           />
         )
       })}
@@ -369,10 +392,12 @@ function Row({
   path,
   description,
   isLast,
+  locale,
 }: {
   path: string
   description: string
   isLast: boolean
+  locale: import("@/lib/i18n/dict").Locale
 }) {
   // D52d follow-up (a11y): each (dt, dd) pair lives inside its own
   // role='listitem' wrapper so the grouping survives a description-list
@@ -383,15 +408,41 @@ function Row({
   // The connector glyph is purely decorative; semantic content is the
   // <dt> / <dd> pair. SR users hear "path X checks Y" via the aria-label
   // on the listitem; the role-stripped fallback still groups them.
+  //
+  // D64: render the friendly display label as primary text and tuck
+  // the raw `path` underneath as a muted mono row. UNKNOWN paths
+  // (operator-typed custom MCP slugs) fall back to the raw path alone
+  // so the row never invents a friendly name it doesn't have. The
+  // aria-label still names the raw path so SR users hear the literal
+  // field reference (preserves the pre-D64 SR contract).
   const connector = isLast ? "└─" : "├─"
-  const ariaLabel = `${path} checks ${description}`
+  const friendly = getDisplayLabel(path, locale)
+  const isFriendly = friendly !== path
+  const ariaLabel = `${friendly}${isFriendly ? ` (${path})` : ""} checks ${description}`
   return (
-    <div role="listitem" aria-label={ariaLabel} className="contents">
-      <dt className="flex items-baseline gap-1.5 font-mono text-[var(--color-text-primary)]">
+    <div
+      role="listitem"
+      aria-label={ariaLabel}
+      data-field-path={path}
+      data-display-label={friendly}
+      className="contents"
+    >
+      <dt className="flex items-baseline gap-1.5 text-[var(--color-text-primary)]">
         <span aria-hidden className="text-[var(--color-text-tertiary)] select-none">
           {connector}
         </span>
-        <Code className="text-[11.5px]">{path}</Code>
+        {isFriendly ? (
+          <span className="flex flex-col">
+            <span className="text-[11.5px] font-semibold">
+              {friendly}
+            </span>
+            <Code className="text-[10.5px] text-[var(--color-text-tertiary)]">
+              {path}
+            </Code>
+          </span>
+        ) : (
+          <Code className="text-[11.5px]">{path}</Code>
+        )}
       </dt>
       <dd className="text-[var(--color-text-secondary)] leading-relaxed">
         <span aria-hidden className="mr-1.5 text-[var(--color-text-tertiary)]">

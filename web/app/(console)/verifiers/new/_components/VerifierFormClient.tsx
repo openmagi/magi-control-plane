@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react"
+import { getDisplayLabel } from "@/lib/payload-schemas"
 
 /**
  * Stable id generator for trigger rows. crypto.randomUUID is in the
@@ -141,9 +142,17 @@ interface Props {
     input_assembly?: InputAssemblyValue
     caller_assembly_hint?: string
   }
+  /** D64: locale used to resolve friendly display labels for the
+   * field-check path picker. When the operator types a path the
+   * runtime registry knows (`tool_input.command`, `tool_response.output`,
+   * …) we render the friendly label below the input so the operator
+   * sees the human-readable name they're picking. UNKNOWN paths get
+   * no label (the input itself reads as the raw path). Defaults to
+   * `en` so older callers without locale wiring still render. */
+  locale?: "ko" | "en"
 }
 
-export default function VerifierFormClient({ labels, initial }: Props) {
+export default function VerifierFormClient({ labels, initial, locale = "en" }: Props) {
   const [name, setName] = useState(initial?.name ?? "")
   const [description, setDescription] = useState(initial?.description ?? "")
   const [triggers, setTriggers] = useState<InternalTriggerRow[]>(() => {
@@ -753,6 +762,29 @@ export default function VerifierFormClient({ labels, initial }: Props) {
                     }
                     className="mt-1 block w-full rounded-md border border-[var(--color-border-strong)] bg-white px-2 py-1.5 text-xs font-mono focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[var(--color-border-focus)]/40"
                   />
+                  {/* D64: friendly display label for the typed path
+                      (when the runtime registry knows it). UNKNOWN
+                      paths get no helper — the operator already sees
+                      the raw path they typed in the input. The helper
+                      is decorative (the truth source remains the raw
+                      path), so we render it muted and aria-hidden so
+                      SR users hear the input value + label only. */}
+                  {(() => {
+                    const trimmedPath = fc.path.trim()
+                    if (!trimmedPath) return null
+                    const friendly = getDisplayLabel(trimmedPath, locale)
+                    if (friendly === trimmedPath) return null
+                    return (
+                      <p
+                        aria-hidden
+                        data-testid={`field-check-path-display-label-${fc._id}`}
+                        data-field-path={trimmedPath}
+                        className="mt-1 text-[10.5px] text-[var(--color-text-tertiary)]"
+                      >
+                        {friendly}
+                      </p>
+                    )
+                  })()}
                 </div>
                 <div className="flex-[2] min-w-[220px]">
                   <label

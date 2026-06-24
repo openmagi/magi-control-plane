@@ -164,3 +164,36 @@ describe("VerifierFieldChecks data parity vs the descriptor mirror", () => {
     expect(getVerifierDescriptor("does_not_exist")).toBeNull()
   })
 })
+
+/* ─── D64: friendly display labels per row ────────────────────── */
+describe("VerifierFieldChecks D64 display-label invariants", () => {
+  const src = readFileSync(
+    path.join(__dirname, "VerifierFieldChecks.tsx"),
+    "utf-8",
+  )
+
+  it("imports getDisplayLabel and threads locale into the Row renderer", () => {
+    expect(src).toContain("getDisplayLabel")
+    expect(src).toContain('from "@/lib/payload-schemas"')
+    // VerifierFieldChecks accepts an optional locale prop; Row reads
+    // it to resolve the friendly label per path.
+    expect(src).toMatch(/locale\?:\s*import\("@\/lib\/i18n\/dict"\)\.Locale/)
+  })
+
+  it("Row renders friendly label as primary + raw path as muted secondary", () => {
+    expect(src).toMatch(/friendly\s*=\s*getDisplayLabel\(path,\s*locale\)/)
+    expect(src).toMatch(/isFriendly\s*=\s*friendly\s*!==\s*path/)
+  })
+
+  it("Row exposes data-field-path + data-display-label hooks", () => {
+    expect(src).toMatch(/data-field-path=\{path\}/)
+    expect(src).toMatch(/data-display-label=\{friendly\}/)
+  })
+
+  it("aria-label names BOTH the friendly label and the raw path", () => {
+    // SR users still hear the literal field path (back-compat) AND
+    // the friendly name. Brief: "raw path in title= tooltip + aria-
+    // label". Both go into the listitem aria.
+    expect(src).toMatch(/ariaLabel\s*=\s*`\$\{friendly\}/)
+  })
+})

@@ -222,7 +222,7 @@ export default async function NewCustomVerifierPage({
 }: {
   searchParams: { err?: string; msg?: string }
 }) {
-  const { t } = await getT()
+  const { t, locale } = await getT()
   const flash = resolveFlash(searchParams.msg, searchParams.err)
 
   const labels = {
@@ -290,7 +290,7 @@ export default async function NewCustomVerifierPage({
 
       <Card className="max-w-2xl">
         <form action={createVerifierAction} className="space-y-4" noValidate>
-          <VerifierFormClient labels={labels} />
+          <VerifierFormClient labels={labels} locale={locale} />
         </form>
       </Card>
     </>

@@ -46,6 +46,14 @@ export type FieldDescriptor = {
    * leaves (sh:PropertyShape sh:path …), `node` for nested JSON
    * (sh:NodeShape sh:targetClass magi:Hook + sh:property …). */
   sh_kind?: ShaclKind
+  /** D64: friendly display label (KO + EN). UI surfaces render the
+   * locale-matched string as the primary chip text and keep the raw
+   * `path` in the title= tooltip + aria-label + click-to-insert
+   * behaviour. Click-to-insert STAYS the raw path so authors editing
+   * regex / shacl get the literal field path the runtime materializes.
+   * An UNKNOWN path falls back to the raw path verbatim. */
+  display_label_ko?: string
+  display_label_en?: string
 }
 
 const FT_TO_DATATYPE: Record<FieldType, ShaclDatatype> = {
@@ -61,6 +69,109 @@ function withShaclHints(fields: FieldDescriptor[]): FieldDescriptor[] {
     ...f,
     sh_datatype: f.sh_datatype ?? FT_TO_DATATYPE[f.type],
     sh_kind: f.sh_kind ?? (f.type === "dict" || f.type === "list" ? "node" : "property"),
+  }))
+}
+
+/* ── D64: friendly display labels ─────────────────────────────────────
+ *
+ * Mirrors `_DISPLAY_LABELS_*` in src/magi_cp/policy/payload_schemas.py.
+ * Keep the two tables in lockstep — a path missing from one side falls
+ * back to the raw path verbatim, which is honest but the operator
+ * loses the friendly name.
+ *
+ * The raw path stays the truth source. UI chips, the verifier expander
+ * Input Paths panel, the wizard /verifiers/new path picker, and the
+ * IR draft pane all render display labels for known paths and the raw
+ * path verbatim for unknown ones (operator-typed MCP slugs etc).
+ * Click-to-insert behaviour STAYS raw path everywhere — operators
+ * authoring regex / shacl need the actual field path, not a friendly
+ * label that the runtime doesn't materialize.
+ */
+const DISPLAY_LABELS_EN: Record<string, string> = {
+  "tool_input.command": "Bash command",
+  "tool_input.cwd": "Command working directory",
+  "tool_input.timeout": "Command timeout (ms)",
+  "tool_input.description": "Command description",
+  "tool_input.url": "Fetched URL",
+  "tool_input.prompt": "Fetch follow-up prompt",
+  "tool_input.file_path": "File path",
+  "tool_input.old_string": "Replaced text",
+  "tool_input.new_string": "Replacement text",
+  "tool_input.content": "File content",
+  "tool_input.offset": "Read line offset",
+  "tool_input.limit": "Read line limit",
+  "tool_input": "Tool input",
+  "tool_response.output": "Tool output",
+  "tool_response.is_error": "Tool error flag",
+  "tool_response.duration_ms": "Tool duration (ms)",
+  "session_id": "Session ID",
+  "transcript_path": "Conversation transcript path",
+  "transcript": "Recent conversation turns",
+  "tool_name": "Tool name",
+  "tool_use_id": "Tool call ID",
+  "cwd": "Session working directory",
+  "final_message": "Agent final answer",
+  "prompt": "User prompt",
+  "citations[].quote": "Cited quote",
+  "citations[].ref": "Citation reference id",
+}
+
+const DISPLAY_LABELS_KO: Record<string, string> = {
+  "tool_input.command": "Bash 명령어",
+  "tool_input.cwd": "명령 작업 디렉터리",
+  "tool_input.timeout": "명령 타임아웃(ms)",
+  "tool_input.description": "명령 설명",
+  "tool_input.url": "요청 URL",
+  "tool_input.prompt": "Fetch 후속 프롬프트",
+  "tool_input.file_path": "파일 경로",
+  "tool_input.old_string": "치환 대상 텍스트",
+  "tool_input.new_string": "치환할 텍스트",
+  "tool_input.content": "파일 내용",
+  "tool_input.offset": "읽기 시작 라인",
+  "tool_input.limit": "읽기 최대 라인 수",
+  "tool_input": "도구 입력",
+  "tool_response.output": "도구 출력",
+  "tool_response.is_error": "도구 오류 여부",
+  "tool_response.duration_ms": "도구 실행 시간(ms)",
+  "session_id": "세션 ID",
+  "transcript_path": "대화 기록 경로",
+  "transcript": "최근 대화 턴",
+  "tool_name": "도구 이름",
+  "tool_use_id": "도구 호출 ID",
+  "cwd": "세션 작업 디렉터리",
+  "final_message": "에이전트 최종 답변",
+  "prompt": "사용자 입력",
+  "citations[].quote": "인용 본문",
+  "citations[].ref": "인용 ref id",
+}
+
+/**
+ * Friendly display label for a raw payload path.
+ *
+ * UNKNOWN path → raw path verbatim (operator-typed custom paths render
+ * the literal field path; the UI never claims a friendly name it does
+ * not have).
+ *
+ * Locale fallback chain: ko → en → raw path. Unsupported locales
+ * degrade to English so a future widening (e.g. "ja") doesn't crash
+ * the chip renderer.
+ */
+export function getDisplayLabel(path: string, locale: "ko" | "en" = "en"): string {
+  if (!path) return path
+  if (locale === "ko") {
+    const ko = DISPLAY_LABELS_KO[path]
+    if (ko) return ko
+  }
+  const en = DISPLAY_LABELS_EN[path]
+  if (en) return en
+  return path
+}
+
+function withDisplayLabels(fields: FieldDescriptor[]): FieldDescriptor[] {
+  return fields.map((f) => ({
+    ...f,
+    display_label_ko: f.display_label_ko ?? getDisplayLabel(f.path, "ko"),
+    display_label_en: f.display_label_en ?? getDisplayLabel(f.path, "en"),
   }))
 }
 
@@ -385,18 +496,29 @@ export function availableFields(event: string, matcher?: string): FieldDescripto
     schema = first
   }
   if (schema.matcher_class === "tool" && matcher && matcher !== "*") {
-    return withShaclHints(enrichWithToolSpecific(schema, matcher).fields)
+    return withDisplayLabels(
+      withShaclHints(enrichWithToolSpecific(schema, matcher).fields),
+    )
   }
-  return withShaclHints(schema.fields.slice())
+  return withDisplayLabels(withShaclHints(schema.fields.slice()))
 }
 
 /** Full registry dump — for debugging / linting / a future "show me
- * everything CC can deliver" view. */
+ * everything CC can deliver" view. D64: each schema's fields carry the
+ * resolved sh_datatype / sh_kind / display_label_* hints (matches the
+ * `availableFields` contract so callers can render either with the
+ * same FieldDescriptor shape). */
 export function allSchemas(): PayloadSchema[] {
   const out: PayloadSchema[] = []
   for (const bucket of Object.values(REGISTRY)) {
     for (const schema of Object.values(bucket)) {
-      if (schema) out.push(schema)
+      if (schema) {
+        out.push({
+          event: schema.event,
+          matcher_class: schema.matcher_class,
+          fields: withDisplayLabels(withShaclHints(schema.fields.slice())),
+        })
+      }
     }
   }
   return out

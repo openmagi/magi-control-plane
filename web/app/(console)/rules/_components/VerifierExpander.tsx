@@ -1,6 +1,10 @@
 import Link from "next/link"
 import { ledgerHref } from "@/lib/ledger-url"
-import { availableFields, type FieldDescriptor as PayloadFieldDescriptor } from "@/lib/payload-schemas"
+import {
+  availableFields,
+  getDisplayLabel,
+  type FieldDescriptor as PayloadFieldDescriptor,
+} from "@/lib/payload-schemas"
 import {
   getVerifierDescriptor,
   type EvidenceField,
@@ -159,6 +163,7 @@ export function VerifierExpander({
                   inputAssembly={inputAssembly}
                   fieldChecksOverride={fieldChecksOverride}
                   lifecycle={lifecycle}
+                  locale={locale}
                 />
               </>
             ) : (
@@ -186,6 +191,7 @@ export function VerifierExpander({
               t={t}
               inputAssembly={inputAssembly}
               lifecycle={lifecycle}
+              locale={locale}
             />
             <InputPathsPanel
               step={step}
@@ -193,6 +199,7 @@ export function VerifierExpander({
               inputFields={descriptor.input_fields ?? []}
               triggers={descriptor.triggers}
               t={t}
+              locale={locale}
             />
             <VerdictPanel verdicts={descriptor.verdict_set} t={t} />
             <EvidencePanel evidence={descriptor.output_evidence} t={t} />
@@ -336,7 +343,7 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
  * pulled those paths off CC stdin.
  */
 function FieldChecksPanel({
-  step, t, inputAssembly, fieldChecksOverride, lifecycle,
+  step, t, inputAssembly, fieldChecksOverride, lifecycle, locale,
 }: {
   step: string
   t: T
@@ -347,6 +354,9 @@ function FieldChecksPanel({
    * default and the other groups render dimmed. Omitted on the
    * standalone catalog surface (every group renders open). */
   lifecycle?: string
+  /** D64: threaded so the per-row friendly display label resolves in
+   * the operator's locale instead of always falling back to English. */
+  locale?: import("@/lib/i18n/dict").Locale
 }) {
   const headingKey = inputAssembly === "caller_assembled"
     ? "rules.verifier.expander.fieldChecks.callerAssembled"
@@ -361,6 +371,7 @@ function FieldChecksPanel({
         t={t}
         fieldChecksOverride={fieldChecksOverride}
         lifecycle={lifecycle}
+        locale={locale}
       />
     </div>
   )
@@ -515,12 +526,20 @@ function InputPathsPanel({
   inputFields,
   triggers,
   t,
+  locale,
 }: {
   step: string
   paths: string[]
   inputFields: InputField[]
   triggers: TriggerSpec[]
   t: T
+  /** D64: locale-aware display label resolution. The tree row renders
+   * the friendly label as primary text and the raw `path` as the muted
+   * secondary mono row. UNKNOWN paths (no lookup entry) fall back to
+   * showing the raw path alone so an operator-typed input_fields path
+   * (e.g. `citations[].quote` on a domain-specific custom verifier)
+   * stays readable. */
+  locale: import("@/lib/i18n/dict").Locale
 }) {
   // Primary lookup: descriptor's own input_fields (sourced from the
   // verifier's input_schema). These describe the verifier's OWN input
@@ -558,16 +577,44 @@ function InputPathsPanel({
             ?? t("rules.verifier.expander.inputFallback")
           const example = inputField?.example ?? ccField?.example
           const type = inputField?.type ?? ccField?.type ?? "json"
+          // D64: friendly display label as primary text, raw path as a
+          // muted secondary row. UNKNOWN paths fall back to raw-only
+          // (no duplicated row) so operator-typed input_fields stay
+          // honest. The CC stdin overlap lookup populates
+          // display_label_* via `availableFields` so common paths
+          // (tool_input.command, transcript_path, …) get the friendly
+          // label even when the verifier's own input_fields didn't
+          // ship one.
+          const ccLabel = ccField
+            ? (locale === "ko"
+                ? ccField.display_label_ko
+                : ccField.display_label_en)
+            : undefined
+          const friendly = ccLabel ?? getDisplayLabel(p, locale)
+          const isFriendly = friendly !== p
           // Stable id so aria-describedby resolves; one path per row.
           const descId = `verifier-${step}-input-${p.replace(/[^a-zA-Z0-9_-]/g, "_")}`
           return (
             <li
               key={p}
               role="listitem"
+              data-field-path={p}
+              data-display-label={friendly}
               className="rounded-md border border-black/[0.08] bg-white p-2"
             >
               <div className="flex flex-wrap items-baseline gap-1.5">
-                <Code className="text-[11.5px]">{p}</Code>
+                {isFriendly ? (
+                  <>
+                    <span className="text-[12px] font-semibold text-[var(--color-text-primary)]">
+                      {friendly}
+                    </span>
+                    <Code className="text-[10.5px] text-[var(--color-text-tertiary)]">
+                      {p}
+                    </Code>
+                  </>
+                ) : (
+                  <Code className="text-[11.5px]">{p}</Code>
+                )}
                 <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                   {type}
                 </span>

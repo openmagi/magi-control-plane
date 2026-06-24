@@ -29,6 +29,7 @@
  */
 
 import { Button } from "@/components/ui/Button"
+import { getDisplayLabel } from "@/lib/payload-schemas"
 import { DryRunPanel } from "../../_components/DryRunPanel"
 
 // i18n helper signature matches the rest of the policies/* tree.
@@ -151,6 +152,27 @@ function readRunCommandFailClosed(d: Record<string, unknown> | null): boolean {
   return v === true
 }
 
+/**
+ * D64: extract a path-like reference from a requires item if present,
+ * then resolve it to the friendly display label. Falls back to the raw
+ * path when the runtime registry doesn't know it.
+ *
+ * Some condition kinds (shacl shapes the conversational compiler emits,
+ * or a custom evidence shape that points at a known CC stdin field) put
+ * the field path on a `path` key inside the requires entry. Surfacing
+ * the friendly label there keeps the IR draft pane plain-language even
+ * for shapes the operator is iterating on through the conversational
+ * compose loop.
+ */
+function maybeFriendlyPath(
+  item: Record<string, unknown>,
+  ko: boolean,
+): string | null {
+  const raw = item.path
+  if (typeof raw !== "string" || !raw.trim()) return null
+  return getDisplayLabel(raw.trim(), ko ? "ko" : "en")
+}
+
 function conditionLabel(
   d: Record<string, unknown> | null,
   ko: boolean,
@@ -187,6 +209,17 @@ function conditionLabel(
     case "shacl": {
       const ttl = typeof item.shape_ttl === "string" ? item.shape_ttl : ""
       if (!ttl) return ko ? "구조 규칙 입력 대기 중" : "Waiting for a structured rule"
+      // D64: when the shacl entry carries an explicit `path` (the
+      // conversational compiler can stash the target path alongside the
+      // shape ttl during incremental compose), surface the friendly
+      // display label so the operator sees "Bash command" instead of
+      // the raw `magi:tool_input.command` predicate.
+      const friendlyPath = maybeFriendlyPath(item, ko)
+      if (friendlyPath) {
+        return ko
+          ? `구조 규칙 (${friendlyPath})`
+          : `Structured rule (${friendlyPath})`
+      }
       return ko ? "구조 규칙" : "Structured rule"
     }
     case "step": {

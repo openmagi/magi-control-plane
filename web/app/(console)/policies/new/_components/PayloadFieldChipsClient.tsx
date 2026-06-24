@@ -35,6 +35,13 @@ export type ChipField = {
   example?: string
   sh_datatype?: string
   sh_kind?: "node" | "property"
+  /** D64: friendly display label (KO + EN). When present, the chip
+   * renders the locale-matched label as its primary text and keeps
+   * the raw `path` in the title= tooltip + aria-label + click-to-
+   * insert behaviour. UNKNOWN paths (no entry in the lookup) fall
+   * back to showing the raw path verbatim. */
+  display_label_ko?: string
+  display_label_en?: string
 }
 
 type Variant = "path" | "shacl-stub"
@@ -118,22 +125,48 @@ export default function PayloadFieldChipsClient({
       </p>
       <div className="flex flex-wrap gap-1.5" role="list">
         {fields.map((f) => {
-          const aria = `${ariaInsertVerb} ${f.path} (${f.type})${
+          // D64: friendly display label as primary chip text, raw path
+          // moves into title / aria-label / sr-only span. UNKNOWN paths
+          // (no lookup entry) fall back to the raw path verbatim so an
+          // operator-typed MCP slug still chips honestly.
+          //
+          // Click-to-insert STAYS the raw path (handled in
+          // `onChipActivate`) — operators authoring regex / shacl need
+          // the literal field path that the runtime materializes, not
+          // a label the runtime doesn't know.
+          const friendly =
+            (locale === "ko" ? f.display_label_ko : f.display_label_en)
+            ?? f.display_label_en
+            ?? f.path
+          const isFriendly = friendly !== f.path
+          const aria = `${ariaInsertVerb} ${friendly} (${f.path}, ${f.type})${
             f.description ? " — " + f.description : ""
           }`
+          const title = isFriendly
+            ? `${friendly}\n${f.path} (${f.type}) — ${f.description}${
+                f.example ? "\n\nexample: " + f.example : ""
+              }`
+            : `${f.type} — ${f.description}${
+                f.example ? "\n\nexample: " + f.example : ""
+              }`
           return (
             <button
               key={f.path}
               type="button"
               role="listitem"
               aria-label={aria}
-              title={`${f.type} — ${f.description}${
-                f.example ? "\n\nexample: " + f.example : ""
-              }`}
+              data-field-path={f.path}
+              data-display-label={friendly}
+              title={title}
               onClick={() => onChipActivate(f)}
-              className="inline-flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 py-0.5 text-[11px] font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] cursor-pointer"
+              className="inline-flex items-center gap-1 rounded-md border border-black/[0.08] bg-white px-2 py-0.5 text-[11px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/[0.04] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] cursor-pointer"
             >
-              <span>{f.path}</span>
+              <span className={isFriendly ? "" : "font-mono"}>{friendly}</span>
+              {isFriendly && (
+                <span className="sr-only">
+                  {" "}({f.path})
+                </span>
+              )}
               <span className="text-[10px] text-[var(--color-text-tertiary)]">
                 :{f.type}
               </span>

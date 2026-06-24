@@ -239,4 +239,44 @@ describe("VerifierExpander source invariants", () => {
     const matches = src.match(/lifecycle=\{lifecycle\}/g) ?? []
     expect(matches.length).toBeGreaterThanOrEqual(2)
   })
+
+  /* ─── D64: friendly display labels on the Input Paths panel ───── */
+  it("D64: imports getDisplayLabel from the payload-schemas seam", () => {
+    // The InputPathsPanel resolves the friendly label per row. Same
+    // seam the wizard chips + verifier authoring form use, so the
+    // friendly name stays consistent across surfaces.
+    expect(src).toContain("getDisplayLabel")
+    expect(src).toContain('from "@/lib/payload-schemas"')
+  })
+
+  it("D64: InputPathsPanel accepts a locale prop", () => {
+    expect(src).toMatch(/locale:\s*import\("@\/lib\/i18n\/dict"\)\.Locale/)
+  })
+
+  it("D64: forwards the wizard / dashboard locale into InputPathsPanel", () => {
+    // The expander's parent already threads `locale` down for the
+    // RecentEmissionsPanel. The InputPathsPanel call site picks it up
+    // so the friendly label resolves in the operator's locale.
+    expect(src).toMatch(/<InputPathsPanel[\s\S]*?locale=\{locale\}[\s\S]*?\/>/)
+  })
+
+  it("D64: row renders friendly label as primary + raw path as muted secondary", () => {
+    // The `isFriendly` branch renders the human-readable label on top
+    // and the raw path underneath in mono / tertiary text. UNKNOWN
+    // paths fall back to the raw-only render so an operator-typed
+    // path stays honest.
+    expect(src).toContain("getDisplayLabel(p, locale)")
+    expect(src).toMatch(/isFriendly\s*=\s*friendly\s*!==\s*p/)
+  })
+
+  it("D64: tree row exposes data-field-path + data-display-label hooks", () => {
+    expect(src).toMatch(/data-field-path=\{p\}/)
+    expect(src).toMatch(/data-display-label=\{friendly\}/)
+  })
+
+  it("D64: forwards locale into the FieldChecksPanel for the field-check tree", () => {
+    // Same row-level friendly resolution lives in VerifierFieldChecks,
+    // so the lifecycle-grouped checks render the friendly name too.
+    expect(src).toMatch(/<FieldChecksPanel[\s\S]*?locale=\{locale\}/)
+  })
 })

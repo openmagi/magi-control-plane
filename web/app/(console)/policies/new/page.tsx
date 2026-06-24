@@ -4197,6 +4197,7 @@ function Step3Condition({
                                 t={t}
                                 showFooter
                                 lifecycle={ccEvent}
+                                locale={locale}
                               />
                             </div>
                           </div>
