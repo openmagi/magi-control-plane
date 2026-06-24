@@ -392,7 +392,10 @@ describe("/policies/new page wiring (Conversational mode dispatch)", () => {
   )
 
   it("Mode union includes 'conversational'", () => {
-    expect(pageSrc).toMatch(/type Mode\s*=\s*"nl"\s*\|\s*"guided"\s*\|\s*"advanced"\s*\|\s*"conversational"/)
+    // D56b: NL compose retired. Mode union shrinks to guided | advanced
+    // | conversational; URL backcompat for `?mode=nl` is handled via a
+    // redirect at the top of the page component.
+    expect(pageSrc).toMatch(/type Mode\s*=\s*"guided"\s*\|\s*"advanced"\s*\|\s*"conversational"/)
   })
 
   it("?mode=conversational resolves to the conversational branch", () => {

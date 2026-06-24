@@ -112,17 +112,9 @@ describe("policies/new wizard — P9 steering wiring", () => {
   })
 
   // D53b: dry-run wiring on every authoring mode.
-  it("D53b: NL CompileResultBlock renders DryRunPanel below the Save CTA", () => {
-    // CompileResultBlock owns the Save form for NL mode; the
-    // Dry-run panel must appear inside the same Card so the
-    // operator's eye doesn't have to leave the result block. The
-    // button is enabled iff the compile passed (`canSave`).
-    expect(src).toContain("DryRunPanel")
-    expect(src).toMatch(
-      /canSave \? \(data\.ir as Record<string, unknown>\) : null/,
-    )
-  })
-
+  // D56b: NL CompileResultBlock retired; the conversational compose
+  // surface owns its own dry-run pane (covered by
+  // ConversationalCompose.test.ts).
   it("D53b: Guided Step6Review renders DryRunPanel with the derived draft", () => {
     expect(src).toContain("buildGuidedDraftForDryRun")
     // The panel only enables when the wizard has an id (would not

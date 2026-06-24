@@ -3,9 +3,8 @@ import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
-import { XMarkIcon, ArrowLeftIcon, SparklesIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
-import NlAuthoringGuide from "../../_components/NlAuthoringGuide"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
@@ -14,7 +13,7 @@ import { validatePolicyId } from "@/lib/policy-id"
 import {
   validateDraft, type PolicyDraft,
 } from "@/lib/policy-builder"
-import { CloudConfigError, cloud, type CompileResult } from "@/lib/cloud"
+import { CloudConfigError, cloud } from "@/lib/cloud"
 import {
   availableFields as payloadAvailableFields,
   lifecycleToEvent as payloadLifecycleToEvent,
@@ -24,13 +23,12 @@ import {
 import type { SteerableConditionKind } from "@/lib/payload-steering"
 import { getT } from "@/lib/i18n/server"
 import {
-  Badge, Card, CodeBlock, ErrorState,
-  SubmitButton, Textarea,
+  Badge, Card, ErrorState,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
 
-type Mode = "nl" | "guided" | "advanced" | "conversational"
+type Mode = "guided" | "advanced" | "conversational"
 const WIZARD_TOTAL = 6
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -302,35 +300,6 @@ function summaryForBackend(s: WizardState): string {
 }
 
 /* ─── server actions ─────────────────────────────────────────────── */
-
-async function compileNL(formData: FormData): Promise<void> {
-  "use server"
-  const nl = String(formData.get("nl") ?? "").trim()
-  if (!nl) {
-    redirect("/policies/new?mode=nl&err=invalid_input&nl=" + encodeURIComponent(nl))
-  }
-  let result: CompileResult
-  try {
-    result = await cloud.compilePolicy(nl)
-  } catch (e: unknown) {
-    redirect(`/policies/new?mode=nl&err=${codeForError(e)}&nl=${encodeURIComponent(nl)}`)
-  }
-  const payload = JSON.stringify({ nl, ...result })
-  if (payload.length > 1500) {
-    const { cookies } = await import("next/headers")
-    cookies().set({
-      name: "magi-cp-compile-result",
-      value: payload,
-      path: "/policies/new",
-      sameSite: "lax",
-      maxAge: 60 * 5,
-    })
-    revalidatePath("/policies/new")
-    redirect("/policies/new?mode=nl&msg=large")
-  }
-  revalidatePath("/policies/new")
-  redirect(`/policies/new?mode=nl&r=${encodeURIComponent(payload)}`)
-}
 
 async function persistDraft(draft: PolicyDraft, source: string): Promise<void> {
   const errs = validateDraft(draft)
@@ -626,24 +595,6 @@ function validateSpecifics(s: WizardState): string | null {
 
 /* ─── decoders for compile result ─────────────────────────────────── */
 
-function decodeResult(r: string | undefined): (CompileResult & { nl: string }) | null {
-  if (!r) return null
-  try {
-    const obj = JSON.parse(decodeURIComponent(r))
-    if (typeof obj !== "object" || !obj || !obj.ir || !obj.review) return null
-    return obj as CompileResult & { nl: string }
-  } catch { return null }
-}
-async function readCookieResult(): Promise<(CompileResult & { nl: string }) | null> {
-  const { cookies } = await import("next/headers")
-  const raw = cookies().get("magi-cp-compile-result")?.value
-  if (!raw) return null
-  try {
-    const obj = JSON.parse(raw)
-    if (!obj?.ir || !obj?.review) return null
-    return obj as CompileResult & { nl: string }
-  } catch { return null }
-}
 function _parseDraftQuery(draft: string | undefined): PolicyDraft | null {
   if (!draft) return null
   try {
@@ -767,26 +718,36 @@ export default async function NewPolicyPage({
   const flash = resolveFlash(undefined, searchParams.err)
 
   const rawMode = searchParams.mode
-  const mode: Mode | null =
+  // D56b: NL compose mode retired. Conversational compose (D55) absorbs
+  // its use case — when the user types a complete, unambiguous
+  // description, the conversational compiler returns ready_to_save=true
+  // on turn 1. URL backcompat: `/policies/new?mode=nl` lands users on
+  // the new conversational page, preserving any incoming nl= seed.
+  if (rawMode === "nl") {
+    const seed = searchParams.nl
+    const tail = seed ? `&nl=${encodeURIComponent(seed)}` : ""
+    redirect(`/policies/new?mode=conversational${tail}`)
+  }
+  // D56b: first-time visitors (no mode= query and no draft= prefill)
+  // jump straight to Conversational compose instead of the legacy
+  // picker landing. The PickerLanding helper is kept in source and
+  // still reachable via `?mode=picker` for direct-URL access.
+  if (rawMode === undefined && searchParams.draft == null) {
+    redirect("/policies/new?mode=conversational")
+  }
+  type ResolvedMode = Mode | "picker"
+  const mode: ResolvedMode =
     rawMode === "advanced" || (rawMode === undefined && searchParams.draft != null)
       ? "advanced"
-      : rawMode === "nl"
-        ? "nl"
-        : rawMode === "guided"
-          ? "guided"
-          : rawMode === "conversational"
-            ? "conversational"
-            : null
-
-  const fromQuery = decodeResult(searchParams.r)
-  const compileResult =
-    mode === "nl"
-      ? fromQuery ?? (searchParams.msg === "large" ? await readCookieResult() : null)
-      : null
-  const nl = compileResult?.nl ?? searchParams.nl ?? ""
+      : rawMode === "guided"
+        ? "guided"
+        : rawMode === "conversational"
+          ? "conversational"
+          : rawMode === "picker"
+            ? "picker"
+            : "conversational"
 
   const initialDraft =
-    (compileResult?.ir as PolicyDraft | undefined) ??
     _parseDraftQuery(searchParams.draft) ??
     null
 
@@ -857,66 +818,7 @@ export default async function NewPolicyPage({
         </pre>
       )}
 
-      {mode === null && <PickerLanding t={t} locale={locale === "ko" ? "ko" : "en"} />}
-
-      {mode === "nl" && (
-        <AuthoringShell
-          t={t}
-          modeTitle={t("newPolicy.mode.nlAuthoring")}
-          info={{
-            tone: "info",
-            title: t("newPolicy.nl.info.title"),
-            body: t("newPolicy.nl.info.body"),
-          }}
-        >
-          <Card>
-            {/* D52e: collapsible authoring guide. Closed by default,
-                expanded/collapsed state persisted per-user in
-                localStorage. Lives only on the NL compose mode: the
-                Guided wizard and Raw IR PolicyBuilder are structured
-                already and don't need this scaffolding. */}
-            <NlAuthoringGuide locale={locale} targetTextareaId="nl" />
-            <form action={compileNL}>
-              <Textarea
-                id="nl"
-                name="nl"
-                rows={4}
-                defaultValue={nl}
-                label={t("compile.field.label")}
-                placeholder={t("compile.field.placeholder")}
-                required
-                spellCheck={false}
-                autoComplete="off"
-                monospace
-              />
-              {flash?.kind === "error" && (
-                <div
-                  role="alert"
-                  className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
-                >
-                  {flash.text}
-                </div>
-              )}
-              <div className="mt-3 flex items-center gap-2">
-                <SubmitButton
-                  label={t("compile.submit")}
-                  pendingLabel={t("compile.submit.pending")}
-                  progressHint={t("compile.progressHint")}
-                />
-                {compileResult && (
-                  <Link href="/policies/new?mode=nl" className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
-                    {t("newPolicy.composeNL.clear")}
-                  </Link>
-                )}
-              </div>
-            </form>
-          </Card>
-
-          {compileResult && (
-            <CompileResultBlock t={t} data={compileResult} saveAction={saveCompiled} locale={locale} />
-          )}
-        </AuthoringShell>
-      )}
+      {mode === "picker" && <PickerLanding t={t} locale={locale === "ko" ? "ko" : "en"} />}
 
       {mode === "guided" && (
         <GuidedWizard
@@ -1139,7 +1041,9 @@ function PickerLanding({
         </div>
       </div>
 
-      {/* 4-mode picker (D55b adds Conversational) */}
+      {/* D56b: NL compose mode retired. Conversational is the default
+          authoring path and lives first; Guided + Raw IR remain for
+          power users. */}
       <div className="rounded-2xl border border-black/[0.08] bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0 mb-1">
           {ko ? "직접 만들기" : "Build it yourself"}
@@ -1155,7 +1059,7 @@ function PickerLanding({
         >
           {t("newPolicy.picker.conversationalNudge")}
         </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <ChoiceCard
             href="/policies/new?mode=conversational"
             icon={<ChatBubbleLeftRightIcon className="h-5 w-5" />}
@@ -1163,13 +1067,6 @@ function PickerLanding({
             description={t("newPolicy.picker.conversational.description")}
             backing={t("newPolicy.picker.conversational.backing")}
             testId="picker-card-conversational"
-          />
-          <ChoiceCard
-            href="/policies/new?mode=nl"
-            icon={<SparklesIcon className="h-5 w-5" />}
-            label={t("newPolicy.picker.nl.label")}
-            description={t("newPolicy.picker.nl.description")}
-            backing={t("newPolicy.picker.nl.backing")}
           />
           <ChoiceCard
             href="/policies/new?mode=guided&step=1"
@@ -2588,117 +2485,6 @@ function Step6Review({
         action={(state.action === "strip" ? "strip" : (state.action ?? "audit"))}
       />
     </StepShell>
-  )
-}
-
-/* ─── compile-result block (NL mode) ─────────────────────────────── */
-
-function CompileResultBlock({
-  t, data, saveAction, locale,
-}: {
-  data: CompileResult & { nl: string }
-  saveAction: (fd: FormData) => Promise<void>
-  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
-  locale: import("@/lib/i18n/dict").Locale
-}) {
-  const irJson = JSON.stringify(data.ir, null, 2)
-  const hasSchemaIssues = data.schema_issues.length > 0
-  const canSave = data.review.ok && !hasSchemaIssues
-  const draft = data.ir as unknown as PolicyDraft
-
-  return (
-    <Card className="border-[var(--color-accent)]/20 bg-gradient-to-br from-[var(--color-accent)]/[0.02] to-white">
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <h2 className="text-md font-semibold m-0">{t("compile.result.title")}</h2>
-        <Badge variant={data.review.ok ? "ok" : "review"}>
-          {data.review.ok ? t("compile.result.reviewerOk") : t("compile.result.reviewerFlagged")}
-        </Badge>
-        <Badge variant={hasSchemaIssues ? "deny" : "ok"}>
-          {hasSchemaIssues
-            ? t("compile.result.schemaIssues", { n: data.schema_issues.length })
-            : t("compile.result.schemaClean")}
-        </Badge>
-      </div>
-
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-sm mb-3">
-        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">id</dt>
-        <dd className="font-mono text-[13px]" translate="no">{draft.id}</dd>
-        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">trigger</dt>
-        <dd><code className="font-mono">{draft.trigger.event}</code> · <code className="font-mono">{draft.trigger.matcher}</code></dd>
-        {draft.requires && draft.requires.length > 0 && (
-          <>
-            <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">requires</dt>
-            <dd className="text-[var(--color-text-secondary)] text-xs">
-              {draft.requires.map((r) => {
-                const kind = ("kind" in r ? r.kind : "step")
-                if (kind === "step") return `${("step" in r ? r.step : "")}=${("verdict" in r ? r.verdict : "pass")}`
-                if (kind === "regex") return `regex(${("pattern" in r ? r.pattern : "").slice(0, 24)})`
-                if (kind === "llm_critic") return `llm(${("criterion" in r ? r.criterion : "").slice(0, 24)})`
-                if (kind === "shacl") return "shacl(…)"
-                return kind
-              }).join(", ")}
-            </dd>
-          </>
-        )}
-        <dt className="text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider font-semibold pt-0.5">action</dt>
-        <dd className="text-[var(--color-text-secondary)]">{draft.action}</dd>
-      </dl>
-
-      <details className="mb-3 rounded-lg bg-gray-50/70 p-2">
-        <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          {t("compile.result.irLabel")}
-        </summary>
-        <CodeBlock maxHeight="44vh" className="mt-2">{irJson}</CodeBlock>
-      </details>
-
-      {data.review.issues.length > 0 && (
-        <div className="mb-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
-            {t("compile.result.reviewerIssuesLabel")}
-          </p>
-          <ul className="m-0 pl-5 text-xs list-disc text-[var(--color-text-secondary)] space-y-1 leading-relaxed">
-            {data.review.issues.map((s, i) => <li key={i}>{s}</li>)}
-          </ul>
-        </div>
-      )}
-
-      {hasSchemaIssues && (
-        <div className="mb-3 rounded-lg border border-[var(--color-deny-fg)]/20 bg-[var(--color-deny-bg)]/60 p-3" role="alert">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-deny-fg)] mb-1.5">
-            {t("compile.result.schemaIssuesLabel")}
-          </p>
-          <ul className="m-0 pl-5 text-xs list-disc text-[var(--color-text-secondary)] space-y-1 leading-relaxed">
-            {data.schema_issues.map((s, i) => <li key={i}>{s}</li>)}
-          </ul>
-        </div>
-      )}
-
-      <form action={saveAction} className="mt-2 flex items-center gap-2 flex-wrap">
-        <input type="hidden" name="ir_json" value={irJson} />
-        <input type="hidden" name="source" value="org" />
-        <SubmitButton
-          label={t("compile.activate")}
-          pendingLabel={t("newPolicy.saving")}
-        />
-        {!canSave && (
-          <span className="text-xs text-[var(--color-text-tertiary)] leading-tight">
-            {t("compile.cantActivate")}
-          </span>
-        )}
-      </form>
-
-      {/* D53b: "Dry-run on last 24h" replay. Only enabled when the
-          compile passed cleanly (canSave) - dry-run reuses /policies
-          PUT's validation surface, so a draft that would 422 on save
-          would 422 here too. Loading + error states are inline so a
-          failed dry-run never blocks the Save action above. */}
-      <DryRunPanel
-        locale={locale}
-        ir={canSave ? (data.ir as Record<string, unknown>) : null}
-        disabled={!canSave}
-        action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
-      />
-    </Card>
   )
 }
 
