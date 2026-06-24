@@ -33,7 +33,7 @@ def _text_of(content: object) -> str:
     """Join the text of a message ``content`` (str or block list); '' otherwise."""
     if isinstance(content, str):
         return content
-    if isinstance(content, Sequence):
+    if isinstance(content, (list, tuple)):
         parts = [
             block.get("text", "")
             for block in content
@@ -41,6 +41,26 @@ def _text_of(content: object) -> str:
         ]
         return "".join(p for p in parts if isinstance(p, str)).strip()
     return ""
+
+
+# Claude Code injects non-user `type:"user"` events: subagent prompts
+# (``isSidechain``), system reminders (``isMeta``), and slash-command / shell
+# wrappers. None of these are the human's goal, and surfacing one on a public
+# link would leak an internal prompt as the headline.
+_NON_GOAL_PREFIXES = (
+    "<command-",
+    "<local-command",
+    "<bash-",
+    "<system-reminder",
+)
+
+
+def _is_goal_text(event: Mapping[str, object], text: str) -> bool:
+    if not text:
+        return False
+    if event.get("isSidechain") or event.get("isMeta"):
+        return False
+    return not text.lstrip().startswith(_NON_GOAL_PREFIXES)
 
 
 def _message(event: Mapping[str, object]) -> Mapping[str, object]:
@@ -93,7 +113,7 @@ def transcript_to_run_view(
                 results.append({"prNumber": event.get("prNumber"), "prUrl": url})
         elif etype == "user":
             text = _text_of(_message(event).get("content"))
-            if text and goal is None:
+            if goal is None and _is_goal_text(event, text):
                 goal = text
         elif etype == "assistant":
             saw_assistant = True
@@ -106,7 +126,7 @@ def transcript_to_run_view(
                 in_tokens += _non_negative_int(usage.get("input_tokens"))
                 out_tokens += _non_negative_int(usage.get("output_tokens"))
             content = msg.get("content")
-            blocks = content if isinstance(content, Sequence) and not isinstance(content, str) else []
+            blocks = content if isinstance(content, (list, tuple)) else []
             text = _text_of(content)
             if text:
                 result = text  # last assistant text wins

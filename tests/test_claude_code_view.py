@@ -108,7 +108,7 @@ def test_empty_transcript_is_safe() -> None:
     assert view["trace"] == []
 
 
-def test_meta_user_messages_skipped_for_goal() -> None:
+def test_tool_result_user_events_skipped_for_goal() -> None:
     # Tool-result user events must not be mistaken for the goal.
     events = [
         _tool_result("t0", "noise"),
@@ -116,3 +116,30 @@ def test_meta_user_messages_skipped_for_goal() -> None:
         _assistant(text="ok"),
     ]
     assert transcript_to_run_view(events)["summary"]["goal"] == "the real goal"
+
+
+def test_sidechain_and_meta_user_events_skipped_for_goal() -> None:
+    # Subagent prompts (isSidechain) and system reminders (isMeta) are type:user
+    # but must NOT become the public headline goal.
+    sidechain = {"type": "user", "sessionId": "s", "isSidechain": True,
+                 "message": {"role": "user", "content": "You are a subagent. Do X."}}
+    meta = {"type": "user", "sessionId": "s", "isMeta": True,
+            "message": {"role": "user", "content": "<system-reminder>be nice</system-reminder>"}}
+    events = [sidechain, meta, _user("the human's real ask"), _assistant(text="done")]
+    assert transcript_to_run_view(events)["summary"]["goal"] == "the human's real ask"
+
+
+def test_command_wrapper_user_events_skipped_for_goal() -> None:
+    cmd = _user("<command-name>clear</command-name><command-message>cleared</command-message>")
+    events = [cmd, _user("real goal here"), _assistant(text="ok")]
+    assert transcript_to_run_view(events)["summary"]["goal"] == "real goal here"
+
+
+def test_assistant_tool_only_turn_keeps_prior_result() -> None:
+    events = [
+        _user("g"),
+        _assistant(text="partial answer", in_tok=5, out_tok=5),
+        _assistant(tool={"id": "t1", "name": "Bash", "input": {"command": "ls"}}, in_tok=5, out_tok=5),
+    ]
+    # The last assistant turn is tool-only (no text); result stays from the prior turn.
+    assert transcript_to_run_view(events)["summary"]["result"] == "partial answer"

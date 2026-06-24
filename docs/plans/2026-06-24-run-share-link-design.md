@@ -51,6 +51,12 @@ style bottom-up virality + non-developer onboarding surface).
 The `trace`/`governance` arrays reuse the `openmagi.runView.v1` shape so the vendored
 `build_public_run_view` allowlist projection + `redact_public_text` apply unchanged.
 
+NOTE for PR-2: the producer adds two fields beyond the magi-agent shape:
+`results` (top-level, PR links) and `summary.title`. The vendored
+`build_public_run_view` allowlist MUST be extended to pass `results` (scrubbing
+urls) and `summary.title` (scrubbed), or they are silently dropped from the
+public view.
+
 ## Build plan (PRs in magi-control-plane)
 
 - **PR-1 (producer + vendored redaction):** `src/magi_cp/share/`
