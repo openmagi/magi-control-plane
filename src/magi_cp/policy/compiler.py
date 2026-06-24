@@ -38,7 +38,7 @@ import sys
 
 from .ir import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, McpGatingPolicy,
-    PermissionPolicy, Policy, SubagentPolicy, load_policy,
+    PermissionPolicy, SubagentPolicy, load_policy,
 )
 
 

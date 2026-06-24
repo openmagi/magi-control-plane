@@ -1017,7 +1017,8 @@ class TestRateLimit:
             r = client.post("/citation_verify", json={
                 "subject": "S1", "payload_hash": "P", "citations": []}, headers=HEADERS)
             if r.status_code == 429:
-                got_429 = True; break
+                got_429 = True
+                break
         assert got_429, "rate limiter must engage under burst"
 
 
@@ -1030,7 +1031,7 @@ class TestUniquePrev:
         from sqlalchemy.orm import Session
         from sqlalchemy.exc import IntegrityError
         led = LedgerRepo(app.state.engine)
-        e1 = led.append(subject="S1", body={"x": 1}, token="t1")
+        led.append(subject="S1", body={"x": 1}, token="t1")
         # Try inserting another entry with the same prev as e1 (="") — should fail.
         with Session(app.state.engine) as s:
             forced = LedgerEntry(

@@ -7,7 +7,7 @@ semantics: each verifier returns a Verdict that the cloud signs into a token.
 import pytest
 
 from magi_cp.verifier.protocol import (
-    Verdict, VerifierInput, Verifier, Enforcement,
+    Verdict, Enforcement,
     VerifierRegistry,
 )
 

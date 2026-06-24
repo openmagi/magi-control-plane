@@ -28,7 +28,8 @@ def _sign(body: bytes) -> str:
 
 def _tmp_store():
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     return f.name
 
 

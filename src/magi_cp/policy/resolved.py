@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .ir import AnyPolicy, EvidencePolicy, Policy
+from .ir import AnyPolicy, EvidencePolicy
 from .precedence import (
     LooseningError, PolicySource, source_rank, tighten_against,
 )

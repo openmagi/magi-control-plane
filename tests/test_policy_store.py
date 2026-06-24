@@ -51,7 +51,8 @@ def test_save_and_load_round_trip(tmp_path):
 def test_normalize_is_byte_stable(tmp_path):
     """Saving the same overrides twice → identical file bytes (sha-stable)."""
     import hashlib
-    p1 = tmp_path / "a.json"; p2 = tmp_path / "b.json"
+    p1 = tmp_path / "a.json"
+    p2 = tmp_path / "b.json"
     PolicyStore(path=str(p1)).save([_ov("a"), _ov("b")])
     PolicyStore(path=str(p2)).save([_ov("a"), _ov("b")])
     assert hashlib.sha256(p1.read_bytes()).hexdigest() == \
@@ -61,7 +62,8 @@ def test_normalize_is_byte_stable(tmp_path):
 def test_normalize_sorts_for_determinism(tmp_path):
     """Different input order, same content → same byte output."""
     import hashlib
-    p1 = tmp_path / "a.json"; p2 = tmp_path / "b.json"
+    p1 = tmp_path / "a.json"
+    p2 = tmp_path / "b.json"
     PolicyStore(path=str(p1)).save([_ov("a"), _ov("b")])
     PolicyStore(path=str(p2)).save([_ov("b"), _ov("a")])  # reversed
     assert hashlib.sha256(p1.read_bytes()).hexdigest() == \

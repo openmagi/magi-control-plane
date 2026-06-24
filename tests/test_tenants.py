@@ -14,8 +14,6 @@ maps to a synthetic "default" tenant so existing tests + single-tenant
 deployments keep working.
 """
 import hashlib
-import os
-import tempfile
 
 import pytest
 

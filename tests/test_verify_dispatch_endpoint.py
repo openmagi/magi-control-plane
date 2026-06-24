@@ -4,8 +4,6 @@ Routes any registered verifier (other than citation_verify, which keeps its
 specialized NLI+ledger path) to the registry, runs it, signs the verdict
 into a token if pass/review, records to ledger.
 """
-import json
-import os
 import tempfile
 
 import pytest

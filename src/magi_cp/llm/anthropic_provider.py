@@ -21,7 +21,7 @@ import time
 
 import httpx
 
-from .provider import LlmMessage, LlmProvider, LlmProviderError
+from .provider import LlmMessage, LlmProviderError
 
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"

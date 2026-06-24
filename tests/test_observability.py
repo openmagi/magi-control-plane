@@ -4,16 +4,15 @@
   - Counters increment on /verify dispatch
   - Logger is structlog-shaped when configured, stdlib fallback otherwise
 """
-import os
 import tempfile
 
-import pytest
 from fastapi.testclient import TestClient
 
 
 def _tmp_store():
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     return f.name
 
 

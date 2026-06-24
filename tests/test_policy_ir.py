@@ -6,8 +6,7 @@ import re
 import pytest
 
 from magi_cp.policy import (
-    Policy, Trigger, EvidenceReq,
-    load_policy, compile_to_managed_settings, compile_files,
+    Trigger, load_policy, compile_to_managed_settings, compile_files,
 )
 
 
@@ -126,8 +125,10 @@ def test_load_policy_rejects_bad_id(tmp_path, bad_id, reason):
 
 
 def test_compiler_rejects_duplicate_policy_ids(tmp_path):
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     p1 = load_policy(_write_policy(a, {"id": "dup/v1"}))
     p2 = load_policy(_write_policy(b, {"id": "dup/v1"}))
     with pytest.raises(ValueError, match="중복"):
@@ -160,8 +161,10 @@ def test_compiler_output_shape(tmp_path):
 
 
 def test_compiler_multi_policy_preserves_order(tmp_path):
-    a_dir = tmp_path / "a"; a_dir.mkdir()
-    b_dir = tmp_path / "b"; b_dir.mkdir()
+    a_dir = tmp_path / "a"
+    a_dir.mkdir()
+    b_dir = tmp_path / "b"
+    b_dir.mkdir()
     p1 = load_policy(_write_policy(a_dir, {"id": "a/v1"}))
     p2 = load_policy(_write_policy(b_dir, {"id": "b/v1"}))
     out = compile_to_managed_settings([p1, p2])

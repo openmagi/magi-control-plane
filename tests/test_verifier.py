@@ -1,7 +1,7 @@
 """P1 verifier — spike behavior를 테스트로 lock."""
 import pytest
 from magi_cp.verifier import (
-    Citation, CitationVerdict, DocumentVerdict, normalize,
+    Citation, normalize,
     extract_case_number, verify_citation, verify_document,
     DictResolver,
 )

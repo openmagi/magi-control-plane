@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 
 def _tmp_store():
     f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]"); f.close()
+    f.write("[]")
+    f.close()
     return f.name
 
 
@@ -49,7 +50,8 @@ def _client_with_registry():
 
 
 def _hmac_post(c: TestClient, path: str, payload: dict):
-    import hashlib, hmac as _hmac
+    import hashlib
+    import hmac as _hmac
     body = json.dumps(payload).encode("utf-8")
     sig = _hmac.new(b"test-hmac", body, hashlib.sha256).hexdigest()
     return c.post(path, headers={

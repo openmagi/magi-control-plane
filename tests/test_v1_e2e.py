@@ -428,7 +428,8 @@ def test_verify_dispatch_synthesised_subject_threads_into_token_and_ledger(tmp_p
     # PR4: only canonical names in the token body.
     assert "matter" not in token_body
     assert "doc_hash" not in token_body
-    import hashlib as _hashlib, json as _json
+    import hashlib as _hashlib
+    import json as _json
     expected_hash = _hashlib.sha256(_json.dumps(
         payload, sort_keys=True, ensure_ascii=False,
         separators=(",", ":")).encode("utf-8")).hexdigest()[:32]

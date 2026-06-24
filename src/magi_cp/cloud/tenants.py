@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 
 from sqlalchemy import (
-    BigInteger, Engine, ForeignKey, Index, Integer, String, UniqueConstraint, select,
+    BigInteger, Engine, ForeignKey, String, UniqueConstraint, select,
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -119,7 +119,8 @@ class TenantRepo:
                 id=tenant_id, status="active", plan=plan,
                 created_at=int(time.time()), expires_at=expires_at,
             )
-            s.add(t); s.commit()
+            s.add(t)
+            s.commit()
             return TenantRecord(t.id, t.status, t.plan, t.expires_at)
 
     def get(self, tenant_id: str) -> TenantRecord | None:
@@ -134,7 +135,8 @@ class TenantRepo:
             t = s.get(Tenant, tenant_id)
             if t is None:
                 raise KeyError(tenant_id)
-            t.status = "suspended"; t.suspended_reason = reason
+            t.status = "suspended"
+            t.suspended_reason = reason
             s.commit()
 
     def reactivate(self, tenant_id: str) -> None:
@@ -142,7 +144,8 @@ class TenantRepo:
             t = s.get(Tenant, tenant_id)
             if t is None:
                 raise KeyError(tenant_id)
-            t.status = "active"; t.suspended_reason = None
+            t.status = "active"
+            t.suspended_reason = None
             s.commit()
 
     def set_plan(self, tenant_id: str, *, plan: str,
@@ -170,7 +173,9 @@ class ApiKeyRepo:
                 tenant_id=tenant_id, hashed_key=hashed, prefix=prefix,
                 created_at=int(time.time()),
             )
-            s.add(k); s.commit(); s.refresh(k)
+            s.add(k)
+            s.commit()
+            s.refresh(k)
             return IssuedKey(id=k.id, tenant_id=tenant_id,
                               cleartext=cleartext, prefix=prefix)
 
