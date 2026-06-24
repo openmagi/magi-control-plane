@@ -103,12 +103,20 @@ def build_check_catalog(
     if verifier_registry is not None:
         # Lazy import — keeps this module standalone-importable from
         # tests that mock the registry.
-        from ..verifier.descriptors import get_descriptor
+        from ..verifier.descriptors import field_checks_flat, get_descriptor
         for v in verifier_registry.all():
             descriptor = get_descriptor(v.step)
             field_checks: list[dict] = []
             if descriptor is not None:
-                for fc in descriptor.get("field_checks", []) or []:
+                # D57e: descriptor field_checks is grouped by lifecycle
+                # (`dict[event, list[FieldCheck]]`). The wire keeps the
+                # historical flat-list shape via `field_checks_flat()`
+                # so existing consumers (the catalog row reader, custom
+                # verifier authoring tooling) keep parsing the same
+                # rows. The dashboard reads the grouped shape off the
+                # /verifier-descriptors endpoint when it needs the
+                # lifecycle keying.
+                for fc in field_checks_flat(descriptor):
                     field_checks.append({
                         "path": fc.get("path", ""),
                         "check_description": fc.get("check_description", ""),

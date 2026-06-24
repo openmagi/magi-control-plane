@@ -511,6 +511,7 @@ const KO_RAW = {
   "rules.verifier.fieldChecks.preview": "이 verifier 는 preview 모드입니다, 런타임 검사 동작이 등록되어 있지 않습니다.",
   "rules.verifier.fieldChecks.verdicts": "verdicts:",
   "rules.verifier.fieldChecks.emits": "emits:",
+  "rules.verifier.fieldChecks.lifecycleActive": "현재 라이프사이클",
   "newPolicy.wizard.verifier.checksLabel": "이 verifier 가 검사하는 항목",
 
   /* ── ledger filter chips (D52c) ───────────────────────────────── */
@@ -1132,6 +1133,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.verifier.fieldChecks.preview": "This verifier is in preview mode; no runtime check is registered.",
   "rules.verifier.fieldChecks.verdicts": "verdicts:",
   "rules.verifier.fieldChecks.emits": "emits:",
+  "rules.verifier.fieldChecks.lifecycleActive": "Current lifecycle",
   "newPolicy.wizard.verifier.checksLabel": "What this verifier checks",
 
   "ledger.filter.title": "Filter by verifier",

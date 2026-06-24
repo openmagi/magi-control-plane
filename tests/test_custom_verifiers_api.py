@@ -513,22 +513,33 @@ class TestVerifierDescriptors:
             for p in d["input_payload_paths"]:
                 assert p in field_paths, (d["step"], p, field_paths)
 
-    # ── D52d ──────────────────────────────────────────────────────
+    # ── D52d (D57e: grouped by lifecycle) ─────────────────────────
     def test_every_builtin_has_field_checks(self, client):
-        """Every built-in descriptor must declare >= 1 field_check row.
-        The dashboard's catalog expander + wizard picker both render off
-        this list, so an empty list misleads the operator into the
-        "preview mode" branch for a verifier that actually has a
-        runtime body."""
+        """Every built-in descriptor must declare at least one
+        lifecycle group with at least one field_check row. The
+        dashboard's catalog expander + wizard picker both render off
+        this dict-of-arrays, so an empty dict misleads the operator
+        into the "preview mode" branch for a verifier that actually
+        has a runtime body.
+
+        D57e: field_checks shape changed from `list[FieldCheck]` to
+        `dict[event, list[FieldCheck]]`. We walk both axes here so
+        a future row-level invariant regression surfaces with the
+        lifecycle key it landed under.
+        """
         r = client.get("/verifier-descriptors")
         assert r.status_code == 200
         for d in r.json()["descriptors"]:
-            fcs = d.get("field_checks") or []
-            assert len(fcs) >= 1, d["step"]
-            for i, fc in enumerate(fcs):
-                assert fc.get("path"), (d["step"], i)
-                assert fc.get("check_description"), (d["step"], i)
-                assert len(fc["check_description"]) <= 200, (d["step"], i)
+            groups = d.get("field_checks") or {}
+            assert isinstance(groups, dict), (d["step"], type(groups).__name__)
+            assert len(groups) >= 1, d["step"]
+            for event, rows in groups.items():
+                assert isinstance(event, str) and event.strip(), (d["step"], event)
+                assert isinstance(rows, list) and len(rows) >= 1, (d["step"], event)
+                for i, fc in enumerate(rows):
+                    assert fc.get("path"), (d["step"], event, i)
+                    assert fc.get("check_description"), (d["step"], event, i)
+                    assert len(fc["check_description"]) <= 200, (d["step"], event, i)
 
     # ── D57c: input_assembly on descriptor list endpoint ──────────
     def test_every_descriptor_has_input_assembly(self, client):
@@ -626,23 +637,96 @@ class TestVerifierDescriptors:
         assert "prompt" in hint or "tool_response.output" in hint
 
     def test_citation_verify_field_checks_shape(self, client):
-        """D52d follow-up: citation_verify is a caller-assembled
-        verifier; its run() reads `citations` and `corpus_override`
-        from its OWN input dict, not CC stdin paths. The catalog row
-        therefore documents the verifier's input contract, not CC
-        stdin paths. The earlier brief asking for `tool_input.url` /
-        `tool_response.output` / `transcript_path` was fabrication.
-        descriptors.py:_assert_field_checks_paths_resolve() now hard-
+        """D52d follow-up + D57e: citation_verify is a caller-
+        assembled verifier; its run() reads `citations` and
+        `corpus_override` from its OWN input dict, not CC stdin
+        paths. The catalog row therefore documents the verifier's
+        input contract, not CC stdin paths. The earlier brief asking
+        for `tool_input.url` / `tool_response.output` /
+        `transcript_path` was fabrication.
+        descriptors.py:_assert_field_checks_paths_resolve() hard-
         fails import if any built-in carries a row that resolves
-        neither to a CC stdin path on a declared trigger nor to one of
-        the verifier's own input_payload_paths."""
+        neither to a CC stdin path on a declared trigger nor to one
+        of the verifier's own input_payload_paths.
+
+        D57e: citation_verify groups its rows under the Stop
+        lifecycle (the only lifecycle the verifier fires under). The
+        earlier PostToolUse trigger was pruned because the verifier
+        does not actually run on every research-tool result.
+        """
         r = client.get("/verifier-descriptors/citation_verify")
         assert r.status_code == 200
         d = r.json()
-        paths = [fc["path"] for fc in d["field_checks"]]
+        groups = d["field_checks"]
+        # D57e: dict-of-arrays keyed by lifecycle event. citation_verify
+        # only fires at Stop time.
+        assert isinstance(groups, dict)
+        assert list(groups.keys()) == ["Stop"]
+        paths = [fc["path"] for fc in groups["Stop"]]
         assert "citations[].quote" in paths
         assert "citations[].ref" in paths
         assert "corpus_override" in paths
+
+    def test_prompt_injection_screen_lifecycle_groups(self, client):
+        """D57e: prompt_injection_screen does NOT fire on PreToolUse
+        (no tool input is "screen-worthy" before the call lands); the
+        brief explicitly hides PreToolUse here. The verifier groups
+        carry UserPromptSubmit / PostToolUse / Stop only."""
+        r = client.get("/verifier-descriptors/prompt_injection_screen")
+        assert r.status_code == 200
+        groups = r.json()["field_checks"]
+        assert isinstance(groups, dict)
+        assert "PreToolUse" not in groups
+        assert {"UserPromptSubmit", "PostToolUse", "Stop"} <= set(groups.keys())
+        assert any(fc["path"] == "prompt" for fc in groups["UserPromptSubmit"])
+        assert any(
+            fc["path"] == "tool_response.output" for fc in groups["PostToolUse"]
+        )
+        assert any(fc["path"] == "final_message" for fc in groups["Stop"])
+
+    def test_privilege_scan_lifecycle_groups(self, client):
+        """D57e: privilege_scan walks four lifecycles. PreToolUse
+        carries three tool-specific rows (Bash command, Edit
+        new_string, Write content); the other lifecycles carry one
+        row each."""
+        r = client.get("/verifier-descriptors/privilege_scan")
+        assert r.status_code == 200
+        groups = r.json()["field_checks"]
+        assert set(groups.keys()) == {
+            "PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit",
+        }
+        pre_paths = {fc["path"] for fc in groups["PreToolUse"]}
+        assert {
+            "tool_input.command", "tool_input.new_string", "tool_input.content",
+        } <= pre_paths
+        assert any(fc["path"] == "final_message" for fc in groups["Stop"])
+        assert any(fc["path"] == "prompt" for fc in groups["UserPromptSubmit"])
+
+    def test_source_allowlist_lifecycle_groups(self, client):
+        """D57e: source_allowlist is PreToolUse-only (per brief). The
+        old PostToolUse trigger was pruned because there is no
+        runtime path that re-checks the URL after the fetch already
+        ran."""
+        r = client.get("/verifier-descriptors/source_allowlist")
+        assert r.status_code == 200
+        groups = r.json()["field_checks"]
+        assert list(groups.keys()) == ["PreToolUse"]
+        assert any(fc["path"] == "tool_input.url" for fc in groups["PreToolUse"])
+
+    def test_structured_output_lifecycle_groups(self, client):
+        """D57e: structured_output groups under Stop only. The row set
+        documents the caller-assembled contract (the caller extracts
+        a fenced JSON block from `final_message` and POSTs the
+        verifier's own `json` / `data` / `schema` keys)."""
+        r = client.get("/verifier-descriptors/structured_output")
+        assert r.status_code == 200
+        groups = r.json()["field_checks"]
+        assert list(groups.keys()) == ["Stop"]
+        paths = {fc["path"] for fc in groups["Stop"]}
+        # The CC stdin surface the caller extracts FROM, plus the
+        # verifier's own input dict keys.
+        assert "final_message" in paths
+        assert {"json", "data", "schema"} <= paths
 
 
 # ── D52d module-level descriptor invariants ────────────────────────
@@ -664,14 +748,60 @@ class TestDescriptorFieldChecksModule:
             assert get_descriptor(d["step"]) is d
 
     def test_descriptor_field_checks_export(self):
+        """D57e: field_checks is a dict keyed by lifecycle event with
+        list-of-rows values. We walk both axes so a future drift on
+        either layer surfaces with the right key in the assertion."""
         from magi_cp.verifier.descriptors import all_descriptors
         for d in all_descriptors():
             assert "field_checks" in d
-            assert len(d["field_checks"]) >= 1
-            for fc in d["field_checks"]:
-                assert isinstance(fc["path"], str) and fc["path"]
-                assert isinstance(fc["check_description"], str)
+            groups = d["field_checks"]
+            assert isinstance(groups, dict)
+            assert len(groups) >= 1
+            for event, rows in groups.items():
+                assert isinstance(event, str) and event
+                assert isinstance(rows, list) and len(rows) >= 1
+                for fc in rows:
+                    assert isinstance(fc["path"], str) and fc["path"]
+                    assert isinstance(fc["check_description"], str)
+                    assert fc["check_description"]
+
+    def test_descriptor_field_checks_flat_helper(self):
+        """D57e: `field_checks_flat()` flattens the grouped dict into
+        a list, preserving lifecycle insertion order. Existing
+        consumers (the /checks catalog, custom-verifier authoring
+        tooling, the older /verifier-descriptors flat-list tests)
+        keep parsing the same rows. The dashboard reads the grouped
+        shape directly when it needs the lifecycle keying."""
+        from magi_cp.verifier.descriptors import (
+            all_descriptors, field_checks_flat,
+        )
+        for d in all_descriptors():
+            flat = field_checks_flat(d)
+            # Flat list mirrors the union of every group's rows.
+            total = sum(len(rows) for rows in d["field_checks"].values())
+            assert len(flat) == total, d["step"]
+            for fc in flat:
+                assert fc["path"]
                 assert fc["check_description"]
+
+    def test_descriptor_lifecycle_groups_match_triggers(self):
+        """D57e structural invariant: every lifecycle group key in
+        field_checks must match an event the verifier declares in its
+        triggers list. The dashboard Step 3 picker filters verifiers
+        on `event in field_checks`; an orphan group (no trigger row)
+        would mean the picker shows the verifier for a lifecycle the
+        runtime never actually fires under, which is the silent-
+        drift mode this gate exists to prevent.
+
+        The same constraint runs at descriptors.py import time via
+        `_assert_field_checks_paths_resolve()`; this re-asserts it
+        in pytest for grep / CI surface.
+        """
+        from magi_cp.verifier.descriptors import all_descriptors
+        for d in all_descriptors():
+            trigger_events = {tr["event"] for tr in d.get("triggers", [])}
+            for event in d.get("field_checks", {}).keys():
+                assert event in trigger_events, (d["step"], event)
 
     def test_descriptor_input_assembly_export(self):
         """D57c module-level guarantee: every descriptor declares an

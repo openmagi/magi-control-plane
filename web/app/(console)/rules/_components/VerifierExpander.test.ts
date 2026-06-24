@@ -224,4 +224,19 @@ describe("VerifierExpander source invariants", () => {
     // implicit assumption — instead of throwing or rendering "??".
     expect(src).toMatch(/inputAssembly:\s*InputAssembly\s*=[\s\S]*?"cc_stdin"/)
   })
+
+  /* ─── D57e: lifecycle prop threading ──────────────────────────── */
+  it("D57e: accepts an optional lifecycle prop", () => {
+    // The catalog surface omits lifecycle (every group renders open).
+    // The Step 3 picker passes the wizard's current CC event so the
+    // matching group renders open + the others dimmed.
+    expect(src).toMatch(/lifecycle\?:\s*string/)
+  })
+
+  it("D57e: threads the lifecycle into the FieldChecksPanel", () => {
+    // Both branches (descriptor-present + custom-override) forward
+    // the lifecycle so the per-group renderer sees the same prop.
+    const matches = src.match(/lifecycle=\{lifecycle\}/g) ?? []
+    expect(matches.length).toBeGreaterThanOrEqual(2)
+  })
 })

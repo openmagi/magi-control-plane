@@ -5,6 +5,7 @@ import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
+import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
@@ -2508,15 +2509,57 @@ function Step3Condition({
                 {k === "evidence_ref" && (
                   <div className="space-y-2">
                     <FieldLabel>{ko ? "참조할 verifier (1개 이상)" : "Verifier(s) to reference"}</FieldLabel>
-                    {wiredSteps.length === 0 && (
-                      <p className="text-xs text-amber-700">
-                        {ko
-                          ? "연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요."
-                          : "No wired verifiers yet. Enable one under /presets first."}
-                      </p>
-                    )}
+                    {/* D57e: filter wiredSteps to only those whose
+                        descriptor declares a field_checks group for
+                        the current lifecycle. A Stop-lifecycle wizard
+                        does not show source_allowlist (PreToolUse
+                        only); a PreToolUse-lifecycle wizard does not
+                        show citation_verify (Stop only). Verifiers
+                        with no registered descriptor degrade to
+                        "show" so the picker does not silently drop
+                        a wired preset the descriptor mirror has not
+                        been updated for. */}
+                    {(() => {
+                      const filtered = wiredSteps.filter((w) =>
+                        verifierFiresOnLifecycle(w.step, ccEvent),
+                      )
+                      const droppedCount = wiredSteps.length - filtered.length
+                      return (
+                        <>
+                          {wiredSteps.length === 0 && (
+                            <p className="text-xs text-amber-700">
+                              {ko
+                                ? "연결된 verifier가 없습니다. 먼저 /presets에서 verifier를 enable 하세요."
+                                : "No wired verifiers yet. Enable one under /presets first."}
+                            </p>
+                          )}
+                          {wiredSteps.length > 0 && filtered.length === 0 && (
+                            <p
+                              data-testid="step3-verifier-picker-no-lifecycle-match"
+                              className="text-xs text-amber-700"
+                            >
+                              {ko
+                                ? `${lifecycleLabel} 라이프사이클에서 발동하는 verifier 가 없습니다. 다른 라이프사이클을 고르거나 새 verifier 를 enable 하세요.`
+                                : `No wired verifier fires on the ${lifecycleLabel} lifecycle. Pick a different lifecycle or enable a verifier that does.`}
+                            </p>
+                          )}
+                          {droppedCount > 0 && filtered.length > 0 && (
+                            <p
+                              data-testid="step3-verifier-picker-dropped-note"
+                              className="text-[11px] italic text-[var(--color-text-tertiary)]"
+                            >
+                              {ko
+                                ? `${droppedCount} 개의 verifier 가 이 라이프사이클에서 발동하지 않아 숨김 처리되었습니다.`
+                                : `${droppedCount} verifier(s) hidden because they do not fire on this lifecycle.`}
+                            </p>
+                          )}
+                        </>
+                      )
+                    })()}
                     <div className="space-y-2">
-                      {wiredSteps.map((w) => {
+                      {wiredSteps
+                        .filter((w) => verifierFiresOnLifecycle(w.step, ccEvent))
+                        .map((w) => {
                         // D52d follow-up (a11y): the field_checks tree
                         // is positioned visually below the
                         // CheckboxCard but was not programmatically
@@ -2560,6 +2603,7 @@ function Step3Condition({
                                 step={w.step}
                                 t={t}
                                 showFooter
+                                lifecycle={ccEvent}
                               />
                             </div>
                           </div>

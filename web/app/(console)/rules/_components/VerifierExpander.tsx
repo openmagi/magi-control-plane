@@ -37,6 +37,7 @@ type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>
 export function VerifierExpander({
   step, t, locale, recentEmissions24h, nfFormat, source, enforcement,
   fieldChecksOverride, inputAssemblyOverride, callerAssemblyHintOverride,
+  lifecycle,
 }: {
   step: string
   t: T
@@ -70,6 +71,13 @@ export function VerifierExpander({
    * rows; the descriptor mirror is the source there. */
   inputAssemblyOverride?: InputAssembly
   callerAssemblyHintOverride?: string
+  /** D57e: the policy's current lifecycle CC event, when the
+   * expander is rendered inside a policy context (Step 3 picker, a
+   * future inline expand on the Policies tab). The matching
+   * lifecycle group then expands by default and the other groups
+   * render dimmed/collapsed. Omitted on the standalone catalog
+   * surface (every group renders open). */
+  lifecycle?: string
 }) {
   const descriptor = getVerifierDescriptor(step)
   // D57c: resolve the (input_assembly, caller_assembly_hint) pair.
@@ -150,6 +158,7 @@ export function VerifierExpander({
                   t={t}
                   inputAssembly={inputAssembly}
                   fieldChecksOverride={fieldChecksOverride}
+                  lifecycle={lifecycle}
                 />
               </>
             ) : (
@@ -176,6 +185,7 @@ export function VerifierExpander({
               step={step}
               t={t}
               inputAssembly={inputAssembly}
+              lifecycle={lifecycle}
             />
             <InputPathsPanel
               step={step}
@@ -326,12 +336,17 @@ function PanelHeader({ children }: { children: React.ReactNode }) {
  * pulled those paths off CC stdin.
  */
 function FieldChecksPanel({
-  step, t, inputAssembly, fieldChecksOverride,
+  step, t, inputAssembly, fieldChecksOverride, lifecycle,
 }: {
   step: string
   t: T
   inputAssembly: InputAssembly
   fieldChecksOverride?: Array<{ path: string; check_description: string }>
+  /** D57e: the policy's current lifecycle CC event. Threaded into
+   * VerifierFieldChecks so the matching lifecycle group expands by
+   * default and the other groups render dimmed. Omitted on the
+   * standalone catalog surface (every group renders open). */
+  lifecycle?: string
 }) {
   const headingKey = inputAssembly === "caller_assembled"
     ? "rules.verifier.expander.fieldChecks.callerAssembled"
@@ -345,6 +360,7 @@ function FieldChecksPanel({
         step={step}
         t={t}
         fieldChecksOverride={fieldChecksOverride}
+        lifecycle={lifecycle}
       />
     </div>
   )

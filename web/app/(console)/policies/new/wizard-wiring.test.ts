@@ -80,10 +80,13 @@ describe("policies/new wizard — P9 steering wiring", () => {
   })
 
   it("D52d: surfaces the field_checks tree inline for each verifier in the evidence_ref picker", () => {
-    // The component is rendered inside the wiredSteps.map iteration so
-    // every author-visible verifier card gets its own tree.
+    // The component is rendered inside the wiredSteps.{filter}.map
+    // iteration so every author-visible verifier card gets its own
+    // tree. D57e widened this from a bare `.map` to `.filter(...).map`
+    // so a verifier with no lifecycle-matching field_checks group
+    // is hidden; the surface contract still holds.
     expect(src).toMatch(
-      /wiredSteps\.map\([\s\S]*?VerifierFieldChecks[\s\S]*?showFooter/,
+      /wiredSteps[\s\S]*?\.map\([\s\S]*?VerifierFieldChecks[\s\S]*?showFooter/,
     )
   })
 
@@ -669,6 +672,47 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // "state-build" and "seam" since comment-formatter or future
       // editor may re-wrap.
       expect(body).toMatch(/state-build[\s\n/]*seam/)
+    })
+  })
+
+  describe("D57e: Step 3 verifier picker filters by lifecycle", () => {
+    // D57e: the verifier picker (kind=evidence_ref) must only show
+    // verifiers whose descriptor declares a field_checks group for
+    // the wizard's current lifecycle. A Stop-lifecycle wizard
+    // should hide source_allowlist (PreToolUse-only); a PreToolUse-
+    // lifecycle wizard should hide citation_verify (Stop-only).
+    it("imports verifierFiresOnLifecycle from the descriptor mirror", () => {
+      // Single source of truth for "does this verifier fire on this
+      // lifecycle": the descriptor mirror in @/lib/verifier-
+      // descriptors. Local re-derivation would drift.
+      expect(src).toContain("verifierFiresOnLifecycle")
+      expect(src).toMatch(/from\s+["']@\/lib\/verifier-descriptors["']/)
+    })
+
+    it("filters wiredSteps through verifierFiresOnLifecycle inside the evidence_ref branch", () => {
+      // The picker map starts with `wiredSteps.filter((w) =>
+      // verifierFiresOnLifecycle(w.step, ccEvent)).map(...)` so the
+      // dropped verifiers do not render. The filter uses the same
+      // `ccEvent` the per-lifecycle conditional uses (LIFECYCLE_TO_
+      // EVENT lookup), so the picker tracks Step 1's choice.
+      expect(src).toMatch(
+        /wiredSteps[\s\n]*\.filter\(\(w\)\s*=>\s*verifierFiresOnLifecycle\(w\.step,\s*ccEvent\)\)/,
+      )
+    })
+
+    it("surfaces a 'no verifier matches this lifecycle' note when the filter drops everything", () => {
+      expect(src).toContain("step3-verifier-picker-no-lifecycle-match")
+    })
+
+    it("surfaces a dropped-count note when the filter hides some but not all verifiers", () => {
+      expect(src).toContain("step3-verifier-picker-dropped-note")
+    })
+
+    it("threads the lifecycle into the inline VerifierFieldChecks render", () => {
+      // The matching group expands by default and other groups dim
+      // out, so the operator sees the context relevant to their
+      // policy without losing the cross-lifecycle picture.
+      expect(src).toMatch(/VerifierFieldChecks[\s\S]{0,400}lifecycle=\{ccEvent\}/)
     })
   })
 })

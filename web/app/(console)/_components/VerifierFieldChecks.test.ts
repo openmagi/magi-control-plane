@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import {
+  fieldChecksFlat,
   getVerifierDescriptor,
   allVerifierDescriptors,
+  lifecycleGroupsFor,
 } from "../../../lib/verifier-descriptors"
 
 /**
@@ -30,15 +32,43 @@ describe("VerifierFieldChecks source invariants", () => {
     expect(src).toContain("@/lib/verifier-descriptors")
   })
 
-  it("renders the preview branch when the resolved field_checks list is empty", () => {
-    // D52d follow-up: the preview branch now triggers on
-    // `fieldChecks.length === 0`. `fieldChecks` resolves to the
-    // explicit `fieldChecksOverride` when the caller passes one (for
-    // custom-source catalog rows) and falls back to the descriptor
-    // mirror otherwise. A non-empty override therefore renders the
-    // tree even when getVerifierDescriptor returns null.
-    expect(src).toMatch(/fieldChecks\.length === 0/)
+  it("renders the preview branch when the resolved field_checks groups are empty", () => {
+    // D52d follow-up + D57e: the preview branch now triggers on
+    // `groups === null` (no descriptor + no override, or every
+    // resolved group is empty). `groups` resolves to the explicit
+    // `fieldChecksOverride` when the caller passes one (for custom-
+    // source catalog rows) and falls back to the descriptor mirror
+    // otherwise. A non-empty override therefore renders the tree
+    // even when getVerifierDescriptor returns null.
+    expect(src).toMatch(/groups === null/)
     expect(src).toContain("verifier-field-checks-preview")
+  })
+
+  it("renders one <details> section per lifecycle group (D57e)", () => {
+    // D57e: descriptors that ship more than one lifecycle group
+    // render each under its own <details> so the operator can
+    // collapse the ones that do not match their policy's lifecycle.
+    expect(src).toContain("verifier-field-checks-group-")
+    expect(src).toMatch(/<details/)
+    expect(src).toMatch(/<summary/)
+  })
+
+  it("dims non-matching groups when a lifecycle is supplied (D57e)", () => {
+    // The brief: "When the verifier is used inside a policy with a
+    // specific lifecycle, the OTHER groups appear collapsed and
+    // grayed-out; the current lifecycle's group is expanded by
+    // default."
+    expect(src).toMatch(/data-lifecycle-active/)
+    expect(src).toMatch(/data-lifecycle-dimmed/)
+    expect(src).toMatch(/opacity-60 grayscale/)
+  })
+
+  it("labels each group with a plain-language tooltip (D57e)", () => {
+    // The brief: labeled with the CC event name + a plain-language
+    // tooltip ("PreToolUse" = "Before any tool runs").
+    expect(src).toMatch(/lifecycleTooltip/)
+    expect(src).toContain("Before any tool runs")
+    expect(src).toContain("Before the agent's final reply")
   })
 
   it("accepts a fieldChecksOverride prop so custom-source catalog rows render the tree", () => {
@@ -76,11 +106,17 @@ describe("VerifierFieldChecks source invariants", () => {
  * and the wizard picker would mis-render if the mirror drifted.
  */
 describe("VerifierFieldChecks data parity vs the descriptor mirror", () => {
-  it("every built-in descriptor exposes a non-empty field_checks list", () => {
+  it("every built-in descriptor exposes a non-empty field_checks dict (D57e)", () => {
+    // D57e: field_checks is grouped by lifecycle. Every built-in
+    // must declare at least one group; every group must carry at
+    // least one row with a non-empty path + description.
     for (const d of allVerifierDescriptors()) {
-      const fcs = d.field_checks ?? []
-      expect(fcs.length, `field_checks empty on ${d.step}`).toBeGreaterThan(0)
-      for (const fc of fcs) {
+      const groups = d.field_checks ?? {}
+      expect(
+        Object.keys(groups).length,
+        `field_checks dict empty on ${d.step}`,
+      ).toBeGreaterThan(0)
+      for (const fc of fieldChecksFlat(d)) {
         expect(fc.path, `empty path on ${d.step}`).toBeTruthy()
         expect(fc.check_description, `empty desc on ${d.step}`).toBeTruthy()
         expect(fc.check_description.length).toBeLessThanOrEqual(200)
@@ -93,15 +129,12 @@ describe("VerifierFieldChecks data parity vs the descriptor mirror", () => {
     // (its `run()` reads `citations` + `corpus_override` from the
     // posted dict, NOT a CC stdin path). The catalog row therefore
     // documents the verifier's input contract, not CC stdin paths.
-    // The earlier brief that asked for `tool_input.url` /
-    // `tool_response.output` / `transcript_path` was fabrication;
-    // _assert_field_checks_paths_resolve() in descriptors.py now hard-
-    // fails import if any built-in carries a row that resolves
-    // neither to a CC stdin path on a declared trigger nor to one of
-    // the verifier's own input_payload_paths.
+    //
+    // D57e: rows live under the Stop lifecycle group.
     const d = getVerifierDescriptor("citation_verify")
     expect(d).not.toBeNull()
-    const paths = (d!.field_checks ?? []).map((f) => f.path)
+    expect(lifecycleGroupsFor(d!)).toEqual(["Stop"])
+    const paths = (d!.field_checks!.Stop ?? []).map((f) => f.path)
     expect(paths).toContain("citations[].quote")
     expect(paths).toContain("citations[].ref")
     expect(paths).toContain("corpus_override")
@@ -110,7 +143,9 @@ describe("VerifierFieldChecks data parity vs the descriptor mirror", () => {
   it("source_allowlist field_check description names allowlist semantics", () => {
     const d = getVerifierDescriptor("source_allowlist")
     expect(d).not.toBeNull()
-    const fcs = d!.field_checks ?? []
+    // D57e: source_allowlist is PreToolUse-only.
+    expect(lifecycleGroupsFor(d!)).toEqual(["PreToolUse"])
+    const fcs = d!.field_checks!.PreToolUse ?? []
     expect(fcs.length).toBeGreaterThan(0)
     const blob = fcs.map((f) => `${f.path} ${f.check_description}`).join("\n")
     expect(blob).toMatch(/allowlist/i)
