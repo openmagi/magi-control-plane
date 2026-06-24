@@ -134,10 +134,11 @@ function SectionShell({
 // ── visual primitives ─────────────────────────────────────────────
 function PrimaryCTA({ href, children, size = "md" }: { href: string; children: React.ReactNode; size?: "md" | "lg" }) {
   const external = href.startsWith("http")
-  const sizeCls = size === "lg" ? "px-6 py-3.5 text-base" : "px-5 py-3 text-sm"
+  const sizeCls = size === "lg" ? "px-7 py-3.5 text-base" : "px-5 py-3 text-sm"
   const cls =
     `inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[var(--cta)] ${sizeCls} ` +
-    "font-semibold text-white shadow-sm hover:bg-[var(--cta-hover)] " +
+    "font-semibold text-white hover:bg-[var(--cta-hover)] " +
+    "shadow-[0_0_16px_rgba(124,58,237,0.3),0_0_32px_rgba(124,58,237,0.1)] " +
     "transition-colors duration-200 cursor-pointer " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cta)] " +
     "focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--canvas)]"
@@ -168,7 +169,7 @@ function Arrow() {
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-lg border border-[var(--brand)]/25 bg-[var(--brand-tint)] px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--brand-strong)]">
+    <span className="inline-flex items-center rounded-lg border border-[var(--ink)]/10 bg-white/80 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--body)]">
       {children}
     </span>
   )
