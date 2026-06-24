@@ -480,6 +480,53 @@ class LedgerRepo:
                 and r.body.get("step") in wanted_set
             )
 
+    def list_recent_by_verifier(
+        self,
+        tenant_id: str,
+        *,
+        verifier: str,
+        limit: int,
+        since_ts: int | None = None,
+    ) -> list[LedgerEntry]:
+        """D53a: most-recent N rows for a single verifier, tenant scoped.
+
+        Powers the "Recent emissions samples" inline list on the verifier
+        catalog expander. Ordered DESC by id so the caller renders newest
+        first (matching the operator's read order).
+
+        `verifier` is the step name (e.g. `citation_verify`,
+        `inline_regex`); empty / falsy returns `[]` so an unknown verifier
+        is a clean empty list, not a 404 at the API surface above.
+
+        `since_ts` (optional) bounds the window the same way the count
+        endpoints do. The brief's default is 24h; the route layer passes
+        `now - 86400` when the caller doesn't override.
+        """
+        if not verifier:
+            return []
+        limit = max(1, min(int(limit), 25))
+        with Session(self.engine) as s:
+            stmt = select(LedgerEntry).where(
+                LedgerEntry.tenant_id == tenant_id,
+            )
+            if since_ts is not None:
+                stmt = stmt.where(LedgerEntry.ts >= since_ts)
+            dialect = self.engine.dialect.name
+            stmt = self._apply_step_filter(stmt, [verifier], dialect)
+            stmt = stmt.order_by(LedgerEntry.id.desc()).limit(limit)
+            rows = list(s.scalars(stmt))
+            for r in rows:
+                s.expunge(r)
+            if dialect not in ("postgresql", "sqlite"):
+                # Fallback dialect: the step filter is a no-op on
+                # `_apply_step_filter`, so we have to filter in Python.
+                rows = [
+                    r for r in rows
+                    if isinstance(r.body, dict)
+                    and r.body.get("step") == verifier
+                ]
+            return rows
+
     def counts_by_step(
         self,
         tenant_id: str,

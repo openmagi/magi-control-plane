@@ -9,6 +9,7 @@ import {
 } from "@/lib/verifier-descriptors"
 import { Code } from "@/components/ui"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
+import { VerifierSamplesList } from "./VerifierSamplesList"
 
 /**
  * D52b: per-verifier expander rendered on the Rules → Verifiers tab.
@@ -172,6 +173,13 @@ function RecentEmissionsPanel({
   // so no regression observed; the foot-gun was the duplicated
   // contract, fixed at the source).
   const href = ledgerHref({ verifiers: [step] })
+  // D53a: only render the inline samples list when the verifier has a
+  // runtime binding (built-in or wired policy-derived step). Custom
+  // verifiers + `enforcement: missing` rows do not emit, so the list
+  // would always be empty there and the "Show samples" affordance
+  // would be misleading. The structural note is already surfaced by
+  // the `noteKey` branch below.
+  const showSamples = !noRuntimeBinding
   return (
     <div data-testid="verifier-expander-recent-emissions">
       <PanelHeader>
@@ -202,6 +210,9 @@ function RecentEmissionsPanel({
         >
           {t(RECENT_NOTE_KEYS[noteKey])}
         </p>
+      )}
+      {showSamples && (
+        <VerifierSamplesList step={step} t={t} initialCount={count} />
       )}
     </div>
   )

@@ -133,6 +133,27 @@ export type LedgerPage = {
   entries: LedgerEntry[]
 }
 
+/** D53a: one row of the verifier samples response.
+ *
+ * `redacted_payload_preview` is already redacted server-side via
+ * `magi_cp.policy.run_redaction.redact_payload_preview` (allowlist
+ * projection + linear regex masking + 240-char truncation). The
+ * dashboard renders it verbatim - never re-extracts or attempts to
+ * de-redact. `policy_id` is reserved for a future producer that
+ * records the policy that fired this verifier; today it is always
+ * `null` for built-in / inline kinds. */
+export type VerifierSample = {
+  id: number
+  ts: string
+  verdict: "pass" | "fail" | "deny" | "review" | "needs_review" | "not_applicable" | null
+  redacted_payload_preview: string
+  policy_id: string | null
+}
+
+export type VerifierSamplesResponse = {
+  samples: VerifierSample[]
+}
+
 export type PolicyTrigger = {
   host: string
   event: string
@@ -319,6 +340,34 @@ export const cloud = {
     const qs = params.toString()
     return _fetch<{ counts: Record<string, number> }>(
       `/ledger/counts${qs ? `?${qs}` : ""}`,
+      { method: "GET", keyType: "api" },
+    )
+  },
+
+  /** D53a: most-recent N redacted samples for one verifier.
+   *
+   * Powers the inline sample list on the verifier catalog expander.
+   * Each sample's `redacted_payload_preview` has already passed
+   * through the cloud-side redactor; the dashboard never sees raw
+   * evidence payloads. Unknown verifier names come back as
+   * `{samples: []}` (NOT a 404), matching the count endpoint's
+   * "empty filter view is valid" contract.
+   *
+   * `limit` is clamped server-side to [1, 25]; the dashboard's
+   * collapsed list shows 5. */
+  listVerifierSamples: (
+    verifier: string,
+    limit: number = 5,
+    sinceSecs: number = 24 * 60 * 60,
+  ): Promise<VerifierSamplesResponse> => {
+    const params = new URLSearchParams()
+    params.set("verifier", verifier)
+    params.set("limit", String(Math.max(1, Math.min(25, Math.floor(limit)))))
+    if (sinceSecs > 0) {
+      params.set("since_secs", String(Math.floor(sinceSecs)))
+    }
+    return _fetch<VerifierSamplesResponse>(
+      `/ledger/samples?${params.toString()}`,
       { method: "GET", keyType: "api" },
     )
   },

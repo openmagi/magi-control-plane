@@ -548,6 +548,200 @@ class TestLedgerCountsBatch:
         assert r.status_code == 400
 
 
+class TestLedgerSamples:
+    """D53a: GET /ledger/samples?verifier=<step>&limit=<n>&since_secs=<s>.
+
+    Powers the "Recent emissions samples" inline list on the verifier
+    catalog expander. Each sample row passes through D50's redactor
+    before serialization; raw payloads NEVER reach the dashboard."""
+
+    def _seed_inline_regex(self, client, n, *, payload_text=None):
+        for i in range(n):
+            client.post("/verify_inline", json={
+                "kind": "regex", "pattern": "foo",
+                "payload": {
+                    "text": payload_text if payload_text else f"foo {i}",
+                    "session_id": f"s_{i}",
+                },
+            }, headers=HEADERS)
+
+    def test_samples_returns_recent_redacted_rows(self, client):
+        self._seed_inline_regex(client, n=3)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=HEADERS,
+        ).json()
+        # All three seeded rows fit under the default limit.
+        assert "samples" in r
+        assert len(r["samples"]) == 3
+        first = r["samples"][0]
+        # Contract shape: id, ts, verdict, redacted_payload_preview,
+        # policy_id (nullable until producers record it).
+        assert isinstance(first["id"], int)
+        assert isinstance(first["ts"], str) and first["ts"].endswith("Z")
+        assert first["verdict"] in ("pass", "review", "deny", None)
+        assert isinstance(first["redacted_payload_preview"], str)
+        assert "policy_id" in first
+
+    def test_samples_respects_limit(self, client):
+        self._seed_inline_regex(client, n=8)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=3",
+            headers=HEADERS,
+        ).json()
+        assert len(r["samples"]) == 3
+
+    def test_samples_default_limit_is_five(self, client):
+        self._seed_inline_regex(client, n=12)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex",
+            headers=HEADERS,
+        ).json()
+        assert len(r["samples"]) == 5
+
+    def test_samples_unknown_verifier_returns_empty_array(self, client):
+        # Per the brief: unknown verifier name -> empty samples list,
+        # NOT 404. An empty filter view is a valid operator-visible
+        # state; the catalog chip lists names that exist, but the
+        # expander should never crash on a typo'd query.
+        self._seed_inline_regex(client, n=2)
+        r = client.get(
+            "/ledger/samples?verifier=does_not_exist",
+            headers=HEADERS,
+        )
+        assert r.status_code == 200
+        assert r.json() == {"samples": []}
+
+    def test_samples_orders_newest_first(self, client):
+        self._seed_inline_regex(client, n=4)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=10",
+            headers=HEADERS,
+        ).json()
+        ids = [row["id"] for row in r["samples"]]
+        assert ids == sorted(ids, reverse=True)
+
+    def test_samples_redacts_secret_shaped_payload(self, client):
+        # Inline-regex deny rows store the pattern verbatim in
+        # `body['reasons']` (e.g. "pattern did not match: <pattern>").
+        # That's our injection point: a JWT-shaped string used as the
+        # pattern flows into the ledger body verbatim, and the
+        # samples endpoint MUST run it through the redactor before
+        # responding. Without redaction the JWT comes through whole.
+        jwt = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxIiwibmFtZSI6IkphbmUifQ."
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        )
+        # Use the JWT as the `pattern`; with a payload text that does
+        # NOT contain the JWT shape, the verify_inline route writes a
+        # `pattern did not match: <jwt>` reason into the ledger body.
+        client.post("/verify_inline", json={
+            "kind": "regex",
+            # `pattern` field has a 2000-char cap; well under that.
+            "pattern": jwt,
+            "payload": {"text": "no secret here", "session_id": "s_jwt"},
+        }, headers=HEADERS)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=HEADERS,
+        ).json()
+        previews = [row["redacted_payload_preview"] for row in r["samples"]]
+        assert previews, "expected at least one sample"
+        joined = " ".join(previews)
+        # The redactor masks the JWT shape; the verbatim token must
+        # not appear in any preview row.
+        assert jwt not in joined
+        # The marker shape is the redactor's contract; assert at
+        # least one of the patterns fired (kind=jwt is what we expect
+        # for this input).
+        assert "[REDACTED:jwt]" in joined
+
+    def test_samples_preview_truncated(self, client):
+        # A long `reasons` string forces the redactor to truncate.
+        # The deny path concatenates `f"pattern did not match: <pat>"`
+        # (with the pattern truncated to 80 chars), so the rendered
+        # preview is naturally short. We instead exercise the
+        # truncation contract by calling the redactor directly with
+        # a pre-built long body; this isolates the cap behaviour
+        # from the route shape (which today caps reasons to ~80 chars
+        # of pattern).
+        from magi_cp.policy.run_redaction import (
+            DEFAULT_PREVIEW_MAX_CHARS, redact_payload_preview,
+        )
+        long_body = {
+            "step": "inline_regex",
+            "verdict": "deny",
+            "reasons": ["x" * 600],
+        }
+        prev = redact_payload_preview(long_body)
+        assert len(prev) <= DEFAULT_PREVIEW_MAX_CHARS
+        assert prev.endswith("...")
+
+    def test_samples_requires_api_key(self, client):
+        # Same fail-closed posture as /ledger. No API key -> 401.
+        r = client.get("/ledger/samples?verifier=inline_regex")
+        assert r.status_code == 401
+
+    def test_samples_tenant_scoping_holds(self, app, client):
+        # Two tenants, each with a row that differs in its `pattern`.
+        # The pattern flows through into `body['reasons']` on the
+        # inline_regex deny path; we exploit that to make each
+        # tenant's row carry an identifiable fingerprint, then assert
+        # tenant A's sample list contains A's fingerprint and NOT B's.
+        from magi_cp.cloud.tenants import ApiKeyRepo, TenantRepo
+        engine = app.state.engine
+        repo = TenantRepo(engine)
+        repo.create(tenant_id="tenant_a", plan="free")
+        repo.create(tenant_id="tenant_b", plan="free")
+        key_a = ApiKeyRepo(engine).issue(tenant_id="tenant_a")
+        key_b = ApiKeyRepo(engine).issue(tenant_id="tenant_b")
+        headers_a = {"X-Api-Key": key_a.cleartext}
+        headers_b = {"X-Api-Key": key_b.cleartext}
+        client.post("/verify_inline", json={
+            "kind": "regex", "pattern": "alpha_fingerprint",
+            "payload": {"text": "bar", "session_id": "sa"},
+        }, headers=headers_a)
+        client.post("/verify_inline", json={
+            "kind": "regex", "pattern": "beta_fingerprint",
+            "payload": {"text": "bar", "session_id": "sb"},
+        }, headers=headers_b)
+        r_a = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=headers_a,
+        ).json()
+        previews_a = " ".join(
+            row["redacted_payload_preview"] for row in r_a["samples"]
+        )
+        assert "alpha_fingerprint" in previews_a
+        assert "beta_fingerprint" not in previews_a
+        r_b = client.get(
+            "/ledger/samples?verifier=inline_regex&limit=5",
+            headers=headers_b,
+        ).json()
+        previews_b = " ".join(
+            row["redacted_payload_preview"] for row in r_b["samples"]
+        )
+        assert "beta_fingerprint" in previews_b
+        assert "alpha_fingerprint" not in previews_b
+
+    def test_samples_window_excludes_old_rows(self, client):
+        # since_secs=1 with a stale row must produce empty samples. We
+        # seed a row, then craft a query with the smallest positive
+        # window (1s) - the seeded row's ts is "now", but the
+        # `time.time()` between SQL and the request is too tight to
+        # bound deterministically without mocking. Instead we seed the
+        # row, sleep 2s, then query with since_secs=1; the row is now
+        # outside the window.
+        self._seed_inline_regex(client, n=1)
+        time.sleep(2)
+        r = client.get(
+            "/ledger/samples?verifier=inline_regex&since_secs=1",
+            headers=HEADERS,
+        ).json()
+        assert r["samples"] == []
+
+
 class TestLedgerHasMore:
     """D52c follow-up: /ledger emits has_more so the dashboard can hide
     Next-page when the filtered chain is exhausted."""

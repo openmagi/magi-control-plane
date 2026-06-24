@@ -1232,6 +1232,66 @@ def create_app(
         )
         return {"count": int(n)}
 
+    @app.get("/ledger/samples", dependencies=[Depends(require_tenant_auth)])
+    def ledger_samples(request: Request,
+                        verifier: str = Query(..., min_length=1, max_length=64),
+                        limit: int = Query(default=5, ge=1, le=25),
+                        since_secs: int = Query(default=86400, ge=0)) -> dict:
+        """D53a: most-recent N redacted samples for a single verifier.
+
+        Powers the inline "Recent emissions" sample list on the verifier
+        catalog expander. Each sample is the verdict + a short redacted
+        preview of the body (raw payloads never reach the dashboard;
+        every preview flows through `run_redaction.redact_payload_preview`
+        before the response is built).
+
+        Defaults:
+          - `limit=5` (max 25, lower-clamped to 1)
+          - `since_secs=86400` (24h window; `0` disables the window)
+          - `verifier` is required; unknown verifier names return
+            `{samples: []}` (NOT 404; an empty filter view is a valid
+            operator-visible state, mirrors the count endpoint's
+            "unknown=0" contract).
+
+        Auth: same tenant-scoped key as /ledger.
+        """
+        from ..policy.run_redaction import (
+            DEFAULT_PREVIEW_MAX_CHARS, redact_payload_preview,
+        )
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        cutoff: int | None = None
+        if since_secs > 0:
+            cutoff = int(time.time()) - int(since_secs)
+        rows = ledger.list_recent_by_verifier(
+            tenant_id,
+            verifier=verifier,
+            limit=limit,
+            since_ts=cutoff,
+        )
+        samples: list[dict] = []
+        for r in rows:
+            body = r.body if isinstance(r.body, dict) else {}
+            verdict = body.get("verdict")
+            # Defense in depth: every body MUST pass through the
+            # redactor before it reaches the response. The preview
+            # function is fail-closed (allowlist projection + linear
+            # regex masking) so an unexpected future body field with a
+            # secret cannot leak through this surface.
+            preview = redact_payload_preview(
+                body, max_chars=DEFAULT_PREVIEW_MAX_CHARS,
+            )
+            samples.append({
+                "id": r.id,
+                "ts": _iso_ts(r.ts),
+                "verdict": verdict if isinstance(verdict, str) else None,
+                "redacted_payload_preview": preview,
+                # `policy_id` is not stored on ledger bodies today; the
+                # field is reserved in the contract so a future
+                # producer that does record it surfaces automatically.
+                "policy_id": body.get("policy_id"),
+            })
+        return {"samples": samples}
+
     @app.get("/ledger/counts", dependencies=[Depends(require_tenant_auth)])
     def ledger_counts(request: Request,
                        verifier: list[str] | None = Query(default=None),
@@ -1290,6 +1350,21 @@ def create_app(
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+def _iso_ts(ts: int) -> str:
+    """Format a ledger row's epoch-second `ts` as ISO-8601 UTC.
+
+    D53a: the samples endpoint returns ISO strings (the dashboard renders
+    them as relative time via the browser). `ts` is stored as an int
+    epoch second in `LedgerEntry.ts`; we format with a trailing `Z` so
+    the consumer doesn't have to guess at the timezone.
+    """
+    import datetime as _dt
+    return (
+        _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc)
+           .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+
+
 def _citations_summary(doc) -> list[dict]:
     return [
         {"ref": v.citation.ref, "case_number": v.case_number,

@@ -150,4 +150,29 @@ describe("VerifierExpander source invariants", () => {
     // catalog expander + wizard picker both consume the same source.
     expect(src).toMatch(/from ".+_components\/VerifierFieldChecks"/)
   })
+
+  /* ─── D53a: dynamic samples list inside the emissions panel ─── */
+  it("D53a: imports and renders VerifierSamplesList", () => {
+    // The samples list is mounted inside the RecentEmissionsPanel so
+    // the operator sees the inline list under the count + ledger link.
+    expect(src).toContain("VerifierSamplesList")
+    expect(src).toMatch(/from "\.\/VerifierSamplesList"/)
+    expect(src).toContain("<VerifierSamplesList")
+  })
+
+  it("D53a: skips the samples list for verifiers without runtime binding", () => {
+    // custom + policy-derived(missing) rows never emit, so the list
+    // would always be empty. The expander gates the render on the
+    // same `noRuntimeBinding` predicate it uses for the no-runtime
+    // note (single source of truth).
+    expect(src).toContain("showSamples")
+    expect(src).toContain("!noRuntimeBinding")
+  })
+
+  it("D53a: forwards the count into the samples list header", () => {
+    // The header shows "N total" using the same server-rendered count
+    // the existing count widget already has, so the empty-list case
+    // never visually contradicts a stale count.
+    expect(src).toMatch(/initialCount=\{count\}/)
+  })
 })

@@ -102,6 +102,48 @@ describe("cloud client", () => {
     expect(String(captured.url)).toBe("http://test/ledger/count")
   })
 
+  // ── D53a: listVerifierSamples ─────────────────────────────────────
+  it("listVerifierSamples hits /ledger/samples with the given filter", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ samples: [] }), { status: 200 }) as any
+    })
+    const r = await cloud.listVerifierSamples("citation_verify", 5)
+    const u = new URL(String(captured.url))
+    expect(u.pathname).toBe("/ledger/samples")
+    expect(u.searchParams.get("verifier")).toBe("citation_verify")
+    expect(u.searchParams.get("limit")).toBe("5")
+    expect(u.searchParams.get("since_secs")).toBe("86400")
+    expect(captured.init.headers.get("X-Api-Key")).toBe("api-test")
+    expect(r).toEqual({ samples: [] })
+  })
+
+  it("listVerifierSamples clamps limit to [1, 25]", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ samples: [] }), { status: 200 }) as any
+    })
+    await cloud.listVerifierSamples("x", 999)
+    let u = new URL(String(captured.url))
+    expect(u.searchParams.get("limit")).toBe("25")
+    await cloud.listVerifierSamples("x", -10)
+    u = new URL(String(captured.url))
+    expect(u.searchParams.get("limit")).toBe("1")
+  })
+
+  it("listVerifierSamples drops non-positive sinceSecs", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ samples: [] }), { status: 200 }) as any
+    })
+    await cloud.listVerifierSamples("x", 5, 0)
+    const u = new URL(String(captured.url))
+    expect(u.searchParams.get("since_secs")).toBeNull()
+  })
+
   it("throws on non-200 with redacted message (no body leak)", async () => {
     global.fetch = vi.fn(async () => new Response("internal token leaked", { status: 401 }) as any)
     try {
