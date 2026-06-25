@@ -501,20 +501,30 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).not.toContain("tool_alt")
     })
 
-    it("Step 2 chip row is radio-single-select (not checkbox-multi)", () => {
-      // The toolScope_chip control must be `type="radio"` so the
-      // browser enforces single-select per radio-group name.
+    it("Step 2 mounts the D70 ToolCombobox (single autocomplete surface)", () => {
+      // D70: the legacy `toolScope_chip` radio grid + separate MCP
+      // free-text input were retired in favour of a single autocomplete
+      // combobox that covers every CC built-in + free-typed MCP /
+      // custom names. The combobox component owns one hidden form
+      // input named `toolScope_custom` so advanceWizard's existing
+      // seam still picks the typed value up. The Step 2 body therefore
+      // imports + mounts ToolCombobox and no longer renders a chip
+      // radio surface or a separate MCP text input.
       const start = src.indexOf("function Step2ToolScope")
       const end = src.indexOf("\n}\n", start)
       expect(start).toBeGreaterThan(-1)
       expect(end).toBeGreaterThan(start)
       const body = src.slice(start, end)
-      // Exactly one toolScope_chip input on Step 2, and it's a radio.
-      expect(body).toMatch(/name="toolScope_chip"[\s\S]*?type="radio"|type="radio"[\s\S]*?name="toolScope_chip"/)
-      // No checkbox flavour anywhere on Step 2.
-      expect(body).not.toMatch(/name="toolScope_chip"[\s\S]*?type="checkbox"/)
-      // The MCP free-text input is a single name field (maxLength tight).
-      expect(body).toMatch(/name="toolScope_custom"[\s\S]*?maxLength=\{256\}/)
+      // Mounts the client island.
+      expect(body).toMatch(/<ToolCombobox[\s>]/)
+      // No legacy chip radio in Step 2.
+      expect(body).not.toMatch(/name="toolScope_chip"/)
+      // No separate raw MCP text input either; the combobox owns
+      // the only `toolScope_custom` write surface (which lives inside
+      // the imported component, NOT inline here).
+      expect(body).not.toMatch(/name="toolScope_custom"[\s\S]*?maxLength=\{256\}/)
+      // File-level import is present (top of page.tsx).
+      expect(src).toMatch(/import\s+ToolCombobox\s+from\s+"\.\/_components\/ToolCombobox"/)
     })
 
     it("Step 2 surfaces the picked-tool helper hint", () => {

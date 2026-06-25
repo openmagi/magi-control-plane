@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import Step1LifecyclePicker from "./_components/Step1LifecyclePicker"
+import ToolCombobox from "./_components/ToolCombobox"
 import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
@@ -688,10 +689,11 @@ function allowedMatcherClassesForLifecycle(
 // yet. Renders as a "Coming soon" card and is rejected on save.
 const STRIP_AVAILABLE = false
 
-const TOOL_PRESETS = [
-  "Bash", "Read", "Edit", "Write", "Glob", "Grep",
-  "NotebookEdit", "TodoWrite", "WebFetch", "WebSearch",
-] as const
+// D70: the legacy `TOOL_PRESETS` chip list (10 names) was retired in
+// favour of the canonical CC built-in list in `@/lib/cc-tools`. The
+// Step 2 surface now uses a single autocomplete combobox that covers
+// every built-in tool (17 as of CC v2.1.170) plus free-typed MCP /
+// custom names. Nothing else in this file references the old list.
 
 // Common tool list for the tool_name kind. WebFetch is the only one
 // fetch_domain / domain_allowlist target.
@@ -3718,16 +3720,17 @@ function Step2ToolScope({
   // D56d (single-tool wizard): scope is a single tool name. The
   // GuidedWizard state-build seam already collapsed any inbound CSV /
   // alternation to its first entry, so `state.toolScope` is canonical
-  // here. Builtin pick = preset chip string; MCP pick = the free-text
-  // input. The two are mutually exclusive. The form picks the typed
-  // MCP value first in advanceWizard (matching the helper copy) so an
-  // operator who typed into the MCP box wins over a stale chip.
+  // here.
+  // D70: replaced the chip grid + separate MCP input with a single
+  // autocomplete combobox that covers every CC built-in + free-typed
+  // MCP / custom names. The combobox owns the only Step 2 form input
+  // (`toolScope_custom`) and ToolCombobox renders the pre-filled
+  // value. advanceWizard's existing fallback `scopeCustom || scopeChip`
+  // still works because the chip name is now absent (treated as empty
+  // string) and the typed value wins.
   const rawScope = (state.toolScope ?? "").trim()
   const firstPick = rawScope
   const isAny = !rawScope || rawScope === "*"
-  const builtinPick = (TOOL_PRESETS as readonly string[]).includes(firstPick)
-    ? firstPick : ""
-  const customStr = !isAny && !builtinPick ? firstPick : ""
   // D56d (P1 #2): after_tool_use only legalizes (PostToolUse, tool,
   // audit) and (PostToolUse, mcp_tool, audit). No wildcard. Step 2
   // refuses "Any tool" for that lifecycle. With single-tool authoring
@@ -3811,52 +3814,28 @@ function Step2ToolScope({
               {ko ? "특정 도구 하나" : "One specific tool"}
             </span>
             <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-              {ko ? "아래에서 빌트인 도구 하나, 또는 MCP 도구 하나를 입력하세요." : "Pick one builtin tool below, or type one MCP tool name."}
+              {t("newPolicy.wizard.step2.toolPicker.hint")}
             </span>
           </span>
+          {/* D70: replaced 3-column chip grid + separate MCP input with a
+            * single autocomplete combobox covering every CC built-in tool
+            * + free-typed MCP / custom names. The combobox owns ONE
+            * hidden input named `toolScope_custom` so advanceWizard's
+            * existing seam (which already prefers the typed value over
+            * any chip pick) works unchanged. The legacy `toolScope_chip`
+            * radio row is removed; advanceWizard tolerates a missing
+            * chip value because its fallback chain was always
+            * `scopeCustom || scopeChip`. */}
           <span className="mt-3 hidden peer-checked:block space-y-3">
-            <div
-              role="radiogroup"
-              aria-label={ko ? "빌트인 도구" : "Builtin tool"}
-              className="grid grid-cols-2 gap-2 sm:grid-cols-3"
-            >
-              {TOOL_PRESETS.map((tool) => (
-                <label key={tool} className="block cursor-pointer">
-                  <input
-                    type="radio"
-                    name="toolScope_chip"
-                    value={tool}
-                    defaultChecked={builtinPick === tool}
-                    className="peer sr-only"
-                  />
-                  <span className="block rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-center text-sm font-mono text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)]/40 peer-checked:border-[var(--color-accent)] peer-checked:bg-[var(--color-accent)]/[0.06] peer-checked:text-[var(--color-text-primary)]">
-                    {tool}
-                  </span>
-                </label>
-              ))}
-            </div>
             <div>
               <FieldLabel>
-                {ko ? "또는 MCP 도구 하나 (mcp__server__name)" : "Or one MCP tool (mcp__server__name)"}
+                {t("newPolicy.wizard.step2.toolPicker.label")}
               </FieldLabel>
-              <input
-                name="toolScope_custom"
-                maxLength={256}
-                defaultValue={customStr}
-                placeholder="mcp__court__file"
-                spellCheck={false}
-                autoComplete="off"
-                pattern="(mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+|[A-Za-z][A-Za-z0-9_]*)"
-                title={ko
-                  ? "MCP 도구는 mcp__server__name 형식. 빈 값이면 위에서 선택한 빌트인 도구가 사용됩니다."
-                  : "MCP tool follows mcp__server__name. Leave empty to use the builtin pick above."}
-                className={inputCls() + " font-mono text-sm"}
+              <ToolCombobox
+                initialValue={firstPick && firstPick !== "*" ? firstPick : ""}
+                locale={locale}
+                inputId="step2-tool-combobox"
               />
-              <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
-                {ko
-                  ? "빌트인 도구를 골랐다면 비워두세요. 두 칸 다 채워지면 MCP 도구 이름이 이깁니다."
-                  : "Leave empty when you picked a builtin chip. If both are set, the MCP name wins."}
-              </p>
             </div>
             {helperTool && (
               <p
