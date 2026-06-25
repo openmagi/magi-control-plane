@@ -493,14 +493,23 @@ export const cloud = {
     sinceId: number = 0,
     limit: number = 100,
     verifier?: string[],
+    includeBody: boolean = false,
   ): Promise<LedgerPage> => {
     // D52c: `verifier=<step>` (repeatable) filters the chain to records
     // emitted by the named verifier(s). Empty/undefined → no filter,
     // mirroring the URL state on the /ledger page (zero chips picked =
     // full view).
+    //
+    // D76: `includeBody=true` adds `include_body` so callers (the
+    // /overview "Recent activity" panel) get `body.action` /
+    // `body.verdict` / `body.policy_id` projected on each row. Default
+    // stays `false` — the legacy callers (chain-ok check + count
+    // pagination) don't need the body and we keep the legacy response
+    // size unchanged.
     const params = new URLSearchParams()
     params.set("since_id", String(sinceId))
     params.set("limit", String(limit))
+    if (includeBody) params.set("include_body", "true")
     if (verifier && verifier.length > 0) {
       for (const v of verifier) {
         if (v) params.append("verifier", v)
@@ -1031,6 +1040,31 @@ export const cloud = {
       method: "GET", keyType: "admin",
     }),
 
+  /** D76: one-shot summary aggregator powering the /overview headline +
+   * KPI grid. Single round-trip across policy / pack / script / HITL /
+   * ledger so the dashboard does not fan-out on every refresh poll. */
+  overviewSummary: (): Promise<OverviewSummary> =>
+    _fetch<OverviewSummary>("/metrics/summary", {
+      method: "GET", keyType: "api",
+    }),
+
+  /** D76: time-bucketed ledger emissions powering the /overview chart.
+   * Defaults to 24h / 1h (24 buckets). Bucket configurations that
+   * would produce more than ~MAX_BUCKETS buckets return 400 on the
+   * cloud; the dashboard caps inputs client-side too. */
+  ledgerAggregate: (
+    sinceSecs: number = 86_400,
+    bucketSecs: number = 3_600,
+  ): Promise<LedgerAggregateResponse> => {
+    const params = new URLSearchParams()
+    params.set("since_secs", String(Math.max(1, Math.floor(sinceSecs))))
+    params.set("bucket_secs", String(Math.max(60, Math.floor(bucketSecs))))
+    return _fetch<LedgerAggregateResponse>(
+      `/ledger/aggregate?${params.toString()}`,
+      { method: "GET", keyType: "api" },
+    )
+  },
+
   /** D63: upload a script. Body is sent as JSON `{name, runtime,
    * body_b64}` — the Next.js multipart upload route (web/app/api/
    * scripts/route.ts) re-encodes the file body before forwarding here
@@ -1050,6 +1084,52 @@ export const cloud = {
     _fetch<{ id: string }>(`/scripts/${encodeURIComponent(id)}`, {
       method: "DELETE", keyType: "admin",
     }),
+}
+
+/** D76: closed-set action vocabulary the /overview chart renders.
+ * Mirrors `_ACTION_BUCKETS_ORDER` in src/magi_cp/cloud/metrics.py;
+ * widening the set is a deliberate change on both sides. */
+export type OverviewActionKey =
+  | "block" | "ask" | "audit"
+  | "inject_context" | "run_command" | "input_rewrite"
+
+/** D76: closed-set verdict vocabulary the /overview chart renders.
+ * Mirrors `_VERDICT_BUCKETS_ORDER` in src/magi_cp/cloud/metrics.py. */
+export type OverviewVerdictKey =
+  | "pass" | "fail" | "needs_review" | "not_applicable"
+
+/** D76: one time bucket in the /ledger/aggregate response. */
+export type LedgerAggregateBucket = {
+  ts_start: number
+  count: number
+  by_action: Record<OverviewActionKey, number>
+  by_verdict: Record<OverviewVerdictKey, number>
+}
+
+/** D76: full response from GET /ledger/aggregate. */
+export type LedgerAggregateResponse = {
+  since_secs: number
+  bucket_secs: number
+  now: number
+  action_buckets: OverviewActionKey[]
+  verdict_buckets: OverviewVerdictKey[]
+  buckets: LedgerAggregateBucket[]
+}
+
+/** D76: response from GET /metrics/summary. The dashboard's headline
+ * + KPI grid + chain-ok badge render off this single round-trip. */
+export type OverviewSummary = {
+  policies: {
+    total: number
+    enabled: number
+    by_action: Record<OverviewActionKey, number>
+  }
+  packs: { total_active: number; partial: number }
+  scripts: { total: number }
+  hitl_pending: number
+  ledger_24h_total: number
+  ledger_chain_ok: boolean
+  last_emission_ts: number | null
 }
 
 /** D63: row type returned by GET /scripts. Mirrors the cloud-side

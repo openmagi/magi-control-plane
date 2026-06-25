@@ -1890,6 +1890,96 @@ def create_app(
         )
         return {"counts": counts}
 
+    # ── D76: /ledger/aggregate + /metrics/summary — Overview surface ──
+    #
+    # The `/overview` dashboard polls a single round-trip summary +
+    # one time-bucketed aggregate every 30s. Both routes are
+    # tenant-scoped (same auth as /ledger) so the polling cost is
+    # bounded by the tenant chain size, not the global one.
+    from .metrics import (
+        ledger_aggregate as _ledger_aggregate,
+        ledger_aggregate_to_dict as _ledger_aggregate_to_dict,
+        metrics_summary as _metrics_summary,
+        metrics_summary_to_dict as _metrics_summary_to_dict,
+    )
+
+    @app.get("/ledger/aggregate", dependencies=[Depends(require_tenant_auth)])
+    def ledger_aggregate_route(
+        request: Request,
+        since_secs: int | None = Query(default=None, ge=1),
+        bucket_secs: int | None = Query(default=None, ge=1),
+    ) -> dict:
+        """D76: time-bucketed counts powering the /overview chart.
+
+        Defaults to a 24h window in 1h buckets (24 buckets). Buckets
+        carry `count` + `by_action` (block/ask/audit/inject_context/
+        run_command/input_rewrite) + `by_verdict` (pass/fail/
+        needs_review/not_applicable). Unknown action/verdict strings
+        do NOT increment any bucket but still count toward the
+        bucket's `count` total so the chart's stacked columns can be
+        compared against the row totals.
+
+        `since_secs` is hard-capped at 30 days; `bucket_secs` is
+        clamped to a 60-second floor. A configuration that would
+        produce more than `MAX_BUCKETS` buckets returns 400 (cheap
+        guard against `?since_secs=2592000&bucket_secs=1`).
+        """
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        try:
+            agg = _ledger_aggregate(
+                request.app.state.engine, tenant_id,
+                since_secs=since_secs, bucket_secs=bucket_secs,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return _ledger_aggregate_to_dict(agg)
+
+    @app.get("/metrics/summary", dependencies=[Depends(require_tenant_auth)])
+    def metrics_summary_route(request: Request) -> dict:
+        """D76: single-round-trip aggregator for /overview.
+
+        Returns policy/pack/script/HITL/ledger counts in one call so
+        the dashboard's headline + KPI grid can render off a single
+        request instead of fanning out to six endpoints. Tenant-scoped
+        for the ledger + HITL slices; policy/pack/script counts are
+        single-tenant on the self-host install (which ships one
+        PolicyStore/PackStore/ScriptStore per cloud) so the figures
+        match the /rules + /scripts pages 1:1.
+        """
+        tenant_id = getattr(request.state, "tenant_id", "default")
+        # Pack member lists: builtin specs + user-pack rows. We resolve
+        # them inline so the metrics module doesn't take a build-time
+        # dependency on the pack catalog import (which pulls the
+        # policy IR; we want the metrics module to stay test-cheap).
+        from ..policy.pack import all_builtin_packs
+        pack_member_lists: list[list[str]] = []
+        # all_builtin_packs returns dicts with policy_ids; reuse the
+        # catalog so we get the same ordering the /policy-packs surface
+        # exposes. locale is irrelevant for the count (policy_ids is
+        # locale-agnostic) so we pass "en" arbitrarily.
+        for p in all_builtin_packs(locale="en", enabled_ids=set()):
+            pack_member_lists.append(list(p.get("policy_ids", [])))
+        if pack_store is not None:
+            for row in pack_store.load():
+                pack_member_lists.append(list(row.policy_ids))
+        scripts_total = 0
+        if script_store is not None:
+            try:
+                scripts_total = len(script_store.list())
+            except Exception:
+                # Defense in depth: a malformed scripts index must not
+                # take the overview offline. The /scripts page will
+                # surface the underlying error if the operator drills in.
+                scripts_total = 0
+        summary = _metrics_summary(
+            request.app.state.engine, tenant_id,
+            policy_overrides=policy_store.load(),
+            pack_member_lists=pack_member_lists,
+            scripts_total=scripts_total,
+            ledger_repo=ledger,
+        )
+        return _metrics_summary_to_dict(summary)
+
     # ── /policies CRUD (v1) ──────────────────────────────────────
     _attach_policy_routes(app, policy_store, policy_lock,
                           verifier_registry=verifier_registry,
