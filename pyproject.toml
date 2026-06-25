@@ -43,8 +43,16 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+norecursedirs = [
+    "tests/e2e/node_modules",
+    "tests/e2e/.report",
+    "tests/e2e/playwright-report",
+    ".venv",
+    "node_modules",
+    "web/node_modules",
+]
 markers = [
-    "network: requires live HTTP (law.go.kr) — skipped by `make test-quick`",
+    "network: requires live HTTP (law.go.kr), skipped by `make test-quick`",
 ]
 
 [tool.ruff]

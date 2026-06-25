@@ -1,32 +1,34 @@
 /**
- * D73 — scenario 05: inject_context roundtrip.
+ * D73. scenario 05: inject_context roundtrip.
  *
- * Requires the `claude` binary. SKIPs when missing (do NOT fail).
+ * Requires the `claude` binary. SKIPs when missing (do NOT fail). The
+ * centralized `assertHarnessReady({ requiresClaude: true })` covers
+ * every preflight skip surface (claude, docker, admin keys, cloud,
+ * dashboard) with a single hook.
  *
  * Steps:
  *   1. Wire an inject_context policy on UserPromptSubmit with template
  *      "REMINDER: always cite sources".
- *   2. Run claude -p with a simple prompt; the gate fires
+ *   2. Run claude -p with a simple prompt. the gate fires
  *      additionalContext on the UserPromptSubmit hook.
  *   3. Assert the ledger has a row referencing the policy id. We do
- *      NOT assert the model's output contains the injected text — that
+ *      NOT assert the model's output contains the injected text. that
  *      is brittle without controlling the LLM. The ledger evidence is
  *      the contract we check.
  */
 import { test, expect } from "@playwright/test"
-import { runClaudePrompt, locateClaude } from "../helpers/claude"
+import { runClaudePrompt } from "../helpers/claude"
 import { currentLedgerCursor, waitForLedgerRow } from "../helpers/ledger"
+import { assertHarnessReady } from "../helpers/preflight"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 test.describe.configure({ mode: "serial" })
 
-test("05 inject_context roundtrip", async () => {
-  test.skip(
-    locateClaude() == null,
-    "claude binary not found — set MAGI_CP_E2E_CLAUDE_BIN or install Claude Code CLI",
-  )
+test("05 inject_context roundtrip", async ({}, testInfo) => {
+  const skipReason = assertHarnessReady({ requiresClaude: true })
+  test.skip(skipReason != null, skipReason ?? "")
 
   const policyId = `e2e/inject-${Date.now()}`
   await _wirePolicy(policyId)
@@ -38,13 +40,31 @@ test("05 inject_context roundtrip", async () => {
     "Reply with a one-word answer to this question: hello?",
     { cwd, timeoutMs: 60_000 },
   )
+
+  if (result.available) {
+    await testInfo.attach("claude-output", {
+      body: JSON.stringify({
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        duration_ms: result.duration_ms,
+      }, null, 2),
+      contentType: "application/json",
+    })
+  } else {
+    await testInfo.attach("claude-output", {
+      body: JSON.stringify({ available: false, reason: result.reason }, null, 2),
+      contentType: "application/json",
+    })
+  }
+
   expect(result.available).toBe(true)
 
   // Ledger should carry an inject_context fire row referencing the
   // wired policy id.
   const row = await waitForLedgerRow(
     (r) => JSON.stringify(r.body ?? {}).includes(policyId),
-    { timeoutMs: 30_000, startSinceId: cursor },
+    { timeoutMs: 30_000, startSinceId: cursor, testInfo },
   )
   expect(row, "no ledger row referencing inject policy").toBeTruthy()
 

@@ -1,5 +1,5 @@
 /**
- * D73 — page-object helpers for the magi-cp dashboard.
+ * D73. page-object helpers for the magi-cp dashboard.
  *
  * These wrap Playwright Page actions in named verbs the scenarios can
  * read. The wizard surface (/policies/new) is the busiest page-object;
@@ -8,7 +8,7 @@
  * landing force-redirect) all live on this URL.
  *
  * The helpers prefer URL-state assertions over DOM-text assertions
- * wherever the wizard already round-trips state via search params —
+ * wherever the wizard already round-trips state via search params:
  * that is the design contract the page is supposed to honour, and
  * URL stability is what regressions break first.
  */
@@ -29,7 +29,7 @@ export async function gotoNewPolicy(page: Page): Promise<void> {
  *
  *  Note: landing rendered ONLY when no mode= param is on the URL. If
  *  a regression force-redirects to ?mode=guided before the operator
- *  picks, the picker silently disappears — the scenario asserts the
+ *  picks, the picker silently disappears, so the scenario asserts the
  *  landing is reachable, then advances. */
 export async function pickGuided(page: Page): Promise<void> {
   // Picker links are rendered with explicit href="?mode=guided".
@@ -49,7 +49,7 @@ export async function step1PickStop(page: Page): Promise<void> {
   await expect(radio).toBeAttached({ timeout: 10_000 })
   await radio.check({ force: true })
   // Submit the form. The wizard uses a single advance button per step
-  // (text varies by locale — match by type=submit + visible).
+  // (text varies by locale, match by type=submit + visible).
   await Promise.all([
     page.waitForURL(/step=[2-6]/, { timeout: 10_000 }),
     page.locator('button[type="submit"]').first().click(),
@@ -86,7 +86,7 @@ export async function step3PickDefaultAndAdvance(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/step=3.*err=/, { timeout: 5_000 })
 }
 
-/** Step 4 — pick "audit" action and advance. The audit card is a
+/** Step 4. pick "audit" action and advance. The audit card is a
  *  radio input with value="audit". */
 export async function step4PickAuditAndAdvance(page: Page): Promise<void> {
   await page.waitForURL(/step=4/, { timeout: 10_000 })
@@ -100,7 +100,7 @@ export async function step4PickAuditAndAdvance(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/step=4.*err=/, { timeout: 5_000 })
 }
 
-/** Step 5 — type a unique policy id. */
+/** Step 5. type a unique policy id. */
 export async function step5SetIdAndAdvance(
   page: Page,
   id: string,
@@ -117,7 +117,7 @@ export async function step5SetIdAndAdvance(
   await expect(page).not.toHaveURL(/step=5.*err=/, { timeout: 5_000 })
 }
 
-/** Step 6 — confirm save. The review screen has a final "Save" submit
+/** Step 6. confirm save. The review screen has a final "Save" submit
  *  that POSTs to /policies and redirects to /rules (or /policies/<id>). */
 export async function step6Save(page: Page): Promise<Response | null> {
   await page.waitForURL(/step=6/, { timeout: 10_000 })
@@ -130,6 +130,7 @@ export async function step6Save(page: Page): Promise<Response | null> {
     submit.click(),
   ])
   // After save the dashboard navigates away from /policies/new.
+
   await page.waitForURL(/^(?!.*\/policies\/new).*/, { timeout: 10_000 }).catch(() => {})
   return response
 }

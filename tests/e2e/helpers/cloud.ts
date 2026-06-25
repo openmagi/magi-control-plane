@@ -1,11 +1,11 @@
 /**
- * D73 — thin HTTP client mirroring web/lib/cloud.ts.
+ * D73. thin HTTP client mirroring web/lib/cloud.ts.
  *
  * The dashboard's server-side cloud client (web/lib/cloud.ts) reads keys
  * from process.env and signs HMAC posts; for E2E we want a minimal
  * surface to assert backend state independent of the dashboard.
  *
- * Wire shape parity with web/lib/cloud.ts is what we care about — if
+ * Wire shape parity with web/lib/cloud.ts is what we care about: if
  * the cloud changes a response field, the scenarios catch it instead of
  * a silent dashboard regression.
  *
@@ -175,7 +175,7 @@ export async function deleteScript(id: string): Promise<{ id: string }> {
   return _send(`/scripts/${encodeURIComponent(id)}`, "DELETE", null, "admin")
 }
 
-/** Direct HMAC admin tenant create — used by scenarios that need to
+/** Direct HMAC admin tenant create, used by scenarios that need to
  *  provision a fresh tenant before the rest of the harness runs. */
 export async function createTenantHmac(
   tenantId: string,

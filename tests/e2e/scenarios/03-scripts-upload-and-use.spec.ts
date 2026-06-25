@@ -1,11 +1,11 @@
 /**
- * D73 — scenario 03: scripts upload + use + delete-refusal.
+ * D73. scenario 03: scripts upload + use + delete-refusal.
  *
  * Drives the /scripts upload + the cloud-side referential-integrity
  * gate. A policy with script_path=<id> must block the delete with a
  * 409 that names the referencing policy id.
  *
- * Steps (cloud-only — the dashboard upload button is a hidden file
+ * Steps (cloud-only. the dashboard upload button is a hidden file
  * input that Playwright can drive, but for parity with the cloud
  * contract we exercise the API surface directly. The dashboard's
  * `/scripts` page is re-rendered for the visual assertion).
@@ -15,14 +15,18 @@ import { gotoScripts } from "../helpers/dashboard"
 import {
   uploadScript, deleteScript, listScripts, listPolicies,
 } from "../helpers/cloud"
+import { assertHarnessReady } from "../helpers/preflight"
 
 const SCRIPT_NAME = `e2e-echo-${Date.now()}`
 
 test.describe.configure({ mode: "serial" })
 
-test("03 scripts upload and use", async ({ page }) => {
+test("03 scripts upload and use", async ({ page }, testInfo) => {
+  const skipReason = assertHarnessReady()
+  test.skip(skipReason != null, skipReason ?? "")
+
   // 1. Upload a tiny bash script via the cloud (mirrors the dashboard
-  //    UploadScriptButton -> /api/scripts -> cloud /scripts pipe).
+  //    UploadScriptButton to /api/scripts to cloud /scripts pipe).
   const uploaded = await uploadScript(SCRIPT_NAME, "bash", "#!/usr/bin/env bash\necho hi\n")
   expect(uploaded.name).toBe(SCRIPT_NAME)
   expect(uploaded.runtime).toBe("bash")
@@ -35,24 +39,28 @@ test("03 scripts upload and use", async ({ page }) => {
 
   // 3. Render /scripts and confirm the row paints. No client-side errors.
   const clientErrors: string[] = []
+  const consoleErrors: string[] = []
   page.on("pageerror", (err) => clientErrors.push(err.message))
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text())
+  })
   await gotoScripts(page)
   await expect(page.locator(`text=${SCRIPT_NAME}`)).toBeVisible({
     timeout: 10_000,
   })
 
   // 4. Wire a run_command policy referencing the script. We POST the
-  //    IR directly to the admin /policies endpoint — the wizard's
+  //    IR directly to the admin /policies endpoint. the wizard's
   //    Step 4b builds an equivalent body. This isolates the integrity
   //    gate check from any wizard wiring regression.
   //
   //    The IR shape is intentionally minimal: action=run_command +
   //    script_path=<id>. The cloud's RunCommandPolicy validator
-  //    accepts; the real surface is the delete-refusal we assert in
+  //    accepts. the real surface is the delete-refusal we assert in
   //    step 5.
   const policyId = `e2e/runner-${Date.now()}`
   // Best-effort: not all builds expose a public PUT /policies for run
-  // command via cloud client; we skip the wiring if the route returns
+  // command via cloud client. we skip the wiring if the route returns
   // 4xx, and the delete-refusal step still validates the integrity
   // gate against any pre-existing script reference.
   const wireFailed = await _wireRunCommand(policyId, uploaded.id).catch(
@@ -60,7 +68,7 @@ test("03 scripts upload and use", async ({ page }) => {
   )
 
   if (!wireFailed) {
-    // 5. DELETE the script — cloud refuses with 409 naming the policy.
+    // 5. DELETE the script. cloud refuses with 409 naming the policy.
     let refused = false
     let body = ""
     try {
@@ -84,6 +92,11 @@ test("03 scripts upload and use", async ({ page }) => {
   // 6. Cleanup: delete the script. If the wiring failed (skip path)
   //    this still verifies the happy-path delete.
   await deleteScript(uploaded.id).catch(() => {})
+
+  await testInfo.attach("client-errors", {
+    body: JSON.stringify({ pageerrors: clientErrors, console_errors: consoleErrors }, null, 2),
+    contentType: "application/json",
+  })
 
   expect(clientErrors, "client-side exceptions").toEqual([])
 })

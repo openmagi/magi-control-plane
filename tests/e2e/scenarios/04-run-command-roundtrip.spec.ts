@@ -1,9 +1,10 @@
 /**
- * D73 — scenario 04: run_command roundtrip.
+ * D73. scenario 04: run_command roundtrip.
  *
  * Requires the `claude` binary on PATH (or MAGI_CP_E2E_CLAUDE_BIN).
- * When missing, the scenario marks itself SKIP with a clear reason —
- * do NOT fail.
+ * When missing OR when other preflight checks fail (admin keys, cloud,
+ * dashboard), the scenario marks itself SKIP with a clear reason. do
+ * NOT fail.
  *
  * Steps:
  *   1. Wire a run_command policy that fires on PreToolUse + Bash,
@@ -14,23 +15,23 @@
  *   4. Assert the redacted preview shows MAGI_E2E (not masked) and
  *      the policy_id matches the wired policy.
  *
- * The strict "claude binary missing => SKIP, not fail" rule lives in
- * helpers/claude.ts (locateClaude returns null in that case).
+ * The "claude binary missing -> SKIP, not fail" rule lives in
+ * helpers/claude.ts (locateClaude returns null in that case) AND in
+ * the centralized `assertHarnessReady({ requiresClaude: true })`.
  */
 import { test, expect } from "@playwright/test"
-import { runClaudePrompt, locateClaude } from "../helpers/claude"
+import { runClaudePrompt } from "../helpers/claude"
 import { currentLedgerCursor, waitForLedgerRow } from "../helpers/ledger"
+import { assertHarnessReady } from "../helpers/preflight"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 test.describe.configure({ mode: "serial" })
 
-test("04 run_command roundtrip", async () => {
-  test.skip(
-    locateClaude() == null,
-    "claude binary not found — set MAGI_CP_E2E_CLAUDE_BIN or install Claude Code CLI",
-  )
+test("04 run_command roundtrip", async ({}, testInfo) => {
+  const skipReason = assertHarnessReady({ requiresClaude: true })
+  test.skip(skipReason != null, skipReason ?? "")
 
   // 1. Wire the policy (PreToolUse + Bash + audit + script that
   //    echoes the sentinel). The sentinel `MAGI_E2E` is a known plain
@@ -43,7 +44,7 @@ test("04 run_command roundtrip", async () => {
 
   // 3. Run claude -p. The prompt asks claude to use the Bash tool to
   //    emit the sentinel. We allowlist Bash explicitly. cwd is a
-  //    throwaway dir so claude doesn't index the e2e repo.
+  //    throwaway dir so claude does not index the e2e repo.
   const cwd = mkdtempSync(join(tmpdir(), "magi-cp-e2e-claude-"))
   const result = await runClaudePrompt(
     "Use the Bash tool to run: echo MAGI_E2E",
@@ -53,7 +54,27 @@ test("04 run_command roundtrip", async () => {
       timeoutMs: 60_000,
     },
   )
-  expect(result.available).toBe(true)
+
+  // Always attach claude output BEFORE asserting so a fix-pass agent
+  // reading report.json sees stdout/stderr regardless of pass/fail.
+  if (result.available) {
+    await testInfo.attach("claude-output", {
+      body: JSON.stringify({
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        duration_ms: result.duration_ms,
+      }, null, 2),
+      contentType: "application/json",
+    })
+  } else {
+    await testInfo.attach("claude-output", {
+      body: JSON.stringify({ available: false, reason: result.reason }, null, 2),
+      contentType: "application/json",
+    })
+  }
+
+  expect(result.available, result.available ? "" : `claude unavailable: ${(result as { reason?: string }).reason ?? ""}`).toBe(true)
   if (result.available) {
     expect(result.code,
       `claude exited ${result.code}: ${result.stderr.slice(0, 200)}`,
@@ -66,7 +87,7 @@ test("04 run_command roundtrip", async () => {
       const body = JSON.stringify(r.body ?? {})
       return body.includes("MAGI_E2E")
     },
-    { timeoutMs: 30_000, startSinceId: cursor },
+    { timeoutMs: 30_000, startSinceId: cursor, testInfo },
   )
   expect(row, "no ledger row carrying MAGI_E2E").toBeTruthy()
 
