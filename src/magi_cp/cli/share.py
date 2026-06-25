@@ -138,6 +138,11 @@ def cli(argv: list[str]) -> int:
     if not url:
         print("error: malformed server response (no url/token)", file=sys.stderr)
         return 1
+    # URL on stdout (pipeable); human-facing framing on stderr.
+    print("Share this run:", file=sys.stderr)
     print(url)
-    print("review before sharing publicly: redaction is best-effort", file=sys.stderr)
+    print(
+        "  Redaction is best-effort — review the page before sharing publicly.",
+        file=sys.stderr,
+    )
     return 0
