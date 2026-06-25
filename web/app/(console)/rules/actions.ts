@@ -6,6 +6,67 @@ import { cloud } from "@/lib/cloud"
 import { codeForError } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 
+/** D75: enable / disable a policy pack as a single cascading action.
+ *
+ * Pack id must match `pack/<slug>` or `user-pack/<slug>`. The server
+ * action normalises the request, calls the right cloud verb based on
+ * the `enabled` form field, and revalidates `/rules` so the next
+ * paint reflects the cascade result.
+ *
+ * Per-member errors come back inside the response envelope (the brief
+ * commits partial success). The dashboard surfaces them on the pack
+ * card when present. */
+const _PACK_ID_RE = /^(pack|user-pack)\/[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/
+
+function _validatePackId(raw: FormDataEntryValue | null): string {
+  if (typeof raw !== "string" || !_PACK_ID_RE.test(raw) || raw.length > 200) {
+    throw new Error("invalid_pack_id")
+  }
+  return raw
+}
+
+export async function togglePackAction(formData: FormData): Promise<void> {
+  let id: string
+  try {
+    id = _validatePackId(formData.get("id"))
+  } catch {
+    redirect("/rules?err=invalid_id")
+  }
+  const enabled = formData.get("enabled") === "true"
+  try {
+    if (enabled) {
+      await cloud.enablePack(id)
+    } else {
+      await cloud.disablePack(id)
+    }
+  } catch (e: unknown) {
+    redirect(`/rules?err=${codeForError(e)}`)
+  }
+  revalidatePath("/rules")
+  redirect(`/rules?tab=policies&msg=toggled`)
+}
+
+/** D75: create a user pack from the New Pack page. The cloud derives
+ * the slug from `name` when `slug` is omitted. Redirects to /rules on
+ * success so the new card renders inline; redirects to the new page
+ * with an error code on failure (422 / 409 / transport). */
+export async function createPackAction(formData: FormData): Promise<void> {
+  const name = String(formData.get("name") || "").trim()
+  const description = String(formData.get("description") || "").trim()
+  // policy_ids[] checkbox group on the picker.
+  const policyIds = formData.getAll("policy_ids").map(String).filter(Boolean)
+  if (!name) {
+    redirect("/policy-packs/new?err=name_required")
+  }
+  try {
+    await cloud.createPack({ name, description, policy_ids: policyIds })
+  } catch (e: unknown) {
+    redirect(`/policy-packs/new?err=${codeForError(e)}`)
+  }
+  revalidatePath("/rules")
+  redirect(`/rules?tab=policies&msg=pack_created`)
+}
+
 /** Toggle a stored policy's enabled flag. The only mutating action on
  * /rules. pure-derivation pivot retired the per-verifier toggle. */
 export async function togglePolicyAction(formData: FormData): Promise<void> {

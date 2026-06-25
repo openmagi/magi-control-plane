@@ -5,6 +5,7 @@ import {
   type CheckEntry,
   type EvidenceRecordType,
   type PolicyListItem,
+  type PolicyPackEntry,
   type PrebuiltPolicyEntry,
 } from "@/lib/cloud"
 import { resolveFlash, codeForError } from "@/lib/flash"
@@ -19,6 +20,7 @@ import {
   ErrorState,
   PageHeader,
 } from "@/components/ui"
+import { PackSection } from "./_components/PackSection"
 import { PolicyToggle } from "./_components/PolicyToggle"
 import { PrebuiltToggle } from "./_components/PrebuiltToggle"
 import { ChecksTab } from "./_components/ChecksTab"
@@ -104,6 +106,7 @@ export default async function RulesPage({
   let policies: PolicyListItem[] = []
   let policiesErr: string | null = null
   let prebuilt: PrebuiltPolicyEntry[] = []
+  let packs: PolicyPackEntry[] = []
   let checks: CheckEntry[] = []
   let checksErr: string | null = null
   let evidence: EvidenceRecordType[] = []
@@ -121,6 +124,10 @@ export default async function RulesPage({
     try { prebuilt = await cloud.listPrebuiltPolicies() }
     catch (e: unknown) {
       console.error(`rules: listPrebuiltPolicies failed code=${codeForError(e)}`)
+    }
+    try { packs = await cloud.listPacks(locale) }
+    catch (e: unknown) {
+      console.error(`rules: listPacks failed code=${codeForError(e)}`)
     }
   } else if (tab === "checks") {
     try {
@@ -204,6 +211,7 @@ export default async function RulesPage({
           items={policies}
           err={policiesErr}
           prebuilt={prebuilt}
+          packs={packs}
           nfFormat={nf.format.bind(nf)}
           t={t}
           locale={locale}
@@ -287,11 +295,12 @@ function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
 }
 
 function PoliciesTab({
-  items, err, prebuilt, nfFormat, t, locale,
+  items, err, prebuilt, packs, nfFormat, t, locale,
 }: {
   items: PolicyListItem[]
   err: string | null
   prebuilt: PrebuiltPolicyEntry[]
+  packs: PolicyPackEntry[]
   nfFormat: (n: number) => string
   t: TFunc
   locale: import("@/lib/i18n/dict").Locale
@@ -317,6 +326,9 @@ function PoliciesTab({
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
         {t("rules.tab.policies.hint")}
       </p>
+      {/* D75: pack section renders ABOVE prebuilts so the
+       * intent-level controls land first. */}
+      <PackSection items={packs} t={t} />
       {prebuilt.length > 0 && (
         <PrebuiltSection items={prebuilt} t={t} />
       )}

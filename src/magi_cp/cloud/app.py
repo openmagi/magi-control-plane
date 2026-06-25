@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FPath
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -48,6 +48,9 @@ from .custom_verifier_store import (
     serialize as serialize_custom_verifier,
 )
 from .policy_store import PolicyStore, _evidence_req_to_dict
+from .pack_store import (
+    PackStore, UserPackRow, slugify_name, validate_user_slug,
+)
 from .script_store import (
     MAX_SCRIPT_BYTES, ScriptStore, ScriptStoreConflict, ScriptStoreError,
     ScriptStoreInUseError, serialize as serialize_script_entry,
@@ -629,6 +632,7 @@ def create_app(
     dsn: str | None = None,
     nli_classifier: EntailmentClassifier | None = None,
     policy_store_path: str | None = None,
+    pack_store_path: str | None = None,
     custom_verifier_store_path: str | None = None,
     verifier_registry: "VerifierRegistry | None" = None,
     llm_compiler: "object | None" = None,
@@ -661,6 +665,12 @@ def create_app(
     share_repo = SharedRunRepo(engine)
     policy_store = PolicyStore(path=policy_store_path or os.environ.get(
         "MAGI_CP_POLICY_STORE", str(Path.home() / ".magi-cp" / "policies.json")))
+    # D75: user-pack registry. Default path lives alongside the policy
+    # store; built-in packs are catalog-only (no on-disk row needed).
+    pack_store = PackStore(path=pack_store_path or os.environ.get(
+        "MAGI_CP_PACK_STORE",
+        str(Path.home() / ".magi-cp" / "packs.json"),
+    ))
     custom_verifier_store = CustomVerifierStore(
         path=custom_verifier_store_path or os.environ.get(
             "MAGI_CP_CUSTOM_VERIFIER_STORE",
@@ -694,6 +704,9 @@ def create_app(
     # D63: script-store mutation lock. Same lost-update defense
     # PolicyStore + CustomVerifierStore use for concurrent POSTs.
     script_store_lock = asyncio.Lock()
+    # D75: pack-store mutation lock. Same lost-update defense for
+    # POST / PUT / DELETE /policy-packs.
+    pack_store_lock = asyncio.Lock()
 
     app = FastAPI(title="magi-control-plane cloud", version="0.0.1")
     # Order matters: outer → inner. Body cap first, then rate limit, then CORS.
@@ -1883,7 +1896,9 @@ def create_app(
                           keystore=ks,
                           kid=kid,
                           script_store=script_store,
-                          script_store_lock=script_store_lock)
+                          script_store_lock=script_store_lock,
+                          pack_store=pack_store,
+                          pack_store_lock=pack_store_lock)
 
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     _attach_admin_tenant_routes(app, engine)
@@ -2298,6 +2313,8 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                            kid: str | None = None,
                            script_store: "ScriptStore | None" = None,
                            script_store_lock: asyncio.Lock | None = None,
+                           pack_store: "PackStore | None" = None,
+                           pack_store_lock: asyncio.Lock | None = None,
                            ) -> None:
 
     def _assert_policy_lifecycle_endorsed(policy: AnyPolicy) -> None:
@@ -2744,6 +2761,482 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             "enforcement": enforcement,
             "setup_required": spec.setup_required,
         }
+
+    # ── D75: policy packs ───────────────────────────────────────────
+    #
+    # A pack is a named GROUP of policy ids that share an operator
+    # context. Built-in packs (`pack/...`) ship membership in
+    # `policy/pack.py`; user packs (`user-pack/...`) persist in the
+    # `pack_store`. Enable/disable cascades to every member; for
+    # `prebuilt/...` members we route through the same enable/disable
+    # path the prebuilt toggle uses, so the materialized IR + lifecycle
+    # gate match exactly. For inline IRs the strict-block bundle owns,
+    # we persist via the same PolicyOverride shape the prebuilt branch
+    # uses.
+    #
+    # Decision (per the brief): "blunt cascade". A pack toggle sets each
+    # member's enabled state to the target regardless of other-pack
+    # ownership. Simpler tests, fewer surprises; the alternative ("only
+    # disable when no other enabled pack still owns this member")
+    # requires a global pack-membership reverse-index that's easy to
+    # drift on user-pack edits.
+    #
+    # Routed BEFORE the `/policies/{policy_id:path}` catch-all is added
+    # in this same function (the catch-all installs further down). The
+    # literal `/policy-packs` prefix avoids the collision.
+
+    def _pack_locale(accept_language: str | None) -> str:
+        """Return 'ko' when the request Accept-Language prefers Korean,
+        else 'en'. The dashboard always sets Accept-Language explicitly
+        (server component fetches), so a missing header defaults to en.
+        """
+        if not accept_language:
+            return "en"
+        head = accept_language.split(",")[0].strip().lower()
+        if head.startswith("ko"):
+            return "ko"
+        return "en"
+
+    def _enabled_id_set() -> set[str]:
+        return {ov.policy.id for ov in store.load() if ov.enabled}
+
+    def _list_user_packs_dict(locale: str) -> list[dict]:
+        from ..policy.pack import user_pack_to_dict
+        if pack_store is None:
+            return []
+        enabled = _enabled_id_set()
+        out: list[dict] = []
+        for row in pack_store.load():
+            pack = user_pack_to_dict(
+                row.id, row.name, row.description,
+                row.policy_ids, enabled,
+            )
+            out.append(dict(pack))
+            del locale  # locale doesn't affect user-pack copy
+        return out
+
+    def _list_builtin_packs_dict(locale: str) -> list[dict]:
+        from ..policy.pack import all_builtin_packs
+        enabled = _enabled_id_set()
+        return [dict(p) for p in all_builtin_packs(locale=locale,
+                                                    enabled_ids=enabled)]
+
+    @app.get("/policy-packs", dependencies=[Depends(require_admin_key)])
+    def list_policy_packs(
+        accept_language: str | None = Header(default=None,
+                                              alias="Accept-Language"),
+    ) -> dict:
+        locale = _pack_locale(accept_language)
+        return {
+            "items": [
+                *_list_builtin_packs_dict(locale),
+                *_list_user_packs_dict(locale),
+            ],
+        }
+
+    def _resolve_pack_members(pack_id: str) -> list[str] | None:
+        """Return the ordered member ids of the given pack, or None
+        when the pack is unknown. Used by GET-single + enable + disable
+        handlers.
+        """
+        from ..policy.pack import builtin_pack_spec_by_id, _builtin_member_ids
+        spec = builtin_pack_spec_by_id(pack_id)
+        if spec is not None:
+            return _builtin_member_ids(spec)
+        if pack_id.startswith("user-pack/") and pack_store is not None:
+            for row in pack_store.load():
+                if row.id == pack_id:
+                    return list(row.policy_ids)
+        return None
+
+    @app.get("/policy-packs/{pack_id:path}",
+             dependencies=[Depends(require_admin_key)])
+    def get_policy_pack(
+        pack_id: str,
+        accept_language: str | None = Header(default=None,
+                                              alias="Accept-Language"),
+    ) -> dict:
+        from ..policy.pack import (
+            all_builtin_packs, builtin_pack_spec_by_id, user_pack_to_dict,
+        )
+        if not pack_id.startswith("pack/") and not pack_id.startswith("user-pack/"):
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        locale = _pack_locale(accept_language)
+        enabled = _enabled_id_set()
+        # Built-in.
+        spec = builtin_pack_spec_by_id(pack_id)
+        if spec is not None:
+            built = next(
+                p for p in all_builtin_packs(locale=locale, enabled_ids=enabled)
+                if p["id"] == pack_id
+            )
+            members_resolved = [
+                {"id": mid, "enabled": (mid in enabled)}
+                for mid in built["policy_ids"]
+            ]
+            envelope = dict(built)
+            envelope["members"] = members_resolved
+            return envelope
+        # User.
+        if pack_store is not None:
+            for row in pack_store.load():
+                if row.id == pack_id:
+                    p = user_pack_to_dict(
+                        row.id, row.name, row.description,
+                        row.policy_ids, enabled,
+                    )
+                    envelope = dict(p)
+                    envelope["members"] = [
+                        {"id": mid, "enabled": (mid in enabled)}
+                        for mid in row.policy_ids
+                    ]
+                    return envelope
+        raise HTTPException(404, f"pack {pack_id!r} not found")
+
+    @app.post("/policy-packs",
+              dependencies=[Depends(require_admin_key)])
+    async def create_user_pack(req: dict = Body(...)) -> dict:
+        if pack_store is None or pack_store_lock is None:
+            raise HTTPException(500, "pack store not configured")
+        if not isinstance(req, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        raw_name = req.get("name")
+        if not isinstance(raw_name, str):
+            raise HTTPException(422, "name is required")
+        name = raw_name.strip()
+        if not name:
+            raise HTTPException(422, "name is required")
+        if len(name) > 200:
+            raise HTTPException(422, "name too long (max 200)")
+        raw_desc = req.get("description") or ""
+        if not isinstance(raw_desc, str):
+            raise HTTPException(422, "description must be a string")
+        description = raw_desc.strip()
+        if len(description) > 1000:
+            raise HTTPException(422, "description too long (max 1000)")
+        raw_policy_ids = req.get("policy_ids")
+        if raw_policy_ids is None:
+            raw_policy_ids = []
+        if not isinstance(raw_policy_ids, list):
+            raise HTTPException(422, "policy_ids must be a list")
+        # De-dupe policy_ids while preserving order. Empty list is
+        # allowed (operator may build the pack incrementally).
+        seen: set[str] = set()
+        member_ids: list[str] = []
+        for mid in raw_policy_ids:
+            if not isinstance(mid, str) or not mid:
+                raise HTTPException(422, "policy_ids entries must be strings")
+            if mid in seen:
+                continue
+            seen.add(mid)
+            member_ids.append(mid)
+        raw_slug = req.get("slug")
+        if raw_slug is not None and not isinstance(raw_slug, str):
+            raise HTTPException(422, "slug must be a string")
+        slug_raw = raw_slug or slugify_name(name)
+        try:
+            slug = validate_user_slug(slug_raw)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        pack_id = f"user-pack/{slug}"
+        async with pack_store_lock:
+            rows = pack_store.load()
+            if any(r.id == pack_id for r in rows):
+                raise HTTPException(409, f"pack {pack_id!r} already exists")
+            rows.append(UserPackRow(
+                id=pack_id, name=name, description=description,
+                policy_ids=member_ids,
+            ))
+            pack_store.save(rows)
+        return {
+            "id": pack_id,
+            "name": name,
+            "description": description,
+            "policy_ids": member_ids,
+            "source": "user",
+        }
+
+    @app.put("/policy-packs/{pack_id:path}",
+             dependencies=[Depends(require_admin_key)])
+    async def update_user_pack(
+        pack_id: str, req: dict = Body(...),
+    ) -> dict:
+        if pack_id.startswith("pack/"):
+            raise HTTPException(405, "built-in packs are immutable")
+        if not pack_id.startswith("user-pack/"):
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        if pack_store is None or pack_store_lock is None:
+            raise HTTPException(500, "pack store not configured")
+        if not isinstance(req, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        in_name = req.get("name")
+        in_desc = req.get("description")
+        in_policy_ids = req.get("policy_ids")
+        async with pack_store_lock:
+            rows = pack_store.load()
+            target_idx: int | None = None
+            for i, r in enumerate(rows):
+                if r.id == pack_id:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                raise HTTPException(404, f"pack {pack_id!r} not found")
+            cur = rows[target_idx]
+            if in_name is None:
+                new_name = cur.name
+            else:
+                if not isinstance(in_name, str):
+                    raise HTTPException(422, "name must be a string")
+                new_name = in_name.strip()
+                if not new_name:
+                    raise HTTPException(422, "name must not be empty")
+            if len(new_name) > 200:
+                raise HTTPException(422, "name too long (max 200)")
+            if in_desc is None:
+                new_desc = cur.description
+            else:
+                if not isinstance(in_desc, str):
+                    raise HTTPException(422, "description must be a string")
+                new_desc = in_desc.strip()
+            if len(new_desc) > 1000:
+                raise HTTPException(422, "description too long (max 1000)")
+            if in_policy_ids is None:
+                new_members = list(cur.policy_ids)
+            else:
+                if not isinstance(in_policy_ids, list):
+                    raise HTTPException(422, "policy_ids must be a list")
+                seen: set[str] = set()
+                new_members = []
+                for mid in in_policy_ids:
+                    if not isinstance(mid, str) or not mid:
+                        raise HTTPException(
+                            422, "policy_ids entries must be strings",
+                        )
+                    if mid in seen:
+                        continue
+                    seen.add(mid)
+                    new_members.append(mid)
+            rows[target_idx] = UserPackRow(
+                id=pack_id, name=new_name, description=new_desc,
+                policy_ids=new_members,
+            )
+            pack_store.save(rows)
+        return {
+            "id": pack_id,
+            "name": new_name,
+            "description": new_desc,
+            "policy_ids": new_members,
+            "source": "user",
+        }
+
+    @app.delete("/policy-packs/{pack_id:path}",
+                dependencies=[Depends(require_admin_key)])
+    async def delete_user_pack(pack_id: str) -> dict:
+        if pack_id.startswith("pack/"):
+            raise HTTPException(405, "built-in packs are immutable")
+        if not pack_id.startswith("user-pack/"):
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        if pack_store is None or pack_store_lock is None:
+            raise HTTPException(500, "pack store not configured")
+        async with pack_store_lock:
+            rows = pack_store.load()
+            kept = [r for r in rows if r.id != pack_id]
+            if len(kept) == len(rows):
+                raise HTTPException(404, f"pack {pack_id!r} not found")
+            pack_store.save(kept)
+        return {"id": pack_id, "deleted": True}
+
+    async def _enable_one_member(
+        member_id: str, pack_id: str,
+    ) -> dict:
+        """Enable a single member id under the given pack. Returns
+        a dict with `id`, `enabled`, `ok`, and `error` (when not ok).
+        Routes prebuilt members through the prebuilt enable path so
+        the lifecycle gate + setup_required surface stays consistent;
+        routes inline pack-owned IRs through the same PolicyOverride
+        materialization; routes user-policy ids through a simple
+        enabled-flag flip.
+        """
+        from ..policy.pack import inline_policy_for
+        # Prebuilt member.
+        if member_id.startswith("prebuilt/"):
+            slug = member_id[len("prebuilt/"):]
+            try:
+                result = await enable_prebuilt_policy(slug)
+                return {
+                    "id": member_id, "enabled": True, "ok": True,
+                    "source": result.get("source"),
+                }
+            except HTTPException as e:
+                return {"id": member_id, "enabled": False, "ok": False,
+                        "error": e.detail}
+            except Exception as e:  # noqa: BLE001
+                return {"id": member_id, "enabled": False, "ok": False,
+                        "error": str(e)}
+        # Inline pack-owned IR (strict-block bundle).
+        inline = inline_policy_for(pack_id, member_id)
+        if inline is not None:
+            try:
+                async with policy_lock:
+                    existing = store.load()
+                    target: PolicyOverride | None = None
+                    for ov in existing:
+                        if ov.policy.id == member_id:
+                            target = ov
+                            break
+                    if target is not None and target.enabled:
+                        return {"id": member_id, "enabled": True, "ok": True}
+                    if target is None:
+                        _assert_policy_lifecycle_endorsed(inline)
+                        saved_enforcement = _resolve_enforcement_for(inline)
+                        existing.append(PolicyOverride(
+                            policy=inline,
+                            source="bot",
+                            enabled=True,
+                            enforcement=saved_enforcement,
+                        ))
+                    else:
+                        saved_enforcement = _revalidate_for_reenable(target)
+                        _assert_policy_lifecycle_endorsed(target.policy)
+                        existing = [
+                            ov for ov in existing if ov.policy.id != member_id
+                        ]
+                        existing.append(PolicyOverride(
+                            policy=target.policy,
+                            source=target.source,
+                            enabled=True,
+                            enforcement=saved_enforcement,
+                        ))
+                    store.save(existing)
+                return {"id": member_id, "enabled": True, "ok": True}
+            except HTTPException as e:
+                return {"id": member_id, "enabled": False, "ok": False,
+                        "error": e.detail}
+            except Exception as e:  # noqa: BLE001
+                return {"id": member_id, "enabled": False, "ok": False,
+                        "error": str(e)}
+        # User-policy member.
+        try:
+            async with policy_lock:
+                existing = store.load()
+                target = None
+                for ov in existing:
+                    if ov.policy.id == member_id:
+                        target = ov
+                        break
+                if target is None:
+                    return {
+                        "id": member_id, "enabled": False, "ok": False,
+                        "error": "member policy not found in store",
+                    }
+                if target.enabled:
+                    return {"id": member_id, "enabled": True, "ok": True}
+                saved_enforcement = _revalidate_for_reenable(target)
+                _assert_policy_lifecycle_endorsed(target.policy)
+                new_list = [
+                    ov for ov in existing if ov.policy.id != member_id
+                ]
+                new_list.append(PolicyOverride(
+                    policy=target.policy,
+                    source=target.source,
+                    enabled=True,
+                    enforcement=saved_enforcement,
+                ))
+                store.save(new_list)
+            return {"id": member_id, "enabled": True, "ok": True}
+        except HTTPException as e:
+            return {"id": member_id, "enabled": False, "ok": False,
+                    "error": e.detail}
+        except Exception as e:  # noqa: BLE001
+            return {"id": member_id, "enabled": False, "ok": False,
+                    "error": str(e)}
+
+    async def _disable_one_member(member_id: str) -> dict:
+        # Prebuilt member.
+        if member_id.startswith("prebuilt/"):
+            slug = member_id[len("prebuilt/"):]
+            try:
+                await disable_prebuilt_policy(slug)
+                return {"id": member_id, "enabled": False, "ok": True}
+            except HTTPException as e:
+                return {"id": member_id, "enabled": True, "ok": False,
+                        "error": e.detail}
+            except Exception as e:  # noqa: BLE001
+                return {"id": member_id, "enabled": True, "ok": False,
+                        "error": str(e)}
+        # Inline + user-policy members share the same disable shape:
+        # flip the row's enabled flag to False if present, no-op
+        # otherwise.
+        try:
+            async with policy_lock:
+                existing = store.load()
+                changed = False
+                new_list: list[PolicyOverride] = []
+                for ov in existing:
+                    if ov.policy.id == member_id and ov.enabled:
+                        new_list.append(PolicyOverride(
+                            policy=ov.policy,
+                            source=ov.source,
+                            enabled=False,
+                            enforcement=ov.enforcement,
+                        ))
+                        changed = True
+                    else:
+                        new_list.append(ov)
+                if changed:
+                    store.save(new_list)
+            return {"id": member_id, "enabled": False, "ok": True}
+        except HTTPException as e:
+            return {"id": member_id, "enabled": True, "ok": False,
+                    "error": e.detail}
+        except Exception as e:  # noqa: BLE001
+            return {"id": member_id, "enabled": True, "ok": False,
+                    "error": str(e)}
+
+    async def _cascade(
+        pack_id: str, action: str, *, only_missing: bool = False,
+    ) -> dict:
+        members = _resolve_pack_members(pack_id)
+        if members is None:
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        results: list[dict] = []
+        if action == "enable":
+            enabled_now = _enabled_id_set() if only_missing else set()
+            for mid in members:
+                if only_missing and mid in enabled_now:
+                    results.append({"id": mid, "enabled": True, "ok": True,
+                                     "skipped": True})
+                    continue
+                results.append(await _enable_one_member(mid, pack_id))
+        else:
+            for mid in members:
+                results.append(await _disable_one_member(mid))
+        # Recompute status post-attempt.
+        from ..policy.pack import compute_status
+        enabled_after = _enabled_id_set()
+        status, enabled_count = compute_status(members, enabled_after)
+        return {
+            "id": pack_id,
+            "status": status,
+            "enabled_count": enabled_count,
+            "member_count": len(members),
+            "results": results,
+        }
+
+    @app.post("/policy-packs/{pack_id:path}/enable",
+              dependencies=[Depends(require_admin_key)])
+    async def enable_policy_pack(pack_id: str) -> dict:
+        return await _cascade(pack_id, "enable", only_missing=False)
+
+    @app.post("/policy-packs/{pack_id:path}/enable-missing",
+              dependencies=[Depends(require_admin_key)])
+    async def enable_missing_policy_pack(pack_id: str) -> dict:
+        return await _cascade(pack_id, "enable", only_missing=True)
+
+    @app.post("/policy-packs/{pack_id:path}/disable",
+              dependencies=[Depends(require_admin_key)])
+    async def disable_policy_pack(pack_id: str) -> dict:
+        return await _cascade(pack_id, "disable")
 
     # D57f-2 — input-rewrite verdict endpoint. Called by the
     # `magi-cp-input-rewrite` shim at PreToolUse time. Routed BEFORE

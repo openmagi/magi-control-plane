@@ -329,6 +329,63 @@ export type CompiledManagedSettings = {
  *   ir              : the policy IR, ready to feed the PolicyBuilder
  *                     draft prefill. Same shape as PolicyBody.
  */
+/** D75: policy pack.
+ *
+ * A pack is a named group of policy ids that share an operator context
+ * (research mode, coding session, compliance audit). One toggle on the
+ * pack card cascades to every member.
+ *
+ *   id            : `pack/<slug>` for built-ins, `user-pack/<slug>` for
+ *                   user-authored packs.
+ *   name          : operator-facing label (locale-resolved by the cloud
+ *                   via Accept-Language).
+ *   description   : one-sentence "what this bundles in practice".
+ *   policy_ids    : ordered list of member ids. The dashboard renders
+ *                   members in this order.
+ *   source        : "builtin" (immutable membership) or "user".
+ *   status        : derived against the live policy store.
+ *                   `all` = every member enabled, `none` = none, the
+ *                   rest = `partial`.
+ *   member_count  : `policy_ids.length`. Server-computed convenience.
+ *   enabled_count : how many members are currently enabled.
+ */
+export type PolicyPackEntry = {
+  id: string
+  name: string
+  description: string
+  policy_ids: string[]
+  source: "builtin" | "user"
+  status: "all" | "partial" | "none"
+  member_count: number
+  enabled_count: number
+}
+
+/** D75: GET /policy-packs/{id} envelope with member-resolved state. */
+export type PolicyPackDetail = PolicyPackEntry & {
+  members: Array<{ id: string; enabled: boolean }>
+}
+
+/** D75: POST /policy-packs/{id}/(enable|disable|enable-missing) result.
+ *
+ * Status reflects post-attempt reality. Per-member outcome rides in
+ * `results[]`; failed members carry `ok: false` + `error`. Successful
+ * skipped-already-enabled members (only on `enable-missing`) carry
+ * `skipped: true`. */
+export type PolicyPackCascadeResult = {
+  id: string
+  status: "all" | "partial" | "none"
+  enabled_count: number
+  member_count: number
+  results: Array<{
+    id: string
+    enabled: boolean
+    ok: boolean
+    skipped?: boolean
+    source?: string
+    error?: string
+  }>
+}
+
 export type PrebuiltPolicyEntry = {
   id: string
   title: string
@@ -541,6 +598,95 @@ export const cloud = {
       method: "DELETE", keyType: "admin",
     })
   },
+
+  /** D75: list every policy pack (built-in + user) with computed status.
+   *
+   * Built-in packs (`pack/...`) ship membership in the cloud catalog;
+   * user packs (`user-pack/...`) live in the operator-side pack store.
+   * Status is computed against the live policy store at request time
+   * (`all` / `partial` / `none`).
+   *
+   * The locale-aware copy on built-in packs follows Accept-Language;
+   * we send it explicitly so the dashboard render matches the cookie
+   * the rest of the surface uses.
+   */
+  listPacks: (locale?: "ko" | "en"): Promise<PolicyPackEntry[]> =>
+    _fetch<{ items: PolicyPackEntry[] }>("/policy-packs", {
+      method: "GET", keyType: "admin",
+      headers: locale ? { "Accept-Language": locale } : undefined,
+    }).then(d => d.items),
+
+  /** D75: single pack with member-resolved state. The members array
+   * carries `{id, enabled}` per member so the dashboard expander can
+   * render each member's toggle without a second round-trip to
+   * /policies. */
+  getPack: (
+    packId: string, locale?: "ko" | "en",
+  ): Promise<PolicyPackDetail> =>
+    _fetch<PolicyPackDetail>(`/policy-packs/${_encId(packId)}`, {
+      method: "GET", keyType: "admin",
+      headers: locale ? { "Accept-Language": locale } : undefined,
+    }),
+
+  /** D75: cascade-enable. Idempotent on the cloud (already-enabled
+   * members are no-ops). Per-member errors land in `results[].error`
+   * with `ok: false`; the cascade still commits the successful ones
+   * (partial-success per the brief). */
+  enablePack: (packId: string): Promise<PolicyPackCascadeResult> =>
+    _fetch<PolicyPackCascadeResult>(
+      `/policy-packs/${_encId(packId)}/enable`,
+      { method: "POST", keyType: "admin" },
+    ),
+
+  /** D75: cascade-disable. Idempotent. Members stay in the policy
+   * store (their `enabled` flag flips to false) so a subsequent
+   * enable preserves any operator edits. */
+  disablePack: (packId: string): Promise<PolicyPackCascadeResult> =>
+    _fetch<PolicyPackCascadeResult>(
+      `/policy-packs/${_encId(packId)}/disable`,
+      { method: "POST", keyType: "admin" },
+    ),
+
+  /** D75: enable only the members currently disabled. Skipped members
+   * land in `results[]` with `skipped: true`. */
+  enableMissingPack: (packId: string): Promise<PolicyPackCascadeResult> =>
+    _fetch<PolicyPackCascadeResult>(
+      `/policy-packs/${_encId(packId)}/enable-missing`,
+      { method: "POST", keyType: "admin" },
+    ),
+
+  /** D75: create a user pack. The cloud derives the slug from `name`
+   * when `slug` is omitted (slugify_name pattern). Returns the new
+   * pack id (`user-pack/<slug>`). */
+  createPack: (req: {
+    name: string
+    description?: string
+    policy_ids: string[]
+    slug?: string
+  }): Promise<{ id: string; name: string; description: string;
+                policy_ids: string[]; source: "user" }> =>
+    _fetch("/policy-packs", {
+      method: "POST", keyType: "admin",
+      body: JSON.stringify(req),
+    }),
+
+  /** D75: update a user pack. PUT with optional fields. Built-in
+   * packs return 405. */
+  updatePack: (
+    packId: string,
+    req: { name?: string; description?: string; policy_ids?: string[] },
+  ): Promise<{ id: string; name: string; description: string;
+                policy_ids: string[]; source: "user" }> =>
+    _fetch(`/policy-packs/${_encId(packId)}`, {
+      method: "PUT", keyType: "admin",
+      body: JSON.stringify(req),
+    }),
+
+  /** D75: delete a user pack. Built-in packs return 405. */
+  deletePack: (packId: string): Promise<{ id: string; deleted: boolean }> =>
+    _fetch(`/policy-packs/${_encId(packId)}`, {
+      method: "DELETE", keyType: "admin",
+    }),
 
   getPolicy: (id: string): Promise<PolicyDetail> =>
     _fetch<PolicyDetail>(`/policies/${_encId(id)}`, { method: "GET", keyType: "admin" }),

@@ -147,6 +147,23 @@ export async function disablePrebuilt(prebuiltId: string): Promise<{
     "DELETE", null, "admin")
 }
 
+// D75: policy-pack cascade helpers.
+export async function enablePack(packId: string): Promise<{
+  id: string; status: string;
+  results: Array<{ id: string; ok: boolean; enabled: boolean }>
+}> {
+  const enc = packId.split("/").map(encodeURIComponent).join("/")
+  return _send(`/policy-packs/${enc}/enable`, "POST", {}, "admin")
+}
+
+export async function disablePack(packId: string): Promise<{
+  id: string; status: string;
+  results: Array<{ id: string; ok: boolean; enabled: boolean }>
+}> {
+  const enc = packId.split("/").map(encodeURIComponent).join("/")
+  return _send(`/policy-packs/${enc}/disable`, "POST", {}, "admin")
+}
+
 export async function ledger(
   sinceId = 0,
   limit = 200,
