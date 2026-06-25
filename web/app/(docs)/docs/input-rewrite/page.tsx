@@ -3,9 +3,16 @@ import { getLocale } from "@/lib/i18n/server"
 import { Code, CodeBlock } from "@/components/ui"
 import { DocsLayout } from "../_components/DocsLayout"
 import { CalloutAside } from "../_components/CalloutAside"
+import { REWRITER_KINDS } from "@/lib/runtime-manifest"
 
 /**
- * D78: how PreToolUse updatedInput works, the rewriter DSL.
+ * D78: how PreToolUse updatedInput works + the rewriter DSL.
+ *
+ * Review fix: the IR examples now use the real
+ * `InputRewritePolicy` shape (`type`, `trigger`, `rewriter`) and the
+ * rewriter kind names come from `runtime-manifest.REWRITER_KINDS`,
+ * which is pinned to `src/magi_cp/policy/rewriters.py` by the vitest
+ * gate.
  */
 export const dynamic = "force-static"
 
@@ -37,41 +44,90 @@ export default function InputRewritePage() {
             도구의 새로운 인자가 됩니다.
           </p>
 
-          <h2>DSL</h2>
-          <p>magi-cp 가 제공하는 재작성 연산자 세 가지:</p>
+          <h2>IR 모양</h2>
+          <p>
+            wrapper 는 <Code inline>type</Code>, <Code inline>id</Code>, <Code inline>description</Code>,
+            <Code inline> trigger</Code>, <Code inline>rewriter</Code> 다섯 필드를 가진 한 덩어리입니다.
+            <Code inline> rewriter.kind</Code> 가 연산자 이름이고, 대상 필드 이름은
+            <Code inline> rewriter.config.field</Code> 한 칸에 들어갑니다
+            (<Code inline>tool_input.url</Code> 같은 점-경로는 허용되지 않습니다).
+            지원 연산자: {REWRITER_KINDS.map((k, i) => (
+              <span key={k}>
+                {i > 0 ? ", " : ""}
+                <Code inline>{k}</Code>
+              </span>
+            ))}.
+          </p>
 
           <h3>prefix_strip</h3>
           <p>대상 필드가 특정 접두사로 시작하면 제거합니다.</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.url",
-  "op": "prefix_strip",
-  "prefix": "file://"
+  "type": "input_rewrite",
+  "id": "strip-file-scheme",
+  "description": "WebFetch 의 file:// 접두를 제거합니다",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "WebFetch"
+  },
+  "rewriter": {
+    "kind": "prefix_strip",
+    "config": {
+      "field": "url",
+      "prefix": "file://",
+      "strip_repeat": false
+    }
+  }
 }`}</CodeBlock>
 
           <h3>scheme_force</h3>
           <p>URL 의 scheme 을 강제로 바꿉니다 (검열 우회 가드).</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.url",
-  "op": "scheme_force",
-  "from": "http",
-  "to": "https"
+  "type": "input_rewrite",
+  "id": "force-https",
+  "description": "WebFetch 호출의 http:// 를 https:// 로 강제",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "WebFetch"
+  },
+  "rewriter": {
+    "kind": "scheme_force",
+    "config": {
+      "field": "url",
+      "from": "http://",
+      "to": "https://"
+    }
+  }
 }`}</CodeBlock>
 
           <h3>regex_substitute</h3>
           <p>정규식 캡처 → 치환. 가장 자유롭지만 가장 위험합니다.</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.command",
-  "op": "regex_substitute",
-  "pattern": "^rm -rf (?P<path>.+)$",
-  "replacement": "rm -ri \\\\g<path>"
+  "type": "input_rewrite",
+  "id": "soften-rm-rf",
+  "description": "rm -rf 를 대화형 rm -ri 로 치환",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "Bash"
+  },
+  "rewriter": {
+    "kind": "regex_substitute",
+    "config": {
+      "field": "command",
+      "pattern": "^rm -rf (?P<path>.+)$",
+      "replacement": "rm -ri \\\\g<path>",
+      "count": 1
+    }
+  }
 }`}</CodeBlock>
 
           <CalloutAside tone="warn">
             정규식 치환은 의도하지 않은 인자를 망칠 수 있습니다. 시뮬레이터
             (<Link href="/docs/first-policy">/docs/first-policy</Link>) 로 미리 시험하세요.
+            <Code inline>config.field</Code> 는 한 칸짜리 식별자만 받습니다.
+            점이 든 이름은 <Code inline>validate_rewriter_spec</Code> 가 거부합니다.
           </CalloutAside>
 
           <h2>적용 순서</h2>
@@ -102,41 +158,90 @@ export default function InputRewritePage() {
             tool's arguments for the call.
           </p>
 
-          <h2>DSL</h2>
-          <p>magi-cp ships three rewrite operators:</p>
+          <h2>IR shape</h2>
+          <p>
+            The wrapper has five fields: <Code inline>type</Code>, <Code inline>id</Code>,
+            <Code inline> description</Code>, <Code inline>trigger</Code>, <Code inline>rewriter</Code>.
+            The operator name lives in <Code inline>rewriter.kind</Code> and the target field name
+            in <Code inline>rewriter.config.field</Code> (a single identifier, no dotted paths
+            like <Code inline>tool_input.url</Code>). Supported operators:
+            {" "}{REWRITER_KINDS.map((k, i) => (
+              <span key={k}>
+                {i > 0 ? ", " : ""}
+                <Code inline>{k}</Code>
+              </span>
+            ))}.
+          </p>
 
           <h3>prefix_strip</h3>
           <p>Drop a prefix from the target field if it matches.</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.url",
-  "op": "prefix_strip",
-  "prefix": "file://"
+  "type": "input_rewrite",
+  "id": "strip-file-scheme",
+  "description": "Drop file:// from WebFetch URLs",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "WebFetch"
+  },
+  "rewriter": {
+    "kind": "prefix_strip",
+    "config": {
+      "field": "url",
+      "prefix": "file://",
+      "strip_repeat": false
+    }
+  }
 }`}</CodeBlock>
 
           <h3>scheme_force</h3>
           <p>Force the URL scheme. Useful as an HTTPS guard.</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.url",
-  "op": "scheme_force",
-  "from": "http",
-  "to": "https"
+  "type": "input_rewrite",
+  "id": "force-https",
+  "description": "Force WebFetch URLs to https://",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "WebFetch"
+  },
+  "rewriter": {
+    "kind": "scheme_force",
+    "config": {
+      "field": "url",
+      "from": "http://",
+      "to": "https://"
+    }
+  }
 }`}</CodeBlock>
 
           <h3>regex_substitute</h3>
           <p>Capture + substitute. Maximum freedom; maximum risk.</p>
           <CodeBlock>{`{
-  "kind": "input_rewrite",
-  "target": "tool_input.command",
-  "op": "regex_substitute",
-  "pattern": "^rm -rf (?P<path>.+)$",
-  "replacement": "rm -ri \\\\g<path>"
+  "type": "input_rewrite",
+  "id": "soften-rm-rf",
+  "description": "Rewrite rm -rf to interactive rm -ri",
+  "trigger": {
+    "host": "claude-code",
+    "event": "PreToolUse",
+    "matcher": "Bash"
+  },
+  "rewriter": {
+    "kind": "regex_substitute",
+    "config": {
+      "field": "command",
+      "pattern": "^rm -rf (?P<path>.+)$",
+      "replacement": "rm -ri \\\\g<path>",
+      "count": 1
+    }
+  }
 }`}</CodeBlock>
 
           <CalloutAside tone="warn">
             Regex substitution can mangle args you didn't intend to touch. Confirm with the
             simulator (<Link href="/docs/first-policy">/docs/first-policy</Link>).
+            <Code inline>config.field</Code> only accepts single identifiers;
+            <Code inline> validate_rewriter_spec</Code> rejects dotted paths.
           </CalloutAside>
 
           <h2>Order of application</h2>

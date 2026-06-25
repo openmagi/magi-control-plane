@@ -3,10 +3,15 @@ import { getLocale } from "@/lib/i18n/server"
 import { Code, CodeBlock } from "@/components/ui"
 import { DocsLayout } from "../_components/DocsLayout"
 import { CalloutAside } from "../_components/CalloutAside"
+import { POLICY_IR_VERSION_FIELD } from "@/lib/runtime-manifest"
 
 /**
  * D78: how to upgrade the docker stack, version compatibility, and
  * the prebuilt-id stability promise (D60).
+ *
+ * Review fix: the policy-IR version field is named `version` per
+ * dataclass in `src/magi_cp/policy/ir.py`. The backup script in
+ * `scripts/` is `backup.sh`; there is no `snapshot.sh`.
  */
 export const dynamic = "force-static"
 
@@ -27,7 +32,7 @@ export default function UpgradePage() {
           <h2>업그레이드 절차</h2>
           <ol>
             <li>릴리즈 노트를 한 줄이라도 읽습니다 (특히 breaking 표기).</li>
-            <li>현재 정책·스크립트·ledger 백업: <Code inline>./scripts/snapshot.sh</Code></li>
+            <li>현재 정책·스크립트·ledger 백업: <Code inline>./scripts/backup.sh</Code></li>
             <li>이미지를 새 태그로 풀: <Code inline>docker compose pull</Code></li>
             <li>중단 없이 교체: <Code inline>docker compose up -d</Code></li>
             <li>대시보드 새로 고침, <Link href="/setup">/setup</Link> 가 여전히 API 키를 인식하는지 확인.</li>
@@ -38,7 +43,9 @@ export default function UpgradePage() {
           <p>
             컨트롤 플레인은 <b>마이너 N → N+1</b> 까지 정책 IR 호환을 약속합니다.
             메이저 업이 있을 때만 IR 마이그레이션 스크립트가 필요합니다.
-            <Code inline>policy_ir_version</Code> 필드를 보면 현재 IR 버전을 알 수 있습니다.
+            저장된 정책 JSON 의 각 정책 타입은 자기 <Code inline>{POLICY_IR_VERSION_FIELD}</Code>
+            필드를 따로 들고 있습니다 (모든 dataclass 가 <Code inline>{POLICY_IR_VERSION_FIELD}: str = "0.1"</Code>
+            로 시작). 한 정책의 IR 버전이 궁금하면 그 객체의 <Code inline>{POLICY_IR_VERSION_FIELD}</Code> 키를 보세요.
           </p>
 
           <CalloutAside tone="warn" title="롤백 정책">
@@ -64,7 +71,7 @@ export default function UpgradePage() {
           <h2>업그레이드가 실패할 때</h2>
           <ol>
             <li>이전 태그로 되돌리기: <Code inline>docker compose down && IMAGE_TAG=&lt;prev&gt; docker compose up -d</Code></li>
-            <li><Code inline>snapshot.sh</Code> 의 결과를 풀어 정책·스크립트 디렉터리 복구.</li>
+            <li><Code inline>backup.sh</Code> 의 결과를 풀어 정책·스크립트 디렉터리 복구.</li>
             <li><Link href="/docs/troubleshooting">문제 해결</Link> 의 “Cloud unreachable” 절을 따라가서 클라우드 살아남 확인.</li>
           </ol>
 
@@ -79,7 +86,7 @@ export default function UpgradePage() {
           <h2>Upgrade procedure</h2>
           <ol>
             <li>Read the release notes (especially the breaking section).</li>
-            <li>Back up current policies, scripts, ledger: <Code inline>./scripts/snapshot.sh</Code>.</li>
+            <li>Back up current policies, scripts, ledger: <Code inline>./scripts/backup.sh</Code>.</li>
             <li>Pull the new image tag: <Code inline>docker compose pull</Code>.</li>
             <li>Zero-downtime swap: <Code inline>docker compose up -d</Code>.</li>
             <li>Refresh the dashboard. Confirm <Link href="/setup">/setup</Link> still accepts your API key.</li>
@@ -89,9 +96,11 @@ export default function UpgradePage() {
           <h2>Version compatibility</h2>
           <p>
             The control plane promises <b>minor N → N+1</b> Policy-IR compatibility.
-            Major upgrades require an IR migration script. Inspect
-            <Code inline> policy_ir_version</Code> on a saved policy to see what IR version it
-            was authored on.
+            Major upgrades require an IR migration script. Every policy dataclass carries its
+            own <Code inline>{POLICY_IR_VERSION_FIELD}</Code> field (the JSON key is literally
+            <Code inline> {POLICY_IR_VERSION_FIELD}</Code>, defaulting to
+            <Code inline> "0.1"</Code>); inspect that key on a saved policy to see what IR
+            version it was authored on.
           </p>
 
           <CalloutAside tone="warn" title="Rollback policy">
@@ -117,7 +126,7 @@ export default function UpgradePage() {
           <h2>If an upgrade fails</h2>
           <ol>
             <li>Roll back to the previous tag: <Code inline>docker compose down && IMAGE_TAG=&lt;prev&gt; docker compose up -d</Code>.</li>
-            <li>Restore from the <Code inline>snapshot.sh</Code> output.</li>
+            <li>Restore from the <Code inline>backup.sh</Code> output.</li>
             <li>Walk through the "Cloud unreachable" section of <Link href="/docs/troubleshooting">Troubleshooting</Link>.</li>
           </ol>
 

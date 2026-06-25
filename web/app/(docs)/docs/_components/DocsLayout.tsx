@@ -7,6 +7,7 @@ import {
   ArrowLeftIcon,
 } from "@heroicons/react/24/outline"
 import { getT, getLocale } from "@/lib/i18n/server"
+import type { TKey } from "@/lib/i18n/dict"
 
 /**
  * D78: shared layout for every /docs/* page. Renders a left rail of
@@ -18,6 +19,11 @@ import { getT, getLocale } from "@/lib/i18n/server"
  * 10 entries match the 10 pages mandated by D78. The breadcrumbs are
  * inline (no heavy schema.org markup) since these pages are inside the
  * console shell and operators aren't sharing the URLs externally.
+ *
+ * Review fix: rail and breadcrumb labels now resolve through the
+ * `docs.nav.*` keys in `web/lib/i18n/dict.ts`, so a translator editing
+ * the dict actually changes what the user sees and the existing
+ * EN-mirror gate catches drift.
  */
 
 export type DocsSlug =
@@ -37,20 +43,23 @@ interface DocsNavEntry {
   href: string
   /** Heroicon component reference. */
   icon: typeof HomeIcon
+  /** i18n key for the rail label. Single source of truth for both the
+   *  rail and the breadcrumb head. */
+  labelKey: TKey
 }
 
 /** Single source of truth for the docs left rail order. */
 export const DOCS_NAV: ReadonlyArray<DocsNavEntry> = [
-  { slug: "index",          href: "/docs",                  icon: HomeIcon },
-  { slug: "concepts",       href: "/docs/concepts",         icon: AcademicCapIcon },
-  { slug: "first-policy",   href: "/docs/first-policy",     icon: BookOpenIcon },
-  { slug: "run-command",    href: "/docs/run-command",      icon: CommandLineIcon },
-  { slug: "inject-context", href: "/docs/inject-context",   icon: ArrowUpTrayIcon },
-  { slug: "input-rewrite",  href: "/docs/input-rewrite",    icon: PencilSquareIcon },
-  { slug: "conversational", href: "/docs/conversational",   icon: ChatBubbleLeftRightIcon },
-  { slug: "env-reference",  href: "/docs/env-reference",    icon: AdjustmentsHorizontalIcon },
-  { slug: "troubleshooting",href: "/docs/troubleshooting",  icon: WrenchScrewdriverIcon },
-  { slug: "upgrade",        href: "/docs/upgrade",          icon: ArchiveBoxIcon },
+  { slug: "index",          href: "/docs",                  icon: HomeIcon,                   labelKey: "docs.nav.index" },
+  { slug: "concepts",       href: "/docs/concepts",         icon: AcademicCapIcon,            labelKey: "docs.nav.concepts" },
+  { slug: "first-policy",   href: "/docs/first-policy",     icon: BookOpenIcon,               labelKey: "docs.nav.firstPolicy" },
+  { slug: "run-command",    href: "/docs/run-command",      icon: CommandLineIcon,            labelKey: "docs.nav.runCommand" },
+  { slug: "inject-context", href: "/docs/inject-context",   icon: ArrowUpTrayIcon,            labelKey: "docs.nav.injectContext" },
+  { slug: "input-rewrite",  href: "/docs/input-rewrite",    icon: PencilSquareIcon,           labelKey: "docs.nav.inputRewrite" },
+  { slug: "conversational", href: "/docs/conversational",   icon: ChatBubbleLeftRightIcon,    labelKey: "docs.nav.conversational" },
+  { slug: "env-reference",  href: "/docs/env-reference",    icon: AdjustmentsHorizontalIcon,  labelKey: "docs.nav.envReference" },
+  { slug: "troubleshooting",href: "/docs/troubleshooting",  icon: WrenchScrewdriverIcon,      labelKey: "docs.nav.troubleshooting" },
+  { slug: "upgrade",        href: "/docs/upgrade",          icon: ArchiveBoxIcon,             labelKey: "docs.nav.upgrade" },
 ] as const
 
 interface DocsLayoutProps {
@@ -64,32 +73,11 @@ interface DocsLayoutProps {
   children: ReactNode
 }
 
-function labelFor(slug: DocsSlug, isKo: boolean): string {
-  const KO: Record<DocsSlug, string> = {
-    "index":           "시작하기",
-    "concepts":        "개념",
-    "first-policy":    "첫 정책",
-    "run-command":     "스크립트 실행",
-    "inject-context":  "컨텍스트 주입",
-    "input-rewrite":   "입력 재작성",
-    "conversational":  "대화형 작성기",
-    "env-reference":   "환경변수",
-    "troubleshooting": "문제 해결",
-    "upgrade":         "업그레이드",
-  }
-  const EN: Record<DocsSlug, string> = {
-    "index":           "Quickstart",
-    "concepts":        "Concepts",
-    "first-policy":    "First policy",
-    "run-command":     "Run a script",
-    "inject-context":  "Inject context",
-    "input-rewrite":   "Rewrite input",
-    "conversational":  "Conversational",
-    "env-reference":   "Env reference",
-    "troubleshooting": "Troubleshooting",
-    "upgrade":         "Upgrade",
-  }
-  return (isKo ? KO : EN)[slug]
+/** Lookup helper used by both the rail and the breadcrumb head. */
+export function navLabelKey(slug: DocsSlug): TKey {
+  const entry = DOCS_NAV.find((e) => e.slug === slug)
+  if (!entry) throw new Error(`unknown docs slug: ${slug}`)
+  return entry.labelKey
 }
 
 export async function DocsLayout({
@@ -127,7 +115,7 @@ export async function DocsLayout({
                     }
                   >
                     <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{labelFor(entry.slug, isKo)}</span>
+                    <span className="truncate">{t(entry.labelKey)}</span>
                   </Link>
                 </li>
               )
@@ -159,7 +147,7 @@ export async function DocsLayout({
             <>
               <span aria-hidden="true" className="mx-1.5">/</span>
               <span className="text-[var(--color-text-secondary)]">
-                {labelFor(current, isKo)}
+                {t(navLabelKey(current))}
               </span>
             </>
           )}

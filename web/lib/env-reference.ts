@@ -6,9 +6,15 @@
  * "allowed values" hint. The descriptions are intentionally one line so the
  * reference table stays scannable; deep dives belong in the topic pages.
  *
- * Adding a new MAGI_CP_* env var? Add it here too. The vitest source-grep
- * gate in env-reference.test.ts asserts every name documented here is
- * actually referenced somewhere in src/, plugin/, or web/.
+ * Drift gates (env-reference.test.ts):
+ *  1. Spot-check: a hand-curated REQUIRED list of names that doc pages
+ *     explicitly cite must remain present.
+ *  2. Bidirectional grep gate: every `MAGI_CP_*` name found in
+ *     `src/magi_cp/` and `web/` (excluding the env-reference file itself
+ *     and its test) must appear in `ENV_REFERENCE`, and every
+ *     `MAGI_CP_*` name documented here must be referenced somewhere in
+ *     the same scan. New env vars added in source without a matching
+ *     row fail the test loudly.
  */
 export interface EnvVarEntry {
   /** Full env var name. */
@@ -284,10 +290,10 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
   {
     name: "MAGI_CP_DASH_PORT",
     group: "dashboard",
-    default: "3787",
+    default: "3000",
     allowed: "integer 1-65535",
-    ko: "대시보드 포트.",
-    en: "Dashboard port.",
+    ko: "install.sh / quickstart.sh 가 대시보드 컨테이너에 매핑할 포트 (기본 3000, 충돌 시 자동 +50 범위 탐색).",
+    en: "Port that install.sh / quickstart.sh map the dashboard container to (default 3000; auto-scans +50 on collision).",
   },
   {
     name: "MAGI_CP_CLOUD_PORT",
@@ -346,11 +352,32 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "Required when MAGI_CP_LLM_COMPILER=anthropic_default.",
   },
   {
+    name: "ANTHROPIC_MODEL",
+    group: "provider",
+    default: "(provider default)",
+    ko: "anthropic_default 가 사용할 모델 id 오버라이드. 비우면 provider 기본 모델.",
+    en: "Override the model id used by anthropic_default. Unset means provider default.",
+  },
+  {
     name: "OPENAI_API_KEY",
     group: "provider",
     default: "(required for reviewer)",
     ko: "MAGI_CP_LLM_REVIEWER=openai_default 일 때 필요.",
     en: "Required when MAGI_CP_LLM_REVIEWER=openai_default.",
+  },
+  {
+    name: "OPENAI_MODEL",
+    group: "provider",
+    default: "(provider default)",
+    ko: "openai_default 가 사용할 모델 id 오버라이드. 비우면 provider 기본 모델.",
+    en: "Override the model id used by openai_default. Unset means provider default.",
+  },
+  {
+    name: "CLAUDE_PROJECTS_DIR",
+    group: "provider",
+    default: "~/.claude/projects",
+    ko: "magi-cp share 가 Claude Code 세션 자료를 읽어들이는 디렉터리.",
+    en: "Directory `magi-cp share` reads Claude Code session data from.",
   },
 ] as const
 

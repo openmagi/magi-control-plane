@@ -1,16 +1,36 @@
 import Link from "next/link"
+import { Fragment } from "react"
 import { getLocale } from "@/lib/i18n/server"
 import { Code } from "@/components/ui"
 import { DocsLayout } from "../_components/DocsLayout"
 import { CalloutAside } from "../_components/CalloutAside"
+import { LEDGER_VERDICTS_ORDERED } from "@/lib/runtime-manifest"
 
 /**
  * D78: concepts page. Defines the 5 nouns operators see every day:
  * policy, verifier, evidence, pack, prebuilt. Plain language; if the
  * operator needs to think about an internal concept (matcher,
  * lifecycle), define it inline with a 1-2 sentence example.
+ *
+ * Review fix: the canonical verdict allowlist is imported from
+ * `runtime-manifest` (gated against `src/magi_cp/policy/verdicts.py`).
+ * Adding a verdict in Python without updating the manifest fails the
+ * vitest gate before the docs go stale.
  */
 export const dynamic = "force-static"
+
+function VerdictList() {
+  return (
+    <>
+      {LEDGER_VERDICTS_ORDERED.map((v, i) => (
+        <Fragment key={v}>
+          {i > 0 ? ", " : ""}
+          <Code inline>{v}</Code>
+        </Fragment>
+      ))}
+    </>
+  )
+}
 
 export default function ConceptsPage() {
   const isKo = getLocale() === "ko"
@@ -28,7 +48,7 @@ export default function ConceptsPage() {
         <>
           <h2>정책 (policy)</h2>
           <p>
-            훅 이벤트 + 매처 + verifier + 액션 의 조합 한 개입니다.
+            훅 이벤트 + 매처 + verifier + 액션의 조합 하나입니다.
             예를 들어 “PreToolUse(Bash) 에서 rm -rf 가 들어오면 차단(block)”은 정책 한 개입니다.
             정책의 IR (intermediate representation) 은 JSON 한 덩어리고, 클라우드에 저장됩니다.
           </p>
@@ -49,8 +69,12 @@ export default function ConceptsPage() {
             <li><b>shacl</b>: RDF 그래프 + SHACL 모양으로 결정론적 검증</li>
           </ul>
           <p>
-            verdict 는 <Code inline>pass</Code>, <Code inline>fail</Code>,
-            <Code inline>needs_review</Code>, <Code inline>not_applicable</Code> 네 가지입니다.
+            verdict 는 여섯 가지입니다: <VerdictList />.
+            <Code inline>pass</Code> 와 <Code inline>not_applicable</Code> 만 통과로 취급되고,
+            <Code inline>deny</Code> 는 차단을 즉시 강제, <Code inline>review</Code> 와
+            <Code inline>needs_review</Code> 는 HITL 큐로 보냅니다.
+            이 값들은 <Link href="/ledger">/ledger</Link> 와 <Link href="/policies">정책 dry-run</Link> 화면에
+            그대로 표시되니, 도구가 모르는 verdict 를 보여 줄 일은 없습니다.
           </p>
 
           <h2>Evidence</h2>
@@ -78,10 +102,15 @@ export default function ConceptsPage() {
 
           <h2>이벤트 lifecycle</h2>
           <p>
-            Claude Code 는 한 턴 안에서 여러 훅을 발사합니다. 보통은:
-            <Code inline>UserPromptSubmit</Code> → <Code inline>PreToolUse</Code> →
-            <Code inline>PostToolUse</Code> 순서. magi-cp 정책은 어느 이벤트에든
-            붙을 수 있지만 액션 종류가 다릅니다 (<Link href="/docs/inject-context">inject-context</Link>,
+            한 턴은 보통 이렇게 흐릅니다.
+            사용자 메시지마다 <Code inline>UserPromptSubmit</Code> 가 한 번 떨어지고,
+            그 뒤로 도구 호출이 있을 때마다 <Code inline>PreToolUse</Code> →
+            <Code inline>PostToolUse</Code> 쌍이 반복됩니다.
+            마지막으로 <Code inline>Stop</Code> 또는 <Code inline>SessionEnd</Code> 가 닫아 줍니다.
+            한 번의 <Code inline>UserPromptSubmit</Code> 뒤에 여러 도구 호출이 따라올 수 있으므로,
+            “모든 Bash 직전”을 가드하려면 <Code inline>PreToolUse</Code> 정책이 맞습니다.
+            magi-cp 정책은 어느 이벤트에든 붙을 수 있지만 액션 종류가 다릅니다
+            (<Link href="/docs/inject-context">inject-context</Link>,
             <Link href="/docs/input-rewrite"> input-rewrite</Link>).
           </p>
 
@@ -115,9 +144,12 @@ export default function ConceptsPage() {
             <li><b>shacl</b>: deterministic RDF graph + SHACL shape</li>
           </ul>
           <p>
-            Verdicts are one of <Code inline>pass</Code>,
-            <Code inline>fail</Code>, <Code inline>needs_review</Code>,
-            <Code inline>not_applicable</Code>.
+            The verdict allowlist is six values: <VerdictList />.
+            <Code inline>pass</Code> and <Code inline>not_applicable</Code> are passing;
+            <Code inline>deny</Code> blocks immediately; <Code inline>review</Code> and
+            <Code inline>needs_review</Code> route to the HITL queue. These exact strings
+            show up in <Link href="/ledger">/ledger</Link> and the policy dry-run UI, so the
+            console will never display a verdict the docs haven't named.
           </p>
 
           <h2>Evidence</h2>
@@ -143,10 +175,14 @@ export default function ConceptsPage() {
 
           <h2>Event lifecycle</h2>
           <p>
-            Claude Code fires several hooks per turn. The common order is:
-            <Code inline>UserPromptSubmit</Code> → <Code inline>PreToolUse</Code> →
-            <Code inline>PostToolUse</Code>. A magi-cp policy can bind to any event,
-            but the action kinds differ (<Link href="/docs/inject-context">inject context</Link>,
+            A typical turn looks like this. One <Code inline>UserPromptSubmit</Code> fires
+            on the user message, then one or more <Code inline>PreToolUse</Code> →
+            <Code inline>PostToolUse</Code> pairs follow as the model uses tools, and
+            <Code inline>Stop</Code> or <Code inline>SessionEnd</Code> closes the turn.
+            Because many tool calls can ride one <Code inline>UserPromptSubmit</Code>,
+            "gate every Bash" belongs on <Code inline>PreToolUse</Code>, not on
+            <Code inline>UserPromptSubmit</Code>. A magi-cp policy can bind to any event,
+            but the available action kinds differ (<Link href="/docs/inject-context">inject context</Link>,
             <Link href="/docs/input-rewrite">rewrite input</Link>).
           </p>
 

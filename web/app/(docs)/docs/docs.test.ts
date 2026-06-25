@@ -67,4 +67,68 @@ describe("D78 /docs/* surface", () => {
     expect(sidebarSrc).toMatch(/href="\/docs"/)
     expect(sidebarSrc).toMatch(/nav\.group\.help/)
   })
+
+  /**
+   * Review fix: CLAUDE.md "no em-dashes" is a hard rule and the repo
+   * even ships humanize tooling specifically to strip them. A grep
+   * gate at the docs surface fails loudly the next time one slips in.
+   */
+  it("no em-dashes anywhere under /docs/* (CLAUDE.md hard rule)", () => {
+    const offenders: string[] = []
+    for (const p of PAGES) {
+      const src = readFileSync(path.join(docsDir, p.rel), "utf-8")
+      if (src.includes("—")) offenders.push(p.rel)
+    }
+    // Also scan the shared components directory.
+    const sharedFiles = ["_components/DocsLayout.tsx", "_components/CalloutAside.tsx"]
+    for (const rel of sharedFiles) {
+      const abs = path.join(docsDir, rel)
+      if (!existsSync(abs)) continue
+      const src = readFileSync(abs, "utf-8")
+      if (src.includes("—")) offenders.push(rel)
+    }
+    expect(
+      offenders,
+      `em-dash (U+2014) found in: ${offenders.join(", ")}; use a comma, period, or colon`,
+    ).toEqual([])
+  })
+
+  /**
+   * Review fix: the dead `docs.nav.*` keys are now load-bearing. The
+   * rail in DocsLayout and the card grid on /docs both translate via
+   * those keys, so the key set must stay in lockstep with the slug
+   * set; the dict file itself must contain a row for each slug. This
+   * makes future translator edits visible immediately.
+   */
+  it("dict has a docs.nav.* key for every slug, and DocsLayout binds it", () => {
+    const dictSrc = readFileSync(
+      path.join(__dirname, "..", "..", "..", "lib", "i18n", "dict.ts"),
+      "utf-8",
+    )
+    const slugToKey: Record<string, string> = {
+      "index":           "docs.nav.index",
+      "concepts":        "docs.nav.concepts",
+      "first-policy":    "docs.nav.firstPolicy",
+      "run-command":     "docs.nav.runCommand",
+      "inject-context":  "docs.nav.injectContext",
+      "input-rewrite":   "docs.nav.inputRewrite",
+      "conversational":  "docs.nav.conversational",
+      "env-reference":   "docs.nav.envReference",
+      "troubleshooting": "docs.nav.troubleshooting",
+      "upgrade":         "docs.nav.upgrade",
+    }
+    const layoutSrc = readFileSync(
+      path.join(docsDir, "_components/DocsLayout.tsx"), "utf-8",
+    )
+    for (const [, key] of Object.entries(slugToKey)) {
+      // Once in KO_RAW, once in EN. At least two occurrences.
+      const occurrences = (dictSrc.match(new RegExp(`"${key.replace(/\./g, "\\.")}"`, "g")) ?? []).length
+      expect(
+        occurrences,
+        `dict.ts is missing or under-covers ${key} (need both KO + EN entries; got ${occurrences})`,
+      ).toBeGreaterThanOrEqual(2)
+      // DocsLayout binds the same key into the rail.
+      expect(layoutSrc, `DocsLayout missing labelKey ${key}`).toContain(`"${key}"`)
+    }
+  })
 })

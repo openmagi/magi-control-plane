@@ -59,13 +59,14 @@ export default function FirstPolicyPage() {
           <h2>2. 토글을 켠다</h2>
           <p>
             각 행 오른쪽의 토글을 누르면 즉시 활성화됩니다. 클라우드에 IR 이 저장되고,
-            플러그인이 다음 폴 (기본 60초) 에 새 정책을 가져갑니다.
+            플러그인은 다음 훅이 발사될 때 클라우드에서 정책을 다시 끌어옵니다
+            (별도 폴링 데몬은 없습니다). 활성화 직후 강제하고 싶다면 그냥 한 번
+            새 메시지를 보내거나 <Code inline>claude</Code> 세션을 재시작하면 됩니다.
           </p>
           <CalloutAside tone="tip">
-            {isKo
-              ? <>활성화 직후 강제하려면 플러그인 셸에서 <Code inline>magi-cp sync</Code> 를 실행하세요.</>
-              : <>To enforce immediately, run <Code inline>magi-cp sync</Code> in your CC plugin shell.</>
-            }
+            캐시된 정책 사본이 의심스러우면 <Code inline>MAGI_CP_LOCAL_DIR</Code>
+            (기본 <Code inline>~/.config/magi-cp</Code>) 아래의 정책 캐시 파일을 지우고 다시
+            <Code inline> claude</Code> 를 띄우세요. 다음 훅에서 최신 IR 이 내려옵니다.
           </CalloutAside>
 
           <h2>3. 시뮬레이터로 발사 테스트</h2>
@@ -112,10 +113,15 @@ export default function FirstPolicyPage() {
           <h2>2. Flip the toggle</h2>
           <p>
             The toggle on the right of each row enables the policy. The IR is saved to the
-            cloud; the plugin picks it up on the next poll (default 60s).
+            cloud; the plugin fetches policies inline on the next hook invocation (there is no
+            background poll loop). To force-pick-up, send a fresh message or restart your
+            <Code inline> claude</Code> session.
           </p>
           <CalloutAside tone="tip">
-            To enforce immediately, run <Code inline>magi-cp sync</Code> in your CC plugin shell.
+            If you suspect a stale cached copy, delete the policy cache files under
+            <Code inline> MAGI_CP_LOCAL_DIR</Code> (default
+            <Code inline> ~/.config/magi-cp</Code>) and re-launch <Code inline>claude</Code>.
+            The next hook downloads the current IR.
           </CalloutAside>
 
           <h2>3. Test it with the simulator</h2>

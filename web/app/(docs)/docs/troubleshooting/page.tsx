@@ -55,7 +55,9 @@ docker compose restart cloud`}</CodeBlock>
           <p>증상: ledger 에 <Code inline>run_command</Code> 가 <Code inline>timeout</Code> 으로 떨어짐.</p>
           <p>해결:</p>
           <ul>
-            <li>정책 IR 의 <Code inline>timeout_seconds</Code> 를 늘리거나 (최대 120),</li>
+            <li>정책 IR 의 <Code inline>timeout_ms</Code> 를 늘리세요 (밀리초, 최대 30000).
+                옛 표기 <Code inline>timeout_seconds</Code> 는 인식되지 않고 무시되니
+                반드시 <Code inline>timeout_ms</Code> 키를 쓰세요.</li>
             <li>긴 작업을 백그라운드로 두기 (<Code inline>nohup … &</Code>).</li>
             <li>플러그인 컨테이너에 runtime 이 진짜 있는지 (<Code inline>which python3</Code>).</li>
           </ul>
@@ -64,15 +66,18 @@ docker compose restart cloud`}</CodeBlock>
           <p>증상: 시뮬레이터에서는 차단되는데 실제 <Code inline>claude</Code> 에서는 통과.</p>
           <p>점검:</p>
           <ol>
-            <li>플러그인이 최신 정책을 가져왔는지: <Code inline>magi-cp sync</Code></li>
-            <li>CC 가 훅을 정말 부르는지: <Code inline>claude --hook-debug</Code></li>
+            <li>로컬 정책 캐시가 stale 한지: <Code inline>~/.config/magi-cp</Code> (또는
+                <Code inline>$MAGI_CP_LOCAL_DIR</Code>) 의 캐시 파일을 지우고 <Code inline>claude</Code>
+                를 재시작하면 다음 훅에서 최신 IR 이 내려옵니다.</li>
+            <li>CC 의 디버그 출력으로 훅이 정말 발사되는지: <Code inline>CLAUDE_HOOK_DEBUG=1 claude …</Code>
+                (또는 운영자가 CC 셸 안에서 <Code inline>claude doctor</Code> 로 hook 설정 확인).</li>
             <li>매처가 실제 도구 이름과 일치하는지: 시뮬레이터에 같은 payload 를 넣어봅니다.</li>
             <li>플러그인 로그에 보안상의 deny 가 있는지: <Code inline>tail -F ~/.config/magi-cp/plugin.log</Code></li>
           </ol>
 
           <CalloutAside tone="tip">
-            <Link href="/docs/env-reference">환경변수 레퍼런스</Link> 에서 위 페이지가 인용한 모든
-            <Code inline> MAGI_CP_*</Code> 의 기본값과 한 줄 설명을 볼 수 있습니다.
+            <Link href="/docs/env-reference">환경변수 레퍼런스</Link> 에서 위에서 언급한 모든
+            <Code inline> MAGI_CP_*</Code> 의 기본값과 한 줄 설명을 확인할 수 있습니다.
           </CalloutAside>
         </>
       ) : (
@@ -101,14 +106,16 @@ docker compose restart cloud`}</CodeBlock>
           <ul>
             <li>Key expired or billing limit hit.</li>
             <li>Key lacks access to the reviewer's model (OpenAI gpt-5.5, etc).</li>
-            <li>Provider outage — retry after 1-2 minutes.</li>
+            <li>Provider outage. Retry after 1-2 minutes.</li>
           </ul>
 
           <h2>4. Script timeout in run_command</h2>
           <p>Symptom: ledger entry for <Code inline>run_command</Code> ends in <Code inline>timeout</Code>.</p>
           <p>Fix:</p>
           <ul>
-            <li>Raise <Code inline>timeout_seconds</Code> in the policy IR (cap 120).</li>
+            <li>Raise <Code inline>timeout_ms</Code> in the policy IR (milliseconds, cap 30000).
+                The legacy spelling <Code inline>timeout_seconds</Code> is silently ignored;
+                make sure the key is <Code inline>timeout_ms</Code>.</li>
             <li>Push long jobs to the background (<Code inline>nohup … &</Code>).</li>
             <li>Confirm the runtime is present in the plugin container (<Code inline>which python3</Code>).</li>
           </ul>
@@ -117,8 +124,12 @@ docker compose restart cloud`}</CodeBlock>
           <p>Symptom: simulator blocks, but real <Code inline>claude</Code> lets it through.</p>
           <p>Checks:</p>
           <ol>
-            <li>Plugin synced latest policies: <Code inline>magi-cp sync</Code>.</li>
-            <li>CC really emits the hook: <Code inline>claude --hook-debug</Code>.</li>
+            <li>Local policy cache may be stale: delete files under
+                <Code inline> ~/.config/magi-cp</Code> (or <Code inline>$MAGI_CP_LOCAL_DIR</Code>)
+                and restart <Code inline>claude</Code>. The next hook downloads the current IR.</li>
+            <li>Confirm CC actually emits the hook via its own debug output:
+                <Code inline> CLAUDE_HOOK_DEBUG=1 claude …</Code> (or open <Code inline>claude doctor</Code>
+                inside the CC shell to inspect hook configuration).</li>
             <li>Matcher matches the real tool name: re-test the simulator with that payload.</li>
             <li>Plugin log: <Code inline>tail -F ~/.config/magi-cp/plugin.log</Code>.</li>
           </ol>
