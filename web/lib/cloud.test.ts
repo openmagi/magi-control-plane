@@ -522,3 +522,30 @@ describe("cloud client", () => {
   })
 
 })
+
+describe("run-share (public, keyless)", () => {
+  beforeEach(() => { process.env.MAGI_CP_CLOUD_URL = "http://test" })
+
+  it("getSharedRun fetches keyless and returns the view", async () => {
+    let captured: any
+    global.fetch = vi.fn(async (url: any, init: any) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify({ view: { schemaVersion: "openmagi.runView.v1" }, createdAt: 1 }),
+                          { status: 200 }) as any
+    })
+    const out = await cloud.getSharedRun("tok 1/2")
+    expect(captured.url).toBe("http://test/share/run/tok%201%2F2")  // encoded
+    expect(captured.init.headers?.["X-Api-Key"]).toBeUndefined()
+    expect(out?.view.schemaVersion).toBe("openmagi.runView.v1")
+  })
+
+  it("getSharedRun returns null on 404", async () => {
+    global.fetch = vi.fn(async () => new Response("", { status: 404 }) as any)
+    expect(await cloud.getSharedRun("nope")).toBeNull()
+  })
+
+  it("getSharedRun throws on 500", async () => {
+    global.fetch = vi.fn(async () => new Response("", { status: 500 }) as any)
+    await expect(cloud.getSharedRun("x")).rejects.toThrow("cloud 500")
+  })
+})
