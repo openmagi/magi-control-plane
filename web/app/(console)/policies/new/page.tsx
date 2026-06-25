@@ -3693,94 +3693,95 @@ function lifecycleCardCopy(
       label: "세션 종료 (SessionEnd)",
       sub: "세션이 종료될 때 한 번 발동. 감사 경계 마커로 사용합니다. 세션이 닫히는 중이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
-    // D58
+    // D58 → D79 (verified against CC 2.1.170 binary; payload fields
+    // pinned in src/magi_cp/policy/payload_schemas.py).
     post_tool_use_failure: {
       label: "도구 실행 실패 (PostToolUseFailure)",
-      sub: "도구 호출이 실패로 끝났을 때 발동. 실패 페이로드를 감사용으로 기록합니다.",
+      sub: "도구 호출이 오류로 끝난 직후 발동. payload 에 tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms 가 들어옵니다.",
     },
     post_tool_batch: {
       label: "도구 배치 종료 (PostToolBatch)",
-      sub: "여러 도구 호출이 묶여 끝났을 때 발동. 배치 단위 감사용.",
+      sub: "한 턴의 모든 도구 호출이 끝난 직후 한 번 발동. payload 의 tool_calls 배열에 각 호출의 tool_name/tool_input/tool_response 가 순서대로 들어옵니다.",
     },
     permission_request: {
       label: "권한 요청 (PermissionRequest)",
-      sub: "CC 가 사용자에게 권한 결정을 묻기 직전. allow/deny/ask 를 정책으로 오버라이드 가능.",
+      sub: "CC 가 사용자에게 권한 확인을 띄우기 직전. payload 에 tool_name, tool_input, permission_suggestions 가 있고, 정책 stdout 의 hookSpecificOutput.decision 으로 allow/deny 를 덮어쓸 수 있습니다.",
     },
     permission_denied: {
       label: "권한 거부 (PermissionDenied)",
-      sub: "권한이 거부된 직후. 거부 사유를 감사용으로 기록합니다.",
+      sub: "사용자가 권한을 거부한 직후. payload 의 tool_name, tool_input, tool_use_id, reason 으로 거부 사유를 감사용으로 기록합니다.",
     },
     user_prompt_expansion: {
       label: "프롬프트 확장 중 (UserPromptExpansion)",
-      sub: "유저 프롬프트가 expansion 중일 때. 차단은 가능하지만 ask 인터럽트는 불가.",
+      sub: "슬래시 커맨드/별칭/import 가 본 프롬프트로 풀리는 동안 발동. payload 에 expansion_type, command_name, command_args, command_source, prompt 가 들어옵니다. 차단 가능, ask 인터럽트는 불가.",
     },
     post_compact: {
       label: "컴팩션 직후 (PostCompact)",
-      sub: "컨텍스트 컴팩션이 끝난 직후. 압축 결과를 감사용으로 기록합니다.",
+      sub: "컨텍스트 컴팩션이 끝나고 요약이 새 컨텍스트로 들어가기 직전. payload 의 trigger (\"manual\"/\"auto\") 와 compact_summary 를 감사용으로 기록합니다.",
     },
     elicitation: {
       label: "유저 응답 요청 직전 (Elicitation)",
-      sub: "런타임이 유저에게 추가 정보를 묻기 직전. 정책으로 차단/승인 가능. MCP elicitation 채널이므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "MCP 서버가 사용자에게 elicitation 을 요청하기 직전. payload 에 mcp_server_name, message, mode, url, elicitation_id, requested_schema 가 들어옵니다. MCP elicitation 채널이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     elicitation_result: {
       label: "유저 응답 수신 (ElicitationResult)",
-      sub: "유저가 elicitation 에 답한 직후. 응답 내용 감사용. MCP elicitation 채널이므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "유저가 elicitation 에 응답한 직후. payload 에 mcp_server_name, elicitation_id, mode, action (\"accept\"/\"decline\"/\"cancel\"), content 가 들어옵니다. MCP elicitation 채널이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     subagent_start: {
       label: "서브에이전트 시작 (SubagentStart)",
-      sub: "서브에이전트가 spawn 되기 직전. mandate 를 컨텍스트로 주입할 수 있습니다.",
+      sub: "Task 도구가 서브에이전트를 spawn 하기 직전. payload 의 agent_id, agent_type 으로 어떤 child 인지 식별 가능. mandate 를 additionalContext 로 주입할 수 있습니다.",
     },
     stop_failure: {
       label: "에이전트 종료 실패 (StopFailure)",
-      sub: "Stop 훅 처리 중 실패가 발생했을 때. 감사용. Stop 과 마찬가지로 실행 종료 시점이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "Stop 훅 체인이 오류(비정상 종료 코드, 타임아웃 등) 로 끝났을 때 발동. payload 에 error, error_details, last_assistant_message 가 들어옵니다. 실행 종료 시점이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     setup: {
       label: "최초 셋업 (Setup)",
-      sub: "CC 가 워크스페이스를 한 번 설정할 때. 설정 결과 감사용.",
+      sub: "CC 가 워크스페이스를 처음 또는 리셋 후 부트스트랩할 때 한 번 발동. payload 의 trigger 로 셋업 이유를 받습니다.",
     },
     notification: {
       label: "알림 (Notification)",
-      sub: "CC 가 유저에게 알림(터미널 벨, 데스크톱 푸시 등) 을 띄울 때.",
+      sub: "CC 가 사용자에게 알림(터미널 벨, 데스크톱 푸시 등) 을 표시하기 직전. payload 에 message, title, notification_type (\"idle\"/\"permission\"/\"completed\" 등) 이 들어옵니다.",
     },
     teammate_idle: {
       label: "팀메이트 유휴 (TeammateIdle)",
-      sub: "팀 모드에서 다른 에이전트가 유휴 상태로 들어갈 때.",
+      sub: "팀 모드에서 다른 에이전트가 유휴(다음 작업 대기) 상태로 들어갔을 때. payload 의 teammate_name, team_name 으로 어떤 팀메이트인지 식별합니다.",
     },
     task_created: {
       label: "백그라운드 태스크 생성 (TaskCreated)",
-      sub: "/workflows 백그라운드 태스크가 큐에 들어갈 때.",
+      sub: "Task 도구가 서브에이전트에 작업을 디스패치한 직후 발동. payload 에 task_id, task_subject, task_description, teammate_name, team_name 이 들어옵니다.",
     },
     task_completed: {
       label: "백그라운드 태스크 완료 (TaskCompleted)",
-      sub: "Task 도구가 끝났을 때 발동. 결과를 본세션 컨텍스트에 다시 주입하거나, 태스크 실행 로그를 기록할 때 사용하세요.",
+      sub: "Task 도구가 결과를 돌려준 직후 발동. payload 에 task_id, task_subject, task_description, teammate_name, team_name 이 들어와 TaskCreated 와 task_id 로 짝지을 수 있습니다.",
     },
     config_change: {
       label: "설정 변경 (ConfigChange)",
-      sub: "CC settings.json 의 값이 바뀔 때 발동. 설정 표류 감사용.",
+      sub: "CC 가 settings.json 의 변경을 감지하고 새 값을 적용한 직후. payload 의 source (\"userSettings\"/\"projectSettings\"/\"localSettings\"/\"flagSettings\") 와 file_path 로 어느 레이어가 바뀌었는지 알 수 있습니다.",
     },
     worktree_create: {
       label: "워크트리 생성 (WorktreeCreate)",
-      sub: "isolation:worktree 가 git worktree 를 새로 만들 때. hookSpecificOutput.worktreePath 로 경로를 반환하는 채널이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "CC 가 isolation:worktree 정책으로 새 git worktree 를 만든 직후. payload 의 name 으로 슬러그를 받습니다. 이 훅은 hookSpecificOutput.worktreePath 채널로 경로를 반환하기 때문에 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     worktree_remove: {
       label: "워크트리 제거 (WorktreeRemove)",
-      sub: "isolation 워크트리가 정리될 때. 변경 사항 감사용.",
+      sub: "isolation 워크트리가 정리된 직후. payload 의 worktree_path 로 제거된 경로를 받습니다.",
     },
     instructions_loaded: {
       label: "지침 로드 (InstructionsLoaded)",
-      sub: "프로젝트 CLAUDE.md / AGENTS.md 가 로드될 때. 지침 표류 감사용.",
+      sub: "CC 가 CLAUDE.md / AGENTS.md / @import 파일을 메모리에 올린 직후 발동. payload 에 file_path, memory_type, load_reason, globs, trigger_file_path, parent_file_path 가 들어옵니다.",
     },
     cwd_changed: {
       label: "작업 디렉터리 변경 (CwdChanged)",
-      sub: "에이전트의 cwd 가 다른 폴더로 옮겨갈 때 발동.",
+      sub: "에이전트의 cwd 가 다른 폴더로 옮겨간 직후. payload 의 old_cwd, new_cwd 로 전후를 비교할 수 있습니다.",
     },
     file_changed: {
       label: "파일 변경 감지 (FileChanged)",
-      sub: "managed FileChanged matcher 가 잡은 파일이 외부에서 변경될 때.",
+      sub: "managed FileChanged matcher 가 잡은 파일이 외부에서 변경됐을 때. payload 의 file_path 와 event (\"created\"/\"modified\"/\"deleted\"/\"renamed\") 로 어떤 변경인지 알 수 있습니다.",
     },
     message_display: {
       label: "메시지 표시 (MessageDisplay)",
-      sub: "어시스턴트 응답이 유저 터미널에 렌더링될 때 발동. 표시 전용 — 저장된 메시지나 모델 컨텍스트를 바꾸지 않으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "스트리밍 어시스턴트 응답의 각 델타가 터미널로 렌더되기 직전. payload 의 turn_id, message_id, index, final, delta 로 어디까지 그렸는지 추적합니다. hookSpecificOutput.displayContent 로 표시만 덮어쓸 수 있고 저장된 메시지/모델 컨텍스트는 바꾸지 못하므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
   } : {
     before_tool_use: {
@@ -3815,94 +3816,95 @@ function lifecycleCardCopy(
       label: "When the session closes (SessionEnd)",
       sub: "Fires once at session end. Audit boundary marker. The session is closing so there is no downstream model turn for additionalContext; “Inject extra context” is not available here.",
     },
-    // D58
+    // D58 → D79 (verified against CC 2.1.170 binary; payload fields
+    // pinned in src/magi_cp/policy/payload_schemas.py).
     post_tool_use_failure: {
       label: "Tool call failed (PostToolUseFailure)",
-      sub: "Fires when a tool call ends in error. Audit the failure payload.",
+      sub: "Fires right after a tool call ends in error. Payload carries tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms.",
     },
     post_tool_batch: {
       label: "Tool batch finished (PostToolBatch)",
-      sub: "Fires after a batched tool invocation returns. Batch-level audit.",
+      sub: "Fires once after every tool call in the turn returns. Payload carries the tool_calls array (one entry per call with tool_name/tool_input/tool_response).",
     },
     permission_request: {
       label: "Permission request (PermissionRequest)",
-      sub: "Right before CC asks the user for a permission decision. Policy can override allow/deny/ask.",
+      sub: "Right before CC pops a permission prompt. Payload carries tool_name, tool_input, permission_suggestions; hook stdout's hookSpecificOutput.decision can override allow/deny/ask.",
     },
     permission_denied: {
       label: "Permission denied (PermissionDenied)",
-      sub: "Right after a permission was denied. Audit the rejection reason.",
+      sub: "Right after a permission was denied. Payload carries tool_name, tool_input, tool_use_id, reason — log the rejection cause for audit.",
     },
     user_prompt_expansion: {
       label: "Prompt expansion (UserPromptExpansion)",
-      sub: "Fires while a user prompt is being expanded. Block is supported; ask cannot interrupt.",
+      sub: "Fires while a slash command / alias / import expands into the final prompt. Payload carries expansion_type, command_name, command_args, command_source, prompt. Block is supported; ask cannot interrupt.",
     },
     post_compact: {
       label: "After compaction (PostCompact)",
-      sub: "Fires right after a context compaction. Audit the compacted summary.",
+      sub: "Fires right after a context compaction, before the new summary lands in the model context. Payload carries trigger (\"manual\"/\"auto\") and compact_summary.",
     },
     elicitation: {
       label: "Before elicitation (Elicitation)",
-      sub: "Right before the runtime prompts the user for extra info. Block / ask / audit. MCP elicitation channel — “Inject extra context” is not available here.",
+      sub: "Right before an MCP server asks the user for extra info. Payload carries mcp_server_name, message, mode, url, elicitation_id, requested_schema. MCP elicitation channel — “Inject extra context” is not available here.",
     },
     elicitation_result: {
       label: "Elicitation answered (ElicitationResult)",
-      sub: "Fires when the user has answered an elicitation. Audit the response. MCP elicitation channel — “Inject extra context” is not available here.",
+      sub: "Right after the user answers an MCP elicitation. Payload carries mcp_server_name, elicitation_id, mode, action (\"accept\"/\"decline\"/\"cancel\"), content. MCP elicitation channel — “Inject extra context” is not available here.",
     },
     subagent_start: {
       label: "Subagent starting (SubagentStart)",
-      sub: "Fires just before a subagent is spawned. Inject mandate into context.",
+      sub: "Fires just before a Task-tool subagent is spawned. Payload carries agent_id, agent_type — inject a mandate via additionalContext to carry parent intent into the child.",
     },
     stop_failure: {
       label: "Stop failure (StopFailure)",
-      sub: "Fires when the Stop hook chain itself errored out. Audit-only. Same end-of-execution timing as Stop, so “Inject extra context” is not available here.",
+      sub: "Fires when the Stop hook chain itself errored out (non-zero exit, timeout, etc.). Payload carries error, error_details, last_assistant_message. End-of-execution timing — “Inject extra context” is not available here.",
     },
     setup: {
       label: "Workspace setup (Setup)",
-      sub: "Fires once during CC's workspace bootstrap. Audit the setup result.",
+      sub: "Fires once on CC's workspace bootstrap (first run, reset). Payload carries trigger so you can scope on the reason.",
     },
     notification: {
       label: "Notification (Notification)",
-      sub: "Fires when CC surfaces a notification (terminal bell, desktop push, …).",
+      sub: "Right before CC surfaces a notification (terminal bell, desktop push, …). Payload carries message, title, notification_type (\"idle\"/\"permission\"/\"completed\", …).",
     },
     teammate_idle: {
       label: "Teammate idle (TeammateIdle)",
-      sub: "Fires when a team-mode agent enters idle. Useful for team-coordination audits.",
+      sub: "Fires when a team-mode agent enters idle (waiting for the next task). Payload carries teammate_name, team_name.",
     },
     task_created: {
-      label: "Background task created (TaskCreated)",
-      sub: "Fires when a /workflows background task is queued.",
+      label: "Task dispatched (TaskCreated)",
+      sub: "Fires right after the Task tool dispatches work to a subagent. Payload carries task_id, task_subject, task_description, teammate_name, team_name.",
     },
     task_completed: {
-      label: "Background task done (TaskCompleted)",
-      sub: "Fires after a Task tool finishes. Use this to inject results back into the main session or to log the task run.",
+      label: "Task done (TaskCompleted)",
+      sub: "Fires right after the Task tool returns. Payload carries task_id, task_subject, task_description, teammate_name, team_name — correlate with TaskCreated via task_id.",
     },
     config_change: {
       label: "Config change (ConfigChange)",
-      sub: "Fires when a CC settings.json value changes. Catch config drift.",
+      sub: "Fires right after CC notices a settings.json change and reloads. Payload carries source (\"userSettings\" / \"projectSettings\" / \"localSettings\" / \"flagSettings\") and file_path so you can scope by layer.",
     },
     worktree_create: {
       label: "Worktree created (WorktreeCreate)",
-      sub: "Fires when isolation:worktree creates a new git worktree. The hook returns the worktree path via hookSpecificOutput.worktreePath — “Inject extra context” is not available here.",
+      sub: "Fires right after isolation:worktree creates a new git worktree. Payload carries name. This hook returns the worktree path via hookSpecificOutput.worktreePath, so “Inject extra context” is not available here.",
     },
     worktree_remove: {
       label: "Worktree removed (WorktreeRemove)",
-      sub: "Fires when an isolation worktree is cleaned up.",
+      sub: "Right after an isolation worktree is cleaned up. Payload carries worktree_path so you can scope by location.",
     },
     instructions_loaded: {
       label: "Instructions loaded (InstructionsLoaded)",
-      sub: "Fires when CC loads project CLAUDE.md / AGENTS.md. Catch instructions drift.",
+      sub: "Right after CC loads a CLAUDE.md / AGENTS.md / @import file. Payload carries file_path, memory_type, load_reason, globs, trigger_file_path, parent_file_path.",
     },
     cwd_changed: {
       label: "Working directory changed (CwdChanged)",
-      sub: "Fires when the agent's cwd moves to another folder.",
+      sub: "Right after the agent's cwd moves. Payload carries old_cwd and new_cwd so you can diff the move.",
     },
     file_changed: {
       label: "Watched file changed (FileChanged)",
-      sub: "Fires when a file matched by a managed FileChanged matcher is modified externally.",
+      sub: "Fires when a file matched by a managed FileChanged matcher is modified outside CC. Payload carries file_path and event (\"created\" / \"modified\" / \"deleted\" / \"renamed\").",
     },
     message_display: {
       label: "Message displayed (MessageDisplay)",
-      sub: "Fires when an assistant message is rendered in the user's terminal. Display-only; does not change the stored message or feed back into the model context. “Inject extra context” is not available here.",
+      sub: "Fires for every streaming-assistant delta right before it renders to the terminal. Payload carries turn_id, message_id, index, final, delta. Display-only: hookSpecificOutput.displayContent overrides the rendered text but does not change the stored message or the model context. “Inject extra context” is not available here.",
     },
   }
 }

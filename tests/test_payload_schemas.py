@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from magi_cp.policy.matrix import supported_events
 from magi_cp.policy.payload_schemas import (
     PAYLOAD_SCHEMAS_BY_EVENT,
     all_schemas,
@@ -12,13 +13,98 @@ from magi_cp.policy.payload_schemas import (
 
 # Every event Claude Code currently fires — every entry should have at
 # least one field documented or authors will start guessing again.
+#
+# D79 — the pre-D58 floor of 8 events is preserved; the 22 D58
+# candidates are added here too because the binary audit verified them
+# end-to-end and they all have payload-schema entries now.
 KNOWN_EVENTS = [
+    # Pre-D58 verified surface
     "PreToolUse", "PostToolUse",
     "UserPromptSubmit",
     "Stop", "SubagentStop",
     "SessionStart", "SessionEnd",
     "PreCompact",
+    # D79-promoted
+    "PostToolUseFailure", "PostToolBatch",
+    "PermissionRequest", "PermissionDenied",
+    "UserPromptExpansion", "PostCompact",
+    "Elicitation", "ElicitationResult",
+    "SubagentStart", "StopFailure",
+    "Setup", "Notification",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+    "MessageDisplay",
 ]
+
+
+def test_d79_payload_schemas_cover_every_matrix_event() -> None:
+    """D79 — every event admitted by the matrix MUST have a payload
+    schema entry. The chip menu / verifier authoring path would offer
+    "no suggestions" for missing entries, which silently regresses to
+    the pre-P7 guess-the-field mode the wizard was redesigned to
+    eliminate."""
+    matrix_events = supported_events()
+    registry_events = set(PAYLOAD_SCHEMAS_BY_EVENT.keys())
+    missing = matrix_events - registry_events
+    assert not missing, (
+        f"payload_schemas.py missing entries for: {sorted(missing)}"
+    )
+    # Every registry entry must also be in the matrix (catch typos /
+    # stale events).
+    extra = registry_events - matrix_events
+    assert not extra, (
+        f"payload_schemas.py has events the matrix doesn't recognize: "
+        f"{sorted(extra)}"
+    )
+
+
+def test_d79_each_promoted_event_carries_its_signature_field() -> None:
+    """Per-event regression pin: every previously-unverified event has
+    at least one field that was lifted directly from the CC 2.1.170
+    binary `hook_event_name:"<Event>"` constructor literal. A future
+    refactor that accidentally drops the field list (e.g. by
+    re-routing through the catch-all `_GENERIC_TOOL_FIELDS`) fails
+    here loudly."""
+    signature_fields: dict[str, str] = {
+        "PostToolUseFailure": "error",
+        "PostToolBatch": "tool_calls",
+        "PermissionRequest": "permission_suggestions",
+        "PermissionDenied": "reason",
+        "UserPromptExpansion": "expansion_type",
+        "PostCompact": "compact_summary",
+        "Elicitation": "elicitation_id",
+        "ElicitationResult": "action",
+        "SubagentStart": "agent_id",
+        "StopFailure": "last_assistant_message",
+        "Setup": "trigger",
+        "Notification": "notification_type",
+        "TeammateIdle": "teammate_name",
+        "TaskCreated": "task_id",
+        "TaskCompleted": "task_id",
+        "ConfigChange": "source",
+        "WorktreeCreate": "name",
+        "WorktreeRemove": "worktree_path",
+        "InstructionsLoaded": "memory_type",
+        "CwdChanged": "new_cwd",
+        "FileChanged": "event",
+        "MessageDisplay": "delta",
+    }
+    for event, sig in signature_fields.items():
+        # Use a tool matcher for the tool-context events so per-tool
+        # fields are spliced in too.
+        matcher = "Bash" if event in {
+            "PostToolUseFailure", "PostToolBatch",
+            "PermissionRequest", "PermissionDenied",
+        } else None
+        fields = available_fields(event, matcher)
+        paths = [f["path"] for f in fields]
+        assert sig in paths, (
+            f"{event}: signature field {sig!r} missing from registry "
+            f"(got {paths})"
+        )
 
 
 @pytest.mark.parametrize("event", KNOWN_EVENTS)

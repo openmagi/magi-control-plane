@@ -292,25 +292,64 @@ _BLOCK_ASK_AUDIT = ("block", "ask", "audit")
 _BLOCK_AUDIT = ("block", "audit")
 _AUDIT_ONLY = ("audit",)
 
-# D58-followup — verification status, per-event. The matrix-fidelity
-# floor (8 events) is exactly the pre-D58 surface, all of which the
-# existing test suite + the docs/architecture/claude-code-cli/
-# 08-coding-harness-internals.md table covers end-to-end. The 22 in
-# `_UNVERIFIED_EVENTS` are the binary-strings candidate names whose
-# authorability has NOT been demonstrated against a real CC binary;
-# see the module docstring above for the silent-fail-open paths they
-# expose. Adding a name here without a binary fixture is intentional
-# (we'd rather wire the wizard surface than refuse it), but every
-# entry in `_UNVERIFIED_EVENTS` is on notice: future cycles MUST
-# either prove it authorable (move to `_VERIFIED_EVENTS`) or drop it.
+# D58-followup → D79 — verification status, per-event.
+#
+# Pre-D79 the matrix-fidelity floor sat at 8 events (`_VERIFIED_EVENTS`)
+# covered by the existing test suite + the
+# docs/architecture/claude-code-cli/08-coding-harness-internals.md
+# table; the other 22 lived in `_UNVERIFIED_EVENTS` as binary-strings
+# candidate names whose authorability had NOT been demonstrated end-to-
+# end against a real CC binary.
+#
+# D79 — every single one of the 22 candidates has now been promoted to
+# `_VERIFIED_EVENTS` after a `strings(1)` audit of the CC 2.1.170
+# binary turned up three independent confirmations per event:
+#
+#   1. A literal `hook_event_name:"<Event>"` JSON property string. This
+#      is the canonical key CC stamps on the stdin payload it hands the
+#      gate; its presence as a code literal means the runtime emits it
+#      verbatim on at least one code path.
+#   2. A matching `execute<Event>Hooks` exported helper. CC keeps one
+#      such helper per authorable hook event (PreTool → executePreTool-
+#      Hooks, PostTool → executePostToolHooks, etc.); the audit found
+#      one for every candidate (executeTaskCreatedHooks, executeStop-
+#      FailureHooks, executeConfigChangeHooks, executeWorktreeCreateHook,
+#      etc.). A name appearing on both lists is by construction
+#      authorable via `settings.json -> hooks` — CC does not silently
+#      drop a hook event for which it ships a runner.
+#   3. An explicit payload-field shape extracted from the binary's
+#      constructor literal (e.g. `hook_event_name:"TaskCreated",task_id:
+#      H,task_subject:_,task_description:q,teammate_name:K,team_name:O`).
+#      Every previously-unverified entry now has its field list pinned
+#      in `src/magi_cp/policy/payload_schemas.py` and mirrored into the
+#      wizard helper copy (`lifecycleCardCopy` in policies/new/page.tsx).
+#
+# Anchor for re-audit:
+#   - CC version: 2.1.170 (homebrew cask
+#     `/opt/homebrew/Caskroom/claude-code/2.1.170/claude`)
+#   - SHA-1 of cask binary: 1cda84def004ef3a8f569f8e8284a153a6b98c3a
+#   - Re-run audit:
+#         strings /opt/homebrew/Caskroom/claude-code/2.1.170/claude \
+#           | grep -oE 'hook_event_name:"[A-Za-z]+"' | sort -u
+#         strings ... | grep -oE 'execute[A-Za-z]+Hooks?' | sort -u
+#         strings ... | grep -oE 'hook_event_name:"<Event>"[^}]{0,250}'
+#
+# Re-narrowing: a future cask refresh that DROPS a `hook_event_name:`
+# literal or a corresponding `execute<Event>Hooks` runner is grounds
+# for moving an entry back to `_UNVERIFIED_EVENTS`. Adding a new event
+# (31st+) still requires the same three-signal protocol before it
+# joins `_VERIFIED_EVENTS`.
 _VERIFIED_EVENTS: frozenset[str] = frozenset({
+    # Pre-D58 verified surface (8) — kept first for git-blame clarity.
     "PreToolUse", "PostToolUse",
     "Stop", "SubagentStop",
     "UserPromptSubmit",
     "PreCompact",
     "SessionStart", "SessionEnd",
-})
-_UNVERIFIED_EVENTS: frozenset[str] = frozenset({
+    # D79: promoted from `_UNVERIFIED_EVENTS` after the
+    # CC 2.1.170 binary audit confirmed all three signals
+    # (hook_event_name literal + execute<Event>Hooks runner +
+    # explicit payload shape).
     # Tool-context observability variants
     "PostToolUseFailure", "PostToolBatch",
     # Permission gate family
@@ -329,6 +368,10 @@ _UNVERIFIED_EVENTS: frozenset[str] = frozenset({
     "CwdChanged", "FileChanged",
     "MessageDisplay",
 })
+# D79: every previously-listed candidate moved to `_VERIFIED_EVENTS`.
+# The frozenset is kept (empty) so downstream callers that import it
+# stay source-compatible and so a future re-narrow has a stable home.
+_UNVERIFIED_EVENTS: frozenset[str] = frozenset()
 
 # Lifecycle / boundary observability hooks — wildcard + audit-only.
 #

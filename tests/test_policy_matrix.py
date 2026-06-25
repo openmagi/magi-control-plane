@@ -595,28 +595,72 @@ def test_d82d_post_tool_use_failure_block_excludes_tool_alt():
         validate_combination("PostToolUseFailure", "Bash|Edit", "block")
 
 
-def test_d58_verified_vs_unverified_event_split():
-    """D58-followup: matrix.py partitions the 30 names into a
-    `_VERIFIED_EVENTS` set (the pre-D58 8 covered by the existing
-    test fixtures + docs/architecture/claude-code-cli) and a larger
-    `_UNVERIFIED_EVENTS` set (22 candidate names extracted from the
-    binary's `strings(1)` output whose authorability has not been
-    demonstrated against a real CC binary). The split is informational
-    today; the wizard still surfaces unverified candidates. Any
-    candidate moved to `_VERIFIED_EVENTS` MUST come with a binary
-    fixture proving it authorable — see the matrix.py module docstring.
+def test_d79_verified_vs_unverified_event_split():
+    """D79: every previously-unverified candidate has been promoted to
+    `_VERIFIED_EVENTS` after the CC 2.1.170 binary audit confirmed
+    three independent signals per event:
+
+      1. a literal ``hook_event_name:"<Event>"`` JSON property
+         emitted by the runtime on the gate stdin payload;
+      2. a matching ``execute<Event>Hooks`` exported runner (CC ships
+         one per authorable hook event);
+      3. an explicit payload-field shape captured from the binary
+         constructor literal and pinned in
+         ``src/magi_cp/policy/payload_schemas.py``.
+
+    `_UNVERIFIED_EVENTS` is preserved (empty) so downstream callers
+    stay source-compatible and a future cask refresh that drops a
+    runner / `hook_event_name` literal has a stable home to land in.
     """
     from magi_cp.policy.matrix import _VERIFIED_EVENTS, _UNVERIFIED_EVENTS
-    # Sanity: the two sets partition supported_events() exactly.
+    # Sanity: the two sets still partition supported_events() exactly.
     assert _VERIFIED_EVENTS.isdisjoint(_UNVERIFIED_EVENTS)
     assert _VERIFIED_EVENTS | _UNVERIFIED_EVENTS == supported_events()
-    # Verified floor is exactly the pre-D58 8. This is the level the
-    # matrix can safely fall back to without losing existing fixtures.
-    assert _VERIFIED_EVENTS == {
+    # D79: verified set is the full 30-event surface.
+    assert _VERIFIED_EVENTS == supported_events()
+    assert len(_VERIFIED_EVENTS) == 30
+    assert len(_UNVERIFIED_EVENTS) == 0
+
+
+def test_d79_verified_includes_pre_d58_floor():
+    """The pre-D58 verified floor must remain in `_VERIFIED_EVENTS`
+    so a future re-narrow cannot accidentally drop a name covered by
+    the existing test fixtures + docs/architecture/claude-code-cli."""
+    from magi_cp.policy.matrix import _VERIFIED_EVENTS
+    pre_d58_floor = {
         "PreToolUse", "PostToolUse",
         "Stop", "SubagentStop",
         "UserPromptSubmit",
         "PreCompact",
         "SessionStart", "SessionEnd",
     }
-    assert len(_UNVERIFIED_EVENTS) == 22
+    assert pre_d58_floor <= _VERIFIED_EVENTS
+
+
+def test_d79_verified_includes_d58_candidates_promoted():
+    """Pin the 22 D58 candidates as members of `_VERIFIED_EVENTS`. A
+    future cask refresh that loses any of these (CC dropped a
+    `hook_event_name` literal or an `execute<Event>Hooks` runner) must
+    move the name back to `_UNVERIFIED_EVENTS` AND update this
+    assertion in lockstep so the regression cannot land silently."""
+    from magi_cp.policy.matrix import _VERIFIED_EVENTS
+    promoted_in_d79 = {
+        # Tool-context observability variants
+        "PostToolUseFailure", "PostToolBatch",
+        # Permission gate family
+        "PermissionRequest", "PermissionDenied",
+        # Content-flow extensions
+        "UserPromptExpansion", "PostCompact",
+        "Elicitation", "ElicitationResult",
+        # Subagent / Stop boundary
+        "SubagentStart", "StopFailure",
+        # Lifecycle / observability surface
+        "Setup", "Notification",
+        "TeammateIdle", "TaskCreated", "TaskCompleted",
+        "ConfigChange",
+        "WorktreeCreate", "WorktreeRemove",
+        "InstructionsLoaded",
+        "CwdChanged", "FileChanged",
+        "MessageDisplay",
+    }
+    assert promoted_in_d79 <= _VERIFIED_EVENTS

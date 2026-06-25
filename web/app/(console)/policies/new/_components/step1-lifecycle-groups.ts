@@ -74,41 +74,30 @@ export const ADVANCED_GROUP_PREVIEWS: Record<string, readonly string[]> = {
 }
 
 /**
- * D70 — slugs whose canonical CC event lives in
- * `_UNVERIFIED_EVENTS` (see src/magi_cp/policy/matrix.py). These rows
- * render an "unverified candidate" badge so the Common-tier promo for
- * TaskCompleted (D69) does not lend it the same credibility as the
- * 8 _VERIFIED_EVENTS members (PreToolUse / PostToolUse / Stop /
- * SubagentStop / UserPromptSubmit / PreCompact / SessionStart /
- * SessionEnd).
+ * D70 → D79 — slugs whose canonical CC event lives in
+ * `_UNVERIFIED_EVENTS` (see src/magi_cp/policy/matrix.py).
  *
- * Source of truth is matrix.py's `_UNVERIFIED_EVENTS` frozenset; this
- * mirror is the closest the UI can get without crossing the Python /
- * TypeScript boundary at render time. Keep it in lockstep: when a
- * candidate moves to `_VERIFIED_EVENTS` (matched against a binary
- * fixture), remove it here too. The Step1LifecyclePicker test asserts
- * set-equality vs. the Python file so a future Python-side promotion
- * without the TS counterpart fails CI.
+ * D79 — the audit of the CC 2.1.170 binary turned up three
+ * independent confirmations for every previously-unverified entry:
+ *   1. a literal `hook_event_name:"<Event>"` JSON property string
+ *      (the canonical key CC stamps on the gate stdin payload);
+ *   2. a matching `execute<Event>Hooks` exported runner (CC ships
+ *      one per authorable hook event);
+ *   3. an explicit payload-field shape captured from the binary
+ *      constructor literal and pinned in
+ *      `src/magi_cp/policy/payload_schemas.py`.
+ *
+ * With all three signals on every candidate, the set is now empty.
+ * The export is preserved so the picker, the test suite, and the
+ * Python ↔ TypeScript lockstep gate stay source-compatible (D70).
+ *
+ * To re-introduce an unverified candidate (e.g. after a future cask
+ * refresh drops a runner), add the slug here and the corresponding
+ * `<Event>` string back to `_UNVERIFIED_EVENTS` in matrix.py; the
+ * picker will surface the amber badge again automatically.
  */
-export const UNVERIFIED_LIFECYCLE_SLUGS: ReadonlySet<LifecycleSlug> = new Set<LifecycleSlug>([
-  // Tool-context observability variants
-  "post_tool_use_failure", "post_tool_batch",
-  // Permission gate family
-  "permission_request", "permission_denied",
-  // Content-flow extensions
-  "user_prompt_expansion", "post_compact",
-  "elicitation", "elicitation_result",
-  // Subagent / Stop boundary
-  "subagent_start", "stop_failure",
-  // Lifecycle / observability surface
-  "setup", "notification",
-  "teammate_idle", "task_created", "task_completed",
-  "config_change",
-  "worktree_create", "worktree_remove",
-  "instructions_loaded",
-  "cwd_changed", "file_changed",
-  "message_display",
-])
+export const UNVERIFIED_LIFECYCLE_SLUGS: ReadonlySet<LifecycleSlug> =
+  new Set<LifecycleSlug>([])
 
 export function isUnverifiedLifecycle(slug: LifecycleSlug): boolean {
   return UNVERIFIED_LIFECYCLE_SLUGS.has(slug)

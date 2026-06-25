@@ -198,6 +198,55 @@ _DISPLAY_LABELS_EN: dict[str, str] = {
     # gets a friendly name on the catalog).
     "citations[].quote": "Cited quote",
     "citations[].ref": "Citation reference id",
+    # D79 — fields newly promoted to verified payload shapes.
+    "error": "Error message",
+    "error_details": "Error details",
+    "last_assistant_message": "Last assistant message",
+    "is_interrupt": "Was an interrupt",
+    "duration_ms": "Tool duration (ms)",
+    "permission_suggestions": "Suggested permission rules",
+    "reason": "Reason",
+    "expansion_type": "Expansion type",
+    "command_name": "Slash command name",
+    "command_args": "Slash command args",
+    "command_source": "Command source",
+    "trigger": "Trigger",
+    "compact_summary": "Compaction summary",
+    "mcp_server_name": "MCP server name",
+    "message": "Message",
+    "mode": "Mode",
+    "url": "URL",
+    "elicitation_id": "Elicitation ID",
+    "requested_schema": "Requested schema",
+    "action": "Action",
+    "content": "Content",
+    "agent_id": "Subagent ID",
+    "agent_type": "Subagent type",
+    "title": "Notification title",
+    "notification_type": "Notification kind",
+    "teammate_name": "Teammate name",
+    "team_name": "Team name",
+    "task_id": "Task ID",
+    "task_subject": "Task subject",
+    "task_description": "Task description",
+    "source": "Settings layer",
+    "file_path": "File path",
+    "name": "Worktree slug",
+    "worktree_path": "Worktree path",
+    "memory_type": "Memory layer",
+    "load_reason": "Load reason",
+    "globs": "Glob patterns",
+    "trigger_file_path": "Triggering file path",
+    "parent_file_path": "Parent file path",
+    "old_cwd": "Previous working directory",
+    "new_cwd": "New working directory",
+    "event": "Filesystem event kind",
+    "tool_calls": "Tool calls in batch",
+    "turn_id": "Turn ID",
+    "message_id": "Message ID",
+    "index": "Delta index",
+    "final": "Final delta flag",
+    "delta": "Delta text",
 }
 
 _DISPLAY_LABELS_KO: dict[str, str] = {
@@ -227,6 +276,55 @@ _DISPLAY_LABELS_KO: dict[str, str] = {
     "prompt": "사용자 입력",
     "citations[].quote": "인용 본문",
     "citations[].ref": "인용 ref id",
+    # D79
+    "error": "오류 메시지",
+    "error_details": "오류 상세",
+    "last_assistant_message": "마지막 어시스턴트 메시지",
+    "is_interrupt": "인터럽트 여부",
+    "duration_ms": "도구 실행 시간(ms)",
+    "permission_suggestions": "권장 권한 규칙",
+    "reason": "사유",
+    "expansion_type": "확장 종류",
+    "command_name": "슬래시 커맨드 이름",
+    "command_args": "슬래시 커맨드 인자",
+    "command_source": "커맨드 출처",
+    "trigger": "트리거",
+    "compact_summary": "컴팩션 요약",
+    "mcp_server_name": "MCP 서버 이름",
+    "message": "메시지",
+    "mode": "모드",
+    "url": "URL",
+    "elicitation_id": "Elicitation ID",
+    "requested_schema": "요청 스키마",
+    "action": "사용자 응답",
+    "content": "응답 내용",
+    "agent_id": "서브에이전트 ID",
+    "agent_type": "서브에이전트 종류",
+    "title": "알림 제목",
+    "notification_type": "알림 종류",
+    "teammate_name": "팀메이트 이름",
+    "team_name": "팀 이름",
+    "task_id": "태스크 ID",
+    "task_subject": "태스크 주제",
+    "task_description": "태스크 설명",
+    "source": "설정 레이어",
+    "file_path": "파일 경로",
+    "name": "워크트리 슬러그",
+    "worktree_path": "워크트리 경로",
+    "memory_type": "메모리 레이어",
+    "load_reason": "로드 사유",
+    "globs": "글롭 패턴",
+    "trigger_file_path": "트리거 파일 경로",
+    "parent_file_path": "상위 지침 파일 경로",
+    "old_cwd": "이전 작업 디렉터리",
+    "new_cwd": "새 작업 디렉터리",
+    "event": "파일시스템 이벤트 종류",
+    "tool_calls": "배치 내 도구 호출",
+    "turn_id": "턴 ID",
+    "message_id": "메시지 ID",
+    "index": "델타 인덱스",
+    "final": "마지막 델타 플래그",
+    "delta": "델타 텍스트",
 }
 
 
@@ -569,6 +667,585 @@ _PRE_COMPACT_FIELDS: list[FieldDescriptor] = [
         "description": "Path to the session transcript about to be "
                        "compacted.",
     },
+    {
+        "path": "trigger",
+        "type": "str",
+        "description": "Compaction trigger — `\"manual\"` when the "
+                       "operator ran `/compact`, `\"auto\"` when the "
+                       "runtime hit its compaction threshold.",
+        "example": "auto",
+    },
+]
+
+
+# ── D79 promoted events ──────────────────────────────────────────────
+# Every field list below was extracted from the CC 2.1.170 binary by
+# grepping for the `hook_event_name:"<Event>"` constructor literal and
+# reading the sibling object keys. Cross-check with:
+#
+#   strings /opt/homebrew/Caskroom/claude-code/2.1.170/claude \
+#     | grep -oE 'hook_event_name:"<Event>"[^}]{0,250}'
+#
+# Common envelope (session_id / transcript_path / cwd) is appended via
+# `_with_common_envelope` where the runtime is known to also stamp it.
+
+# Tool-context observability variants ---------------------------------
+
+_POST_TOOL_USE_FAILURE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "tool_name",
+        "type": "str",
+        "description": "The tool that failed (Bash, Read, Edit, "
+                       "WebFetch, mcp__server__name, ...).",
+        "example": "Bash",
+    },
+    {
+        "path": "tool_input",
+        "type": "dict",
+        "description": "The tool input dict CC was about to execute "
+                       "when the failure happened.",
+    },
+    {
+        "path": "tool_use_id",
+        "type": "str",
+        "description": "Unique id for THIS tool call. Correlates with "
+                       "the corresponding PreToolUse payload.",
+        "example": "toolu_01ABcdef0123",
+    },
+    {
+        "path": "error",
+        "type": "str",
+        "description": "Failure message the runtime captured. The "
+                       "field most failure-recovery scripts want.",
+        "example": "git push failed: non-fast-forward",
+    },
+    {
+        "path": "is_interrupt",
+        "type": "bool",
+        "description": "True iff the failure was triggered by an "
+                       "operator interrupt (Ctrl-C / cancel) rather "
+                       "than a genuine tool error.",
+    },
+    {
+        "path": "duration_ms",
+        "type": "int",
+        "description": "Wall time the tool ran before failing, in "
+                       "milliseconds.",
+    },
+]
+
+_POST_TOOL_BATCH_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "tool_calls",
+        "type": "list",
+        "description": "Ordered list of every tool call inside this "
+                       "turn's batch. Each element carries "
+                       "`tool_name`, `tool_input`, `tool_response`, "
+                       "and `tool_use_id`. Authoring per-tool match "
+                       "here is what PostToolUseFailure is for; "
+                       "PostToolBatch policies operate on the whole "
+                       "batch.",
+    },
+]
+
+# Permission gate family ---------------------------------------------
+
+_PERMISSION_REQUEST_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "tool_name",
+        "type": "str",
+        "description": "The tool CC is about to ask permission for.",
+        "example": "Bash",
+    },
+    {
+        "path": "tool_input",
+        "type": "dict",
+        "description": "The tool input dict CC will execute if "
+                       "permission is granted.",
+    },
+    {
+        "path": "permission_suggestions",
+        "type": "list",
+        "description": "Runtime-suggested permission strings (e.g. "
+                       "`Bash(git push:*)`) the user can accept "
+                       "verbatim. Useful for audit / policy override.",
+    },
+]
+
+_PERMISSION_DENIED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "tool_name",
+        "type": "str",
+        "description": "The tool whose permission was denied.",
+        "example": "Bash",
+    },
+    {
+        "path": "tool_input",
+        "type": "dict",
+        "description": "The tool input dict that was rejected.",
+    },
+    {
+        "path": "tool_use_id",
+        "type": "str",
+        "description": "Unique id for the denied tool call.",
+        "example": "toolu_01ABcdef0123",
+    },
+    {
+        "path": "reason",
+        "type": "str",
+        "description": "Operator-supplied (or runtime-generated) "
+                       "denial reason — the field most audit policies "
+                       "want.",
+        "example": "denied by user",
+    },
+]
+
+# Content-flow extensions --------------------------------------------
+
+_USER_PROMPT_EXPANSION_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "expansion_type",
+        "type": "str",
+        "description": "Source of the expansion — one of `\"command\"`, "
+                       "`\"alias\"`, `\"file\"`, `\"argument\"`. Each "
+                       "carries different sibling fields.",
+        "example": "command",
+    },
+    {
+        "path": "command_name",
+        "type": "str",
+        "description": "Slash-command name when expansion_type is "
+                       "`\"command\"` (e.g. `compact`, `model`).",
+        "example": "compact",
+    },
+    {
+        "path": "command_args",
+        "type": "str",
+        "description": "Raw argument string passed to the slash "
+                       "command (everything after the command name).",
+    },
+    {
+        "path": "command_source",
+        "type": "str",
+        "description": "Where the command definition came from — "
+                       "`\"builtin\"`, `\"user\"`, `\"project\"`.",
+        "example": "builtin",
+    },
+    {
+        "path": "prompt",
+        "type": "str",
+        "description": "The expanded prompt text the LLM will see "
+                       "after expansion. Use for prompt-injection "
+                       "screens on the post-expansion form.",
+    },
+]
+
+_POST_COMPACT_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "trigger",
+        "type": "str",
+        "description": "Compaction trigger — `\"manual\"` when the "
+                       "operator ran `/compact`, `\"auto\"` when the "
+                       "runtime hit its compaction threshold.",
+        "example": "auto",
+    },
+    {
+        "path": "compact_summary",
+        "type": "str",
+        "description": "The summary the runtime distilled from the "
+                       "compacted transcript and is about to splice "
+                       "into the new context. The field most audit "
+                       "policies want.",
+    },
+]
+
+_ELICITATION_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "mcp_server_name",
+        "type": "str",
+        "description": "The MCP server that issued the elicitation "
+                       "request.",
+        "example": "court",
+    },
+    {
+        "path": "message",
+        "type": "str",
+        "description": "Human-readable text the MCP server is asking "
+                       "the user to respond to.",
+    },
+    {
+        "path": "mode",
+        "type": "str",
+        "description": "Elicitation mode — `\"input\"` (free text), "
+                       "`\"select\"`, `\"confirm\"`, etc.",
+    },
+    {
+        "path": "url",
+        "type": "str",
+        "description": "Optional MCP-supplied URL for context (form "
+                       "page, OAuth dialog, etc.).",
+    },
+    {
+        "path": "elicitation_id",
+        "type": "str",
+        "description": "Opaque id correlating this Elicitation with "
+                       "the matching ElicitationResult.",
+    },
+    {
+        "path": "requested_schema",
+        "type": "dict",
+        "description": "JSON Schema the MCP server expects the user "
+                       "response to validate against.",
+    },
+]
+
+_ELICITATION_RESULT_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "mcp_server_name",
+        "type": "str",
+        "description": "The MCP server that issued the elicitation "
+                       "the user just answered.",
+        "example": "court",
+    },
+    {
+        "path": "elicitation_id",
+        "type": "str",
+        "description": "Opaque id correlating with the matching "
+                       "Elicitation event.",
+    },
+    {
+        "path": "mode",
+        "type": "str",
+        "description": "Elicitation mode (mirrors the Elicitation "
+                       "field).",
+    },
+    {
+        "path": "action",
+        "type": "str",
+        "description": "What the user did — `\"accept\"`, "
+                       "`\"decline\"`, or `\"cancel\"`.",
+        "example": "accept",
+    },
+    {
+        "path": "content",
+        "type": "dict",
+        "description": "User response payload (shape matches "
+                       "Elicitation.requested_schema when action is "
+                       "`\"accept\"`).",
+    },
+]
+
+# Subagent / Stop boundary -------------------------------------------
+
+_SUBAGENT_START_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "agent_id",
+        "type": "str",
+        "description": "Opaque id for the subagent CC is about to "
+                       "spawn.",
+        "example": "agent_01XYZ",
+    },
+    {
+        "path": "agent_type",
+        "type": "str",
+        "description": "Subagent kind (e.g. `\"general-purpose\"`, "
+                       "or the slug of a custom subagent declared in "
+                       "`.claude/agents/`).",
+        "example": "general-purpose",
+    },
+]
+
+_STOP_FAILURE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "error",
+        "type": "str",
+        "description": "Failure message captured from the Stop hook "
+                       "chain (e.g. non-zero exit, timeout).",
+        "example": "Stop hook exit code 1",
+    },
+    {
+        "path": "error_details",
+        "type": "str",
+        "description": "Optional secondary detail string the runtime "
+                       "produced.",
+    },
+    {
+        "path": "last_assistant_message",
+        "type": "str",
+        "description": "The assistant's final message the failing "
+                       "Stop hook was guarding. Useful for "
+                       "post-mortem audit / replay.",
+    },
+]
+
+# Lifecycle / observability surface ----------------------------------
+
+_SETUP_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "trigger",
+        "type": "str",
+        "description": "What initiated the workspace setup — typically "
+                       "`\"first_run\"`, `\"reset\"`, or a CLI flag "
+                       "string.",
+        "example": "first_run",
+    },
+]
+
+_NOTIFICATION_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "message",
+        "type": "str",
+        "description": "Notification body text the runtime is about "
+                       "to surface to the user.",
+        "example": "Claude needs your input",
+    },
+    {
+        "path": "title",
+        "type": "str",
+        "description": "Notification title (terminal bell label / "
+                       "OS notification title).",
+    },
+    {
+        "path": "notification_type",
+        "type": "str",
+        "description": "Notification kind — `\"idle\"`, "
+                       "`\"permission\"`, `\"completed\"`, etc.",
+        "example": "idle",
+    },
+]
+
+_TEAMMATE_IDLE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "teammate_name",
+        "type": "str",
+        "description": "Display name of the teammate agent that just "
+                       "went idle.",
+        "example": "Reviewer",
+    },
+    {
+        "path": "team_name",
+        "type": "str",
+        "description": "Team this teammate belongs to.",
+        "example": "review-loop",
+    },
+]
+
+_TASK_CREATED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "task_id",
+        "type": "str",
+        "description": "Opaque id for the Task-tool invocation.",
+        "example": "task_01ABCDEF",
+    },
+    {
+        "path": "task_subject",
+        "type": "str",
+        "description": "Short subject the parent agent gave the "
+                       "subtask (one-line summary).",
+        "example": "Audit the migration script for SQL injection",
+    },
+    {
+        "path": "task_description",
+        "type": "str",
+        "description": "Full description of the subtask the parent "
+                       "agent asked the teammate to perform.",
+    },
+    {
+        "path": "teammate_name",
+        "type": "str",
+        "description": "Display name of the teammate the task was "
+                       "dispatched to.",
+    },
+    {
+        "path": "team_name",
+        "type": "str",
+        "description": "Team the dispatched teammate belongs to.",
+    },
+]
+
+_TASK_COMPLETED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "task_id",
+        "type": "str",
+        "description": "Opaque id for the completed Task-tool "
+                       "invocation (correlates with TaskCreated).",
+        "example": "task_01ABCDEF",
+    },
+    {
+        "path": "task_subject",
+        "type": "str",
+        "description": "Short subject of the completed subtask.",
+    },
+    {
+        "path": "task_description",
+        "type": "str",
+        "description": "Full description of the completed subtask.",
+    },
+    {
+        "path": "teammate_name",
+        "type": "str",
+        "description": "Display name of the teammate that ran the "
+                       "task.",
+    },
+    {
+        "path": "team_name",
+        "type": "str",
+        "description": "Team the teammate belongs to.",
+    },
+]
+
+_CONFIG_CHANGE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "source",
+        "type": "str",
+        "description": "Which settings layer changed — "
+                       "`\"userSettings\"`, `\"projectSettings\"`, "
+                       "`\"localSettings\"`, `\"flagSettings\"`.",
+        "example": "projectSettings",
+    },
+    {
+        "path": "file_path",
+        "type": "str",
+        "description": "Absolute path to the settings.json the "
+                       "runtime just reloaded.",
+        "example": "/Users/me/project/.claude/settings.json",
+    },
+]
+
+_WORKTREE_CREATE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "name",
+        "type": "str",
+        "description": "Worktree slug the runtime created (e.g. "
+                       "`fix/login-bug`). The hook stdout channel uses "
+                       "`hookSpecificOutput.worktreePath` to return "
+                       "the created path; `additionalContext` is NOT "
+                       "honored here.",
+        "example": "fix/login-bug",
+    },
+]
+
+_WORKTREE_REMOVE_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "worktree_path",
+        "type": "str",
+        "description": "Absolute path of the worktree the runtime "
+                       "just removed.",
+        "example": "/Users/me/project-worktrees/fix-login-bug",
+    },
+]
+
+_INSTRUCTIONS_LOADED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "file_path",
+        "type": "str",
+        "description": "Absolute path of the instruction file the "
+                       "runtime loaded (CLAUDE.md, AGENTS.md, an "
+                       "imported `@…` file).",
+        "example": "/Users/me/project/CLAUDE.md",
+    },
+    {
+        "path": "memory_type",
+        "type": "str",
+        "description": "Memory layer — `\"user\"`, `\"project\"`, "
+                       "`\"project, gitignored\"` (localSettings), "
+                       "or `\"cli flag\"`.",
+        "example": "project",
+    },
+    {
+        "path": "load_reason",
+        "type": "str",
+        "description": "Why this file loaded — `\"startup\"`, "
+                       "`\"reload\"`, `\"import\"`, `\"glob_match\"`.",
+        "example": "startup",
+    },
+    {
+        "path": "globs",
+        "type": "list",
+        "description": "Glob patterns that matched, when load_reason "
+                       "is `\"glob_match\"`.",
+    },
+    {
+        "path": "trigger_file_path",
+        "type": "str",
+        "description": "Path of the file that triggered an import "
+                       "load (e.g. the parent CLAUDE.md that wrote "
+                       "`@some/file.md`).",
+    },
+    {
+        "path": "parent_file_path",
+        "type": "str",
+        "description": "Path of the parent instruction file when "
+                       "load_reason is `\"import\"`.",
+    },
+]
+
+_CWD_CHANGED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "old_cwd",
+        "type": "str",
+        "description": "The previous working directory.",
+        "example": "/Users/me/project",
+    },
+    {
+        "path": "new_cwd",
+        "type": "str",
+        "description": "The new working directory CC just moved to.",
+        "example": "/Users/me/project/subdir",
+    },
+]
+
+_FILE_CHANGED_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "file_path",
+        "type": "str",
+        "description": "Absolute path of the file the watcher saw "
+                       "change.",
+        "example": "/Users/me/project/src/app.py",
+    },
+    {
+        "path": "event",
+        "type": "str",
+        "description": "Filesystem event kind — `\"created\"`, "
+                       "`\"modified\"`, `\"deleted\"`, `\"renamed\"`.",
+        "example": "modified",
+    },
+]
+
+_MESSAGE_DISPLAY_FIELDS: list[FieldDescriptor] = [
+    {
+        "path": "turn_id",
+        "type": "str",
+        "description": "Opaque id of the turn this delta belongs to.",
+    },
+    {
+        "path": "message_id",
+        "type": "str",
+        "description": "Opaque id of the streaming message the delta "
+                       "appends to.",
+    },
+    {
+        "path": "index",
+        "type": "int",
+        "description": "Zero-based index of this delta within the "
+                       "message.",
+    },
+    {
+        "path": "final",
+        "type": "bool",
+        "description": "True iff this is the terminal delta of the "
+                       "message (CC will not stream another delta for "
+                       "this message after this one).",
+    },
+    {
+        "path": "delta",
+        "type": "str",
+        "description": "The text chunk about to render to the user's "
+                       "terminal. Display-only — overriding it via "
+                       "`hookSpecificOutput.displayContent` only "
+                       "changes the rendered string, not the stored "
+                       "message or the model context.",
+    },
 ]
 
 
@@ -654,6 +1331,177 @@ PAYLOAD_SCHEMAS_BY_EVENT: dict[str, dict[str, PayloadSchema]] = {
             "event": "PreCompact",
             "matcher_class": "no_tool",
             "fields": _PRE_COMPACT_FIELDS,
+        },
+    },
+    # ── D79 — promoted from `_UNVERIFIED_EVENTS` ─────────────────────
+    "PostToolUseFailure": {
+        "tool": {
+            "event": "PostToolUseFailure",
+            "matcher_class": "tool",
+            "fields": [
+                *_COMMON_TOOL_ENVELOPE,
+                *_POST_TOOL_USE_FAILURE_FIELDS,
+            ],
+        },
+    },
+    "PostToolBatch": {
+        "tool": {
+            "event": "PostToolBatch",
+            "matcher_class": "tool",
+            "fields": [
+                {
+                    "path": "session_id",
+                    "type": "str",
+                    "description": "Opaque CC session identifier.",
+                },
+                *_POST_TOOL_BATCH_FIELDS,
+            ],
+        },
+    },
+    "PermissionRequest": {
+        "tool": {
+            "event": "PermissionRequest",
+            "matcher_class": "tool",
+            "fields": [
+                *_COMMON_TOOL_ENVELOPE,
+                *_PERMISSION_REQUEST_FIELDS,
+            ],
+        },
+    },
+    "PermissionDenied": {
+        "tool": {
+            "event": "PermissionDenied",
+            "matcher_class": "tool",
+            "fields": [
+                *_COMMON_TOOL_ENVELOPE,
+                *_PERMISSION_DENIED_FIELDS,
+            ],
+        },
+    },
+    "UserPromptExpansion": {
+        "no_tool": {
+            "event": "UserPromptExpansion",
+            "matcher_class": "no_tool",
+            "fields": _USER_PROMPT_EXPANSION_FIELDS,
+        },
+    },
+    "PostCompact": {
+        "no_tool": {
+            "event": "PostCompact",
+            "matcher_class": "no_tool",
+            "fields": _POST_COMPACT_FIELDS,
+        },
+    },
+    "Elicitation": {
+        "no_tool": {
+            "event": "Elicitation",
+            "matcher_class": "no_tool",
+            "fields": _ELICITATION_FIELDS,
+        },
+    },
+    "ElicitationResult": {
+        "no_tool": {
+            "event": "ElicitationResult",
+            "matcher_class": "no_tool",
+            "fields": _ELICITATION_RESULT_FIELDS,
+        },
+    },
+    "SubagentStart": {
+        "no_tool": {
+            "event": "SubagentStart",
+            "matcher_class": "no_tool",
+            "fields": _SUBAGENT_START_FIELDS,
+        },
+    },
+    "StopFailure": {
+        "final": {
+            "event": "StopFailure",
+            "matcher_class": "final",
+            "fields": _STOP_FAILURE_FIELDS,
+        },
+    },
+    "Setup": {
+        "no_tool": {
+            "event": "Setup",
+            "matcher_class": "no_tool",
+            "fields": _SETUP_FIELDS,
+        },
+    },
+    "Notification": {
+        "no_tool": {
+            "event": "Notification",
+            "matcher_class": "no_tool",
+            "fields": _NOTIFICATION_FIELDS,
+        },
+    },
+    "TeammateIdle": {
+        "no_tool": {
+            "event": "TeammateIdle",
+            "matcher_class": "no_tool",
+            "fields": _TEAMMATE_IDLE_FIELDS,
+        },
+    },
+    "TaskCreated": {
+        "no_tool": {
+            "event": "TaskCreated",
+            "matcher_class": "no_tool",
+            "fields": _TASK_CREATED_FIELDS,
+        },
+    },
+    "TaskCompleted": {
+        "no_tool": {
+            "event": "TaskCompleted",
+            "matcher_class": "no_tool",
+            "fields": _TASK_COMPLETED_FIELDS,
+        },
+    },
+    "ConfigChange": {
+        "no_tool": {
+            "event": "ConfigChange",
+            "matcher_class": "no_tool",
+            "fields": _CONFIG_CHANGE_FIELDS,
+        },
+    },
+    "WorktreeCreate": {
+        "no_tool": {
+            "event": "WorktreeCreate",
+            "matcher_class": "no_tool",
+            "fields": _WORKTREE_CREATE_FIELDS,
+        },
+    },
+    "WorktreeRemove": {
+        "no_tool": {
+            "event": "WorktreeRemove",
+            "matcher_class": "no_tool",
+            "fields": _WORKTREE_REMOVE_FIELDS,
+        },
+    },
+    "InstructionsLoaded": {
+        "no_tool": {
+            "event": "InstructionsLoaded",
+            "matcher_class": "no_tool",
+            "fields": _INSTRUCTIONS_LOADED_FIELDS,
+        },
+    },
+    "CwdChanged": {
+        "no_tool": {
+            "event": "CwdChanged",
+            "matcher_class": "no_tool",
+            "fields": _CWD_CHANGED_FIELDS,
+        },
+    },
+    "FileChanged": {
+        "no_tool": {
+            "event": "FileChanged",
+            "matcher_class": "no_tool",
+            "fields": _FILE_CHANGED_FIELDS,
+        },
+    },
+    "MessageDisplay": {
+        "no_tool": {
+            "event": "MessageDisplay",
+            "matcher_class": "no_tool",
+            "fields": _MESSAGE_DISPLAY_FIELDS,
         },
     },
 }

@@ -102,51 +102,35 @@ describe("Step1LifecyclePicker | group composition", () => {
   })
 })
 
-describe("Step1LifecyclePicker | D70 unverified badge", () => {
-  // D70 — verification-status surface. Common-tier promo for
-  // TaskCompleted (D69) sits next to four _VERIFIED_EVENTS rows; an
-  // operator who reads the promo as "Task pair is verified" would
-  // hit a silent-fail-open if CC drops `hooks.TaskCompleted` at
-  // settings load. The picker reads the verification status from the
-  // mirror set and renders an "unverified" badge so the asymmetry
-  // is on screen.
-  it("UNVERIFIED_LIFECYCLE_SLUGS covers the 22 _UNVERIFIED_EVENTS slugs", () => {
-    expect(UNVERIFIED_LIFECYCLE_SLUGS.size).toBe(22)
+describe("Step1LifecyclePicker | D79 verification surface", () => {
+  // D79 — verification-status surface. After the CC 2.1.170 binary
+  // audit (hook_event_name literals + execute<Event>Hooks runners +
+  // explicit payload field shapes) every previously-unverified
+  // candidate moved to `_VERIFIED_EVENTS`. The mirror set is now
+  // empty and the amber badge no longer renders on any row.
+  it("UNVERIFIED_LIFECYCLE_SLUGS is empty after D79 promotion", () => {
+    expect(UNVERIFIED_LIFECYCLE_SLUGS.size).toBe(0)
   })
 
-  it("isUnverifiedLifecycle returns true for TaskCompleted (D69 Common promo) and TaskCreated (D70 Common promo)", () => {
-    expect(isUnverifiedLifecycle("task_completed")).toBe(true)
-    expect(isUnverifiedLifecycle("task_created")).toBe(true)
-  })
-
-  it("isUnverifiedLifecycle returns false for the four pre-D58 verified Common slugs", () => {
-    // The other Common-tier slugs are _VERIFIED_EVENTS members and
-    // must NOT carry the unverified affordance.
-    expect(isUnverifiedLifecycle("before_tool_use")).toBe(false)
-    expect(isUnverifiedLifecycle("after_tool_use")).toBe(false)
-    expect(isUnverifiedLifecycle("user_prompt")).toBe(false)
-    expect(isUnverifiedLifecycle("pre_final")).toBe(false)
-  })
-
-  it("UNVERIFIED_LIFECYCLE_SLUGS + 8 verified slugs partitions all 30 lifecycles", () => {
+  it("isUnverifiedLifecycle returns false for every member of the 30-lifecycle surface", () => {
     const all: LifecycleSlug[] = [
       ...COMMON_GROUP.members,
       ...ADVANCED_GROUPS.flatMap((g) => g.members),
     ]
-    // The 8 _VERIFIED_EVENTS slugs are exactly the pre-D58 surface.
-    const verifiedSlugs: LifecycleSlug[] = [
-      "before_tool_use", "after_tool_use",
-      "pre_final", "subagent_stop",
-      "user_prompt",
-      "pre_compact",
-      "session_start", "session_end",
+    for (const slug of all) {
+      expect(isUnverifiedLifecycle(slug)).toBe(false)
+    }
+  })
+
+  it("the verified-slug count matches the full 30-lifecycle surface", () => {
+    const all: LifecycleSlug[] = [
+      ...COMMON_GROUP.members,
+      ...ADVANCED_GROUPS.flatMap((g) => g.members),
     ]
-    const verifiedCount = all.filter((s) => verifiedSlugs.includes(s)).length
     const unverifiedCount = all.filter((s) =>
       UNVERIFIED_LIFECYCLE_SLUGS.has(s)).length
-    expect(verifiedCount).toBe(8)
-    expect(unverifiedCount).toBe(22)
-    expect(verifiedCount + unverifiedCount).toBe(30)
+    expect(unverifiedCount).toBe(0)
+    expect(all.length).toBe(30)
   })
 })
 
