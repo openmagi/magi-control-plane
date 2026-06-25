@@ -103,6 +103,16 @@ class Trigger:
 EvidenceKindLiteral = Literal["step", "regex", "llm_critic", "shacl"]
 
 
+# D82c fix: shape of a valid `field_path` on a regex EvidenceReq. Same
+# grammar as the marker regex but anchored, so `"tool_response.output"`
+# / `"tool_input.command"` / `"prompt"` all pass and `"foo.."` / `""` /
+# `"a b"` do not. Empty string is allowed as a legitimate "whole-payload"
+# back-compat signal — handled by the regex evaluator below.
+_FIELD_PATH_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+
+
 @dataclass
 class EvidenceReq:
     """One condition that must hold for the policy gate to allow.
@@ -117,6 +127,13 @@ class EvidenceReq:
     verdict: str = "pass"
     # kind=regex — inline regex
     pattern: str = ""
+    # D82c fix: kind=regex — optional dotted path scoping the match.
+    # Empty (default) preserves the pre-D82c behaviour of matching the
+    # whole-payload projection; a non-empty value scopes `re.search` to
+    # the resolved field only (`tool_response.output`, `tool_input.command`,
+    # `prompt`, …). Catches the overmatch hole the wizard's picker UI
+    # promised but the runtime never delivered.
+    field_path: str = ""
     # kind=llm_critic — natural-language rule
     criterion: str = ""
     # kind=shacl — Turtle SHACL shape
@@ -135,6 +152,23 @@ class EvidenceReq:
                 re.compile(self.pattern)
             except re.error as e:
                 raise ValueError(f"EvidenceReq kind=regex pattern fails to compile: {e}") from e
+            # D82c fix: scope check. Empty is fine (legacy behaviour);
+            # any non-empty value MUST be a dotted-identifier chain so
+            # the runtime's `_resolve_dotted_path` can walk it without
+            # surprises. We reject obvious garbage at validate-time
+            # rather than letting it silently degrade to whole-payload
+            # match at eval-time.
+            if self.field_path:
+                if len(self.field_path) > 256:
+                    raise ValueError(
+                        "EvidenceReq kind=regex field_path too long (>256 chars)"
+                    )
+                if not _FIELD_PATH_RE.match(self.field_path):
+                    raise ValueError(
+                        f"EvidenceReq kind=regex field_path must be a "
+                        f"dotted-identifier chain (e.g. 'tool_response.output'); "
+                        f"got {self.field_path!r}"
+                    )
         elif self.kind == "llm_critic":
             if not self.criterion:
                 raise ValueError("EvidenceReq kind=llm_critic requires non-empty `criterion`")
@@ -1049,6 +1083,12 @@ def _coerce_evidence_req(raw: dict) -> EvidenceReq:
         step=raw.get("step", ""),
         verdict=raw.get("verdict", "pass"),
         pattern=raw.get("pattern", ""),
+        # D82c fix: regex field_path threads through deser so a saved
+        # policy round-trips its scoping choice. Missing → "" (legacy
+        # whole-payload behaviour); on-disk byte stability against
+        # pre-D82c regex rows is preserved by the serializer omitting
+        # the key when it's the default.
+        field_path=raw.get("field_path", ""),
         criterion=raw.get("criterion", ""),
         shape_ttl=raw.get("shape_ttl", ""),
     )
@@ -1170,7 +1210,14 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
             if r.kind == "step":
                 return {"step": r.step, "verdict": r.verdict}
             if r.kind == "regex":
-                return {"kind": "regex", "pattern": r.pattern}
+                # D82c fix: only emit field_path when set so pre-D82c
+                # regex rows round-trip byte-identical. Saved policies
+                # that scope their match to a specific field carry the
+                # field_path key; legacy whole-payload policies don't.
+                out: dict = {"kind": "regex", "pattern": r.pattern}
+                if r.field_path:
+                    out["field_path"] = r.field_path
+                return out
             if r.kind == "llm_critic":
                 return {"kind": "llm_critic", "criterion": r.criterion}
             if r.kind == "shacl":

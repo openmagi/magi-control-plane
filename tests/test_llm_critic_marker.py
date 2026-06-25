@@ -122,6 +122,65 @@ def test_returns_input_when_payload_is_none():
     assert out == "text (no x available)"
 
 
+# ── D82c fix: tightened marker regex + per-marker length cap ──────
+
+
+def test_trailing_dot_marker_left_untouched():
+    """`{foo.}` is not a valid dotted-identifier chain — the runtime
+    must NOT substitute (which would otherwise produce the noisy
+    `(no foo. available)` placeholder)."""
+    out = interpolate_payload_markers(
+        "x {foo.} y",
+        {"foo": "bar"},
+    )
+    assert out == "x {foo.} y"
+
+
+def test_double_dot_marker_left_untouched():
+    """`{a..b}` is not valid — substituting would walk an empty
+    segment and miss the dict key."""
+    out = interpolate_payload_markers(
+        "x {a..b} y",
+        {"a": {"b": "bar"}},
+    )
+    assert out == "x {a..b} y"
+
+
+def test_leading_dot_marker_left_untouched():
+    """`{.x}` is not valid — the path must start with an identifier."""
+    out = interpolate_payload_markers(
+        "x {.x} y",
+        {"x": "bar"},
+    )
+    assert out == "x {.x} y"
+
+
+def test_marker_value_capped_to_prevent_prompt_blowup():
+    """A `{tool_input.content}` over a megabyte file body must NOT
+    blow past the LLM provider's token limits. The substitutor caps
+    each marker value with a truncation suffix."""
+    huge = "A" * 5000
+    out = interpolate_payload_markers(
+        "Does {tool_input.content} look hostile?",
+        {"tool_input": {"content": huge}},
+    )
+    # Value is capped well below the input size.
+    assert len(out) < 2000
+    assert "<truncated>" in out
+
+
+def test_short_marker_value_not_truncated():
+    """Sub-cap values pass through verbatim — only oversized values
+    get the truncation suffix so the prompt doesn't carry a noisy
+    `<truncated>` indicator on every render."""
+    out = interpolate_payload_markers(
+        "Does {prompt} contain PII?",
+        {"prompt": "hello"},
+    )
+    assert out == "Does hello contain PII?"
+    assert "<truncated>" not in out
+
+
 # ── D82c integration: /verify_inline substitutes markers in criterion ──
 
 import pytest

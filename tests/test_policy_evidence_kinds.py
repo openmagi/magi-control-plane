@@ -74,6 +74,57 @@ def test_regex_pattern_length_capped():
         bad.validate()
 
 
+# ── D82c fix: kind=regex field_path scoping ───────────────────────
+
+
+def test_regex_field_path_round_trips_when_set():
+    """Saved policies carry the field_path scoping choice through
+    ser/deser so a wizard-authored regex doesn't regress to whole-
+    payload on reload."""
+    req = EvidenceReq(
+        kind="regex",
+        pattern=r"\bSSN\b",
+        field_path="tool_response.output",
+    )
+    req.validate()
+    d = _evidence_req_to_dict(req)
+    assert d == {
+        "kind": "regex",
+        "pattern": r"\bSSN\b",
+        "field_path": "tool_response.output",
+    }
+    reloaded = _coerce_evidence_req(d)
+    assert reloaded.field_path == "tool_response.output"
+
+
+def test_regex_no_field_path_omits_key_on_serialize():
+    """Pre-D82c regex rows round-trip byte-identical (no field_path
+    key when empty). Without this, the policy_store would diff on
+    every load."""
+    req = EvidenceReq(kind="regex", pattern=r"\bSSN\b")
+    d = _evidence_req_to_dict(req)
+    assert d == {"kind": "regex", "pattern": r"\bSSN\b"}
+    assert "field_path" not in d
+
+
+def test_regex_field_path_must_be_dotted_identifier():
+    """Garbage paths are caught at validate-time — a typo like
+    `foo bar` would otherwise silently degrade to whole-payload."""
+    bad = EvidenceReq(
+        kind="regex", pattern="x", field_path="foo bar",
+    )
+    with pytest.raises(ValueError, match="dotted-identifier"):
+        bad.validate()
+
+
+def test_regex_field_path_length_capped():
+    bad = EvidenceReq(
+        kind="regex", pattern="x", field_path="a." * 200,
+    )
+    with pytest.raises(ValueError, match="too long"):
+        bad.validate()
+
+
 # ── kind=llm_critic ───────────────────────────────────────────────
 def test_llm_critic_kind_accepts_short_criterion():
     req = _coerce_evidence_req({

@@ -43,11 +43,19 @@ def _is_d59_narrowed_context_injection(item: dict) -> bool:
 def _evidence_req_to_dict(r: EvidenceReq) -> dict:
     """D35: kind-aware serialization. Step shape stays the legacy
     `{step, verdict}` so on-disk policy stores from before D35 still
-    round-trip byte-stable."""
+    round-trip byte-stable.
+
+    D82c fix: kind=regex carries an optional `field_path` scoping the
+    match to a single dotted path. We only emit the key when it's
+    non-empty so pre-D82c regex rows round-trip byte-identical.
+    """
     if r.kind == "step":
         return {"step": r.step, "verdict": r.verdict}
     if r.kind == "regex":
-        return {"kind": "regex", "pattern": r.pattern}
+        out: dict = {"kind": "regex", "pattern": r.pattern}
+        if r.field_path:
+            out["field_path"] = r.field_path
+        return out
     if r.kind == "llm_critic":
         return {"kind": "llm_critic", "criterion": r.criterion}
     if r.kind == "shacl":

@@ -1,7 +1,9 @@
 import Link from "next/link"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
-import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
+import PayloadFieldChipsClient, {
+  type Variant as ChipVariant,
+} from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import Step1LifecyclePicker from "./_components/Step1LifecyclePicker"
 import ToolCombobox from "./_components/ToolCombobox"
@@ -854,7 +856,19 @@ function deriveRequires(s: WizardState): PolicyDraft["requires"] {
     }
     case "regex": {
       const p = (s.pattern ?? "").trim()
-      return p ? [{ kind: "regex", pattern: p }] : []
+      if (!p) return []
+      // D82c fix: thread the picker's chosen field_path into the IR so
+      // the runtime's /verify_inline regex scopes its match to the
+      // chosen field. Empty / "*" → whole-payload scan (legacy default
+      // when the picker is left blank). A real path lands as a typed
+      // EvidenceReq.field_path on the cloud side.
+      const fp = (s.regexFieldPath ?? "").trim()
+      const req: { kind: "regex"; pattern: string; field_path?: string } = {
+        kind: "regex",
+        pattern: p,
+      }
+      if (fp && fp !== "*") req.field_path = fp
+      return [req]
     }
     case "llm_critic": {
       const c = (s.llmCriterion ?? "").trim()
@@ -878,6 +892,60 @@ function escapeRegex(s: string): string {
 }
 function parseCsv(raw: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean)
+}
+
+/** D82c fix: per-lifecycle default for the regex Field-to-match picker.
+ * The previous hard-coded `"tool_response.output"` default was correct
+ * for after_tool_use only — every other lifecycle's payload schema
+ * never exposes that path, so the browser silently fell back to
+ * whichever option the static <option> list rendered first, while the
+ * wizard state thought the default was tool_response.output. The
+ * mismatch was harmless until D82c started threading field_path into
+ * the IR; the moment it does, the wrong field gets scoped at runtime.
+ *
+ * This helper returns the canonical "primary check field" per
+ * lifecycle. For each lifecycle the chosen default is the field the
+ * 90% authoring use case would pick (Bash command on PreToolUse, tool
+ * output on PostToolUse, prompt on UserPromptSubmit, final answer on
+ * Stop, transcript path on PreCompact, session id on SessionStart).
+ */
+function defaultRegexFieldFor(s: WizardState): string {
+  const life: Lifecycle = s.lifecycle ?? "before_tool_use"
+  // Tool-context events look at the tool itself; pick based on the
+  // tool family the operator chose. Bash commands and Read/Edit/Write
+  // file paths are the dominant cases; default to `tool_input.command`
+  // for Bash and `tool_input.file_path` for Read/Edit/Write so the
+  // chip picker's default is a path the runtime actually delivers.
+  const scope = (s.toolScope ?? "").trim()
+  const firstTool = (parseCsv(scope)[0] ?? scope).trim()
+  switch (life) {
+    case "before_tool_use":
+      if (firstTool === "Bash") return "tool_input.command"
+      if (firstTool === "WebFetch") return "tool_input.url"
+      if (firstTool === "Read" || firstTool === "Edit" || firstTool === "Write")
+        return "tool_input.file_path"
+      // Wildcard / unknown tool — `tool_input` is the only guaranteed
+      // top-level key on PreToolUse.
+      return "tool_input"
+    case "after_tool_use":
+      // The verifier 90% pattern: scan the tool's textual output.
+      return "tool_response.output"
+    case "user_prompt":
+      return "prompt"
+    case "pre_final":
+    case "subagent_stop":
+      return "final_message"
+    case "pre_compact":
+    case "session_start":
+    case "session_end":
+      return "session_id"
+    default:
+      // For the rest of the D58/D70 surface either no payload path
+      // is reliably present or the lifecycle is audit-only; the
+      // wizard's chip filter will surface what's available and a
+      // missing default just lets the browser render the first option.
+      return ""
+  }
 }
 
 /** D53b: best-effort draft IR builder for the Guided wizard's Step 6
@@ -2281,6 +2349,10 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
   let conditionKind: ConditionKind = "none"
   let evidenceRefs: string[] | undefined
   let pattern: string | undefined
+  // D82c fix: round-trip regex field_path through Edit. Without this,
+  // a saved policy reloaded into the wizard would lose its scoping
+  // choice and silently regress to the legacy whole-payload behaviour.
+  let regexFieldPath: string | undefined
   let llmCriterion: string | undefined
   let shaclTtl: string | undefined
   if (requires.length === 0) {
@@ -2295,6 +2367,13 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
       } else if (k === "regex" && "pattern" in r) {
         conditionKind = "regex"
         pattern = r.pattern
+        // D82c fix: thread field_path back into the wizard state.
+        // Unknown / legacy rows simply omit the key, which leaves
+        // regexFieldPath undefined — Step 3 then shows its
+        // lifecycle-aware default.
+        if ("field_path" in r && typeof r.field_path === "string" && r.field_path) {
+          regexFieldPath = r.field_path
+        }
         sawNonStep = true
         break
       } else if (k === "llm_critic" && "criterion" in r) {
@@ -2345,6 +2424,7 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
       // Wipe per-kind specifics so the dropped condition doesn't
       // leak its inputs into a different kind.
       pattern = undefined
+      regexFieldPath = undefined
       llmCriterion = undefined
       shaclTtl = undefined
       evidenceRefs = undefined
@@ -2363,6 +2443,7 @@ function _irToWizardState(ir: PolicyDraft | null): WizardState | null {
     toolScope,
     conditionKind,
     pattern,
+    regexFieldPath,
     llmCriterion,
     evidenceRefs,
     shaclTtl,
@@ -4033,7 +4114,7 @@ function PayloadFieldChips({
   // the chip click to a separate <select id={targetSelectId}> so the
   // pattern textarea stays clean of curly braces (which would break
   // the regex compile).
-  variant: "path" | "shacl-stub" | "llm-marker" | "regex-target"
+  variant: ChipVariant
   targetSelectId?: string
 }) {
   if (fields.length === 0) return null
@@ -4364,23 +4445,24 @@ function Step3Condition({
                     {/* D82c: regex condition splits into target field +
                         pattern. Chip clicks set the <select> value; the
                         pattern textarea is left untouched so curly braces
-                        can't accidentally land in the regex source. */}
-                    <PayloadFieldChips
-                      fields={payloadFields}
-                      locale={locale}
-                      intro={ko
-                        ? "검사할 필드 (클릭하면 위 선택 박스에 설정):"
-                        : "Which field to match (click to set the picker above):"}
-                      targetTextareaId="w-regex-pattern"
-                      variant="regex-target"
-                      targetSelectId="w-regex-field-path"
-                    />
+                        can't accidentally land in the regex source.
+
+                        D82c fix: render the <select> ABOVE the chip row
+                        so the chip intro text ("click to set the picker
+                        above") is directionally correct. The picker is
+                        the primary control and the chips are a quick-
+                        pick suggestion strip under it. */}
                     <div className="mb-2">
                       <FieldLabel>{ko ? "검사할 필드" : "Field to match"}</FieldLabel>
                       <select
                         id="w-regex-field-path"
                         name="regexFieldPath"
-                        defaultValue={state.regexFieldPath ?? "tool_response.output"}
+                        defaultValue={
+                          state.regexFieldPath
+                          ?? defaultRegexFieldFor(state)
+                          ?? payloadFields[0]?.path
+                          ?? ""
+                        }
                         data-testid="step3-regex-field-path"
                         className={inputCls()}
                       >
@@ -4402,6 +4484,16 @@ function Step3Condition({
                           )}
                       </select>
                     </div>
+                    <PayloadFieldChips
+                      fields={payloadFields}
+                      locale={locale}
+                      intro={ko
+                        ? "검사할 필드 (클릭하면 위 선택 박스에 설정):"
+                        : "Which field to match (click to set the picker above):"}
+                      targetTextareaId="w-regex-pattern"
+                      variant="regex-target"
+                      targetSelectId="w-regex-field-path"
+                    />
                     <SteeringAwareField
                       kind="regex"
                       locale={locale}
@@ -4434,16 +4526,30 @@ function Step3Condition({
                     {/* D82c: Yes/No guide. Operators tend to write open-
                         ended prompts that produce inconsistent verdicts.
                         Anchor the criterion as a single yes/no question
-                        (Yes=pass, No=fail) so the LLM head check is
-                        deterministic. */}
-                    <p
+                        whose Yes answer means the action is SAFE.
+
+                        D82c fix: re-anchor on the SAFE-frame so the
+                        natural-language polarity ("Yes = safe") matches
+                        the runtime polarity ("verdict=pass → ALLOW").
+                        The prior "Does X contain bad thing?" phrasing
+                        inverted the polarity for first-time PII / leak
+                        gates: literal Yes → "PII present" but Yes mapped
+                        to pass which mapped to ALLOW the leaky action.
+
+                        D82c fix: visual promotion. Promote from the
+                        plain tertiary 11px caption to a tinted callout
+                        (border-l-2) so the guide reads as "rule for
+                        writing this field" rather than wallpaper. The
+                        chip intro that follows stays tertiary 11px since
+                        it's a column header. */}
+                    <div
                       data-testid="step3-llm-critic-guide"
-                      className="mb-1.5 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]"
+                      className="mb-2 rounded-r border-l-2 border-[var(--color-accent)]/50 bg-[var(--color-accent)]/[0.04] px-2.5 py-1.5 text-xs leading-relaxed text-[var(--color-text-secondary)]"
                     >
                       {ko
-                        ? "예/아니오로 답할 수 있는 질문으로 작성하세요. 예 = 정책 통과, 아니오 = 실패."
-                        : "Write a question that can be answered Yes or No. Yes = the policy passes, No = it fails."}
-                    </p>
+                        ? "예 = 안전(허용), 아니오 = 차단/감사 으로 답할 수 있는 질문으로 작성하세요. 예: \"출력이 개인정보를 누설하지 않나요?\" → 예이면 통과."
+                        : "Write a question whose Yes answer means the action is SAFE to allow. Yes = pass, No = block. e.g. \"Does the output avoid leaking personally identifiable information?\" → Yes means pass."}
+                    </div>
                     <PayloadFieldChips
                       fields={payloadFields}
                       locale={locale}
@@ -4466,9 +4572,19 @@ function Step3Condition({
                       fieldElement="textarea"
                       rows={3}
                       name="llmCriterion"
+                      // D82c fix: both placeholders model the marker
+                      // syntax AND the SAFE-frame Yes polarity. The
+                      // prior EN example referenced {transcript_path}
+                      // which substitutes to a literal filesystem path
+                      // string (degenerate at LLM-time); the KO example
+                      // omitted any marker, contradicting the chip
+                      // intro that just taught marker syntax. Both now
+                      // anchor on {tool_response.output} so the marker
+                      // substitutes to the actual tool output text and
+                      // the chip tutorial agrees with the example.
                       placeholder={ko
-                        ? "예: 출력에 개인정보가 포함되어 있나요?"
-                        : "e.g. Does the answer cite at least one source from {transcript_path}?"}
+                        ? "예: {tool_response.output}이 개인정보(이름·주민번호·이메일)를 누설하지 않나요?"
+                        : "e.g. Does {tool_response.output} avoid leaking personally identifiable information?"}
                       monospace
                     />
                     {step3ErrKind === "llm_critic" && step3ErrHelper && (
@@ -5664,7 +5780,16 @@ function InlineSubConfigPanel({
   let initial: string
   let placeholder: string
   let useChips = false
-  let chipVariant: "path" | "shacl-stub" = "path"
+  // D82c fix: widen the variant union to the FULL `ChipVariant` so the
+  // type checker forces each case to opt into a variant. The prior
+  // `'path' | 'shacl-stub'` narrow let the `llm_critic` branch silently
+  // fall through to `'path'`, which inserted raw `tool_response.output`
+  // (no braces) and broke the runtime marker substitutor. Authors who
+  // first composed via Step 3 (correct {marker}) and later tweaked via
+  // Step 6 silently corrupted the criterion. Same gap for regex —
+  // chips were splicing the path into the pattern textarea, the very
+  // thing the Step 3 split was added to prevent.
+  let chipVariant: ChipVariant = "path"
   let textareaId = "w-step6-sub-config"
 
   switch (kind) {
@@ -5675,7 +5800,13 @@ function InlineSubConfigPanel({
       name = "pattern"
       initial = state.pattern ?? ""
       placeholder = "AKIA[A-Z0-9]{16}"
-      useChips = true
+      // D82c fix: regex authoring in the inline panel mirrors Step 3's
+      // split. We hide the chip row entirely for regex here (the panel
+      // has no `<select>` companion to route the chip click to), so a
+      // path chip click cannot land curly braces in the regex pattern.
+      // Authors who want to scope to a specific field jump back to
+      // Step 3 where the picker + chips render in concert.
+      useChips = false
       textareaId = "w-step6-pattern"
       break
     case "llm_critic":
@@ -5688,6 +5819,12 @@ function InlineSubConfigPanel({
         ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
         : "e.g. Does the output contain a guess the user did not ask for?"
       useChips = true
+      // D82c fix: lock the inline llm_critic chips to the marker
+      // variant so a click inserts `{tool_response.output}` (not the
+      // bare path). The runtime `_MARKER_RX` only matches braces; a
+      // raw path would leak literal `tool_response.output` text into
+      // the prompt.
+      chipVariant = "llm-marker"
       textareaId = "w-step6-llm"
       break
     case "shacl":

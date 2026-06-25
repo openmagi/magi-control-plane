@@ -305,6 +305,108 @@ def test_shacl_minCount_zero_focus_path_target_denies(client):
     assert r.json()["verdict"] == "deny"
 
 
+# ── D82c fix: kind=regex field_path scoping ───────────────────────
+
+
+def test_regex_field_path_scopes_match_to_chosen_field(client):
+    """The picker promised field-scoped matching; the runtime must
+    deliver it. A pattern matching `tool_input.command` should NOT
+    match when the operator scopes to `tool_response.output`.
+
+    This was the silent fail-OPEN / overmatch mode that landed in
+    the wizard before the field_path threading was wired through.
+    """
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": r"\bSSN\b",
+            "field_path": "tool_response.output",
+            "payload": {
+                # SSN appears in tool_input.command but NOT in
+                # tool_response.output — scoped match must miss.
+                "tool_input": {"command": "echo SSN"},
+                "tool_response": {"output": "clean output"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "deny"
+
+
+def test_regex_field_path_match_passes_when_scoped_field_contains_pattern(client):
+    """Same scoping, but the pattern DOES match the scoped field —
+    verdict must be pass and the reason mentions which field matched."""
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": r"\bSSN\b",
+            "field_path": "tool_response.output",
+            "payload": {
+                "tool_input": {"command": "echo clean"},
+                "tool_response": {"output": "leaking SSN here"},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "pass"
+    assert any("tool_response.output" in s for s in body["reasons"])
+
+
+def test_regex_field_path_absent_field_denies(client):
+    """If the scoped field is absent from the payload the verdict must
+    be deny with an explicit reason — not silently scan the whole
+    payload (which would re-introduce the overmatch hole)."""
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": r"\bSSN\b",
+            "field_path": "tool_response.output",
+            # Pre-tool payload: tool_response not delivered yet.
+            "payload": {"tool_input": {"command": "echo SSN"}},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "deny"
+    assert any("absent" in s for s in body["reasons"])
+
+
+def test_regex_field_path_invalid_shape_422(client):
+    """Garbage field_path values are caught at the REST boundary so a
+    typo doesn't silently degrade to whole-payload match at eval-time."""
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": "x",
+            "field_path": "foo bar",  # space → not a dotted identifier
+            "payload": {"text": "x"},
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_regex_without_field_path_still_scans_whole_payload(client):
+    """Back-compat: empty / omitted field_path keeps the legacy whole-
+    payload projection so pre-D82c regex rows do NOT regress."""
+    r = client.post(
+        "/verify_inline", headers=HDR,
+        json={
+            "kind": "regex",
+            "pattern": r"\bSSN\b",
+            # No field_path key.
+            "payload": {"tool_input": {"command": "echo SSN"}},
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Whole-payload JSON contains "SSN" → pass under legacy behaviour.
+    assert r.json()["verdict"] == "pass"
+
+
 # ── unknown kind rejected by pydantic ─────────────────────────────
 def test_unknown_kind_422(client):
     r = client.post(

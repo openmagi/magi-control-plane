@@ -108,6 +108,32 @@ describe("PayloadFieldChipsClient — D64 friendly label invariants", () => {
     expect(src).not.toMatch(/—/)
   })
 
+  it("D82c fix: exports the Variant union for type-safe callers", () => {
+    // The page-side InlineSubConfigPanel imports this union so its
+    // chipVariant declaration cannot silently narrow and drop a
+    // variant (the bug it ships covering: `'path' | 'shacl-stub'`
+    // missed `'llm-marker'` and `'regex-target'`).
+    expect(src).toMatch(/export type Variant/)
+  })
+
+  it("D82c fix: llm-marker variant rejects non-identifier paths", () => {
+    // The runtime _MARKER_RX only accepts dotted identifiers; chip
+    // paths containing `[]` / `-` etc fall back to raw-path
+    // insertion (the marker substitutor would never resolve them).
+    expect(src).toMatch(/_MARKER_PATH_RX/)
+    expect(src).toMatch(/\.test\(f\.path\)/)
+  })
+
+  it("D82c fix: regex-target select-missing falls back to path insertion", () => {
+    // When the targetSelectId doesn't resolve to an HTMLSelectElement
+    // (mismatched id, mid-rerender, etc.), the chip still inserts
+    // the raw path into the pattern textarea so the click does
+    // something visible. Operators clicking and seeing nothing
+    // happen would otherwise reasonably conclude the picker is broken.
+    expect(src).toMatch(/console\.warn/)
+    expect(src).toMatch(/falling back to path insertion/)
+  })
+
   it("D64 polish: aria-label leads with the raw path before the friendly label", () => {
     // SR users authoring regex care about what is about to be inserted at
     // the caret (the raw path). Friendly label trails as the human cue.

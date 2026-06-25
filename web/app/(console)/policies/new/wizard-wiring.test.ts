@@ -2592,3 +2592,110 @@ describe("policies/new wizard — D82b Step 3 shortcut removal", () => {
     expect(src).not.toMatch(/action:\s*"inject_context",\s*conditionKind:\s*"none"/)
   })
 })
+
+describe("policies/new wizard — D82c follow-up fixes", () => {
+  const src = readFileSync(
+    path.join(__dirname, "page.tsx"),
+    "utf-8",
+  )
+
+  it("deriveRequires threads regexFieldPath into the regex EvidenceReq", () => {
+    // The picker the wizard renders for kind=regex now produces a
+    // typed `field_path` on the IR, so the runtime /verify_inline
+    // regex scopes its match to the chosen field instead of the
+    // whole payload.
+    expect(src).toMatch(/regexFieldPath/)
+    // The compiled requires entry includes the field_path key when
+    // a non-empty value was picked.
+    expect(src).toMatch(/field_path/)
+  })
+
+  it("InlineSubConfigPanel (Step 6) uses chip variant 'llm-marker' for llm_critic", () => {
+    // Authors who first compose via Step 3 (correct {marker}) and
+    // later tweak via Step 6 would otherwise silently corrupt the
+    // criterion by inserting raw paths the marker substitutor never
+    // recognises.
+    expect(src).toMatch(/chipVariant = "llm-marker"/)
+  })
+
+  it("InlineSubConfigPanel widens chipVariant type to the full ChipVariant union", () => {
+    // The prior `let chipVariant: 'path' | 'shacl-stub'` narrow let
+    // the llm_critic branch silently fall through to 'path' (no
+    // braces). The fix imports the Variant union from
+    // PayloadFieldChipsClient and uses it here so a future variant
+    // addition forces an exhaustive opt-in.
+    expect(src).toMatch(/type Variant as ChipVariant/)
+    expect(src).toMatch(/chipVariant: ChipVariant/)
+  })
+
+  it("Step 3 regex section renders the <select> ABOVE the chip row", () => {
+    // The chip intro says "set the picker above"; the JSX layout
+    // must back that claim. We grep for the field id appearing
+    // before the regex-target PayloadFieldChips block.
+    const idx_select = src.indexOf('id="w-regex-field-path"')
+    const idx_chips = src.indexOf('variant="regex-target"')
+    expect(idx_select).toBeGreaterThan(0)
+    expect(idx_chips).toBeGreaterThan(0)
+    expect(idx_select).toBeLessThan(idx_chips)
+  })
+
+  it("Step 3 regex select uses a lifecycle-aware default helper, not a hard-coded path", () => {
+    // The prior `defaultValue={state.regexFieldPath ?? "tool_response.output"}`
+    // would set a path that doesn't exist on PreToolUse / UserPromptSubmit /
+    // Stop / etc — the browser then silently fell back to the first
+    // <option>. The helper returns the right primary check field
+    // per lifecycle.
+    expect(src).toMatch(/defaultRegexFieldFor/)
+    // The hard-coded default is gone (no `?? "tool_response.output"`
+    // on the defaultValue of the regex select).
+    expect(src).not.toMatch(
+      /defaultValue=\{state\.regexFieldPath \?\? "tool_response\.output"\}/,
+    )
+  })
+
+  it("Step 3 LLM critic guide uses the SAFE-frame phrasing", () => {
+    // "Yes = safe" anchors the natural-language polarity on the same
+    // direction as the runtime polarity (verdict=pass → ALLOW). The
+    // prior "Does X contain bad thing?" placeholder + "Yes = passes"
+    // wording inverted the polarity for PII / leak gates.
+    expect(src).toMatch(/safe/i)
+    expect(src).toMatch(/안전/)
+  })
+
+  it("Step 3 LLM critic placeholders demonstrate the {marker} syntax in BOTH locales", () => {
+    // KO placeholder previously had no marker, which contradicted the
+    // chip intro that just taught marker syntax. EN placeholder used
+    // {transcript_path} which substitutes to a literal filesystem path
+    // (degenerate at LLM-time and mis-trains the operator). Both now
+    // anchor on {tool_response.output}.
+    expect(src).toMatch(/\{tool_response\.output\}/)
+    // The misleading {transcript_path} placeholder is gone from the
+    // llm_critic step.
+    const transcriptUses = src.match(/\{transcript_path\}/g) ?? []
+    // It may still appear in a chip-list / doc comment elsewhere; the
+    // critical hit is that it is NOT inside the placeholder= for the
+    // llm_critic textarea. We pin the surrounding "placeholder=" +
+    // {transcript_path} pair specifically.
+    expect(src).not.toMatch(/placeholder=\{[^}]*\{transcript_path\}/s)
+    // Spot-check: at most a few stray references survive (chip
+    // labels, doc strings) — none in author-facing placeholders.
+    expect(transcriptUses.length).toBeLessThan(5)
+  })
+
+  it("Step 3 LLM critic guide is visually promoted (not stacked-tertiary 11px)", () => {
+    // The previous 11px tertiary text rendered the guide as wallpaper
+    // next to the chip intro. The fix promotes it to a tinted callout
+    // (border-l-2 + accent tint). We grep the structural class on the
+    // guide container.
+    expect(src).toMatch(/data-testid="step3-llm-critic-guide"/)
+    // Border-l-2 + accent tint indicates the callout treatment.
+    expect(src).toMatch(/step3-llm-critic-guide[\s\S]{0,200}border-l-2/)
+  })
+
+  it("IR → wizard adapter round-trips regex field_path back into state", () => {
+    // A saved policy loaded into Edit mode must restore its field
+    // scoping choice; otherwise the wizard silently regresses to
+    // legacy whole-payload behaviour on every reload.
+    expect(src).toMatch(/regexFieldPath = r\.field_path/)
+  })
+})

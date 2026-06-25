@@ -451,6 +451,12 @@ def _requires_holds(
         # headline number reflects "could not check" rather than
         # "would have fired."
         snapshot = body.get(_PAYLOAD_SNAPSHOT_KEY)
+        # D82c fix: the runtime now writes the scoped projection into
+        # `__payload_snapshot__` (the same text the live regex saw),
+        # so the offline replay scans the SAME text whether or not the
+        # policy used field_path scoping. No extra resolution needed —
+        # the runtime already did it. Stays back-compat for whole-
+        # payload snapshots written by pre-D82c regex rows.
         text = _payload_text(snapshot)
         if not text:
             return _INDET

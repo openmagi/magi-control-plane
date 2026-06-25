@@ -57,7 +57,14 @@ export type ChipField = {
   display_label_en?: string
 }
 
-type Variant = "path" | "shacl-stub" | "llm-marker" | "regex-target"
+// D82c fix: export so the page-side InlineSubConfigPanel (and any
+// future caller) imports the same union the chip renderer matches
+// against. Without this the panel's local `'path' | 'shacl-stub'`
+// narrow silently masked a missing `'llm-marker'` branch (the panel
+// could pass a too-narrow value at build time, then run-time inserted
+// the raw path without curly braces, the exact failure mode the Step
+// 3 split was added to prevent).
+export type Variant = "path" | "shacl-stub" | "llm-marker" | "regex-target"
 
 interface Props {
   fields: ChipField[]
@@ -74,6 +81,14 @@ const MAGI_NS_PREFIX_BLOCK = `@prefix sh:   <http://www.w3.org/ns/shacl#> .
 @prefix magi: <https://magi.openmagi.ai/cc/hook#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 `
+
+// D82c fix: mirror the runtime `_MARKER_RX` so chip insertion under
+// the llm-marker variant cannot emit a span the substitutor would
+// fail to recognise. Identifier-style dotted paths only (no `[]` /
+// `-` / spaces); paths the regex rejects fall back to raw-path
+// insertion + a dev-console warning.
+const _MARKER_PATH_RX =
+  /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/
 
 function buildShaclStub(f: ChipField): string {
   // Property shape for scalar leaves; node shape for nested JSON. The
@@ -136,6 +151,29 @@ export default function PayloadFieldChipsClient({
           }
           sel.value = f.path
           sel.dispatchEvent(new Event("change", { bubbles: true }))
+          return
+        }
+        // D82c fix: the select lookup failed (mismatched id, the form
+        // re-rendered before the click landed, or the variant was
+        // wired without `targetSelectId`). Fall back to splicing the
+        // raw path into the pattern textarea so the click still does
+        // something visible. Operators clicking a chip and seeing
+        // nothing happen would otherwise reasonably conclude the
+        // picker is broken. We log a one-line dev hint so the wiring
+        // bug surfaces in the console without spamming users.
+        if (typeof console !== "undefined") {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[PayloadFieldChips] regex-target select not found `
+            + `(id=${id || "<unset>"}); falling back to path insertion`,
+          )
+        }
+        const fallback = document.getElementById(targetTextareaId)
+        if (
+          fallback instanceof HTMLTextAreaElement ||
+          fallback instanceof HTMLInputElement
+        ) {
+          spliceIntoTextarea(fallback, f.path)
         }
         return
       }
@@ -153,7 +191,31 @@ export default function PayloadFieldChipsClient({
         // D82c: wrap path in curly braces so the runtime marker
         // substitutor recognises it and the operator can SEE where
         // the variable ends in the rendered prompt.
-        insertion = `{${f.path}}`
+        //
+        // D82c fix: the runtime regex `_MARKER_RX` only accepts
+        // dotted-identifier paths. A path containing `[]` / `-` /
+        // any non-identifier char would be inserted as a literal
+        // `{citations[].quote}` and the regex would NOT match it,
+        // and the LLM would see the literal braces (the exact failure
+        // mode this commit set out to prevent). Today no `_*_FIELDS`
+        // surfaces such a path, but the display-label table already
+        // names `citations[].quote` and a future custom verifier
+        // exposing it would fire this. Fall back to inserting the
+        // raw path (NO braces) so the prompt at least stays readable;
+        // log a dev hint so the wiring bug surfaces in the console.
+        if (!_MARKER_PATH_RX.test(f.path)) {
+          if (typeof console !== "undefined") {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[PayloadFieldChips] llm-marker variant does not support "
+              + `path "${f.path}": not a dotted identifier. Inserting `
+              + "raw path; the marker substitutor will NOT resolve it.",
+            )
+          }
+          insertion = f.path
+        } else {
+          insertion = `{${f.path}}`
+        }
       } else {
         insertion = f.path
       }

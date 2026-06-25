@@ -800,14 +800,38 @@ def _flatten_payload(
 # Reused by /verify_inline (cloud llm_critic dispatch) and by any future
 # in-process critic runner (e.g. a `magi-cp gate` local llm_critic mode).
 
-_MARKER_RX = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}")
+# D82c fix: tighten the regex to a strict dotted-identifier chain so
+# `{foo.}` / `{a..b}` / `{.x}` no longer match (the previous loose form
+# admitted trailing-dot and double-dot paths whose `split('.')` yields
+# empty segments that miss the dict walk and render the noisy
+# `(no foo. available)` placeholder into the operator-facing prompt).
+_MARKER_RX = re.compile(
+    r"\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}"
+)
+
+# D82c fix: `_MISSING` is the sentinel `_resolve_dotted_path` returns
+# when any dotted segment is absent. Declared BEFORE the resolver so the
+# read order matches the call order (the prior code put `_MISSING` after
+# the function — runtime tolerated it because name resolution is late,
+# but a future default-argument move or early-eval import cycle would
+# break it).
+_MISSING = object()
+
+# D82c fix: per-marker substitution cap. An author who writes
+# `Does {tool_input} look hostile?` on a PostToolUse Write/Edit policy
+# would otherwise inline the entire (potentially megabytes) file body
+# into the CRITERION block — the existing 4000-char PAYLOAD cap was
+# designed to protect against this, but `interpolate_payload_markers`
+# wrote into CRITERION which bypassed it. Cap each substituted value
+# at 1000 chars with an ellipsis suffix so the prompt stays bounded.
+_MAX_MARKER_VALUE_CHARS = 1000
 
 
 def _resolve_dotted_path(payload: dict | None, path: str) -> object | None:
     """Walk a dotted path through a nested dict. Returns the resolved
     value, or ``None`` when any segment is missing (callers distinguish
     "missing" from "stored value is None" via the dedicated `_MISSING`
-    sentinel below)."""
+    sentinel above)."""
     if not isinstance(payload, dict):
         return _MISSING
     cur: object = payload
@@ -818,24 +842,31 @@ def _resolve_dotted_path(payload: dict | None, path: str) -> object | None:
     return cur
 
 
-_MISSING = object()
-
-
 def _format_value_for_prompt(val: object) -> str:
     """Render a payload value as a human-readable string for the LLM
     prompt. Dicts / lists JSON-serialize so the model sees `"command"`
     not `'command'`; bools render `True/False` (English, not lowercase
-    json) because the surrounding prose is English."""
+    json) because the surrounding prose is English.
+
+    D82c fix: each substituted value is capped at
+    ``_MAX_MARKER_VALUE_CHARS`` characters with a `…<truncated>` suffix
+    so a `{tool_input.content}` marker over a megabyte file body cannot
+    blow past the LLM provider's token limits.
+    """
     import json as _json
 
     if isinstance(val, (dict, list)):
         try:
-            return _json.dumps(val, ensure_ascii=False, sort_keys=True)
+            rendered = _json.dumps(val, ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
-            return str(val)
-    if isinstance(val, str):
-        return val
-    return str(val)
+            rendered = str(val)
+    elif isinstance(val, str):
+        rendered = val
+    else:
+        rendered = str(val)
+    if len(rendered) > _MAX_MARKER_VALUE_CHARS:
+        return rendered[:_MAX_MARKER_VALUE_CHARS] + "…<truncated>"
+    return rendered
 
 
 def interpolate_payload_markers(

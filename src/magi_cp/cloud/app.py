@@ -455,6 +455,16 @@ class VerifyInlineReq(BaseModel):
     matcher: str | None = Field(default=None, min_length=1, max_length=256)
     # kind-specific
     pattern: str | None = Field(default=None, max_length=2000)
+    # D82c fix: optional dotted-identifier scoping for kind=regex. Empty
+    # / unset → match whole-payload projection (legacy). Non-empty →
+    # scope `re.search` to the resolved field only, so an operator who
+    # picks `tool_response.output` does NOT also match SSN strings in
+    # `tool_input.command` / `tool_input.description` / etc.
+    field_path: str | None = Field(
+        default=None,
+        max_length=256,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$",
+    )
     criterion: str | None = Field(default=None, max_length=4000)
     shape_ttl: str | None = Field(default=None, max_length=16000)
 
@@ -1341,12 +1351,60 @@ def create_app(
                 rx = re.compile(req.pattern)
             except re.error as e:
                 raise HTTPException(422, f"pattern fails to compile: {e}")
-            if rx.search(payload_text):
-                verdict_status = "pass"
-                reasons = [f"pattern matched: {req.pattern[:80]}"]
+            # D82c fix: when the caller scopes the match to a specific
+            # dotted path, resolve the field BEFORE running re.search.
+            # Without this, an operator who picks `tool_response.output`
+            # with pattern `\bSSN\b` would match an SSN appearing in
+            # `tool_input.command` / `tool_input.description` /
+            # anywhere else in the payload (overmatch / fail-OPEN).
+            scoped_text: str
+            if req.field_path:
+                from magi_cp.policy.payload_schemas import (
+                    _MISSING,
+                    _format_value_for_prompt,
+                    _resolve_dotted_path,
+                )
+                val = _resolve_dotted_path(req.payload, req.field_path)
+                if val is _MISSING:
+                    # Field absent on this payload → cannot match. Deny
+                    # with a clear reason instead of silently scanning
+                    # the whole payload.
+                    scoped_text = ""
+                    verdict_status = "deny"
+                    reasons = [
+                        f"pattern did not match: field {req.field_path!r} "
+                        f"absent from payload",
+                    ]
+                else:
+                    # Strings keep their literal text; dict / list / bool /
+                    # int reuse the prompt formatter so the projection is
+                    # deterministic across kinds. Bounded the same way the
+                    # whole-payload projection is bounded above (8000
+                    # chars) so a giant tool_input.content cannot pin the
+                    # CPU under an adversarial regex.
+                    scoped_text = _format_value_for_prompt(val)[:8000]
+                    if rx.search(scoped_text):
+                        verdict_status = "pass"
+                        reasons = [
+                            f"pattern matched on {req.field_path}: "
+                            f"{req.pattern[:80]}",
+                        ]
+                    else:
+                        verdict_status = "deny"
+                        reasons = [
+                            f"pattern did not match on {req.field_path}: "
+                            f"{req.pattern[:80]}",
+                        ]
+                # Persist the scoped projection so the offline dry-run
+                # replay scans the SAME text the runtime scanned.
+                payload_text = scoped_text
             else:
-                verdict_status = "deny"
-                reasons = [f"pattern did not match: {req.pattern[:80]}"]
+                if rx.search(payload_text):
+                    verdict_status = "pass"
+                    reasons = [f"pattern matched: {req.pattern[:80]}"]
+                else:
+                    verdict_status = "deny"
+                    reasons = [f"pattern did not match: {req.pattern[:80]}"]
         elif kind == "llm_critic":
             if not req.criterion:
                 raise HTTPException(422, "kind=llm_critic requires criterion")

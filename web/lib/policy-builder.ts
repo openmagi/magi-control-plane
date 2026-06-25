@@ -158,7 +158,12 @@ export type EvidenceKind = "step" | "regex" | "llm_critic" | "shacl"
 
 export type EvidenceReqDraft =
   | { kind: "step"; step: string; verdict: string }
-  | { kind: "regex"; pattern: string }
+  // D82c fix: kind=regex carries optional field_path scoping the match
+  // to a single dotted CC payload path (e.g. "tool_response.output").
+  // Empty / absent → whole-payload scan (legacy behaviour); the cloud
+  // serializer omits the key on save when empty so pre-D82c on-disk
+  // rows stay byte-identical.
+  | { kind: "regex"; pattern: string; field_path?: string }
   | { kind: "llm_critic"; criterion: string }
   | { kind: "shacl"; shape_ttl: string }
   // Legacy: rows without an explicit kind are treated as step.
