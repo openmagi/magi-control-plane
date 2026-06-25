@@ -137,35 +137,33 @@ export default function PayloadFieldChipsClient({
       // the pattern compile), so the chip becomes the target-field
       // picker AND the pattern textarea stays untouched.
       if (variant === "regex-target") {
-        const id = targetSelectId ?? ""
-        const sel = document.getElementById(id)
-        if (sel instanceof HTMLSelectElement) {
-          // Add an option lazily when the chip-picked path isn't in
-          // the static <option> list (e.g. operator-typed MCP slugs).
-          const existing = Array.from(sel.options).some((o) => o.value === f.path)
-          if (!existing) {
-            const opt = document.createElement("option")
-            opt.value = f.path
-            opt.textContent = f.path
-            sel.appendChild(opt)
-          }
-          sel.value = f.path
-          sel.dispatchEvent(new Event("change", { bubbles: true }))
+        // D80: unify on the CustomEvent seam. The Step 3 regex picker
+        // is now a FieldPathSelect (custom listbox) instead of a native
+        // <select>; the picker listens for a `regex-field-path-set`
+        // CustomEvent on document and applies `detail.value`. This
+        // converges the two prior code paths (direct <select>.value=
+        // mutation in the legacy native-select wiring vs. CustomEvent
+        // dispatch for the new picker) on a single event seam so the
+        // chips no longer care which picker variant the page is
+        // currently rendering.
+        if (typeof document !== "undefined" && typeof CustomEvent !== "undefined") {
+          document.dispatchEvent(
+            new CustomEvent("regex-field-path-set", {
+              detail: { value: f.path },
+            }),
+          )
           return
         }
-        // D82c fix: the select lookup failed (mismatched id, the form
-        // re-rendered before the click landed, or the variant was
-        // wired without `targetSelectId`). Fall back to splicing the
-        // raw path into the pattern textarea so the click still does
-        // something visible. Operators clicking a chip and seeing
-        // nothing happen would otherwise reasonably conclude the
-        // picker is broken. We log a one-line dev hint so the wiring
-        // bug surfaces in the console without spamming users.
+        // D80 fallback path: the chip click landed before the picker
+        // mounted (SSR-only render path or `CustomEvent` unavailable).
+        // Splice the raw path into the pattern textarea so the click
+        // still does something visible, and log a one-line dev hint.
         if (typeof console !== "undefined") {
           // eslint-disable-next-line no-console
           console.warn(
-            `[PayloadFieldChips] regex-target select not found `
-            + `(id=${id || "<unset>"}); falling back to path insertion`,
+            `[PayloadFieldChips] regex-target CustomEvent unavailable `
+            + `(targetSelectId=${targetSelectId ?? "<unset>"}); `
+            + `falling back to path insertion`,
           )
         }
         const fallback = document.getElementById(targetTextareaId)

@@ -2699,3 +2699,97 @@ describe("policies/new wizard — D82c follow-up fixes", () => {
     expect(src).toMatch(/regexFieldPath = r\.field_path/)
   })
 })
+
+describe("policies/new wizard — D80 polish (Step 3 picker + Step 4 layered + Step 1 grid)", () => {
+  const src = readFileSync(
+    path.join(__dirname, "page.tsx"),
+    "utf-8",
+  )
+
+  it("D80: Step 3 regex picker renders <FieldPathSelect /> instead of native <select>", () => {
+    // Visual parity with the rest of the wizard (ToolCombobox /
+    // custom popovers everywhere else) means the OS-styled native
+    // popup is retired. The hidden input contract still emits
+    // name="regexFieldPath" so saveWizard reads FormData unchanged.
+    expect(src).toMatch(/from\s+"\.\/_components\/FieldPathSelect"/)
+    expect(src).toMatch(/<FieldPathSelect/)
+    // The native <select id="w-regex-field-path" name="regexFieldPath">
+    // block is gone. Grep the field-name pair on a <select> element:
+    // a surviving match here means we regressed back to the OS popup.
+    expect(src).not.toMatch(
+      /<select[\s\S]{0,200}id="w-regex-field-path"[\s\S]{0,200}name="regexFieldPath"/,
+    )
+  })
+
+  it("D80: Step 4 wraps the three advanced archetypes in a layered Step4ActionAdvanced expander", () => {
+    // Operators only need block / ask / audit for the common case.
+    // The three derivative archetypes (inject_context / input_rewrite
+    // / run_command) drop behind a default-collapsed expander that
+    // mirrors the D61 Step 1 layered-disclosure pattern.
+    expect(src).toMatch(/from\s+"\.\/_components\/Step4ActionAdvanced"/)
+    expect(src).toMatch(/<Step4ActionAdvanced/)
+    // Common + Advanced action tiers are explicit:
+    expect(src).toMatch(/COMMON_ACTION_TIER/)
+    expect(src).toMatch(/ADVANCED_ACTION_TIER/)
+    // Advanced set must contain the three derivative archetypes:
+    expect(src).toMatch(/"inject_context"[\s,]+"input_rewrite"[\s,]+"run_command"/)
+  })
+
+  it("D80: Step4ActionAdvanced persists open/closed state via the documented localStorage key", () => {
+    // Mirrors the D61 magi_cp.step1_advanced_open key shape so a
+    // future operator-prefs export lifts both tiers off the same
+    // namespace.
+    const advSrc = readFileSync(
+      path.join(__dirname, "_components", "Step4ActionAdvanced.tsx"),
+      "utf-8",
+    )
+    expect(advSrc).toMatch(/"magi_cp\.step4_advanced_open"/)
+  })
+
+  it("D80: Step4ActionAdvanced default-collapses and exposes aria-expanded toggle", () => {
+    const advSrc = readFileSync(
+      path.join(__dirname, "_components", "Step4ActionAdvanced.tsx"),
+      "utf-8",
+    )
+    // Mount default is closed (SSR-stable), localStorage hydrates.
+    expect(advSrc).toMatch(/useState<boolean>\(false\)/)
+    // Toggle button carries aria-expanded for SR users.
+    expect(advSrc).toMatch(/aria-expanded=\{open\}/)
+    // Matrix gating: forceOpen pulls the section open when the
+    // operator's currently-picked action lives in the Advanced tier
+    // so back-nav from Step 5 still shows the picked card.
+    expect(advSrc).toMatch(/forceOpen/)
+  })
+
+  it("D80: chip click for variant='regex-target' dispatches a regex-field-path-set CustomEvent", () => {
+    // The picker swap unifies both code paths on a single seam: the
+    // chip dispatches a CustomEvent on document, the picker listens
+    // for it. The prior direct-DOM mutation on the native <select>
+    // is retired.
+    const chipSrc = readFileSync(
+      path.join(__dirname, "_components", "PayloadFieldChipsClient.tsx"),
+      "utf-8",
+    )
+    expect(chipSrc).toMatch(/new CustomEvent\("regex-field-path-set"/)
+    expect(chipSrc).toMatch(/document\.dispatchEvent/)
+  })
+
+  it("D80: Step 1 grid containers add auto-rows-fr + items-stretch for equal-height rows", () => {
+    // Source-grep the picker file (not the page.tsx wrapper) since
+    // the grids live there. A 1-line description card next to a
+    // 4-line Stop card used to stagger; the fix anchors the row
+    // height inside each group.
+    const pickerSrc = readFileSync(
+      path.join(__dirname, "_components", "Step1LifecyclePicker.tsx"),
+      "utf-8",
+    )
+    // Matches the Common group grid + every Advanced group grid.
+    const matches = pickerSrc.match(
+      /grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch/g,
+    ) ?? []
+    expect(matches.length).toBeGreaterThanOrEqual(2)
+    // Soft min-height floor on each card so a tall outlier description
+    // does not cascade extreme heights when only one row exists.
+    expect(pickerSrc).toMatch(/min-h-\[11rem\]/)
+  })
+})

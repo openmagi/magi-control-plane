@@ -77,16 +77,17 @@ describe("PayloadFieldChipsClient — D64 friendly label invariants", () => {
     expect(src).toMatch(/insertion = `\{\$\{f\.path\}\}`/)
   })
 
-  it("D82c: variant='regex-target' routes click to a separate <select>", () => {
+  it("D80: variant='regex-target' dispatches a regex-field-path-set CustomEvent on document", () => {
     // Regex pattern textarea is left untouched (curly braces would
-    // break the pattern); the chip sets the value of a separate
-    // <select id={targetSelectId}> instead.
+    // break the pattern). After D80 the chip dispatches a
+    // CustomEvent on `document`; the FieldPathSelect picker listens
+    // for it and applies `detail.value` without opening its popover.
+    // This unifies the two prior code paths (native-<select> direct
+    // DOM mutation vs. the custom popup) on a single event seam.
     expect(src).toMatch(/variant === "regex-target"/)
-    expect(src).toMatch(/targetSelectId/)
-    expect(src).toMatch(/HTMLSelectElement/)
-    // Dispatches a change event so React form bindings pick up the
-    // new value without a manual rebind.
-    expect(src).toMatch(/new Event\("change", \{ bubbles: true \}\)/)
+    expect(src).toMatch(/regex-field-path-set/)
+    expect(src).toMatch(/document\.dispatchEvent/)
+    expect(src).toMatch(/new CustomEvent\("regex-field-path-set"/)
   })
 
   it("exposes data-field-path on the chip for tests / CSS hooks", () => {
@@ -124,12 +125,12 @@ describe("PayloadFieldChipsClient — D64 friendly label invariants", () => {
     expect(src).toMatch(/\.test\(f\.path\)/)
   })
 
-  it("D82c fix: regex-target select-missing falls back to path insertion", () => {
-    // When the targetSelectId doesn't resolve to an HTMLSelectElement
-    // (mismatched id, mid-rerender, etc.), the chip still inserts
-    // the raw path into the pattern textarea so the click does
-    // something visible. Operators clicking and seeing nothing
-    // happen would otherwise reasonably conclude the picker is broken.
+  it("D80: regex-target CustomEvent-unavailable falls back to path insertion", () => {
+    // When the document / CustomEvent globals are unavailable (SSR
+    // path, very old browser), the chip still inserts the raw path
+    // into the pattern textarea so the click does something visible.
+    // Operators clicking and seeing nothing happen would otherwise
+    // reasonably conclude the picker is broken.
     expect(src).toMatch(/console\.warn/)
     expect(src).toMatch(/falling back to path insertion/)
   })

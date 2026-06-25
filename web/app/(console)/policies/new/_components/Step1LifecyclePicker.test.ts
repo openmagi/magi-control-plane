@@ -328,6 +328,33 @@ describe("Step1LifecyclePicker | source invariants", () => {
     expect(src).toContain("step1-advanced-section-header")
     expect(src).toContain("newPolicy.wizard.step1.advancedSection")
   })
+
+  it("D80: every group grid uses auto-rows-fr + items-stretch for equal-height rows", () => {
+    // Card descriptions vary in length (Stop is multi-paragraph long,
+    // others are short). Without auto-rows-fr the row stretches only
+    // for the tall card and the visual baseline staggers across rows
+    // inside the group. Pin the class fragment so a future refactor
+    // that drops `auto-rows-fr` regresses the alignment loudly.
+    const gridFragmentRx = /grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch/g
+    const matches = src.match(gridFragmentRx) ?? []
+    // Common group + Advanced groups all share the same fragment;
+    // count both occurrences (at least 2).
+    expect(matches.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("D80: LifecycleRow card has a min-height floor so a tall outlier does not cascade", () => {
+    // Alternative anchor to `auto-rows-fr`: a per-card min-height keeps
+    // a tall description (Stop) from collapsing siblings to nothing
+    // when the operator's viewport reflows below the sm breakpoint.
+    expect(src).toMatch(/min-h-\[11rem\]/)
+  })
+
+  it("D80: LifecycleRow description block uses mt-auto so card bottoms align", () => {
+    // Without `mt-auto` on the trailing description, the title block
+    // pins top but the description floats up and the bottoms of two
+    // cards in the same row don't line up.
+    expect(src).toMatch(/mt-auto block text-xs/)
+  })
 })
 
 describe("Step1LifecyclePicker | helpers", () => {

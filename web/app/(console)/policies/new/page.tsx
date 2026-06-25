@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import PayloadFieldChipsClient, {
   type Variant as ChipVariant,
 } from "./_components/PayloadFieldChipsClient"
+import { FieldPathSelect } from "./_components/FieldPathSelect"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import Step1LifecyclePicker from "./_components/Step1LifecyclePicker"
 import ToolCombobox from "./_components/ToolCombobox"
@@ -16,6 +17,7 @@ import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
+import Step4ActionAdvanced from "./_components/Step4ActionAdvanced"
 import { previousLiveStep, buildBackHrefFromSearchParams } from "./wizard-nav"
 import { codeForError, resolveFlash, type Step3ErrCode, type Step4ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
@@ -4501,35 +4503,45 @@ function Step3Condition({
                         pick suggestion strip under it. */}
                     <div className="mb-2">
                       <FieldLabel>{ko ? "검사할 필드" : "Field to match"}</FieldLabel>
-                      <select
+                      {/* D80: native <select> retired so the OS-styled
+                          popup doesn't break visual parity with the rest
+                          of the wizard. FieldPathSelect is a custom
+                          listbox button + popover that emits the same
+                          hidden input contract (name="regexFieldPath")
+                          so saveWizard reads FormData unchanged. */}
+                      <FieldPathSelect
                         id="w-regex-field-path"
                         name="regexFieldPath"
-                        defaultValue={
+                        initialValue={
                           state.regexFieldPath
                           ?? defaultRegexFieldFor(state)
                           ?? payloadFields[0]?.path
                           ?? ""
                         }
-                        data-testid="step3-regex-field-path"
-                        className={inputCls()}
-                      >
-                        {payloadFields.map((pf) => (
-                          <option key={pf.path} value={pf.path}>
-                            {pf.path}
-                          </option>
-                        ))}
-                        {/* Fallback: if the in-state field_path is not in
-                            the static list (legacy migration / MCP slug),
-                            still render it as an option so the value
-                            round-trips. */}
-                        {state.regexFieldPath
-                          && !payloadFields.some((pf) => pf.path === state.regexFieldPath)
-                          && (
-                            <option value={state.regexFieldPath}>
-                              {state.regexFieldPath}
-                            </option>
-                          )}
-                      </select>
+                        testId="step3-regex-field-path"
+                        ariaLabel={ko ? "검사할 필드" : "Field to match"}
+                        options={(() => {
+                          const opts: { path: string; displayLabel?: string; type?: string }[] =
+                            payloadFields.map((pf) => ({
+                              path: pf.path,
+                              displayLabel: ko
+                                ? pf.display_label_ko ?? pf.display_label_en
+                                : pf.display_label_en ?? pf.display_label_ko,
+                              type: pf.type,
+                            }))
+                          // Fallback: if the in-state field_path is not
+                          // in the static list (legacy migration / MCP
+                          // slug), still render it so the value
+                          // round-trips.
+                          if (
+                            state.regexFieldPath
+                            && !payloadFields.some((pf) => pf.path === state.regexFieldPath)
+                          ) {
+                            opts.push({ path: state.regexFieldPath })
+                          }
+                          return opts
+                        })()}
+                      />
                     </div>
                     <PayloadFieldChips
                       fields={payloadFields}
@@ -5068,6 +5080,41 @@ function Step4Action({
     step4ErrCode === "missing_rewriter_scheme"
       ? (schemeToEmpty ? " " + errRingCls : "")
       : errRingFor("input_rewrite", "scheme_force")
+  // D80: layered disclosure for Step 4.
+  //
+  // The Step 4 action picker used to render all 6 archetype cards in a
+  // single vertical list. Operators only need block / ask / audit for
+  // the common case; the three derivative archetypes (inject_context /
+  // input_rewrite / run_command) carry a Step 4b sub-form and are
+  // discoverable but not in the operator's face by default.
+  //
+  // Partition `allowed` into the two tiers while preserving the order
+  // the existing matrix surfaces. `strip` is treated as common (it
+  // renders the legacy "coming soon" disabled card and is rare; we
+  // keep it on the Common rail so its "wait, ships later" affordance
+  // remains visible without an extra click).
+  const COMMON_ACTION_TIER: ReadonlySet<Action> = new Set<Action>([
+    "block", "ask", "audit", "strip",
+  ])
+  const ADVANCED_ACTION_TIER: ReadonlySet<Action> = new Set<Action>([
+    "inject_context", "input_rewrite", "run_command",
+  ])
+  const commonActions: Action[] = allowed.filter((a) => COMMON_ACTION_TIER.has(a))
+  const advancedActions: Action[] = allowed.filter((a) => ADVANCED_ACTION_TIER.has(a))
+  // When the operator's currently-picked action lives in the Advanced
+  // tier (Edit mode or back-nav from Step 5), force the expander open
+  // so the selected card is visible without the operator having to
+  // hunt for the disclosure.
+  const advancedForceOpen: boolean = defaultPick != null
+    && ADVANCED_ACTION_TIER.has(defaultPick)
+  // D80 i18n: prefer translated copy via t() so a future locale add
+  // (or copy edit) lifts off the same dict the rest of Step 4 uses.
+  const advancedHeaderLabel: string = t(
+    "newPolicy.wizard.step4.advancedHeader",
+    { count: advancedActions.length },
+  )
+  const advancedExpandLabel: string = t("newPolicy.wizard.step4.expandAdvanced")
+  const advancedCollapseLabel: string = t("newPolicy.wizard.step4.collapseAdvanced")
   return (
     <StepShell
       heading={t("newPolicy.wizard.step4.heading")}
@@ -5107,7 +5154,12 @@ function Step4Action({
           // the textarea still defaults to state.injectTemplate so
           // the value survives the round-trip via the visible input.
         }} />
-        {allowed.map((a) => {
+        {/* D80: Common tier renders block / ask / audit (+ legacy
+            strip if it surfaces) in the operator's first read. The
+            derivative archetypes (inject_context / input_rewrite /
+            run_command) drop behind an Advanced expander further down
+            with the same layered-disclosure pattern Step 1 uses. */}
+        {commonActions.map((a) => {
           const stripDisabled = a === "strip" && !STRIP_AVAILABLE
           if (stripDisabled) {
             return (
@@ -5693,6 +5745,488 @@ function Step4Action({
             />
           )
         })}
+        {/* D80: Advanced tier (inject_context / input_rewrite /
+            run_command). Same layered-disclosure pattern Step 1 uses
+            (D61): default-collapsed, per-user persisted via
+            localStorage key `magi_cp.step4_advanced_open`. Force-open
+            when the operator's pick already lives in this tier so the
+            selected card is visible on a back-nav round-trip. */}
+        {advancedActions.length > 0 && (
+          <Step4ActionAdvanced
+            headerLabel={advancedHeaderLabel}
+            advancedCount={advancedActions.length}
+            expandLabel={advancedExpandLabel}
+            collapseLabel={advancedCollapseLabel}
+            forceOpen={advancedForceOpen}
+          >
+            {advancedActions.map((a) => {
+              const stripDisabled = a === "strip" && !STRIP_AVAILABLE
+              if (stripDisabled) {
+                return (
+                  <label key={a} className="block cursor-not-allowed opacity-60">
+                    <input type="radio" name="action" value={a} disabled className="peer sr-only" />
+                    <span data-action-tone="strip" className="block rounded-xl border border-purple-300 bg-purple-50/40 p-4">
+                      <span className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                        <Badge variant="info">coming soon</Badge>
+                      </span>
+                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                    </span>
+                  </label>
+                )
+              }
+              if (a === "inject_context"
+                  && !lifecycleAllowsInjectContext(lifecycle)) {
+                const narrowedExcluded =
+                  asContextInjectionExcludedLifecycle(lifecycle)
+                if (narrowedExcluded !== null) {
+                  const tip = injectContextDisabledCopy(narrowedExcluded, locale)
+                  const tipId =
+                    `step4-inject-disabled-${narrowedExcluded}`
+                  return (
+                    <label
+                      key={a}
+                      className="block cursor-not-allowed opacity-60"
+                      title={tip}
+                      data-testid="step4-inject-context-disabled"
+                      data-disabled-lifecycle={lifecycle}
+                    >
+                      <input
+                        type="radio"
+                        name="action"
+                        value={a}
+                        disabled
+                        aria-disabled="true"
+                        aria-describedby={tipId}
+                        className="peer sr-only"
+                      />
+                      <span
+                        data-action-tone="inject_context"
+                        className={
+                          "block rounded-xl border bg-white p-4 transition-colors " +
+                          "border-black/[0.08]"
+                        }
+                      >
+                        <span className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                          <Badge variant="muted">
+                            {ko ? "이 hook 에서는 비활성" : "not available"}
+                          </Badge>
+                        </span>
+                        <span
+                          id={tipId}
+                          role="note"
+                          className="block text-xs text-[var(--color-text-secondary)] leading-relaxed"
+                        >
+                          {tip}
+                        </span>
+                      </span>
+                    </label>
+                  )
+                }
+              }
+              if (a === "inject_context") {
+                return (
+                  <label key={a} className="block cursor-pointer">
+                    <input
+                      type="radio"
+                      name="action"
+                      value={a}
+                      defaultChecked={defaultPick === a}
+                      required
+                      className="peer sr-only"
+                    />
+                    <span
+                      data-action-tone="inject_context"
+                      className={
+                        "block rounded-xl border bg-white p-4 transition-colors " +
+                        actionCardClasses("inject_context")
+                      }
+                    >
+                      <span className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                      </span>
+                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                    </span>
+                    <div
+                      data-testid="step4b-inject-editor"
+                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                    >
+                      <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+                        {ko
+                          ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
+                          : "When this hook fires, this text becomes part of the model's context. The model sees it as additional system input."}
+                      </p>
+                      <div>
+                        <FieldLabel>
+                          {ko ? "주입할 본문" : "Text to inject"}
+                        </FieldLabel>
+                        <textarea
+                          name="injectTemplate"
+                          required={state.action === "inject_context"}
+                          maxLength={16000}
+                          rows={6}
+                          defaultValue={state.injectTemplate ?? ""}
+                          placeholder={ko
+                            ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
+                            : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
+                          spellCheck={false}
+                          className={inputCls() + " font-mono" + errRingFor("inject_context")}
+                        />
+                        {step4ErrAction === "inject_context" && step4ErrHelper && (
+                          <p
+                            data-testid="step4-inject-template-helper"
+                            data-step4-err={wizardErr}
+                            role="alert"
+                            className="mt-1 text-xs text-red-700"
+                          >
+                            {step4ErrHelper}
+                          </p>
+                        )}
+                        <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                          {ko
+                            ? "최대 16000자. 더 긴 본문은 저장 단계에서 거부됩니다."
+                            : "Max 16000 chars. Longer templates are refused at save."}
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <FieldLabel>
+                            {ko ? "라벨 (한국어, 선택)" : "Label (Korean, optional)"}
+                          </FieldLabel>
+                          <input
+                            name="injectLabelKo"
+                            maxLength={128}
+                            defaultValue={state.injectLabelKo ?? ""}
+                            placeholder={ko ? "팀 코딩 표준 주입" : "팀 코딩 표준 주입"}
+                            className={inputCls()}
+                          />
+                        </div>
+                        <div>
+                          <FieldLabel>
+                            {ko ? "라벨 (영어, 선택)" : "Label (English, optional)"}
+                          </FieldLabel>
+                          <input
+                            name="injectLabelEn"
+                            maxLength={128}
+                            defaultValue={state.injectLabelEn ?? ""}
+                            placeholder="Inject team coding standards"
+                            className={inputCls()}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </label>
+                )
+              }
+              if (a === "input_rewrite") {
+                const kindPick = state.rewriterKind ?? "prefix_strip"
+                const matcherForHint = (state.toolScope ?? "").trim()
+                const fieldHintEn = matcherForHint === "WebFetch" ? "url"
+                  : matcherForHint === "Read" || matcherForHint === "Write" || matcherForHint === "Edit"
+                    ? "file_path"
+                    : "command"
+                return (
+                  <label key={a} className="block cursor-pointer">
+                    <input
+                      type="radio"
+                      name="action"
+                      value={a}
+                      defaultChecked={defaultPick === a}
+                      required
+                      className="peer sr-only"
+                    />
+                    <span
+                      data-action-tone="input_rewrite"
+                      className={
+                        "block rounded-xl border bg-white p-4 transition-colors " +
+                        actionCardClasses("input_rewrite")
+                      }
+                    >
+                      <span className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                      </span>
+                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                    </span>
+                    <div
+                      data-testid="step4b-rewriter-editor"
+                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                    >
+                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                        <div
+                          data-testid="step4b-rewriter-err-banner"
+                          data-step4-err={wizardErr}
+                          role="alert"
+                          className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+                        >
+                          {step4ErrHelper}
+                        </div>
+                      )}
+                      <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+                        {ko
+                          ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
+                          : "Right before the tool runs, mutate one field of its input. The tool still executes; no human in the loop."}
+                      </p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <FieldLabel>
+                            {ko ? "재작성 종류" : "Rewriter kind"}
+                          </FieldLabel>
+                          <select
+                            name="rewriterKind"
+                            defaultValue={kindPick}
+                            className={inputCls()}
+                          >
+                            <option value="prefix_strip">
+                              {ko ? "접두사 제거 (prefix strip)" : "Strip a prefix"}
+                            </option>
+                            <option value="scheme_force">
+                              {ko ? "URL 스킴 강제 (force scheme)" : "Force URL scheme"}
+                            </option>
+                            <option value="regex_substitute">
+                              {ko ? "정규식 치환 (regex substitute)" : "Regex substitute"}
+                            </option>
+                          </select>
+                        </div>
+                        <div>
+                          <FieldLabel>
+                            {ko ? "도구 입력 필드명" : "Tool input field name"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterField"
+                            required
+                            maxLength={64}
+                            pattern="[A-Za-z_][A-Za-z0-9_]{0,63}"
+                            defaultValue={state.rewriterField ?? fieldHintEn}
+                            placeholder={fieldHintEn}
+                            spellCheck={false}
+                            className={inputCls() + " font-mono"}
+                          />
+                          <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                            {ko
+                              ? "예: Bash → command, WebFetch → url, Read/Write/Edit → file_path."
+                              : "Bash → command, WebFetch → url, Read/Write/Edit → file_path."}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="space-y-3" data-rewriter-kind="prefix_strip">
+                        <div>
+                          <FieldLabel>
+                            {ko ? "제거할 접두사" : "Prefix to strip"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterPrefix"
+                            maxLength={2000}
+                            defaultValue={state.rewriterPrefix ?? ""}
+                            placeholder={ko ? "예: sudo " : "e.g. sudo "}
+                            spellCheck={false}
+                            className={inputCls() + " font-mono" + errRingFor("input_rewrite", "prefix_strip")}
+                          />
+                          {step4ErrCode === "missing_rewriter_prefix" && step4ErrHelper && (
+                            <p
+                              data-testid="step4-rewriter-prefix-helper"
+                              className="mt-1 text-xs text-red-700"
+                            >
+                              {step4ErrHelper}
+                            </p>
+                          )}
+                        </div>
+                        <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
+                          <input
+                            type="checkbox"
+                            name="rewriterStripRepeat"
+                            value="true"
+                            defaultChecked={state.rewriterStripRepeat === "true"}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            {ko
+                              ? "접두사가 연속해서 여러 번 붙어 있어도 모두 제거 (예: `sudo sudo ls` → `ls`)."
+                              : "Peel every consecutive occurrence (e.g. `sudo sudo ls` → `ls`)."}
+                          </span>
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-rewriter-kind="scheme_force">
+                        <div>
+                          <FieldLabel>
+                            {ko ? "기존 스킴" : "From scheme"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterFrom"
+                            maxLength={2000}
+                            defaultValue={state.rewriterFrom ?? "http://"}
+                            placeholder="http://"
+                            spellCheck={false}
+                            className={inputCls() + " font-mono" + schemeFromRingCls}
+                          />
+                          {schemeFromEmpty && step4ErrHelper && (
+                            <p
+                              data-testid="step4-rewriter-scheme-from-helper"
+                              className="mt-1 text-xs text-red-700"
+                            >
+                              {step4ErrHelper}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <FieldLabel>
+                            {ko ? "강제 스킴" : "To scheme"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterTo"
+                            maxLength={2000}
+                            defaultValue={state.rewriterTo ?? "https://"}
+                            placeholder="https://"
+                            spellCheck={false}
+                            className={inputCls() + " font-mono" + schemeToRingCls}
+                          />
+                          {schemeToEmpty && step4ErrHelper && (
+                            <p
+                              data-testid="step4-rewriter-scheme-helper"
+                              className="mt-1 text-xs text-red-700"
+                            >
+                              {step4ErrHelper}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-3" data-rewriter-kind="regex_substitute">
+                        <div>
+                          <FieldLabel>
+                            {ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterPattern"
+                            maxLength={2000}
+                            defaultValue={state.rewriterPattern ?? ""}
+                            placeholder="^\\s*sudo\\s+"
+                            spellCheck={false}
+                            className={inputCls() + " font-mono" + errRingFor("input_rewrite", "regex_substitute")}
+                          />
+                          {step4ErrCode === "missing_rewriter_pattern" && step4ErrHelper && (
+                            <p
+                              data-testid="step4-rewriter-pattern-helper"
+                              className="mt-1 text-xs text-red-700"
+                            >
+                              {step4ErrHelper}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <FieldLabel>
+                            {ko ? "치환 본문 (backref: \\1 / \\g<name>)" : "Replacement (backrefs: \\1 / \\g<name>)"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterReplacement"
+                            maxLength={2000}
+                            defaultValue={state.rewriterReplacement ?? ""}
+                            placeholder=""
+                            spellCheck={false}
+                            className={inputCls() + " font-mono"}
+                          />
+                        </div>
+                        <div>
+                          <FieldLabel>
+                            {ko ? "최대 치환 횟수 (0 = 전부)" : "Max substitutions (0 = all)"}
+                          </FieldLabel>
+                          <input
+                            name="rewriterCount"
+                            type="number"
+                            min={0}
+                            max={1000}
+                            defaultValue={state.rewriterCount ?? "0"}
+                            className={inputCls() + " font-mono"}
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">
+                        {ko
+                          ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
+                          : "The rewriter DSL is bounded — no code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
+                      </p>
+                    </div>
+                  </label>
+                )
+              }
+              if (a === "run_command") {
+                return (
+                  <label key={a} className="block cursor-pointer">
+                    <input
+                      type="radio"
+                      name="action"
+                      value={a}
+                      defaultChecked={defaultPick === a}
+                      required
+                      className="peer sr-only"
+                    />
+                    <span
+                      data-action-tone="run_command"
+                      className={
+                        "block rounded-xl border bg-white p-4 transition-colors " +
+                        actionCardClasses("run_command")
+                      }
+                    >
+                      <span className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                      </span>
+                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+                    </span>
+                    <div
+                      data-testid="step4b-run-command-editor"
+                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+                    >
+                      {step4ErrAction === "run_command" && step4ErrHelper && (
+                        <div
+                          data-testid="step4b-run-command-err-banner"
+                          data-step4-err={wizardErr}
+                          role="alert"
+                          className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+                        >
+                          <p
+                            data-testid="step4-run-command-helper"
+                            className="m-0"
+                          >
+                            {step4ErrHelper}
+                          </p>
+                        </div>
+                      )}
+                      <Step4bRunCommandFields
+                        locale={locale}
+                        defaultMode={state.runCommandMode}
+                        defaultRuntime={state.runCommandRuntime}
+                        defaultBody={state.runCommandBody}
+                        defaultScriptId={state.runCommandScriptId}
+                        defaultScriptName={state.runCommandScriptName}
+                        defaultArgs={state.runCommandArgs}
+                        defaultTimeoutMs={
+                          state.runCommandTimeoutMs
+                            ? Number.parseInt(state.runCommandTimeoutMs, 10) || 5000
+                            : 5000
+                        }
+                        defaultFailClosed={state.runCommandFailClosed === "true"}
+                        inputClassName={inputCls()}
+                        fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
+                        hasError={step4ErrCode === "missing_command_or_script"}
+                        errorRingClassName={errRingCls}
+                      />
+                    </div>
+                  </label>
+                )
+              }
+              return (
+                <RadioCard
+                  key={a}
+                  name="action"
+                  value={a}
+                  defaultChecked={defaultPick === a}
+                  label={labels[a].label}
+                  sub={labels[a].sub}
+                  tone={a}
+                />
+              )
+            })}
+          </Step4ActionAdvanced>
+        )}
         <NextButton label={t("newPolicy.wizard.next")} />
       </form>
     </StepShell>
