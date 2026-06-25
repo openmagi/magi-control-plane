@@ -26,16 +26,21 @@ describe("Sidebar IA invariants", () => {
     ])
   })
 
-  it("contains exactly 8 NavItem entries (1+2+3+2)", () => {
+  it("contains exactly 9 NavItem entries (1+2+4+2)", () => {
     // D63: setup group adds /scripts alongside /setup so run_command
     // policies have a management surface.
+    // run-share: audit group adds /shared (manage + revoke share links).
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(8)
+    expect(items).toHaveLength(9)
   })
 
   it("audit group surfaces the P10 /endpoints attestation page", () => {
     expect(src).toMatch(/href="\/endpoints"/)
     expect(src).toMatch(/icon="endpoints"/)
+  })
+
+  it("audit group surfaces the /shared run-share management page", () => {
+    expect(src).toMatch(/href="\/shared"/)
   })
 
   it("authoring group points only at /rules (New policy lives in-page)", () => {

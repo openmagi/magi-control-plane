@@ -21,6 +21,7 @@ const NAV_HREFS = [
   "/overview",
   "/ledger",
   "/endpoints",
+  "/shared",
   "/setup",
 ] as const
 
@@ -76,6 +77,7 @@ export async function Sidebar() {
               label={t("nav.endpoints")}
               icon="endpoints"
             />
+            <NavItem href="/shared" label={t("nav.shared")} icon="ledger" />
           </NavGroup>
 
           <NavGroup label={t("nav.group.setup")}>

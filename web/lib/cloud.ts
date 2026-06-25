@@ -454,6 +454,16 @@ export type SharedRunView = {
 
 export type SharedRun = { view: SharedRunView; createdAt: number }
 
+export type SharedRunItem = {
+  tokenHash: string
+  title?: string | null
+  status?: string | null
+  createdAt: number
+  expiresAt?: number | null
+  revokedAt?: number | null
+  active: boolean
+}
+
 export const cloud = {
   /** Fetch a public shared run by token. No auth (public endpoint). Returns
    *  null when the token is unknown / revoked / expired (the cloud 404s). */
@@ -469,6 +479,19 @@ export const cloud = {
     }
     return r.json() as Promise<SharedRun>
   },
+
+  /** List the tenant's share links (manage UI). Authed; the raw token is never
+   *  returned (only its hash), so the UI shows metadata + revoke. */
+  listSharedRuns: (): Promise<SharedRunItem[]> =>
+    _fetch<{ items: SharedRunItem[] }>("/v1/runs/share", { method: "GET", keyType: "api" })
+      .then(d => d.items),
+
+  /** Revoke a share link by its token hash (tenant-scoped server-side). */
+  revokeSharedRun: (tokenHash: string): Promise<void> =>
+    _fetch<unknown>(
+      `/v1/runs/share/${encodeURIComponent(tokenHash)}/revoke`,
+      { method: "POST", keyType: "api" },
+    ).then(() => undefined),
 
   listHitl: (): Promise<HitlItem[]> =>
     _fetch<HitlListResp>("/hitl", { method: "GET", keyType: "hitl" })
