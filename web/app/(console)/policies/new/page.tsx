@@ -3003,9 +3003,20 @@ function WizardHeader({
   // enabled rendering check, but the Back href is derived from
   // `searchParams` so every URL field — including run_command* which
   // `buildWizardHref` does not emit — rides through the Back nav.
+  // D82c: pass the state-resolved action/lifecycle into the helper as
+  // navOverrides so the skip math (and condition-side scrub) runs on
+  // the same fields the visual `backStep` saw. Otherwise a draft-
+  // prefill URL (?draft=<IR>&step=4) with state.action=inject_context
+  // would render the Back link as "Step 2" (from `state`) while the
+  // emitted URL pointed at "Step 3" (from `searchParams`, where
+  // action is undefined), producing an infinite Back-Step-3-auto-skip-
+  // to-4 loop on the next render.
   const backStep = previousLiveStep(state, step)
   const backHref = backStep != null
-    ? buildBackHrefFromSearchParams({ ...searchParams, step: String(step) })
+    ? buildBackHrefFromSearchParams(
+        { ...searchParams, step: String(step) },
+        { action: state.action, lifecycle: state.lifecycle },
+      )
     : null
   return (
     <div className="flex items-center justify-between mb-6">

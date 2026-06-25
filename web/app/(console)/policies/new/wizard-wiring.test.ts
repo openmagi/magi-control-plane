@@ -2380,6 +2380,173 @@ describe("policies/new wizard — D82b backHref URL contract", () => {
       expect(params.get(k)).toBe(sp[k])
     }
   })
+
+  /**
+   * D82c P2 fix: empty-string `mode=` would survive `??` and the Back
+   * href re-emitted `mode=`, which resolved to PickerLanding on the
+   * next render (rawMode === "" is none of "guided"/"advanced"/
+   * "conversational"). Pin that empty-string is treated as missing.
+   */
+  it("Step 4 with mode='' coerces to mode=guided on the Back href", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "",
+      step: "4",
+      lifecycle: "before_tool_use",
+      action: "block",
+    })
+    expect(href).not.toBeNull()
+    const { params } = parseHref(href!)
+    expect(params.get("mode")).toBe("guided")
+    expect(params.get("step")).toBe("3")
+  })
+
+  /**
+   * D82c P2 fix: the wizard scrubs condition-side state when the
+   * action is inject_context / input_rewrite / run_command (see
+   * page.tsx GuidedWizard scrub blocks). The Back href previously
+   * copied conditionKind/pattern/llmCriterion/shaclTtl/fetchDomain/
+   * allowlist/evidence_refs verbatim — a shared Back URL leaked
+   * stale authoring state and a Back→Edit round-trip produced two
+   * URLs for the same perceived state. Pin the scrub.
+   */
+  it("Step 4 + action=inject_context drops condition-side fields from Back href", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "regex",
+      pattern: "rm -rf",
+      llmCriterion: "ignored",
+      shaclTtl: "ignored",
+      fetchDomain: "example.com",
+      allowlist: "a,b",
+      evidence_refs: "ev_a",
+      action: "inject_context",
+      injectTemplate: "hello",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("step")).toBe("2")
+    // Scrubbed: every condition-side field is dropped.
+    for (const k of [
+      "conditionKind", "pattern", "llmCriterion", "shaclTtl",
+      "fetchDomain", "allowlist", "evidence_refs",
+    ]) {
+      expect(params.get(k)).toBeNull()
+    }
+    // Action-side fields ride through.
+    expect(params.get("action")).toBe("inject_context")
+    expect(params.get("injectTemplate")).toBe("hello")
+    expect(params.get("lifecycle")).toBe("before_tool_use")
+    expect(params.get("toolScope")).toBe("Bash")
+  })
+
+  it("Step 4 + action=input_rewrite drops condition-side fields from Back href", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "regex",
+      pattern: "rm -rf",
+      action: "input_rewrite",
+      rewriterKind: "prefix",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("pattern")).toBeNull()
+    expect(params.get("conditionKind")).toBeNull()
+    expect(params.get("rewriterKind")).toBe("prefix")
+  })
+
+  it("Step 4 + action=run_command drops condition-side fields from Back href", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "regex",
+      pattern: "rm -rf",
+      action: "run_command",
+      runCommandMode: "inline",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("pattern")).toBeNull()
+    expect(params.get("conditionKind")).toBeNull()
+    expect(params.get("runCommandMode")).toBe("inline")
+  })
+
+  /**
+   * D82c P1 fix: when the URL is a draft-prefill (?draft=<IR>&step=4)
+   * the raw `searchParams.action` / `searchParams.lifecycle` are
+   * undefined, but GuidedWizard resolves them from the draft IR.
+   * Without the override, skip math diverges from the visual
+   * `backStep`: state-side says Step 2 (inject_context+tool lifecycle
+   * skip Step 3), URL-side says Step 3. Result is an infinite loop
+   * (Step 4 → Back to step=3 → auto-skip back to 4).
+   *
+   * Pin: navOverrides forces the skip math to use the resolved
+   * action/lifecycle.
+   */
+  it("navOverrides force skip math to match state-derived action/lifecycle (draft-prefill case)", () => {
+    // No URL action/lifecycle — operator landed via ?draft=<IR>.
+    const sp: Record<string, string | undefined> = {
+      mode: "guided",
+      step: "4",
+      draft: "stub-encoded-ir",
+    }
+    // Without overrides: searchParams.action=undefined => no skip,
+    // helper returns step=3.
+    const noOverride = buildBackHrefFromSearchParams(sp)
+    expect(noOverride).not.toBeNull()
+    expect(parseHref(noOverride!).params.get("step")).toBe("3")
+    // With overrides: tool-lifecycle inject_context skips Step 3
+    // backward → step=2 (matches state-side previousLiveStep).
+    const withOverride = buildBackHrefFromSearchParams(sp, {
+      action: "inject_context",
+      lifecycle: "before_tool_use",
+    })
+    const { params } = parseHref(withOverride!)
+    expect(params.get("step")).toBe("2")
+    // draft= rides through so the prefill survives the Back nav.
+    expect(params.get("draft")).toBe("stub-encoded-ir")
+  })
+
+  it("navOverrides honour non-tool lifecycle + run_command -> step=1", () => {
+    const href = buildBackHrefFromSearchParams(
+      { mode: "guided", step: "4", draft: "x" },
+      { action: "run_command", lifecycle: "user_prompt" },
+    )
+    expect(parseHref(href!).params.get("step")).toBe("1")
+  })
+
+  it("navOverrides honour excluded lifecycle + inject_context -> step=3", () => {
+    // pre_final is in CONTEXT_INJECTION_EXCLUDED_LIFECYCLES, so even
+    // with action=inject_context the wizard does not skip Step 3.
+    const href = buildBackHrefFromSearchParams(
+      { mode: "guided", step: "4", draft: "x" },
+      { action: "inject_context", lifecycle: "pre_final" },
+    )
+    expect(parseHref(href!).params.get("step")).toBe("3")
+  })
+
+  it("navOverrides also drive the condition-side scrub for draft-prefill URLs", () => {
+    // Even with no `action` query param, the override-driven scrub
+    // must drop condition fields when state.action is inject_context.
+    const href = buildBackHrefFromSearchParams(
+      {
+        mode: "guided",
+        step: "4",
+        draft: "x",
+        conditionKind: "regex",
+        pattern: "rm -rf",
+      },
+      { action: "inject_context", lifecycle: "before_tool_use" },
+    )
+    const { params } = parseHref(href!)
+    expect(params.get("conditionKind")).toBeNull()
+    expect(params.get("pattern")).toBeNull()
+    expect(params.get("draft")).toBe("x")
+  })
 })
 
 /**
@@ -2404,12 +2571,17 @@ describe("policies/new wizard — D82b Step 3 shortcut removal", () => {
     // intentionally still appears inside a removal-note comment so a
     // future reader sees WHY the card was dropped; we therefore pin
     // the JSX surface specifically, not the source-text presence.
+    //
+    // D82c P2: dropped the prior `"지름길"` / `"shortcut"` badge-text
+    // negative-assertions. They were overly broad guards on common
+    // words inside a 290 KB file with many unrelated concerns — any
+    // future PR that legitimately used "shortcut" or "지름길" anywhere
+    // in page.tsx (a keyboard shortcut tooltip, an aria-label, an i18n
+    // key fallback) would trip this lens-only test even though the
+    // inject_context shortcut card never re-appeared. The testid pin
+    // here plus the `action: "inject_context", conditionKind: "none"`
+    // synthesis pin in the next `it` block are jointly sufficient.
     expect(src).not.toMatch(/step3-inject-context-shortcut/)
-    // The shortcut card always rendered the Badge labelled "지름길"
-    // ("shortcut") next to the headline — its removal pins the card
-    // is gone from any rendered surface, not just one locale.
-    expect(src).not.toContain('"지름길"')
-    expect(src).not.toContain('"shortcut"')
   })
 
   it("Step 3 no longer synthesizes action=inject_context from the shortcut link", () => {
