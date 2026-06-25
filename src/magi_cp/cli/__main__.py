@@ -9,6 +9,7 @@ Subcommands:
   cloud          run the FastAPI cloud server (dev shortcut)
   mcp            run the stdio MCP server
   keys           rotate / list / revoke Ed25519 signing keys (W7b)
+  share          turn a Claude Code run into a public share link
 """
 from __future__ import annotations
 import sys
@@ -53,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "keys":
         from .keys import cli as keys_cli
         return keys_cli(rest)
+    if cmd == "share":
+        from .share import cli as share_cli
+        return share_cli(rest)
     print(f"unknown subcommand: {cmd!r}", file=sys.stderr)
     return _help(explicit=False)
 
