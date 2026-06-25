@@ -354,7 +354,49 @@ type HitlListResp = { items: HitlItem[] }
 type DecideResp = { verdict?: string; token?: string | null; hitl_id?: number }
 type PolicyListResp = { items: PolicyListItem[] }
 
+// ── run-share (public, keyless) ──────────────────────────────────────
+export type SharedRunView = {
+  schemaVersion?: string
+  sessionId?: string | null
+  summary?: {
+    goal?: string | null
+    result?: string | null
+    status?: string
+    model?: string | { label?: string | null; provider?: string | null } | null
+    usage?: { inputTokens?: number | null; outputTokens?: number | null }
+    title?: string
+  } | null
+  results?: { prNumber?: number | null; prUrl?: string }[]
+  trace?: {
+    name?: string | null
+    status?: string | null
+    activityType?: string | null
+    reason?: string | null
+    durationMs?: number | null
+    argsSummary?: unknown
+  }[]
+  governance?: { name?: string; status?: string; reason?: string; kind?: string }[]
+  counts?: Record<string, number>
+}
+
+export type SharedRun = { view: SharedRunView; createdAt: number }
+
 export const cloud = {
+  /** Fetch a public shared run by token. No auth (public endpoint). Returns
+   *  null when the token is unknown / revoked / expired (the cloud 404s). */
+  getSharedRun: async (token: string): Promise<SharedRun | null> => {
+    const r = await fetch(
+      `${_cloudUrl()}/share/run/${encodeURIComponent(token)}`,
+      { method: "GET", cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+    )
+    if (r.status === 404) return null
+    if (!r.ok) {
+      console.error(`cloud ${r.status} /share/run`)
+      throw new Error(`cloud ${r.status}`)
+    }
+    return r.json() as Promise<SharedRun>
+  },
+
   listHitl: (): Promise<HitlItem[]> =>
     _fetch<HitlListResp>("/hitl", { method: "GET", keyType: "hitl" })
       .then(d => d.items),
