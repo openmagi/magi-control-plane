@@ -218,6 +218,10 @@ export default async function VerifyPage({
         />
       )}
 
+      {/* D72 follow-up: short-circuit the form when nothing is wired so
+          a fresh install does not stack a broken-looking zero-option
+          Select + empty payload textarea below the friendly EmptyState. */}
+      {wired.length > 0 && (
       <form action={runVerify} className="space-y-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Select
@@ -261,6 +265,7 @@ export default async function VerifyPage({
           progressHint={t("verify.progressHint")}
         />
       </form>
+      )}
 
       {prior && <ResultBlock t={t} dtf={dtf} r={prior} />}
     </>

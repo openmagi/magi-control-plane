@@ -86,7 +86,7 @@ export default async function ScriptsPage() {
             <div className="flex flex-wrap items-center justify-center gap-3">
               <UploadScriptButton locale={locale} />
               <Link
-                href="/policies/new?mode=guided&hint=run_command"
+                href="/policies/new?mode=guided"
                 className="text-sm font-medium text-[var(--color-accent-light)] hover:underline"
               >
                 {t("scripts.empty.cta.secondary")}

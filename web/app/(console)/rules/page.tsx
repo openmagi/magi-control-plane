@@ -308,7 +308,7 @@ function PoliciesTab({
   // future surface that wants the unfiltered list still sees it.
   const userPolicies = items.filter((p) => !p.id.startsWith("prebuilt/"))
   // D72: first-time visitor banner. Show only when there is nothing on
-  // this screen to act on — no user policies AND no enabled prebuilt.
+  // this screen to act on: no user policies AND no enabled prebuilt.
   const showWelcome =
     !err && userPolicies.length === 0 && prebuilt.every((p) => !p.enabled)
   return (
@@ -326,7 +326,12 @@ function PoliciesTab({
           body={t("common.seeServerLogs")}
         />
       )}
-      {!err && userPolicies.length === 0 && (
+      {/* D72 follow-up: when the welcome banner renders the EmptyState
+          would stack a third "Build with conversation" nudge on the
+          same screen. The banner already covers the no-policies path
+          with stronger framing. Hide the EmptyState when the banner is
+          visible so the operator sees one focused next step. */}
+      {!err && userPolicies.length === 0 && !showWelcome && (
         <EmptyState
           title={t("rules.empty.policies.title")}
           body={t("rules.empty.policies.body")}

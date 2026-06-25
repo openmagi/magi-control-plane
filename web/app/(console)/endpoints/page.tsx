@@ -99,12 +99,10 @@ export default async function EndpointsPage() {
   return (
     <>
       <PageHeader
-        title={isKo ? "엔드포인트" : "Endpoints"}
-        description={
-          isKo
-            ? `게이트가 cloud에 attest한 활성 endpoint와 적용된 managed-settings digest. ${fmtHoursMinutes(threshold, true)} 이상 응답 없는 endpoint는 stale로 표시됩니다. Cloud는 게이트의 attest를 검증하지 못합니다 (테넌트 API 키 신뢰).`
-            : `Gates attesting their loaded managed-settings to the cloud. Endpoints silent for over ${fmtHoursMinutes(threshold, false)} are flagged stale. The cloud trusts the tenant API key — it does not verify per-endpoint signatures.`
-        }
+        title={t("endpoints.title")}
+        description={t("endpoints.description", {
+          thresholdHm: fmtHoursMinutes(threshold, isKo),
+        })}
       />
 
       {err && (
@@ -120,9 +118,9 @@ export default async function EndpointsPage() {
           body={
             <>
               {t("endpoints.empty.body")}{" "}
-              {isKo
-                ? `권장 주기: ${fmtHoursMinutes(recommendedInterval, true)}. 설치 가이드는 /setup → Step 5 참고.`
-                : `Recommended interval: ${fmtHoursMinutes(recommendedInterval, false)}. See /setup → Step 5 for platform-specific snippets.`}
+              {t("endpoints.empty.recommendedInterval", {
+                intervalHm: fmtHoursMinutes(recommendedInterval, isKo),
+              })}
             </>
           }
           action={

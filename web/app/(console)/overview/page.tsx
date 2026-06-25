@@ -2,7 +2,7 @@ import Link from "next/link"
 import { cloud } from "@/lib/cloud"
 import { getIntl, getT } from "@/lib/i18n/server"
 import {
-  Badge, ErrorState, KPI, PageHeader,
+  Badge, Button, EmptyState, ErrorState, KPI, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -42,6 +42,15 @@ export default async function Home() {
   const { nf } = await getIntl()
   const summary = await loadSummary()
 
+  // D72 follow-up: a true fresh install renders three KPI cards all
+  // reading 0/OK with no context for what the surface is for. Detect
+  // that case (no HITL items AND no ledger entries) and surface an
+  // EmptyState framing instead, pointing the operator at /rules so
+  // they can enable a policy. The KPI grid still renders below for
+  // continuity once entries start landing.
+  const isFreshInstall =
+    !summary.err && summary.pending === 0 && summary.ledgerEntries === 0
+
   return (
     <>
       <PageHeader title={t("overview.title")} />
@@ -49,6 +58,16 @@ export default async function Home() {
         <ErrorState
           title={t("common.cloudUnreachable")}
           body={t("common.seeServerLogs")}
+        />
+      ) : isFreshInstall ? (
+        <EmptyState
+          title={t("overview.empty.title")}
+          body={t("overview.empty.body")}
+          action={
+            <Link href="/rules">
+              <Button variant="primary">{t("overview.empty.ctaRules")}</Button>
+            </Link>
+          }
         />
       ) : (
         <>
@@ -70,14 +89,14 @@ export default async function Home() {
               value={nf.format(summary.ledgerEntries)}
             />
           </div>
-          {/* D72: link to /ledger for first-time visitors so the KPI
-              card row always has an actionable next step. */}
+          {/* D72: link to /ledger so the KPI card row always has an
+              actionable next step once data lands. */}
           <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">
             <Link
               href="/ledger"
               className="font-medium text-[var(--color-accent-light)] hover:underline"
             >
-              {t("overview.empty.cta")}
+              {t("overview.kpis.openLedger")}
             </Link>
           </p>
         </>

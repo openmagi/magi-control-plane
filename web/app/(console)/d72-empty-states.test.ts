@@ -124,8 +124,12 @@ describe("D72: /scripts empty state", () => {
     expect(src).toContain("UploadScriptButton")
   })
 
-  it("secondary CTA links to the wizard with run_command hint", () => {
-    expect(src).toContain('href="/policies/new?mode=guided&hint=run_command"')
+  it("secondary CTA links to the guided wizard (no fictional hint param)", () => {
+    // D72 follow-up: dropped the `hint=run_command` query param because
+    // the wizard does not read it. Linking plainly to the guided wizard
+    // keeps the URL honest about what the operator lands on.
+    expect(src).toContain('href="/policies/new?mode=guided"')
+    expect(src).not.toContain('hint=run_command')
   })
 })
 
@@ -161,13 +165,13 @@ describe("D72: /hitl empty state", () => {
   it("intentionally has no primary CTA (queue surface)", () => {
     // HITL is a queue; new items arrive when an Ask-a-human policy
     // fires. There is no operator-initiated action to take from this
-    // page when it is empty.
-    const src2 = read("hitl/page.tsx")
-    const emptyBlock = src2.slice(
-      src2.indexOf("items.length === 0"),
-      src2.indexOf("items.length === 0") + 240,
+    // page when it is empty. Assert via a parser-friendlier pattern:
+    // the EmptyState tag must be self-closing and reference only the
+    // hitl.empty title + body props, with no `action=` between them.
+    // The previous 240-char window-slice was fragile to copy edits.
+    expect(src).toMatch(
+      /<EmptyState\s+title=\{t\("hitl\.empty\.title"\)\}\s+body=\{t\("hitl\.empty\.body"\)\}\s*\/>/,
     )
-    expect(emptyBlock).not.toMatch(/action=/)
   })
 })
 
@@ -207,8 +211,18 @@ describe("D72: /verify empty state", () => {
 describe("D72: /overview empty-friendly CTA", () => {
   const src = read("overview/page.tsx")
 
-  it("renders an inline link to /ledger so a fresh install has a next step", () => {
+  it("renders an EmptyState on fresh install (zero HITL + zero ledger)", () => {
+    // D72 follow-up: when pending===0 AND ledgerEntries===0 the overview
+    // page renders an EmptyState pointing at /rules instead of three
+    // 0-valued KPI cards with no first-time-visitor framing.
+    expect(src).toContain("overview.empty.title")
+    expect(src).toContain("overview.empty.body")
+    expect(src).toContain("overview.empty.ctaRules")
+    expect(src).toMatch(/href="\/rules"/)
+  })
+
+  it("keeps the inline ledger link for non-empty installs", () => {
     expect(src).toMatch(/href="\/ledger"/)
-    expect(src).toContain("overview.empty.cta")
+    expect(src).toContain("overview.kpis.openLedger")
   })
 })
