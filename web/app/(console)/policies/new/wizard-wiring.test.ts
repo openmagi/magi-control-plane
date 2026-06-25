@@ -1570,10 +1570,14 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const end = src.indexOf("\n}\n", start)
       expect(end).toBeGreaterThan(start)
       const body = src.slice(start, end)
-      // Each action maps to exactly ONE per-action err code.
+      // Each action maps to its per-action err code(s). input_rewrite
+      // is now split into three per-kind codes so the inline copy can
+      // name only the relevant UI field (D68 follow-up P2 ux-clarity).
       expect(body).toMatch(/case "inject_context":[\s\S]*?"missing_template"/)
       expect(body).toMatch(/case "run_command":[\s\S]*?"missing_command_or_script"/)
-      expect(body).toMatch(/case "input_rewrite":[\s\S]*?"missing_rewriter_config"/)
+      expect(body).toMatch(/case "input_rewrite":[\s\S]*?"missing_rewriter_prefix"/)
+      expect(body).toMatch(/case "input_rewrite":[\s\S]*?"missing_rewriter_scheme"/)
+      expect(body).toMatch(/case "input_rewrite":[\s\S]*?"missing_rewriter_pattern"/)
       // The run_command branch must read BOTH runCommandBody AND
       // runCommandScriptId so the attach-mode happy path (script
       // uploaded, body empty) advances without a false positive.
@@ -1588,9 +1592,117 @@ describe("policies/new wizard — P9 steering wiring", () => {
       expect(body).toMatch(/rewriterFrom/)
       expect(body).toMatch(/rewriterTo/)
       expect(body).toMatch(/rewriterPattern/)
-      // block / ask / audit are NOT in the gate body — they have no
-      // sub-form and the default branch returns null.
-      expect(body).toMatch(/default:[\s\S]*?return null/)
+      // D68 follow-up: the four sub-form-less actions
+      // (block / ask / audit / strip) now have EXPLICIT cases that
+      // return null so the intent is documented in code rather than
+      // implicit in a permissive default. The default branch is a
+      // `_exhaustive: never` so a future archetype added to the
+      // Action union without a case here becomes a build-time error.
+      expect(body).toMatch(/case "block":/)
+      expect(body).toMatch(/case "ask":/)
+      expect(body).toMatch(/case "audit":/)
+      expect(body).toMatch(/case "strip":/)
+      expect(body).toMatch(/_exhaustive:\s*never\s*=\s*action/)
+    })
+
+    /* D68 follow-up (P2 completeness/testing): negative-completeness
+     * pin. The lens requires "A future archetype without an early-
+     * validation rule should fail a test." The positive source-grep
+     * tests above match the three known sub-form-owning archetypes,
+     * but adding `case "replace_output":` to the Action union and a
+     * new Step 4b sub-form would leave them green while reintroducing
+     * the silent-pass bug for that archetype.
+     *
+     * This pin reads ALL_ACTIONS + ACTIONS_WITH_SUBFORM from the same
+     * page.tsx source-of-truth and asserts every sub-form-owning
+     * archetype has a case in validateStep4ActionSpecifics. If a
+     * future archetype is added to ACTIONS_WITH_SUBFORM without a
+     * case in the gate body, this test fails. */
+    it("ACTIONS_WITH_SUBFORM exhaustiveness: every sub-form-owning archetype has a gate case", () => {
+      // Pull the canonical lists out of page.tsx so the test tracks
+      // them rather than a hard-coded local copy.
+      const allActionsMatch = src.match(
+        /const ALL_ACTIONS:\s*readonly Action\[\]\s*=\s*\[([\s\S]*?)\]/,
+      )
+      expect(allActionsMatch).not.toBeNull()
+      const allActions = (allActionsMatch![1].match(/"([a-z_]+)"/g) ?? [])
+        .map((s) => s.replace(/"/g, ""))
+      expect(allActions).toContain("inject_context")
+      expect(allActions).toContain("input_rewrite")
+      expect(allActions).toContain("run_command")
+      expect(allActions).toContain("block")
+      expect(allActions).toContain("ask")
+      expect(allActions).toContain("audit")
+      expect(allActions).toContain("strip")
+
+      const subformMatch = src.match(
+        /const ACTIONS_WITH_SUBFORM:\s*readonly Action\[\]\s*=\s*\[([\s\S]*?)\]/,
+      )
+      expect(subformMatch).not.toBeNull()
+      const subformActions = (subformMatch![1].match(/"([a-z_]+)"/g) ?? [])
+        .map((s) => s.replace(/"/g, ""))
+      // Today's known sub-form-owning archetypes. Adding a new one
+      // here without also adding a `case` in the gate fails the next
+      // assertion.
+      expect(subformActions.length).toBeGreaterThan(0)
+
+      const gateStart = src.indexOf("function validateStep4ActionSpecifics")
+      const gateEnd = src.indexOf("\n}\n", gateStart)
+      const gateBody = src.slice(gateStart, gateEnd)
+
+      // Every archetype in ACTIONS_WITH_SUBFORM must have a `case "<a>":`
+      // discriminator in the gate body. A future sub-form-owning
+      // archetype added without a case here fails this assertion
+      // (negative-completeness invariant).
+      for (const a of subformActions) {
+        expect(
+          gateBody,
+          `validateStep4ActionSpecifics is missing a case for "${a}"`,
+        ).toMatch(new RegExp(`case "${a}":`))
+      }
+
+      // Pin that the gate signature narrows actionRaw to Action via a
+      // membership check up front (mirror of D62's
+      // validateStep3Specifics, which guards with ALL_CONDITION_KINDS
+      // before narrowing kindRaw). Without this guard, a future
+      // archetype added without a `case` would silently fall through
+      // to the permissive `default` again.
+      expect(gateBody).toMatch(/ALL_ACTIONS as readonly string\[\]\)\.includes/)
+      expect(gateBody).toMatch(/const action = actionRaw as Action/)
+
+      // The default branch must be the exhaustiveness `never` cast,
+      // not `return null`. A permissive default re-introduces the
+      // silent-pass bug for unknown union members.
+      expect(gateBody).toMatch(/default:[\s\S]*?_exhaustive:\s*never\s*=\s*action/)
+    })
+
+    /* D68 follow-up (P2 completeness): inner rewriter-kind switch is
+     * also exhaustive. A future RewriterKind added without a case in
+     * the gate fails this assertion at runtime AND at build time
+     * (via the `_exhaustive: never = kind` cast). */
+    it("input_rewrite branch exhausts the RewriterKind union", () => {
+      const kindsMatch = src.match(
+        /const ALL_REWRITER_KINDS:\s*readonly RewriterKind\[\]\s*=\s*\[([\s\S]*?)\]/,
+      )
+      expect(kindsMatch).not.toBeNull()
+      const kinds = (kindsMatch![1].match(/"([a-z_]+)"/g) ?? [])
+        .map((s) => s.replace(/"/g, ""))
+      expect(kinds).toEqual([
+        "prefix_strip",
+        "scheme_force",
+        "regex_substitute",
+      ])
+      const gateStart = src.indexOf("function validateStep4ActionSpecifics")
+      const gateEnd = src.indexOf("\n}\n", gateStart)
+      const gateBody = src.slice(gateStart, gateEnd)
+      for (const k of kinds) {
+        expect(gateBody).toMatch(new RegExp(`case "${k}":`))
+      }
+      // The inner default must also be the `_exhaustive: never` cast.
+      // A permissive inner default would re-introduce the
+      // missing_rewriter_config catch-all that hid which field was
+      // actually empty.
+      expect(gateBody).toMatch(/_exhaustive:\s*never\s*=\s*kind/)
     })
 
     it("advanceWizard wires validateStep4ActionSpecifics into the Step 4 → 5 advance", () => {
@@ -1617,20 +1729,26 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
 
     it("STEP4_ERR_CODES enumerates every D68 per-action code in lib/flash.ts", () => {
-      // Mirror of the D62 STEP3_ERR_CODES pin. The three codes are
+      // Mirror of the D62 STEP3_ERR_CODES pin. The codes are
       // deliberately omitted from ERR_CODES so resolveFlash returns
       // null for them (the inline localized banner is the single
-      // source of truth — a duplicate English page-level banner
+      // source of truth; a duplicate English page-level banner
       // above the localized inline copy would regress locale
       // parity exactly as the D62 review documented).
       const flashSrc = readFileSync(
         path.join(__dirname, "..", "..", "..", "..", "lib", "flash.ts"),
         "utf-8",
       )
+      // D68 follow-up (P2 ux-clarity): missing_rewriter_config was
+      // split into per-kind codes so each banner names only the
+      // relevant UI field (mirror of D62 Step 3's per-condition
+      // codes).
       const codes = [
         "missing_template",
         "missing_command_or_script",
-        "missing_rewriter_config",
+        "missing_rewriter_prefix",
+        "missing_rewriter_scheme",
+        "missing_rewriter_pattern",
       ]
       expect(flashSrc).toMatch(/export const STEP4_ERR_CODES\s*=\s*\[/)
       for (const code of codes) {
@@ -1645,13 +1763,24 @@ describe("policies/new wizard — P9 steering wiring", () => {
       for (const code of codes) {
         expect(errCodesBody).not.toMatch(new RegExp(`\\b${code}:`))
       }
+      // Negative pin: the old catch-all rewriter code is gone.
+      expect(flashSrc).not.toMatch(/"missing_rewriter_config"/)
     })
 
-    it("Step 4 component surfaces inline err banner + per-input helper inside Step 4b", () => {
-      // The banner must live INSIDE the Step 4b sub-form (NOT at
-      // the top of the page). Each action that owns a sub-form
-      // renders its own banner so the operator sees the explanation
-      // at the location their attention is already.
+    it("Step 4 component surfaces inline error affordance per archetype", () => {
+      // Each archetype that owns a Step 4b sub-form renders an
+      // explanation inside the peer-checked editor div (NOT at the
+      // top of the page). D68 follow-up (P1 ux-clarity) rebalanced
+      // the patterns so each archetype has EXACTLY one error
+      // surface:
+      //   inject_context  -> per-input helper under the textarea
+      //                      (banner removed; the duplicate copy
+      //                      created visual noise and ambiguity).
+      //   input_rewrite   -> banner near sub-form + per-input helper
+      //                      under the empty rewriter input(s).
+      //   run_command     -> banner near sub-form + per-input red
+      //                      ring on the empty body / script_id
+      //                      (the affordance was missing before).
       const start = src.indexOf("function Step4Action")
       expect(start).toBeGreaterThan(-1)
       // Slice to the next top-level function so the entire
@@ -1661,18 +1790,30 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const body = src.slice(start, end)
       // wizardErr prop wired through from GuidedWizard.
       expect(body).toMatch(/wizardErr\?:\s*string/)
-      // Per-sub-form inline banner data-testids (one per action that
-      // owns a Step 4b sub-form). The banners sit inside the
-      // peer-checked editor div, NOT at the top of the page.
-      expect(body).toContain("step4b-inject-err-banner")
+      // Banners survive for input_rewrite + run_command. The
+      // inject_context banner was dropped in favor of the single
+      // helper paragraph under the empty textarea (which now carries
+      // role="alert"). Negative pin guards regression.
       expect(body).toContain("step4b-rewriter-err-banner")
       expect(body).toContain("step4b-run-command-err-banner")
-      // Per-input red-ring helpers — one per archetype.
+      expect(body).not.toContain("step4b-inject-err-banner")
+      // Per-input red-ring helpers, one per empty field. scheme_force
+      // now renders TWO helpers (one per side) so the operator who
+      // emptied only one side sees the explanation co-located with
+      // that side's red ring.
       expect(body).toContain("step4-inject-template-helper")
       expect(body).toContain("step4-rewriter-prefix-helper")
       expect(body).toContain("step4-rewriter-scheme-helper")
+      expect(body).toContain("step4-rewriter-scheme-from-helper")
       expect(body).toContain("step4-rewriter-pattern-helper")
       expect(body).toContain("step4-run-command-helper")
+      // P2 follow-up: the Step4bRunCommandFields island must receive
+      // hasError + errorRingClassName so the empty body / script_id
+      // input lights up red (matching the inject / rewrite ring).
+      // Without this prop wiring a future refactor would silently
+      // drop the affordance.
+      expect(body).toMatch(/hasError=\{step4ErrCode === "missing_command_or_script"\}/)
+      expect(body).toMatch(/errorRingClassName=\{errRingCls\}/)
     })
 
     it("Step 4 renders localized helper copy per empty-specifics case (KO+EN)", () => {
@@ -1680,15 +1821,34 @@ describe("policies/new wizard — P9 steering wiring", () => {
         path.join(__dirname, "..", "..", "..", "..", "lib", "i18n", "dict.ts"),
         "utf-8",
       )
+      // D68 follow-up: the three rewriter sub-keys replace the old
+      // catch-all missingRewriterConfig so each banner names only
+      // the relevant UI field.
       for (const key of [
         "newPolicy.wizard.step4.err.missingTemplate",
         "newPolicy.wizard.step4.err.missingCommandOrScript",
-        "newPolicy.wizard.step4.err.missingRewriterConfig",
+        "newPolicy.wizard.step4.err.missingRewriterPrefix",
+        "newPolicy.wizard.step4.err.missingRewriterScheme",
+        "newPolicy.wizard.step4.err.missingRewriterPattern",
       ]) {
         // Each key must appear at least twice (KO block + EN block).
         const occurrences = dictSrc.split(`"${key}"`).length - 1
         expect(occurrences).toBeGreaterThanOrEqual(2)
       }
+      // Negative pin: the old catch-all key is gone from both blocks.
+      expect(dictSrc).not.toMatch(/missingRewriterConfig/)
+      // P2 follow-up (ux-clarity): the user-visible copy must NOT
+      // leak IR kind names. The previous catch-all banner read
+      // "Fill in the rewriter config: prefix (prefix_strip) /
+      // from + to (scheme_force) / pattern (regex_substitute)."
+      // which exposed the discriminators to operators. None of the
+      // per-kind copy in either locale block names them.
+      const ko = dictSrc.match(/missingRewriterPrefix":\s*"([^"]+)"/)
+      const en = dictSrc.match(/missingRewriterPattern":\s*"([^"]+)"/)
+      expect(ko).not.toBeNull()
+      expect(en).not.toBeNull()
+      expect(ko![1]).not.toMatch(/prefix_strip|scheme_force|regex_substitute/)
+      expect(en![1]).not.toMatch(/prefix_strip|scheme_force|regex_substitute/)
     })
 
     it("Step 4 component's GuidedWizard call forwards searchParams.err as wizardErr", () => {
@@ -1712,28 +1872,32 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const expected = [
         "missing_template",
         "missing_command_or_script",
-        "missing_rewriter_config",
+        "missing_rewriter_prefix",
+        "missing_rewriter_scheme",
+        "missing_rewriter_pattern",
       ]
       for (const code of expected) expect(body).toContain(`"${code}"`)
-      // The gate must NOT short-circuit to "invalid_input".
+      // The gate must NOT short-circuit to "invalid_input" or the
+      // old catch-all rewriter code.
       expect(body).not.toContain("\"invalid_input\"")
+      expect(body).not.toContain("\"missing_rewriter_config\"")
     })
 
-    it("block / ask / audit advance with no sub-form requirement", () => {
-      // The gate's default branch returns null, so picking a
-      // sub-form-less action lands the operator on Step 5 without
-      // a precise err. Source-pin both: (a) the default-null
-      // branch, and (b) the absence of any case row for the three
-      // sub-form-less actions in the gate body (block / ask /
-      // audit must NOT appear as case discriminators here).
+    it("block / ask / audit / strip pass through with explicit cases", () => {
+      // D68 follow-up: the sub-form-less actions now have EXPLICIT
+      // cases returning null so the intent is documented in code
+      // rather than implicit in a permissive default. Pinning the
+      // explicit cases catches a refactor that re-introduces a
+      // permissive default by accident.
       const start = src.indexOf("function validateStep4ActionSpecifics")
       const end = src.indexOf("\n}\n", start)
       const body = src.slice(start, end)
-      expect(body).toMatch(/default:[\s\S]*?return null/)
-      // No per-action case for block / ask / audit — they pass through.
-      expect(body).not.toMatch(/case "block":/)
-      expect(body).not.toMatch(/case "ask":/)
-      expect(body).not.toMatch(/case "audit":/)
+      // Explicit fall-through cases for block / ask / audit / strip.
+      expect(body).toMatch(/case "block":[\s\S]*?case "ask":[\s\S]*?case "audit":[\s\S]*?case "strip":[\s\S]*?return null/)
+      // The default branch is now the exhaustiveness `never` cast,
+      // NOT a permissive `return null` (which would let an unknown
+      // union member fall through silently).
+      expect(body).toMatch(/default:\s*\{[\s\S]*?_exhaustive:\s*never\s*=\s*action/)
     })
 
     it("run_command attach-mode (script_id only, body empty) advances OK", () => {

@@ -40,8 +40,9 @@ const ERR_CODES: Record<string, string> = {
   // STEP3_ERR_CODES in this file for the canonical list (still
   // exported so wizard-wiring tests can pin the mapping).
   // D62 codes intentionally omitted from ERR_CODES; see comment above.
-  // D68: the three Step 4 action-specifics codes (missing_template,
-  // missing_command_or_script, missing_rewriter_config) follow the
+  // D68: the Step 4 action-specifics codes (missing_template,
+  // missing_command_or_script, missing_rewriter_prefix,
+  // missing_rewriter_scheme, missing_rewriter_pattern) follow the
   // same locale-parity rule. Step4Action renders an inline banner
   // plus per-input red-ring helper inside the Step 4b sub-form for
   // each code; see STEP4_ERR_CODES below.
@@ -70,6 +71,14 @@ export type Step3ErrCode = (typeof STEP3_ERR_CODES)[number]
  *  sub-form (NOT at the top of the page) plus a per-input red-ring
  *  helper, replacing the old generic `invalid_input` banner.
  *
+ *  D68 follow-up (P2 ux-clarity): the original `missing_rewriter_config`
+ *  code was split into three per-kind codes so the inline copy can
+ *  name only the relevant field instead of leaking IR kind names
+ *  (prefix_strip / scheme_force / regex_substitute) into the user-
+ *  visible banner. This mirrors the D62 per-condition split where
+ *  Step 3 has separate `missing_pattern` / `missing_shacl` /
+ *  `missing_domain` / etc. codes for each condition kind.
+ *
  *  Codes are deliberately omitted from ERR_CODES above so
  *  resolveFlash returns null for them: the inline localized banner
  *  is the single source of truth (a duplicate English page-level
@@ -78,7 +87,9 @@ export type Step3ErrCode = (typeof STEP3_ERR_CODES)[number]
 export const STEP4_ERR_CODES = [
   "missing_template",
   "missing_command_or_script",
-  "missing_rewriter_config",
+  "missing_rewriter_prefix",
+  "missing_rewriter_scheme",
+  "missing_rewriter_pattern",
 ] as const
 export type Step4ErrCode = (typeof STEP4_ERR_CODES)[number]
 

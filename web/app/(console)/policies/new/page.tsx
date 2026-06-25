@@ -380,6 +380,30 @@ const ALL_CONDITION_KINDS: readonly ConditionKind[] = [
 // _components/RunCommandForm.tsx for Step 4b.
 type Action = "block" | "ask" | "audit" | "strip" | "inject_context" | "input_rewrite" | "run_command"
 
+// D68 follow-up: single source of truth for the Action union plus the
+// subset that owns a Step 4b sub-form. Mirrors the D62 ALL_CONDITION_KINDS
+// pattern. Exported via module-internal grep so the wizard-wiring test
+// can iterate them and assert every sub-form-owning archetype has a case
+// in validateStep4ActionSpecifics (a future archetype added to the
+// union without an early-validation rule fails the test instead of
+// silently passing through to Step 5).
+const ALL_ACTIONS: readonly Action[] = [
+  "block", "ask", "audit", "strip",
+  "inject_context", "input_rewrite", "run_command",
+]
+const ACTIONS_WITH_SUBFORM: readonly Action[] = [
+  "inject_context", "input_rewrite", "run_command",
+]
+
+// D68 follow-up: explicit narrow type for the rewriter kind union so
+// validateStep4ActionSpecifics' inner switch becomes exhaustive over
+// the three rewriter kinds. Adding a new kind to the WizardState type
+// without a case here becomes a build-time error.
+type RewriterKind = "prefix_strip" | "scheme_force" | "regex_substitute"
+const ALL_REWRITER_KINDS: readonly RewriterKind[] = [
+  "prefix_strip", "scheme_force", "regex_substitute",
+]
+
 // D56c: action set follows the matrix.py LEGAL_COMBINATIONS table.
 //   before_tool_use → block / ask / audit (the runtime can refuse)
 //   after_tool_use  → audit (tool already ran)
@@ -1395,40 +1419,61 @@ function validateStep3Specifics(
   }
 }
 
-/** D68: Step 4 → Step 5 advance gate. Returns a precise err code
+/** D68: Step 4 to Step 5 advance gate. Returns a precise err code
  *  when the operator picked an action that owns a Step 4b sub-form
  *  but left its required fields empty. Returns null when the
  *  advance is safe.
  *
- *  Three actions own a Step 4b sub-form today:
- *   - inject_context  → empty `injectTemplate` returns "missing_template"
- *   - run_command     → empty `runCommandBody` AND empty
- *                       `runCommandScriptId` returns
- *                       "missing_command_or_script"
- *                       (inline-mode operators fill body; attach-mode
- *                       operators fill script_id; both empty is the
- *                       silent-pass-through bug D68 closes)
- *   - input_rewrite   → empty rewriter config (varies by kind:
- *                       prefix_strip needs `rewriterPrefix`,
- *                       scheme_force needs both `rewriterFrom` +
- *                       `rewriterTo`, regex_substitute needs
- *                       `rewriterPattern`) returns
- *                       "missing_rewriter_config"
+ *  Three actions own a Step 4b sub-form today (the canonical list
+ *  lives in ACTIONS_WITH_SUBFORM above this function):
+ *   - inject_context  -> empty `injectTemplate` returns "missing_template"
+ *   - run_command     -> empty `runCommandBody` AND empty
+ *                        `runCommandScriptId` returns
+ *                        "missing_command_or_script"
+ *                        (inline-mode operators fill body; attach-mode
+ *                        operators fill script_id; both empty is the
+ *                        silent-pass-through bug D68 closes)
+ *   - input_rewrite   -> empty rewriter config (varies by kind:
+ *                        prefix_strip needs `rewriterPrefix`,
+ *                        scheme_force needs both `rewriterFrom` +
+ *                        `rewriterTo`, regex_substitute needs
+ *                        `rewriterPattern`). Per-kind codes mirror the
+ *                        D62 per-condition split so the inline copy
+ *                        names only the relevant field and avoids
+ *                        leaking IR kind names to operators:
+ *                          prefix_strip      -> "missing_rewriter_prefix"
+ *                          scheme_force      -> "missing_rewriter_scheme"
+ *                          regex_substitute  -> "missing_rewriter_pattern"
  *
- *  block / ask / audit / strip have no Step 4b sub-form: pass
- *  through. An unknown action falls through to null (Step 4 also
- *  requires the radio so this branch only fires on a hand-rolled
- *  POST that bypassed the form).
+ *  block / ask / audit / strip have no Step 4b sub-form: their cases
+ *  return null explicitly so the intent is documented in code, not
+ *  implicit in a permissive `default`.
+ *
+ *  D68 follow-up: the signature now narrows actionRaw to Action
+ *  through ALL_ACTIONS (mirror of D62's validateStep3Specifics
+ *  narrowing kindRaw via ALL_CONDITION_KINDS). Unknown raw strings
+ *  return null (Step 4 also requires the radio; this branch only
+ *  fires on a hand-rolled POST that bypassed the form). The default
+ *  branch is a `_exhaustive: never` so a future archetype added to
+ *  the Action union without a case here becomes a build-time error,
+ *  re-introducing the silent-pass-through bug is no longer possible.
  *
  *  Mirror of D62's validateStep3Specifics: the same locale-parity
  *  rule applies (codes intentionally omitted from ERR_CODES so the
  *  inline localized banner is the single source of truth). */
 function validateStep4ActionSpecifics(
-  actionRaw: string | null,
+  actionRaw: Action | string | null,
   params: URLSearchParams,
 ): Step4ErrCode | null {
-  if (!actionRaw) return null
-  switch (actionRaw) {
+  if (!actionRaw || !(ALL_ACTIONS as readonly string[]).includes(actionRaw)) {
+    // Unknown raw value (hand-rolled POST, broken Edit-jump). The
+    // radio is required so Step 4's first guard already refuses;
+    // returning null lets the standard `pick_action`-style fallback
+    // path in advanceWizard surface a precise message if needed.
+    return null
+  }
+  const action = actionRaw as Action
+  switch (action) {
     case "inject_context": {
       const template = (params.get("injectTemplate") ?? "").trim()
       return template ? null : "missing_template"
@@ -1444,28 +1489,59 @@ function validateStep4ActionSpecifics(
       return body || scriptId ? null : "missing_command_or_script"
     }
     case "input_rewrite": {
-      const kind = (params.get("rewriterKind") ?? "").trim()
-      if (kind === "prefix_strip") {
-        const prefix = params.get("rewriterPrefix") ?? ""
-        return prefix ? null : "missing_rewriter_config"
+      const kindRaw = (params.get("rewriterKind") ?? "").trim()
+      if (!(ALL_REWRITER_KINDS as readonly string[]).includes(kindRaw)) {
+        // Operator picked input_rewrite but the kind <select> never
+        // landed in FormData (scripted POST, broken Edit-jump). Treat
+        // as missing rewriter config so the inline banner points the
+        // operator at the rewriter editor. We pick the prefix_strip
+        // code because the rewriter editor lands there by default
+        // (kindPick = state.rewriterKind ?? "prefix_strip").
+        return "missing_rewriter_prefix"
       }
-      if (kind === "scheme_force") {
-        const from = params.get("rewriterFrom") ?? ""
-        const to = params.get("rewriterTo") ?? ""
-        return from && to ? null : "missing_rewriter_config"
+      const kind = kindRaw as RewriterKind
+      switch (kind) {
+        case "prefix_strip": {
+          // D68 follow-up (P2): trim before truthiness so a
+          // whitespace-only prefix does not silently pass the gate
+          // and then bounce back at saveWizard with an opaque
+          // `invalid_input`. Mirrors the trim discipline of the
+          // inject_context and run_command branches above.
+          const prefix = (params.get("rewriterPrefix") ?? "").trim()
+          return prefix ? null : "missing_rewriter_prefix"
+        }
+        case "scheme_force": {
+          const from = (params.get("rewriterFrom") ?? "").trim()
+          const to = (params.get("rewriterTo") ?? "").trim()
+          return from && to ? null : "missing_rewriter_scheme"
+        }
+        case "regex_substitute": {
+          const pattern = (params.get("rewriterPattern") ?? "").trim()
+          return pattern ? null : "missing_rewriter_pattern"
+        }
+        default: {
+          // D68 follow-up: exhaustive over RewriterKind. Adding a
+          // new kind to the union without a case here fails at
+          // build time, no silent fallthrough.
+          const _exhaustive: never = kind
+          return _exhaustive
+        }
       }
-      if (kind === "regex_substitute") {
-        const pattern = params.get("rewriterPattern") ?? ""
-        return pattern ? null : "missing_rewriter_config"
-      }
-      // Operator picked input_rewrite but the kind <select> never
-      // landed in FormData (scripted POST, broken Edit-jump). Treat
-      // as missing rewriter config so the inline banner points the
-      // operator at the rewriter editor.
-      return "missing_rewriter_config"
     }
-    default:
+    // Sub-form-less actions: pass the advance through. Listed
+    // explicitly so the intent is documented in code rather than
+    // implicit in a permissive `default: return null`, and so the
+    // exhaustiveness check below catches any future archetype that
+    // forgets to wire its own gate.
+    case "block":
+    case "ask":
+    case "audit":
+    case "strip":
       return null
+    default: {
+      const _exhaustive: never = action
+      return _exhaustive
+    }
   }
 }
 
@@ -4451,32 +4527,94 @@ function Step4Action({
   // editor AND as a per-input red-ring helper on the empty field
   // itself).
   //
+  // D68 follow-up (P2 ux-clarity): missing_rewriter_config was split
+  // into per-kind codes so the inline copy can name only the relevant
+  // field; the maps below carry the rewriter kind through so the red
+  // ring lands on exactly the empty input (not all three rewriter
+  // kinds simultaneously) and the helper paragraph renders adjacent
+  // to that input only.
+  //
   // Mirror of Step3Condition's ERR_TO_KIND / ERR_TO_TKEY pattern:
   // the maps are typed by `Step4ErrCode` so a future code without a
   // row fails at compile time.
   const ERR_TO_ACTION: Record<Step4ErrCode, Action> = {
     missing_template: "inject_context",
     missing_command_or_script: "run_command",
-    missing_rewriter_config: "input_rewrite",
+    missing_rewriter_prefix: "input_rewrite",
+    missing_rewriter_scheme: "input_rewrite",
+    missing_rewriter_pattern: "input_rewrite",
+  }
+  // For the input_rewrite codes, also remember which rewriter kind
+  // the empty field belongs to so the red ring + helper land on the
+  // right input. Non-input_rewrite codes leave this undefined.
+  const ERR_TO_REWRITER_KIND: Record<Step4ErrCode, RewriterKind | undefined> = {
+    missing_template: undefined,
+    missing_command_or_script: undefined,
+    missing_rewriter_prefix: "prefix_strip",
+    missing_rewriter_scheme: "scheme_force",
+    missing_rewriter_pattern: "regex_substitute",
   }
   const ERR_TO_TKEY: Record<Step4ErrCode, import("@/lib/i18n/dict").TKey> = {
     missing_template: "newPolicy.wizard.step4.err.missingTemplate",
     missing_command_or_script: "newPolicy.wizard.step4.err.missingCommandOrScript",
-    missing_rewriter_config: "newPolicy.wizard.step4.err.missingRewriterConfig",
+    missing_rewriter_prefix: "newPolicy.wizard.step4.err.missingRewriterPrefix",
+    missing_rewriter_scheme: "newPolicy.wizard.step4.err.missingRewriterScheme",
+    missing_rewriter_pattern: "newPolicy.wizard.step4.err.missingRewriterPattern",
   }
   const isStep4ErrCode = (s: string | undefined): s is Step4ErrCode =>
     s !== undefined && s in ERR_TO_ACTION
   const step4ErrCode = isStep4ErrCode(wizardErr) ? wizardErr : undefined
   const step4ErrAction = step4ErrCode ? ERR_TO_ACTION[step4ErrCode] : undefined
+  const step4ErrRewriterKind = step4ErrCode
+    ? ERR_TO_REWRITER_KIND[step4ErrCode]
+    : undefined
   const step4ErrHelperKey = step4ErrCode ? ERR_TO_TKEY[step4ErrCode] : undefined
   const step4ErrHelper = step4ErrHelperKey ? t(step4ErrHelperKey) : undefined
   // The red-ring class is applied to the per-action sub-form input
   // only when the err code points at that action. Note the leading
   // space so call sites concatenate without leaving a trailing
   // space on the no-error branch (matches errRingFor in Step3).
+  //
+  // D68 follow-up (P1 ux-clarity): for input_rewrite, also narrow on
+  // the rewriter kind so the red ring lands only on the empty input
+  // for the active kind, not on all three rewriter kinds at once.
+  // Other actions (inject_context / run_command) ignore the kind
+  // argument.
   const errRingCls = "ring-2 ring-red-400 border-red-400"
-  const errRingFor = (a: Action): string =>
-    step4ErrAction === a ? " " + errRingCls : ""
+  const errRingFor = (a: Action, kind?: RewriterKind): string => {
+    if (step4ErrAction !== a) return ""
+    if (a === "input_rewrite") {
+      // input_rewrite has three sub-form kinds rendered side by side.
+      // Only highlight the input whose kind matches the err code.
+      if (kind === undefined || kind !== step4ErrRewriterKind) return ""
+    }
+    return " " + errRingCls
+  }
+  // D68 follow-up (P1 ux-clarity): scheme_force has TWO inputs
+  // (rewriterFrom, rewriterTo). When only ONE is empty, highlighting
+  // both is a false positive and the helper paragraph (rendered only
+  // under rewriterTo today) lands under the filled field if From was
+  // the empty one. Compute per-field empty flags from the URL state
+  // and use them to scope the ring + helper. We trim to match the
+  // gate's whitespace discipline.
+  const schemeFromEmpty =
+    step4ErrCode === "missing_rewriter_scheme"
+    && !((state.rewriterFrom ?? "").trim())
+  const schemeToEmpty =
+    step4ErrCode === "missing_rewriter_scheme"
+    && !((state.rewriterTo ?? "").trim())
+  // Inline ring for the scheme_force inputs: highlight only the empty
+  // one(s). When BOTH are empty, both light up; when only one is
+  // empty, only that one does. Falls back through errRingFor for
+  // non-scheme codes so the rest of the API stays uniform.
+  const schemeFromRingCls =
+    step4ErrCode === "missing_rewriter_scheme"
+      ? (schemeFromEmpty ? " " + errRingCls : "")
+      : errRingFor("input_rewrite", "scheme_force")
+  const schemeToRingCls =
+    step4ErrCode === "missing_rewriter_scheme"
+      ? (schemeToEmpty ? " " + errRingCls : "")
+      : errRingFor("input_rewrite", "scheme_force")
   return (
     <StepShell
       t={t}
@@ -4661,16 +4799,20 @@ function Step4Action({
                   data-testid="step4b-inject-editor"
                   className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
                 >
-                  {step4ErrAction === "inject_context" && step4ErrHelper && (
-                    <div
-                      data-testid="step4b-inject-err-banner"
-                      data-step4-err={wizardErr}
-                      role="alert"
-                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
-                    >
-                      {step4ErrHelper}
-                    </div>
-                  )}
+                  {/* D68 follow-up (P1 ux-clarity): inject_context used
+                      to render the SAME localized error string twice
+                      (once as a banner at the top of the sub-form, once
+                      as a red-text helper beneath the textarea ~30px
+                      apart). That duplication created visual noise and
+                      ambiguity about which is the authoritative pointer.
+                      We now render the explanation in ONE place only,
+                      directly under the empty textarea (co-located with
+                      the red ring), and move role="alert" onto the
+                      surviving helper paragraph so screen readers still
+                      announce the error. Mirrors run_command's "banner
+                      alone" and input_rewrite's "ring + per-field
+                      helper" patterns: each archetype now has exactly
+                      one error surface. */}
                   <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
                     {ko
                       ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
@@ -4695,6 +4837,8 @@ function Step4Action({
                     {step4ErrAction === "inject_context" && step4ErrHelper && (
                       <p
                         data-testid="step4-inject-template-helper"
+                        data-step4-err={wizardErr}
+                        role="alert"
                         className="mt-1 text-xs text-red-700"
                       >
                         {step4ErrHelper}
@@ -4852,9 +4996,13 @@ function Step4Action({
                         defaultValue={state.rewriterPrefix ?? ""}
                         placeholder={ko ? "예: sudo " : "e.g. sudo "}
                         spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite", "prefix_strip")}
                       />
-                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                      {/* D68 follow-up (P1 ux-clarity): scope the helper
+                          to the matching rewriter kind so a regex_substitute
+                          error doesn't render a helper under the prefix
+                          input as well. */}
+                      {step4ErrCode === "missing_rewriter_prefix" && step4ErrHelper && (
                         <p
                           data-testid="step4-rewriter-prefix-helper"
                           className="mt-1 text-xs text-red-700"
@@ -4890,8 +5038,20 @@ function Step4Action({
                         defaultValue={state.rewriterFrom ?? "http://"}
                         placeholder="http://"
                         spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
+                        className={inputCls() + " font-mono" + schemeFromRingCls}
                       />
+                      {/* D68 follow-up (P1 ux-clarity): scheme_force has
+                          TWO inputs. Render a per-field helper under the
+                          empty one(s) so the explanation co-locates with
+                          the highlight. */}
+                      {schemeFromEmpty && step4ErrHelper && (
+                        <p
+                          data-testid="step4-rewriter-scheme-from-helper"
+                          className="mt-1 text-xs text-red-700"
+                        >
+                          {step4ErrHelper}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <FieldLabel>
@@ -4903,9 +5063,9 @@ function Step4Action({
                         defaultValue={state.rewriterTo ?? "https://"}
                         placeholder="https://"
                         spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
+                        className={inputCls() + " font-mono" + schemeToRingCls}
                       />
-                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                      {schemeToEmpty && step4ErrHelper && (
                         <p
                           data-testid="step4-rewriter-scheme-helper"
                           className="mt-1 text-xs text-red-700"
@@ -4927,9 +5087,9 @@ function Step4Action({
                         defaultValue={state.rewriterPattern ?? ""}
                         placeholder="^\\s*sudo\\s+"
                         spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite")}
+                        className={inputCls() + " font-mono" + errRingFor("input_rewrite", "regex_substitute")}
                       />
-                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+                      {step4ErrCode === "missing_rewriter_pattern" && step4ErrHelper && (
                         <p
                           data-testid="step4-rewriter-pattern-helper"
                           className="mt-1 text-xs text-red-700"
@@ -5047,6 +5207,13 @@ function Step4Action({
                     defaultFailClosed={state.runCommandFailClosed === "true"}
                     inputClassName={inputCls()}
                     fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
+                    /* D68 follow-up (P2 ux-clarity): forward the
+                       missing_command_or_script err state so the
+                       island can light the red ring on the empty
+                       command-body / script-id input (matching the
+                       inject_context / input_rewrite affordance). */
+                    hasError={step4ErrCode === "missing_command_or_script"}
+                    errorRingClassName={errRingCls}
                   />
                 </div>
               </label>

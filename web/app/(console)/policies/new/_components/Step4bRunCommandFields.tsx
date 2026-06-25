@@ -51,6 +51,23 @@ export interface Step4bRunCommandFieldsProps {
   defaultFailClosed?: boolean
   inputClassName: string
   fieldLabelClassName: string
+  /**
+   * D68 follow-up (P2 ux-clarity): when the Step 4 advance gate
+   * refuses because BOTH `runCommandBody` AND `runCommandScriptId`
+   * are empty, the parent passes hasError=true so this island
+   * applies the red ring on the actual command-body textarea and
+   * the script-id input (matching the affordance inject_context and
+   * input_rewrite show). Previously the operator saw the banner at
+   * the top of the sub-form but the empty field itself looked
+   * unmarked.
+   */
+  hasError?: boolean
+  /**
+   * D68 follow-up (P2 ux-clarity): tailwind class applied to the
+   * empty input(s) when hasError is set. Driven from the parent so
+   * the styling stays consistent with the rewriter / inject ring.
+   */
+  errorRingClassName?: string
 }
 
 const MAX_INLINE_LEN = 4000
@@ -79,6 +96,8 @@ export function Step4bRunCommandFields(props: Step4bRunCommandFieldsProps) {
     defaultFailClosed = false,
     inputClassName,
     fieldLabelClassName,
+    hasError = false,
+    errorRingClassName = "",
   } = props
   const t = useCallback(
     (k: TKey, vars?: Record<string, string | number>) => translate(locale, k, vars),
@@ -206,7 +225,16 @@ export function Step4bRunCommandFields(props: Step4bRunCommandFieldsProps) {
             placeholder={t("newPolicy.step4.runCommand.commandPlaceholder")}
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            className={inputClassName + " font-mono"}
+            // D68 follow-up (P2 ux-clarity): light the red ring on the
+            // empty command body when the Step 4 advance gate refused.
+            // hasError already implies the parent saw BOTH lanes empty;
+            // we still check body.trim() so the operator who types a
+            // command after the redirect sees the ring clear in-place.
+            className={
+              inputClassName + " font-mono"
+              + (hasError && !body.trim() ? " " + errorRingClassName : "")
+            }
+            data-testid="step4b-rc-inline-body"
           />
           <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0 flex items-center justify-between gap-2">
             <span>{t("newPolicy.step4.runCommand.commandHint")}</span>
@@ -265,7 +293,15 @@ export function Step4bRunCommandFields(props: Step4bRunCommandFieldsProps) {
               maxLength={64}
               pattern="[A-Fa-f0-9]{64}"
               placeholder="sha256 script id (64 hex chars)"
-              className={inputClassName + " font-mono"}
+              // D68 follow-up (P2 ux-clarity): light the red ring on the
+              // empty script-id input when the Step 4 advance gate
+              // refused. Mirrors the inline-mode body treatment so the
+              // attach-mode operator gets the same affordance.
+              className={
+                inputClassName + " font-mono"
+                + (hasError && !scriptId.trim() ? " " + errorRingClassName : "")
+              }
+              data-testid="step4b-rc-attach-script-id"
             />
             <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
               <Link
