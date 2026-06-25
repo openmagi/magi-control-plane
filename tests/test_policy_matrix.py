@@ -641,8 +641,20 @@ def test_d79_verified_includes_d58_candidates_promoted():
     """Pin the 22 D58 candidates as members of `_VERIFIED_EVENTS`. A
     future cask refresh that loses any of these (CC dropped a
     `hook_event_name` literal or an `execute<Event>Hooks` runner) must
-    move the name back to `_UNVERIFIED_EVENTS` AND update this
-    assertion in lockstep so the regression cannot land silently."""
+    move the name back to `_UNVERIFIED_EVENTS` AND update the matching
+    `UNVERIFIED_LIFECYCLE_SLUGS` entry in
+    `web/app/(console)/policies/new/_components/step1-lifecycle-groups.ts`
+    so card label / chip menu / matrix do not drift.
+
+    Honesty caveat: this is a *Python-side pin*. The TS partition test
+    (`Step1LifecyclePicker.test.ts`) pins the TS side independently.
+    Together they fail loudly if either side moves, but the two
+    assertions are NOT cross-language — a partial Python-only revert
+    will fail this test while the TS file keeps rendering the old
+    badge state until the Python failure is fixed. A future build-time
+    JSON handshake (Python → generated `.unverified-events.generated.json`
+    → consumed by `step1-lifecycle-groups.ts`) would close this gap.
+    """
     from magi_cp.policy.matrix import _VERIFIED_EVENTS
     promoted_in_d79 = {
         # Tool-context observability variants

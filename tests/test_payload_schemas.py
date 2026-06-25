@@ -74,6 +74,11 @@ def test_d79_each_promoted_event_carries_its_signature_field() -> None:
         "PermissionRequest": "permission_suggestions",
         "PermissionDenied": "reason",
         "UserPromptExpansion": "expansion_type",
+        # D79 review fix: PreCompact's most-useful field is the
+        # operator-supplied `custom_instructions` string. Pinning here
+        # so a future refactor that drops it back to the
+        # `trigger`-only shape fails loudly.
+        "PreCompact": "custom_instructions",
         "PostCompact": "compact_summary",
         "Elicitation": "elicitation_id",
         "ElicitationResult": "action",
@@ -264,4 +269,40 @@ def test_no_duplicate_paths_in_resolved_view() -> None:
     paths = [f["path"] for f in fields]
     assert len(paths) == len(set(paths)), (
         f"duplicate paths in PreToolUse+Bash: {paths}"
+    )
+
+
+# D79 review fix: widen the duplicate-path gate across every
+# (event, matcher_class) the registry exposes so a future re-introduction
+# of envelope-vs-event-specific overlap (e.g. re-declaring `tool_name`
+# in a per-event field list when `_COMMON_TOOL_ENVELOPE` already
+# supplies it) fails loudly. Pre-D79 the gate only checked
+# PreToolUse+Bash so the D79-promoted PostToolUseFailure /
+# PermissionRequest / PermissionDenied splat-overlap regressed silently.
+def _all_event_matcher_pairs() -> list[tuple[str, str | None]]:
+    out: list[tuple[str, str | None]] = []
+    for event, bucket in PAYLOAD_SCHEMAS_BY_EVENT.items():
+        for matcher_class in bucket.keys():
+            if matcher_class == "tool":
+                # Probe both the generic path (no specific tool) and the
+                # canonical Bash specialization. The latter triggers the
+                # tool-specific splice in available_fields().
+                out.append((event, None))
+                out.append((event, "Bash"))
+            else:
+                out.append((event, None))
+    return out
+
+
+@pytest.mark.parametrize("event,matcher", _all_event_matcher_pairs())
+def test_no_duplicate_paths_for_any_event_matcher(
+    event: str, matcher: str | None,
+) -> None:
+    fields = available_fields(event, matcher)
+    paths = [f["path"] for f in fields]
+    dupes = sorted({p for p in paths if paths.count(p) > 1})
+    assert not dupes, (
+        f"{event}/{matcher!r}: duplicate paths {dupes} in resolved "
+        f"view (likely envelope + event-specific overlap). "
+        f"Full paths: {paths}"
     )

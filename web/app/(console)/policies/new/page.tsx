@@ -1127,8 +1127,8 @@ const LIFECYCLE_LABEL_KO: Record<Lifecycle, string> = {
   setup:                 "최초 셋업 시점",
   notification:          "알림 발송 시점",
   teammate_idle:         "팀메이트 유휴 시점",
-  task_created:          "백그라운드 태스크 생성 시점",
-  task_completed:        "백그라운드 태스크 완료 시점",
+  task_created:          "Task 도구 디스패치 시점",
+  task_completed:        "Task 도구 완료 시점",
   config_change:         "설정 변경 시점",
   worktree_create:       "워크트리 생성 시점",
   worktree_remove:       "워크트리 제거 시점",
@@ -1160,8 +1160,8 @@ const LIFECYCLE_LABEL_EN: Record<Lifecycle, string> = {
   setup:                 "during one-shot environment setup",
   notification:          "when CC raises a notification",
   teammate_idle:         "when a teammate goes idle",
-  task_created:          "when a background task is created",
-  task_completed:        "when a background task completes",
+  task_created:          "when the Task tool dispatches a subagent",
+  task_completed:        "when the Task tool returns",
   config_change:         "when a setting changes",
   worktree_create:       "when a git worktree is created",
   worktree_remove:       "when a git worktree is removed",
@@ -3675,7 +3675,7 @@ function lifecycleCardCopy(
     },
     pre_compact: {
       label: "컨텍스트 컴팩션 직전 (PreCompact)",
-      sub: "컨텍스트 컴팩션 직전에 발동. evidence 체인 보존에 사용합니다.",
+      sub: "컨텍스트 컴팩션 직전에 발동. payload 의 trigger (\"manual\" / \"auto\") 와 custom_instructions (`/compact <지시문>` 으로 입력한 운영자 문자열, 자동 컴팩션이면 빈 값) 를 evidence 체인 보존 / 정책 분기에 사용합니다.",
     },
     pre_final: {
       label: "에이전트 턴 종료 (Stop)",
@@ -3705,7 +3705,7 @@ function lifecycleCardCopy(
     },
     permission_request: {
       label: "권한 요청 (PermissionRequest)",
-      sub: "CC 가 사용자에게 권한 확인을 띄우기 직전. payload 에 tool_name, tool_input, permission_suggestions 가 있고, 정책 stdout 의 hookSpecificOutput.decision 으로 allow/deny 를 덮어쓸 수 있습니다.",
+      sub: "CC 가 사용자에게 권한 확인을 띄우기 직전. payload 에 tool_name, tool_input, permission_suggestions 가 있고, 정책 stdout 의 hookSpecificOutput.permissionRequestResult.behavior (\"allow\" / \"deny\") 로 결정을 덮어쓸 수 있으며 updatedInput / suggestions / message 도 함께 보낼 수 있습니다. (\"ask\" 덮어쓰기는 PreToolUse 전용이라 여기서는 불가합니다.)",
     },
     permission_denied: {
       label: "권한 거부 (PermissionDenied)",
@@ -3713,7 +3713,7 @@ function lifecycleCardCopy(
     },
     user_prompt_expansion: {
       label: "프롬프트 확장 중 (UserPromptExpansion)",
-      sub: "슬래시 커맨드/별칭/import 가 본 프롬프트로 풀리는 동안 발동. payload 에 expansion_type, command_name, command_args, command_source, prompt 가 들어옵니다. 차단 가능, ask 인터럽트는 불가.",
+      sub: "슬래시 커맨드 또는 MCP prompt 가 본 프롬프트로 풀리는 동안 발동. payload 에 expansion_type (\"slash_command\" / \"mcp_prompt\"), command_name, command_args, command_source, prompt 가 들어옵니다. 차단 가능, ask 인터럽트는 불가.",
     },
     post_compact: {
       label: "컴팩션 직후 (PostCompact)",
@@ -3729,35 +3729,35 @@ function lifecycleCardCopy(
     },
     subagent_start: {
       label: "서브에이전트 시작 (SubagentStart)",
-      sub: "Task 도구가 서브에이전트를 spawn 하기 직전. payload 의 agent_id, agent_type 으로 어떤 child 인지 식별 가능. mandate 를 additionalContext 로 주입할 수 있습니다.",
+      sub: "Task 도구가 서브에이전트를 spawn 하기 직전. payload 의 agent_id, agent_type 으로 어떤 child 인지 식별합니다. (CC 가 문서화한 hookSpecificOutput.additionalContext 채널 목록에 SubagentStart 는 포함되지 않습니다. 부모 의도를 child 에 전달하고 싶다면 child 의 SessionStart 훅에서 주입하세요.)",
     },
     stop_failure: {
       label: "에이전트 종료 실패 (StopFailure)",
       sub: "Stop 훅 체인이 오류(비정상 종료 코드, 타임아웃 등) 로 끝났을 때 발동. payload 에 error, error_details, last_assistant_message 가 들어옵니다. 실행 종료 시점이라 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     setup: {
-      label: "최초 셋업 (Setup)",
-      sub: "CC 가 워크스페이스를 처음 또는 리셋 후 부트스트랩할 때 한 번 발동. payload 의 trigger 로 셋업 이유를 받습니다.",
+      label: "워크스페이스 셋업 (Setup)",
+      sub: "CC 가 워크스페이스 셋업을 돌릴 때 한 번 발동. payload 의 trigger (\"init\" / \"maintenance\") 로 어떤 셋업 사이클인지 구분합니다.",
     },
     notification: {
       label: "알림 (Notification)",
-      sub: "CC 가 사용자에게 알림(터미널 벨, 데스크톱 푸시 등) 을 표시하기 직전. payload 에 message, title, notification_type (\"idle\"/\"permission\"/\"completed\" 등) 이 들어옵니다.",
+      sub: "CC 가 사용자에게 알림(터미널 벨, 데스크톱 푸시 등) 을 표시하기 직전. payload 에 message, title, notification_type 이 들어옵니다. notification_type 은 바이너리에서 추출한 8값 enum 입니다: \"idle_prompt\" / \"worker_permission_prompt\" / \"push_notification\" / \"auth_success\" / \"elicitation_complete\" / \"elicitation_response\" / \"computer_use_enter\" / \"computer_use_exit\".",
     },
     teammate_idle: {
       label: "팀메이트 유휴 (TeammateIdle)",
       sub: "팀 모드에서 다른 에이전트가 유휴(다음 작업 대기) 상태로 들어갔을 때. payload 의 teammate_name, team_name 으로 어떤 팀메이트인지 식별합니다.",
     },
     task_created: {
-      label: "백그라운드 태스크 생성 (TaskCreated)",
+      label: "Task 디스패치 (TaskCreated)",
       sub: "Task 도구가 서브에이전트에 작업을 디스패치한 직후 발동. payload 에 task_id, task_subject, task_description, teammate_name, team_name 이 들어옵니다.",
     },
     task_completed: {
-      label: "백그라운드 태스크 완료 (TaskCompleted)",
+      label: "Task 완료 (TaskCompleted)",
       sub: "Task 도구가 결과를 돌려준 직후 발동. payload 에 task_id, task_subject, task_description, teammate_name, team_name 이 들어와 TaskCreated 와 task_id 로 짝지을 수 있습니다.",
     },
     config_change: {
       label: "설정 변경 (ConfigChange)",
-      sub: "CC 가 settings.json 의 변경을 감지하고 새 값을 적용한 직후. payload 의 source (\"userSettings\"/\"projectSettings\"/\"localSettings\"/\"flagSettings\") 와 file_path 로 어느 레이어가 바뀌었는지 알 수 있습니다.",
+      sub: "CC 가 settings.json 의 변경을 감지하고 새 값을 적용한 직후. payload 의 source (\"userSettings\" / \"projectSettings\" / \"localSettings\" / \"flagSettings\" / \"policySettings\") 와 file_path 로 어느 레이어가 바뀌었는지 알 수 있습니다.",
     },
     worktree_create: {
       label: "워크트리 생성 (WorktreeCreate)",
@@ -3777,7 +3777,7 @@ function lifecycleCardCopy(
     },
     file_changed: {
       label: "파일 변경 감지 (FileChanged)",
-      sub: "managed FileChanged matcher 가 잡은 파일이 외부에서 변경됐을 때. payload 의 file_path 와 event (\"created\"/\"modified\"/\"deleted\"/\"renamed\") 로 어떤 변경인지 알 수 있습니다.",
+      sub: "managed FileChanged matcher 가 잡은 파일이 외부에서 변경됐을 때. payload 의 file_path 와 event (chokidar wrapper 가 그대로 전달: \"change\" / \"add\" / \"unlink\") 로 어떤 변경인지 알 수 있습니다.",
     },
     message_display: {
       label: "메시지 표시 (MessageDisplay)",
@@ -3798,7 +3798,7 @@ function lifecycleCardCopy(
     },
     pre_compact: {
       label: "Before context compaction (PreCompact)",
-      sub: "Fires before the runtime compacts the transcript; preserve evidence chains.",
+      sub: "Fires before the runtime compacts the transcript. Payload carries trigger (\"manual\" / \"auto\") and custom_instructions (the operator's string after `/compact <instructions>`; empty when trigger is \"auto\"). Use it to preserve evidence chains or branch on compaction reason.",
     },
     pre_final: {
       label: "When the agent stops (Stop)",
@@ -3828,7 +3828,7 @@ function lifecycleCardCopy(
     },
     permission_request: {
       label: "Permission request (PermissionRequest)",
-      sub: "Right before CC pops a permission prompt. Payload carries tool_name, tool_input, permission_suggestions; hook stdout's hookSpecificOutput.decision can override allow/deny/ask.",
+      sub: "Right before CC pops a permission prompt. Payload carries tool_name, tool_input, permission_suggestions. Override the decision via hookSpecificOutput.permissionRequestResult.behavior (\"allow\" / \"deny\") with optional updatedInput, suggestions, and message. (\"ask\" override is PreToolUse-only and not available here.)",
     },
     permission_denied: {
       label: "Permission denied (PermissionDenied)",
@@ -3836,7 +3836,7 @@ function lifecycleCardCopy(
     },
     user_prompt_expansion: {
       label: "Prompt expansion (UserPromptExpansion)",
-      sub: "Fires while a slash command / alias / import expands into the final prompt. Payload carries expansion_type, command_name, command_args, command_source, prompt. Block is supported; ask cannot interrupt.",
+      sub: "Fires while a slash command or MCP prompt expands into the final prompt. Payload carries expansion_type (\"slash_command\" / \"mcp_prompt\"), command_name, command_args, command_source, prompt. Block is supported; ask cannot interrupt.",
     },
     post_compact: {
       label: "After compaction (PostCompact)",
@@ -3852,7 +3852,7 @@ function lifecycleCardCopy(
     },
     subagent_start: {
       label: "Subagent starting (SubagentStart)",
-      sub: "Fires just before a Task-tool subagent is spawned. Payload carries agent_id, agent_type — inject a mandate via additionalContext to carry parent intent into the child.",
+      sub: "Fires just before a Task-tool subagent is spawned. Payload carries agent_id, agent_type for identification. additionalContext injection into the child is not part of CC's documented hook output channels for this event — if you need to inject context, use SessionStart on the child side.",
     },
     stop_failure: {
       label: "Stop failure (StopFailure)",
@@ -3860,11 +3860,11 @@ function lifecycleCardCopy(
     },
     setup: {
       label: "Workspace setup (Setup)",
-      sub: "Fires once on CC's workspace bootstrap (first run, reset). Payload carries trigger so you can scope on the reason.",
+      sub: "Fires once when CC runs workspace setup. Payload carries trigger (\"init\" / \"maintenance\") so you can scope on the cycle.",
     },
     notification: {
       label: "Notification (Notification)",
-      sub: "Right before CC surfaces a notification (terminal bell, desktop push, …). Payload carries message, title, notification_type (\"idle\"/\"permission\"/\"completed\", …).",
+      sub: "Right before CC surfaces a notification (terminal bell, desktop push, …). Payload carries message, title, notification_type. notification_type is the 8-value enum extracted from the binary: \"idle_prompt\" / \"worker_permission_prompt\" / \"push_notification\" / \"auth_success\" / \"elicitation_complete\" / \"elicitation_response\" / \"computer_use_enter\" / \"computer_use_exit\".",
     },
     teammate_idle: {
       label: "Teammate idle (TeammateIdle)",
@@ -3880,7 +3880,7 @@ function lifecycleCardCopy(
     },
     config_change: {
       label: "Config change (ConfigChange)",
-      sub: "Fires right after CC notices a settings.json change and reloads. Payload carries source (\"userSettings\" / \"projectSettings\" / \"localSettings\" / \"flagSettings\") and file_path so you can scope by layer.",
+      sub: "Fires right after CC notices a settings.json change and reloads. Payload carries source (\"userSettings\" / \"projectSettings\" / \"localSettings\" / \"flagSettings\" / \"policySettings\") and file_path so you can scope by layer.",
     },
     worktree_create: {
       label: "Worktree created (WorktreeCreate)",
@@ -3900,7 +3900,7 @@ function lifecycleCardCopy(
     },
     file_changed: {
       label: "Watched file changed (FileChanged)",
-      sub: "Fires when a file matched by a managed FileChanged matcher is modified outside CC. Payload carries file_path and event (\"created\" / \"modified\" / \"deleted\" / \"renamed\").",
+      sub: "Fires when a file matched by a managed FileChanged matcher is modified outside CC. Payload carries file_path and event — the chokidar wrapper forwards \"change\" / \"add\" / \"unlink\" verbatim (no Posix normalization).",
     },
     message_display: {
       label: "Message displayed (MessageDisplay)",

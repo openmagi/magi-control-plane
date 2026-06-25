@@ -71,8 +71,11 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # for every event × matcher_class pair the runtime supports.
 #
 # D58 — event scope expanded from 8 (pre-D58 verified) to a 30-event
-# candidate surface. CC version anchor: Claude Code 2.1.170, sha
-# 1cda84def004ef3a8f569f8e8284a153a6b98c3a.
+# candidate surface. CC version anchor: Claude Code 2.1.170, SHA-256
+# e903646d8b7a31882a80ecd27569a27d8ac57b3708745f349709632c84117fdf
+# (cask manifest's native digest; SHA-1
+# 8129b0ccb177b2ead72416d9b24ce2478202184d for re-audit greps that
+# prefer the shorter form).
 #
 # Truth source priority (D58-followup, in order):
 #
@@ -324,10 +327,32 @@ _AUDIT_ONLY = ("audit",)
 #      in `src/magi_cp/policy/payload_schemas.py` and mirrored into the
 #      wizard helper copy (`lifecycleCardCopy` in policies/new/page.tsx).
 #
+# Honesty split — binary-pinned vs documentation overlay:
+#   The three signals above cover (a) event NAME, (b) event RUNNER, and
+#   (c) payload field NAMES + types. They do NOT, on their own, anchor
+#   enum value sets or human-readable examples that show up in the
+#   wizard helper copy. Per the D79 review fix:
+#     - Every enum value set surfaced in `payload_schemas.py` is now
+#       either tagged "binary-pinned" with the exact `strings` grep
+#       that extracts it (e.g. Setup.trigger
+#       `k.enum(["init","maintenance"])`, FileChanged.event
+#       `k.enum(["change","add","unlink"])`, Notification.notification_type
+#       8-value literal set), OR explicitly marked "documentation
+#       overlay — exact enum members not pinned by the binary audit"
+#       so authors and reviewers can tell them apart at a glance.
+#     - Display-only example values (e.g. the `example:` key in a
+#       FieldDescriptor) follow the same rule: anchored to a
+#       binary-extracted enum where one exists, otherwise picked as a
+#       plausible operator-facing value (and labeled as such).
+#
 # Anchor for re-audit:
 #   - CC version: 2.1.170 (homebrew cask
 #     `/opt/homebrew/Caskroom/claude-code/2.1.170/claude`)
-#   - SHA-1 of cask binary: 1cda84def004ef3a8f569f8e8284a153a6b98c3a
+#   - SHA-256 of cask binary:
+#       e903646d8b7a31882a80ecd27569a27d8ac57b3708745f349709632c84117fdf
+#     (cask manifest's native digest; also SHA-1
+#     8129b0ccb177b2ead72416d9b24ce2478202184d). Recompute with
+#     `shasum -a 256 /opt/homebrew/Caskroom/claude-code/2.1.170/claude`.
 #   - Re-run audit:
 #         strings /opt/homebrew/Caskroom/claude-code/2.1.170/claude \
 #           | grep -oE 'hook_event_name:"[A-Za-z]+"' | sort -u

@@ -211,6 +211,7 @@ _DISPLAY_LABELS_EN: dict[str, str] = {
     "command_args": "Slash command args",
     "command_source": "Command source",
     "trigger": "Trigger",
+    "custom_instructions": "Operator compaction instructions",
     "compact_summary": "Compaction summary",
     "mcp_server_name": "MCP server name",
     "message": "Message",
@@ -289,6 +290,7 @@ _DISPLAY_LABELS_KO: dict[str, str] = {
     "command_args": "슬래시 커맨드 인자",
     "command_source": "커맨드 출처",
     "trigger": "트리거",
+    "custom_instructions": "수동 컴팩션 지시문",
     "compact_summary": "컴팩션 요약",
     "mcp_server_name": "MCP 서버 이름",
     "message": "메시지",
@@ -670,10 +672,21 @@ _PRE_COMPACT_FIELDS: list[FieldDescriptor] = [
     {
         "path": "trigger",
         "type": "str",
-        "description": "Compaction trigger — `\"manual\"` when the "
-                       "operator ran `/compact`, `\"auto\"` when the "
-                       "runtime hit its compaction threshold.",
+        "description": "Compaction trigger — binary-pinned enum "
+                       "`\"manual\" | \"auto\"`. `\"manual\"` when "
+                       "the operator ran `/compact`, `\"auto\"` when "
+                       "the runtime hit its compaction threshold.",
         "example": "auto",
+    },
+    {
+        "path": "custom_instructions",
+        "type": "str",
+        "description": "Operator-supplied compaction instructions — "
+                       "the string the operator typed after "
+                       "`/compact <instructions>`. Binary-pinned in "
+                       "the PreCompact constructor literal next to "
+                       "`trigger`. Empty when `trigger` is `\"auto\"` "
+                       "(runtime compaction has no operator string).",
     },
 ]
 
@@ -692,25 +705,14 @@ _PRE_COMPACT_FIELDS: list[FieldDescriptor] = [
 # Tool-context observability variants ---------------------------------
 
 _POST_TOOL_USE_FAILURE_FIELDS: list[FieldDescriptor] = [
-    {
-        "path": "tool_name",
-        "type": "str",
-        "description": "The tool that failed (Bash, Read, Edit, "
-                       "WebFetch, mcp__server__name, ...).",
-        "example": "Bash",
-    },
+    # NOTE: `tool_name` and `tool_use_id` are supplied by
+    # `_COMMON_TOOL_ENVELOPE` so they are intentionally omitted here to
+    # avoid duplicate paths in the resolved chip menu.
     {
         "path": "tool_input",
         "type": "dict",
         "description": "The tool input dict CC was about to execute "
                        "when the failure happened.",
-    },
-    {
-        "path": "tool_use_id",
-        "type": "str",
-        "description": "Unique id for THIS tool call. Correlates with "
-                       "the corresponding PreToolUse payload.",
-        "example": "toolu_01ABcdef0123",
     },
     {
         "path": "error",
@@ -751,12 +753,8 @@ _POST_TOOL_BATCH_FIELDS: list[FieldDescriptor] = [
 # Permission gate family ---------------------------------------------
 
 _PERMISSION_REQUEST_FIELDS: list[FieldDescriptor] = [
-    {
-        "path": "tool_name",
-        "type": "str",
-        "description": "The tool CC is about to ask permission for.",
-        "example": "Bash",
-    },
+    # NOTE: `tool_name` is supplied by `_COMMON_TOOL_ENVELOPE` so it is
+    # intentionally omitted here to avoid duplicate paths.
     {
         "path": "tool_input",
         "type": "dict",
@@ -767,28 +765,21 @@ _PERMISSION_REQUEST_FIELDS: list[FieldDescriptor] = [
         "path": "permission_suggestions",
         "type": "list",
         "description": "Runtime-suggested permission strings (e.g. "
-                       "`Bash(git push:*)`) the user can accept "
+                       "`Bash(git *)` or the colon-form `Bash(git:*)` "
+                       "— both grammars appear in the binary's "
+                       "permission templates) the user can accept "
                        "verbatim. Useful for audit / policy override.",
     },
 ]
 
 _PERMISSION_DENIED_FIELDS: list[FieldDescriptor] = [
-    {
-        "path": "tool_name",
-        "type": "str",
-        "description": "The tool whose permission was denied.",
-        "example": "Bash",
-    },
+    # NOTE: `tool_name` and `tool_use_id` are supplied by
+    # `_COMMON_TOOL_ENVELOPE` so they are intentionally omitted here to
+    # avoid duplicate paths in the resolved chip menu.
     {
         "path": "tool_input",
         "type": "dict",
         "description": "The tool input dict that was rejected.",
-    },
-    {
-        "path": "tool_use_id",
-        "type": "str",
-        "description": "Unique id for the denied tool call.",
-        "example": "toolu_01ABcdef0123",
     },
     {
         "path": "reason",
@@ -802,21 +793,33 @@ _PERMISSION_DENIED_FIELDS: list[FieldDescriptor] = [
 
 # Content-flow extensions --------------------------------------------
 
+# NOTE on enum/example provenance for this constructor:
+#   - `expansion_type`: binary-pinned enum extracted via
+#       strings $CC | grep -oE 'expansion_type:k\.enum\(\[[^]]*\]\)'
+#       → `expansion_type:k.enum(["slash_command","mcp_prompt"])`
+#   - `command_source`: field NAME is binary-pinned (sits next to
+#       `command_name` in the UserPromptExpansion constructor literal),
+#       but no `command_source:k.enum([...])` literal exists in the
+#       binary. Bare `"builtin"`/`"user"`/`"project"` strings appear
+#       elsewhere as plausible source labels; treated as documentation
+#       overlay (best-guess), not a verified enum.
 _USER_PROMPT_EXPANSION_FIELDS: list[FieldDescriptor] = [
     {
         "path": "expansion_type",
         "type": "str",
-        "description": "Source of the expansion — one of `\"command\"`, "
-                       "`\"alias\"`, `\"file\"`, `\"argument\"`. Each "
+        "description": "Source of the expansion — binary-pinned enum "
+                       "`\"slash_command\" | \"mcp_prompt\"`. Each "
                        "carries different sibling fields.",
-        "example": "command",
+        "example": "slash_command",
     },
     {
         "path": "command_name",
         "type": "str",
         "description": "Slash-command name when expansion_type is "
-                       "`\"command\"` (e.g. `compact`, `model`).",
-        "example": "compact",
+                       "`\"slash_command\"` (e.g. `compact`, `clear`, "
+                       "`model`). For `\"mcp_prompt\"` this is the "
+                       "MCP prompt id.",
+        "example": "clear",
     },
     {
         "path": "command_args",
@@ -827,8 +830,10 @@ _USER_PROMPT_EXPANSION_FIELDS: list[FieldDescriptor] = [
     {
         "path": "command_source",
         "type": "str",
-        "description": "Where the command definition came from — "
-                       "`\"builtin\"`, `\"user\"`, `\"project\"`.",
+        "description": "String identifying the source of the command "
+                       "(documentation overlay — exact enum members "
+                       "not pinned by the binary audit; observed "
+                       "values include `builtin`, `user`, `project`).",
         "example": "builtin",
     },
     {
@@ -844,9 +849,10 @@ _POST_COMPACT_FIELDS: list[FieldDescriptor] = [
     {
         "path": "trigger",
         "type": "str",
-        "description": "Compaction trigger — `\"manual\"` when the "
-                       "operator ran `/compact`, `\"auto\"` when the "
-                       "runtime hit its compaction threshold.",
+        "description": "Compaction trigger — binary-pinned enum "
+                       "`\"manual\" | \"auto\"`. `\"manual\"` when "
+                       "the operator ran `/compact`, `\"auto\"` when "
+                       "the runtime hit its compaction threshold.",
         "example": "auto",
     },
     {
@@ -876,8 +882,11 @@ _ELICITATION_FIELDS: list[FieldDescriptor] = [
     {
         "path": "mode",
         "type": "str",
-        "description": "Elicitation mode — `\"input\"` (free text), "
-                       "`\"select\"`, `\"confirm\"`, etc.",
+        "description": "Elicitation mode — binary-pinned enum "
+                       "`\"form\" | \"url\"` (extracted via "
+                       "`strings $CC | grep -oE 'mode:k\\.enum\\(\\[[^]]*\\]\\)'` "
+                       "filtered to the Elicitation constructor).",
+        "example": "form",
     },
     {
         "path": "url",
@@ -917,13 +926,17 @@ _ELICITATION_RESULT_FIELDS: list[FieldDescriptor] = [
         "path": "mode",
         "type": "str",
         "description": "Elicitation mode (mirrors the Elicitation "
-                       "field).",
+                       "field; binary-pinned `\"form\" | \"url\"`).",
+        "example": "form",
     },
     {
         "path": "action",
         "type": "str",
-        "description": "What the user did — `\"accept\"`, "
-                       "`\"decline\"`, or `\"cancel\"`.",
+        "description": "What the user did — binary-pinned enum "
+                       "`\"accept\" | \"decline\" | \"cancel\"` "
+                       "(extracted via `strings $CC | grep -oE "
+                       "'action:k\\.enum\\(\\[[^]]*\\]\\)'` filtered "
+                       "to the ElicitationResult constructor).",
         "example": "accept",
     },
     {
@@ -980,14 +993,19 @@ _STOP_FAILURE_FIELDS: list[FieldDescriptor] = [
 
 # Lifecycle / observability surface ----------------------------------
 
+# NOTE on enum provenance: `trigger` is binary-pinned via
+#   strings $CC | grep -oE 'trigger:k\.enum\(\[[^]]*\]\)'
+#   → `trigger:k.enum(["init","maintenance"])` (Setup constructor).
+# The pre-D79 `first_run`/`reset`/`CLI flag` framing was unsourced
+# extrapolation and has been removed.
 _SETUP_FIELDS: list[FieldDescriptor] = [
     {
         "path": "trigger",
         "type": "str",
-        "description": "What initiated the workspace setup — typically "
-                       "`\"first_run\"`, `\"reset\"`, or a CLI flag "
-                       "string.",
-        "example": "first_run",
+        "description": "What initiated the workspace setup — "
+                       "binary-pinned enum `\"init\" | "
+                       "\"maintenance\"`.",
+        "example": "init",
     },
 ]
 
@@ -1008,9 +1026,16 @@ _NOTIFICATION_FIELDS: list[FieldDescriptor] = [
     {
         "path": "notification_type",
         "type": "str",
-        "description": "Notification kind — `\"idle\"`, "
-                       "`\"permission\"`, `\"completed\"`, etc.",
-        "example": "idle",
+        "description": "Notification kind — binary-pinned 8-value set "
+                       "extracted via `strings $CC | grep -oE "
+                       "'notificationType:\"[a-z_]+\"'`: "
+                       "`\"auth_success\" | \"computer_use_enter\" | "
+                       "\"computer_use_exit\" | "
+                       "\"elicitation_complete\" | "
+                       "\"elicitation_response\" | \"idle_prompt\" | "
+                       "\"push_notification\" | "
+                       "\"worker_permission_prompt\"`.",
+        "example": "idle_prompt",
     },
 ]
 
@@ -1098,9 +1123,13 @@ _CONFIG_CHANGE_FIELDS: list[FieldDescriptor] = [
     {
         "path": "source",
         "type": "str",
-        "description": "Which settings layer changed — "
-                       "`\"userSettings\"`, `\"projectSettings\"`, "
-                       "`\"localSettings\"`, `\"flagSettings\"`.",
+        "description": "Which settings layer changed — binary-pinned "
+                       "5-value enum extracted via `strings $CC | "
+                       "grep -oE 'source:k\\.enum\\(\\[[^]]*\\]\\)'` "
+                       "filtered to the ConfigChange constructor: "
+                       "`\"userSettings\" | \"projectSettings\" | "
+                       "\"localSettings\" | \"flagSettings\" | "
+                       "\"policySettings\"`.",
         "example": "projectSettings",
     },
     {
@@ -1206,9 +1235,16 @@ _FILE_CHANGED_FIELDS: list[FieldDescriptor] = [
     {
         "path": "event",
         "type": "str",
-        "description": "Filesystem event kind — `\"created\"`, "
-                       "`\"modified\"`, `\"deleted\"`, `\"renamed\"`.",
-        "example": "modified",
+        "description": "Filesystem event kind — binary-pinned chokidar "
+                       "wrapper enum extracted via `strings $CC | "
+                       "grep -oE 'event:k\\.enum\\(\\[[^]]*\\]\\)'` "
+                       "→ `\"change\" | \"add\" | \"unlink\"` (the "
+                       "watcher emits these three; `\"addDir\"` and "
+                       "`\"unlinkDir\"` are not wired through to the "
+                       "FileChanged hook payload at 2.1.170). The "
+                       "runtime forwards the chokidar verb verbatim — "
+                       "no Posix normalization layer.",
+        "example": "change",
     },
 ]
 
