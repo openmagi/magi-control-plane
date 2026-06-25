@@ -3,22 +3,35 @@
 /**
  * P7 (issue #1): interactive CC hook payload field chips.
  *
- * Two variants share the same chip-row visual:
+ * Four variants share the same chip-row visual:
  *
- *   variant="path"       : chips are <button>s that insert the path
- *                          string at the cursor of `targetTextareaId`.
- *                          Used in the regex / llm_critic forms (the
- *                          author wants the path itself in their
- *                          pattern / NL prompt).
- *   variant="shacl-stub" : chips insert a SHACL `sh:PropertyShape`
- *                          stub (or `sh:NodeShape` for dict / list
- *                          kinds) anchored on the chip's path under
- *                          the canonical `magi:` namespace. Drops the
- *                          stub at the cursor so the author extends a
- *                          shape that is GUARANTEED to find a focus
- *                          node at runtime, closes the vacuous-
- *                          satisfaction footgun the inert <select>
- *                          previously promised but didn't deliver.
+ *   variant="path"        : chips are <button>s that insert the raw
+ *                           path string at the cursor of
+ *                           `targetTextareaId`. Legacy default still
+ *                           used by step-ref / generic forms.
+ *   variant="llm-marker"  : D82c. LLM critic textarea. Chips insert
+ *                           `{<path>}` at the cursor so the runtime
+ *                           marker substitutor (cloud verify_inline)
+ *                           recognises the field and splices in the
+ *                           live payload value before the LLM critic
+ *                           sees the prompt. Without the brace marker
+ *                           the operator can't tell where one variable
+ *                           ends and another begins.
+ *   variant="regex-target": D82c. Regex condition split into target-
+ *                           field picker + pattern textarea. The chip
+ *                           click sets the value of a separate `<select>`
+ *                           identified by `targetSelectId`; the pattern
+ *                           textarea is left alone (curly markers would
+ *                           break the regex).
+ *   variant="shacl-stub"  : chips insert a SHACL `sh:PropertyShape`
+ *                           stub (or `sh:NodeShape` for dict / list
+ *                           kinds) anchored on the chip's path under
+ *                           the canonical `magi:` namespace. Drops the
+ *                           stub at the cursor so the author extends a
+ *                           shape that is GUARANTEED to find a focus
+ *                           node at runtime, closes the vacuous-
+ *                           satisfaction footgun the inert <select>
+ *                           previously promised but didn't deliver.
  *
  * Why a button (not a <span>): P1 #7 in the review explicitly calls
  * out the keyboard/aria gap. `<button>` is in the tab order, lands
@@ -44,7 +57,7 @@ export type ChipField = {
   display_label_en?: string
 }
 
-type Variant = "path" | "shacl-stub"
+type Variant = "path" | "shacl-stub" | "llm-marker" | "regex-target"
 
 interface Props {
   fields: ChipField[]
@@ -52,6 +65,9 @@ interface Props {
   variant: Variant
   introText: string
   locale: "ko" | "en"
+  /** D82c: for variant="regex-target", id of the `<select>` whose
+   * value the chip click should set. Ignored by other variants. */
+  targetSelectId?: string
 }
 
 const MAGI_NS_PREFIX_BLOCK = `@prefix sh:   <http://www.w3.org/ns/shacl#> .
@@ -96,10 +112,33 @@ function spliceIntoTextarea(
 }
 
 export default function PayloadFieldChipsClient({
-  fields, targetTextareaId, variant, introText, locale,
+  fields, targetTextareaId, variant, introText, locale, targetSelectId,
 }: Props) {
   const onChipActivate = useCallback(
     (f: ChipField) => {
+      // D82c: variant="regex-target" routes the chip click to a
+      // separate <select> instead of splicing into a textarea. We
+      // can't curly-wrap the regex pattern (the brace would break
+      // the pattern compile), so the chip becomes the target-field
+      // picker AND the pattern textarea stays untouched.
+      if (variant === "regex-target") {
+        const id = targetSelectId ?? ""
+        const sel = document.getElementById(id)
+        if (sel instanceof HTMLSelectElement) {
+          // Add an option lazily when the chip-picked path isn't in
+          // the static <option> list (e.g. operator-typed MCP slugs).
+          const existing = Array.from(sel.options).some((o) => o.value === f.path)
+          if (!existing) {
+            const opt = document.createElement("option")
+            opt.value = f.path
+            opt.textContent = f.path
+            sel.appendChild(opt)
+          }
+          sel.value = f.path
+          sel.dispatchEvent(new Event("change", { bubbles: true }))
+        }
+        return
+      }
       const el = document.getElementById(targetTextareaId)
       if (
         !(el instanceof HTMLTextAreaElement) &&
@@ -107,12 +146,20 @@ export default function PayloadFieldChipsClient({
       ) {
         return
       }
-      const insertion = variant === "shacl-stub"
-        ? buildShaclStub(f)
-        : f.path
+      let insertion: string
+      if (variant === "shacl-stub") {
+        insertion = buildShaclStub(f)
+      } else if (variant === "llm-marker") {
+        // D82c: wrap path in curly braces so the runtime marker
+        // substitutor recognises it and the operator can SEE where
+        // the variable ends in the rendered prompt.
+        insertion = `{${f.path}}`
+      } else {
+        insertion = f.path
+      }
       spliceIntoTextarea(el, insertion)
     },
-    [targetTextareaId, variant],
+    [targetTextareaId, variant, targetSelectId],
   )
 
   if (fields.length === 0) return null

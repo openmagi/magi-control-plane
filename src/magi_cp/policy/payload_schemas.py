@@ -74,6 +74,7 @@ under the chosen (event, matcher)). Anything more semantic is on the
 author.
 """
 from __future__ import annotations
+import re
 from typing import Literal, TypedDict
 
 
@@ -773,6 +774,104 @@ def _flatten_payload(
         if isinstance(v, dict):
             flat.update(_flatten_payload(v, prefix=f"{key}."))
     return flat
+
+
+# ── D82c: {marker} substitution for inline llm_critic criteria ─────
+#
+# Authors compose llm_critic criteria with a curly-brace marker syntax
+# borrowed from f-strings: `{tool_response.output}` inside the criterion
+# is replaced with the actual value of that path inside the CC stdin
+# payload BEFORE the prompt reaches the LLM. The marker rules:
+#
+#   - Path syntax: dotted lookups (`a.b.c`), same as the SHACL chip row.
+#   - Value typing: scalars stringify, dict / list values serialize to
+#     compact JSON so the LLM sees a readable form (Python repr would
+#     leak `True/False/None` rather than `true/false/null` and surface
+#     `'` instead of `"` for strings).
+#   - Missing path: substitutes `(no <field_path> available)` so the
+#     surrounding prose stays grammatical. The runtime never leaves
+#     literal `{...}` braces in the prompt because the LLM would treat
+#     them as Python-style format placeholders ("forgot to render") and
+#     hallucinate the missing value.
+#   - Unbalanced / malformed markers: left untouched. We only substitute
+#     a span when there is a matching `}` AND the captured key resolves
+#     to a valid identifier-style path.
+#
+# Reused by /verify_inline (cloud llm_critic dispatch) and by any future
+# in-process critic runner (e.g. a `magi-cp gate` local llm_critic mode).
+
+_MARKER_RX = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}")
+
+
+def _resolve_dotted_path(payload: dict | None, path: str) -> object | None:
+    """Walk a dotted path through a nested dict. Returns the resolved
+    value, or ``None`` when any segment is missing (callers distinguish
+    "missing" from "stored value is None" via the dedicated `_MISSING`
+    sentinel below)."""
+    if not isinstance(payload, dict):
+        return _MISSING
+    cur: object = payload
+    for seg in path.split("."):
+        if not isinstance(cur, dict) or seg not in cur:
+            return _MISSING
+        cur = cur[seg]
+    return cur
+
+
+_MISSING = object()
+
+
+def _format_value_for_prompt(val: object) -> str:
+    """Render a payload value as a human-readable string for the LLM
+    prompt. Dicts / lists JSON-serialize so the model sees `"command"`
+    not `'command'`; bools render `True/False` (English, not lowercase
+    json) because the surrounding prose is English."""
+    import json as _json
+
+    if isinstance(val, (dict, list)):
+        try:
+            return _json.dumps(val, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(val)
+    if isinstance(val, str):
+        return val
+    return str(val)
+
+
+def interpolate_payload_markers(
+    text: str, payload: dict | None,
+) -> str:
+    """Replace `{field.path}` markers in `text` with values lifted from
+    the CC stdin `payload`.
+
+    Used by the inline `llm_critic` evaluator so an author-written
+    criterion like
+
+        "Does {tool_response.output} contain PII?"
+
+    becomes
+
+        "Does <the actual tool output text> contain PII?"
+
+    BEFORE the prompt reaches the LLM. Missing paths render as
+    `(no <field_path> available)` so the prose stays grammatical and
+    the model isn't left holding literal curly braces (which it would
+    interpret as a forgotten format placeholder and try to "render").
+
+    Unmatched / malformed markers (no closing brace, non-identifier
+    inside) are left exactly as authored; the regex only consumes
+    spans that look like real dotted-path markers."""
+    if not text:
+        return text
+
+    def _sub(m: "re.Match[str]") -> str:
+        path = m.group(1)
+        val = _resolve_dotted_path(payload, path)
+        if val is _MISSING:
+            return f"(no {path} available)"
+        return _format_value_for_prompt(val)
+
+    return _MARKER_RX.sub(_sub, text)
 
 
 def lift_payload_to_data_graph(

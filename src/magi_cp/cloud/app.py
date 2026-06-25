@@ -1357,13 +1357,24 @@ def create_app(
                     "policy authored but runtime evaluation deferred to HITL.",
                 ]
             else:
+                # D82c: substitute `{field.path}` markers in the criterion
+                # with values lifted from the live CC stdin payload BEFORE
+                # the prompt reaches the LLM. Missing paths render as
+                # `(no <field_path> available)` so the prose stays
+                # grammatical instead of leaking literal `{...}` braces.
+                from magi_cp.policy.payload_schemas import (
+                    interpolate_payload_markers,
+                )
+                resolved_criterion = interpolate_payload_markers(
+                    req.criterion, req.payload,
+                )
                 # Lightweight one-call yes/no critic. The compiler-side
                 # provider already handles auth + timeout; we use it for
                 # judgment too.
                 prompt = (
                     "You are a strict gate. Reply with exactly YES or NO on "
                     "the first line, then a one-sentence rationale.\n\n"
-                    f"CRITERION: {req.criterion}\n\n"
+                    f"CRITERION: {resolved_criterion}\n\n"
                     f"PAYLOAD:\n{payload_text[:4000]}"
                 )
                 try:

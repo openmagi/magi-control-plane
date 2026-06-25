@@ -728,6 +728,11 @@ interface WizardState {
   fetchDomain?: string              // fetch_domain
   allowlist?: string                // domain_allowlist (csv)
   pattern?: string                  // regex
+  // D82c: regex condition splits into target field path + pattern.
+  // Default for legacy / migrated states is "tool_response.output"
+  // (the after_tool_use case), set by the IR-to-wizard adapter so
+  // existing { pattern } shapes round-trip without state loss.
+  regexFieldPath?: string           // regex (chip-picked or freeform)
   llmCriterion?: string             // llm_critic
   evidenceRefs?: string[]           // evidence_ref (multi)
   shaclTtl?: string                 // shacl
@@ -2036,6 +2041,11 @@ async function saveWizard(formData: FormData): Promise<void> {
     fetchDomain: String(formData.get("fetchDomain") ?? "").trim() || undefined,
     allowlist: String(formData.get("allowlist") ?? "").trim() || undefined,
     pattern: String(formData.get("pattern") ?? "").trim() || undefined,
+    // D82c: regex condition picker, chip-picked or default-typed field
+    // path the runtime should run the pattern against. Empty default
+    // ("tool_response.output") is supplied client-side in the <select>
+    // so this carries through even when the operator never touches it.
+    regexFieldPath: String(formData.get("regexFieldPath") ?? "").trim() || undefined,
     llmCriterion: String(formData.get("llmCriterion") ?? "").trim() || undefined,
     evidenceRefs: _evidenceRefsKept,
     shaclTtl: String(formData.get("shaclTtl") ?? "").trim() || undefined,
@@ -2881,6 +2891,7 @@ function buildWizardHref(state: WizardState, step: number): string {
   if (state.fetchDomain) params.set("fetchDomain", state.fetchDomain)
   if (state.allowlist) params.set("allowlist", state.allowlist)
   if (state.pattern) params.set("pattern", state.pattern)
+  if (state.regexFieldPath) params.set("regexFieldPath", state.regexFieldPath)
   if (state.llmCriterion) params.set("llmCriterion", state.llmCriterion)
   if (state.evidenceRefs && state.evidenceRefs.length > 0) {
     params.set("evidence_refs", state.evidenceRefs.join(","))
@@ -2915,6 +2926,7 @@ function HiddenState({ state }: { state: WizardState }) {
       {state.fetchDomain && <input type="hidden" name="fetchDomain" value={state.fetchDomain} />}
       {state.allowlist && <input type="hidden" name="allowlist" value={state.allowlist} />}
       {state.pattern && <input type="hidden" name="pattern" value={state.pattern} />}
+      {state.regexFieldPath && <input type="hidden" name="regexFieldPath" value={state.regexFieldPath} />}
       {state.llmCriterion && <input type="hidden" name="llmCriterion" value={state.llmCriterion} />}
       {state.evidenceRefs && state.evidenceRefs.length > 0 && (
         <input type="hidden" name="evidence_refs" value={state.evidenceRefs.join(",")} />
@@ -3201,6 +3213,11 @@ function GuidedWizard({
     fetchDomain: searchParams.fetchDomain || draftState?.fetchDomain,
     allowlist: searchParams.allowlist || draftState?.allowlist,
     pattern: searchParams.pattern || draftState?.pattern,
+    // D82c: regex condition's target field path. Migration: legacy URLs
+    // and draft states arrive WITHOUT regexFieldPath set; the form's
+    // <select> defaultValue lands "tool_response.output" so the round
+    // trip is byte-stable for the most common after_tool_use case.
+    regexFieldPath: searchParams.regexFieldPath || draftState?.regexFieldPath,
     llmCriterion: searchParams.llmCriterion || draftState?.llmCriterion,
     evidenceRefs: _prunedEvidenceRefs,
     shaclTtl: searchParams.shaclTtl || draftState?.shaclTtl,
@@ -4004,13 +4021,20 @@ function Step2ToolScope({
  * node at runtime (the vacuous-satisfaction failure mode P7 was
  * built to eliminate). */
 function PayloadFieldChips({
-  fields, locale, intro, targetTextareaId, variant,
+  fields, locale, intro, targetTextareaId, variant, targetSelectId,
 }: {
   fields: PayloadFieldDescriptor[]
   locale: "ko" | "en"
   intro?: string
   targetTextareaId: string
-  variant: "path" | "shacl-stub"
+  // D82c: two new variants. "llm-marker" wraps with curly braces so
+  // the runtime marker substitutor recognises the field (and the
+  // operator can see where the variable ends). "regex-target" routes
+  // the chip click to a separate <select id={targetSelectId}> so the
+  // pattern textarea stays clean of curly braces (which would break
+  // the regex compile).
+  variant: "path" | "shacl-stub" | "llm-marker" | "regex-target"
+  targetSelectId?: string
 }) {
   if (fields.length === 0) return null
   const ko = locale === "ko"
@@ -4024,6 +4048,7 @@ function PayloadFieldChips({
       variant={variant}
       introText={introText}
       locale={locale}
+      targetSelectId={targetSelectId}
     />
   )
 }
@@ -4336,12 +4361,47 @@ function Step3Condition({
                 {k === "regex" && (
                   <div>
                     <FieldLabel>{ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}</FieldLabel>
+                    {/* D82c: regex condition splits into target field +
+                        pattern. Chip clicks set the <select> value; the
+                        pattern textarea is left untouched so curly braces
+                        can't accidentally land in the regex source. */}
                     <PayloadFieldChips
                       fields={payloadFields}
                       locale={locale}
+                      intro={ko
+                        ? "검사할 필드 (클릭하면 위 선택 박스에 설정):"
+                        : "Which field to match (click to set the picker above):"}
                       targetTextareaId="w-regex-pattern"
-                      variant="path"
+                      variant="regex-target"
+                      targetSelectId="w-regex-field-path"
                     />
+                    <div className="mb-2">
+                      <FieldLabel>{ko ? "검사할 필드" : "Field to match"}</FieldLabel>
+                      <select
+                        id="w-regex-field-path"
+                        name="regexFieldPath"
+                        defaultValue={state.regexFieldPath ?? "tool_response.output"}
+                        data-testid="step3-regex-field-path"
+                        className={inputCls()}
+                      >
+                        {payloadFields.map((pf) => (
+                          <option key={pf.path} value={pf.path}>
+                            {pf.path}
+                          </option>
+                        ))}
+                        {/* Fallback: if the in-state field_path is not in
+                            the static list (legacy migration / MCP slug),
+                            still render it as an option so the value
+                            round-trips. */}
+                        {state.regexFieldPath
+                          && !payloadFields.some((pf) => pf.path === state.regexFieldPath)
+                          && (
+                            <option value={state.regexFieldPath}>
+                              {state.regexFieldPath}
+                            </option>
+                          )}
+                      </select>
+                    </div>
                     <SteeringAwareField
                       kind="regex"
                       locale={locale}
@@ -4371,14 +4431,27 @@ function Step3Condition({
                 {k === "llm_critic" && (
                   <div>
                     <FieldLabel>{ko ? "LLM critic 기준" : "LLM critic criterion"}</FieldLabel>
+                    {/* D82c: Yes/No guide. Operators tend to write open-
+                        ended prompts that produce inconsistent verdicts.
+                        Anchor the criterion as a single yes/no question
+                        (Yes=pass, No=fail) so the LLM head check is
+                        deterministic. */}
+                    <p
+                      data-testid="step3-llm-critic-guide"
+                      className="mb-1.5 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]"
+                    >
+                      {ko
+                        ? "예/아니오로 답할 수 있는 질문으로 작성하세요. 예 = 정책 통과, 아니오 = 실패."
+                        : "Write a question that can be answered Yes or No. Yes = the policy passes, No = it fails."}
+                    </p>
                     <PayloadFieldChips
                       fields={payloadFields}
                       locale={locale}
                       intro={ko
-                        ? "기준에서 참조 가능한 필드 (클릭하면 삽입):"
-                        : "Fields you can reference in your criterion (click to insert):"}
+                        ? "기준에서 참조 가능한 필드 (클릭하면 {경로} 형태로 삽입):"
+                        : "Fields you can reference in your criterion (click to insert as {path}):"}
                       targetTextareaId={`w-llm-${k}`}
-                      variant="path"
+                      variant="llm-marker"
                     />
                     <SteeringAwareField
                       kind="llm_critic"
@@ -4394,8 +4467,8 @@ function Step3Condition({
                       rows={3}
                       name="llmCriterion"
                       placeholder={ko
-                        ? "예: 출력에 사용자가 묻지 않은 추측이 포함되어 있는가?"
-                        : "e.g. Does the output contain a guess the user did not ask for?"}
+                        ? "예: 출력에 개인정보가 포함되어 있나요?"
+                        : "e.g. Does the answer cite at least one source from {transcript_path}?"}
                       monospace
                     />
                     {step3ErrKind === "llm_critic" && step3ErrHelper && (

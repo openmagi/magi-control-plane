@@ -60,10 +60,33 @@ describe("PayloadFieldChipsClient — D64 friendly label invariants", () => {
   })
 
   it("click-to-insert routes through the raw path (NOT the friendly label)", () => {
-    // The onChipActivate callback inserts `f.path` for variant=path
-    // and the SHACL stub builder substitutes the raw path into the
-    // turtle stub. Either way the friendly label NEVER gets inserted.
-    expect(src).toMatch(/insertion = variant === "shacl-stub"\s*\?\s*buildShaclStub\(f\)\s*:\s*f\.path/)
+    // The onChipActivate callback inserts the raw path for variants
+    // path / llm-marker (the marker wraps the same raw path in
+    // curly braces) and shacl-stub substitutes the raw path into
+    // the turtle stub. Either way the friendly label NEVER gets
+    // inserted at the cursor.
+    expect(src).toMatch(/insertion = f\.path/)
+    expect(src).toMatch(/insertion = buildShaclStub\(f\)/)
+  })
+
+  it("D82c: variant='llm-marker' wraps path in curly braces", () => {
+    // LLM critic textarea needs `{tool_response.output}` so the
+    // runtime marker substitutor recognises the field AND so the
+    // operator can SEE where the variable ends.
+    expect(src).toMatch(/variant === "llm-marker"/)
+    expect(src).toMatch(/insertion = `\{\$\{f\.path\}\}`/)
+  })
+
+  it("D82c: variant='regex-target' routes click to a separate <select>", () => {
+    // Regex pattern textarea is left untouched (curly braces would
+    // break the pattern); the chip sets the value of a separate
+    // <select id={targetSelectId}> instead.
+    expect(src).toMatch(/variant === "regex-target"/)
+    expect(src).toMatch(/targetSelectId/)
+    expect(src).toMatch(/HTMLSelectElement/)
+    // Dispatches a change event so React form bindings pick up the
+    // new value without a manual rebind.
+    expect(src).toMatch(/new Event\("change", \{ bubbles: true \}\)/)
   })
 
   it("exposes data-field-path on the chip for tests / CSS hooks", () => {
