@@ -99,16 +99,30 @@ type Row =
 
 function buildRows(query: string): Row[] {
   const trimmed = query.trim()
-  // Empty query: show the top 5 suggested built-ins.
+  // Empty query: show the FULL built-in list, with the top 5
+  // suggestions surfaced first so the most-common picks stay at the
+  // top of the scroll. The dropdown container already has max-h-72 +
+  // overflow-y-auto so the remaining ~12 entries are reachable by
+  // scrolling. The earlier 5-only slice hid Task / MultiEdit /
+  // NotebookRead / BashOutput / KillBash / ExitPlanMode / AskUser from
+  // first-time visitors.
   if (!trimmed) {
-    return CC_TOP_SUGGESTIONS.map((name) => {
+    const seen = new Set<string>()
+    const ordered: Row[] = []
+    for (const name of CC_TOP_SUGGESTIONS) {
       const entry = findCcBuiltinTool(name)
-      // The CC_TOP_SUGGESTIONS list is hardcoded to names guaranteed
-      // present in CC_BUILTIN_TOOLS, so this branch should never miss.
-      // We narrow the type defensively rather than asserting.
-      if (entry) return { kind: "builtin", entry } as Row
-      return null
-    }).filter((r): r is Row => r !== null)
+      if (entry && !seen.has(entry.name)) {
+        ordered.push({ kind: "builtin", entry })
+        seen.add(entry.name)
+      }
+    }
+    for (const entry of filterCcBuiltins("")) {
+      if (!seen.has(entry.name)) {
+        ordered.push({ kind: "builtin", entry })
+        seen.add(entry.name)
+      }
+    }
+    return ordered
   }
   const matches = filterCcBuiltins(trimmed)
   const builtinRows: Row[] = matches.map((entry) => ({ kind: "builtin", entry }))

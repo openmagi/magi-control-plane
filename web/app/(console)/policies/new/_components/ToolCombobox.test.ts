@@ -101,8 +101,15 @@ describe("ToolCombobox — Step 2 single autocomplete (D70 / D71)", () => {
     expect(src).toMatch(/aria-labelledby=\{ariaLabelledBy\}/)
   })
 
-  it("empty input falls back to CC_TOP_SUGGESTIONS for the dropdown", () => {
-    expect(src).toMatch(/CC_TOP_SUGGESTIONS\.map/)
+  it("empty input lists CC_TOP_SUGGESTIONS first then the rest of the catalog", () => {
+    // D71+ hotfix: dropdown shows the full built-in list on empty
+    // query, with the top 5 surfaced first. The container scrolls
+    // (max-h-72 overflow-y-auto) so the remaining entries (Task /
+    // MultiEdit / NotebookRead / BashOutput / KillBash / ExitPlanMode
+    // / AskUser) are reachable. The earlier 5-only slice hid them
+    // from first-time visitors.
+    expect(src).toContain("CC_TOP_SUGGESTIONS")
+    expect(src).toMatch(/filterCcBuiltins\(""\)/)
   })
 
   it("non-empty query goes through filterCcBuiltins (substring match)", () => {
