@@ -124,10 +124,12 @@ def test_put_rejects_id_mismatch(client):
 
 
 def test_put_rejects_illegal_matrix_combo(client):
-    # D31: PostToolUse + Bash + block is illegal (post-event can't block).
+    # D82d — PostToolUse + Bash + block is now LEGAL (CC retry-feedback
+    # channel). ask stays illegal on post-tool events because there is
+    # no interactive surface to interrupt to after the tool ran.
     body = _valid_policy(
         trigger={"host": "claude-code", "event": "PostToolUse", "matcher": "Bash"},
-        action="block",
+        action="ask",
     )
     r = _put(client, "legal-filing/v1", body)
     assert r.status_code == 400

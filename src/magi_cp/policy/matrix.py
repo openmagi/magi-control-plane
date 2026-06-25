@@ -243,19 +243,35 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 #   inject_context. _AUDIT_ONLY_WILDCARD_EVENTS retains only the events
 #   whose payload genuinely has no tool name to filter on.
 #
-#   block + ask stay narrow: blocking only fires on pre-event channels
-#   the runtime can still interrupt (PreToolUse, UserPromptSubmit,
-#   PreCompact, PermissionRequest, Elicitation); `ask` requires a
-#   routable interactive surface (PreToolUse, UserPromptSubmit,
-#   PermissionRequest, Elicitation). PostToolUse is NOT registered for
-#   block — the prior comment claimed "PostToolUse causes a retry
-#   feedback loop" as a blocking channel, but `_build_legal()` never
-#   registers (PostToolUse, *, block). A future audit reading the
-#   comment alone would conclude block is exposed and start hunting for
-#   the missing wiring. The matrix's actual stance is: PostToolUse +
-#   block is reserved for a future cycle (CC's PostToolUse decision
-#   channel can technically request a retry via deny, but the matrix
-#   does not surface that yet).
+#   block + ask stay narrow: ask requires a routable interactive
+#   surface (PreToolUse, UserPromptSubmit, PermissionRequest,
+#   Elicitation) and is intentionally NOT registered on PostToolUse*
+#   events — by the time the tool ran, an "ask a human" interrupt
+#   leaves no surface the runtime can usefully route to.
+#
+# D82d — PostToolUse / PostToolUseFailure / PostToolBatch admit
+#   block as a 4th gate action. CC's hook stdout JSON contract on
+#   these three events accepts `{"decision": "block", "reason": "…"}`
+#   and surfaces the reason as a retry-feedback message back to the
+#   model. This is a real action surface today's matrix narrowly
+#   refused; the prior "PostToolUse cannot block — the tool already
+#   ran" wording conflated "cannot retract the call" (true) with
+#   "cannot signal the model" (false). The matcher set follows the
+#   shape of each event's payload:
+#     PostToolUse        → per-tool (tool / mcp_tool / tool_alt) — the
+#                          gate decision is scoped to one named tool.
+#     PostToolUseFailure → per-tool (tool / mcp_tool) — failure
+#                          recovery scripts target a specific tool.
+#                          tool_alt stays excluded because batching
+#                          the retry across multiple tools is what
+#                          PostToolBatch is for.
+#     PostToolBatch      → wildcard only — the batch event covers the
+#                          whole turn's tool calls, no single named
+#                          tool to scope to. block here asks the model
+#                          to redo the whole batch with the reason.
+#   block stays illegal on Stop / SessionEnd / SubagentStop /
+#   TaskCompleted — by the time those fire there is no downstream
+#   session turn for the retry-feedback message to land in.
 _BLOCK_ASK_AUDIT = ("block", "ask", "audit")
 _BLOCK_AUDIT = ("block", "audit")
 _AUDIT_ONLY = ("audit",)
@@ -366,12 +382,37 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
     for kls in (MatcherClass.tool, MatcherClass.mcp_tool, MatcherClass.tool_alt):
         out.add(("PreToolUse", kls, "input_rewrite"))
 
-    # PostToolUse — tool already ran; only audit is legal. (strip will
-    # land here in a follow-up once verifier-protocol mutation lands.)
+    # PostToolUse — tool already ran. audit is legal on every matcher
+    # class; D82d also admits block on per-tool matchers so operators
+    # can author "tell the model the result is unusable and let it
+    # retry with this reason" via CC's PostToolUse decision channel
+    # (stdout JSON `{"decision":"block","reason":"…"}` surfaces the
+    # reason to the model as a retry-feedback message). Wildcard +
+    # block is intentionally left off: a "block every PostToolUse"
+    # rule would force a retry on every tool call in the session,
+    # which is rarely the operator's intent.
     out.add(("PostToolUse", MatcherClass.tool, "audit"))
     out.add(("PostToolUse", MatcherClass.mcp_tool, "audit"))
     out.add(("PostToolUse", MatcherClass.tool_alt, "audit"))
     out.add(("PostToolUse", MatcherClass.wildcard, "audit"))
+    for kls in (
+        MatcherClass.tool, MatcherClass.mcp_tool, MatcherClass.tool_alt,
+    ):
+        out.add(("PostToolUse", kls, "block"))
+
+    # D82d — PostToolUseFailure / PostToolBatch admit block for the
+    # same retry-feedback channel. The matcher set differs per event:
+    #   PostToolUseFailure → per-tool (tool / mcp_tool). The failure
+    #     surfaces a specific tool name; tool_alt stays excluded
+    #     because authoring "retry on failure of any of A | B | C"
+    #     is what PostToolBatch is for.
+    #   PostToolBatch → wildcard only. The event covers the whole
+    #     turn's tool calls; there is no single named tool to scope
+    #     to. block here asks the model to redo the whole batch with
+    #     the supplied reason.
+    for kls in (MatcherClass.tool, MatcherClass.mcp_tool):
+        out.add(("PostToolUseFailure", kls, "block"))
+    out.add(("PostToolBatch", MatcherClass.wildcard, "block"))
 
     # D70 — Tool-context observability events keep audit in lockstep
     # with run_command + inject_context. PostToolUseFailure / PostToolBatch

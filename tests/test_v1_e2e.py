@@ -173,10 +173,12 @@ def test_e2e_admin_routes_reject_other_keys(client):
 
 # ── 4. Reject illegal matrix combos at the API boundary ──────────────
 def test_e2e_api_rejects_illegal_matrix(client):
-    # D31: PostToolUse + Bash + block is illegal (post-event can't block).
+    # D82d — PostToolUse + Bash + block is now LEGAL (CC retry-feedback
+    # channel). ask stays illegal on post-tool events because there is
+    # no interactive surface to interrupt to after the tool ran.
     body = _valid_policy(
         trigger={"host": "claude-code", "event": "PostToolUse", "matcher": "Bash"},
-        action="block",
+        action="ask",
     )
     r = client.put("/policies/legal-filing/v1",
                    json={"policy": body, "source": "org", "enabled": True},

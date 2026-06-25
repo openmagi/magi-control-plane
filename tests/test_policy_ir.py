@@ -83,11 +83,14 @@ def test_load_policy_rejects_unknown_action(tmp_path):
 
 def test_load_policy_rejects_illegal_matrix_combination(tmp_path):
     """D31: PreToolUse + tool + audit is now legal, but
-    PostToolUse + Bash + block is still rejected (post-event can't block)."""
+    PostToolUse + Bash + ask is still rejected — by the time the
+    tool ran there is no interactive surface to interrupt to.
+    (D82d admits PostToolUse + Bash + block as the CC retry-feedback
+    channel, so we pin a still-illegal triple here.)"""
     with pytest.raises(ValueError, match="illegal combination"):
         load_policy(_write_policy(tmp_path, {
             "trigger": {**SAMPLE_IR["trigger"], "event": "PostToolUse"},
-            "action": "block",
+            "action": "ask",
         }))
 
 

@@ -144,8 +144,10 @@ def test_load_does_not_drop_unrelated_validation_errors(tmp_path):
                 r"(?P<doc_id>[A-Za-z0-9]+)"
             ),
             "requires": [{"step": "citation_verify", "verdict": "pass"}],
-            # illegal: PostToolUse + block not in matrix
-            "action": "block",
+            # D82d — PostToolUse + Bash + block is now LEGAL as the
+            # retry-feedback channel; ask stays illegal on post-tool
+            # events (no interactive surface after the tool ran).
+            "action": "ask",
             "on_signature_invalid": "deny",
             "gate_binary": "/usr/local/bin/magi-gate.sh",
         },

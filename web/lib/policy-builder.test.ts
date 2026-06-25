@@ -56,8 +56,24 @@ describe("isLegal. mirrors backend matrix", () => {
   })
 
   // Representative illegals
-  it("rejects PostToolUse × Bash × block (tool already ran)", () => {
-    expect(isLegal("PostToolUse", "Bash", "block")).toBe(false)
+  // D82d — PostToolUse + Bash + block is now LEGAL as the CC
+  // retry-feedback channel. ask stays illegal on PostToolUse* events
+  // because there is no interactive surface to interrupt to after
+  // the tool ran.
+  it("rejects PostToolUse × Bash × ask (no interactive surface post-tool)", () => {
+    expect(isLegal("PostToolUse", "Bash", "ask")).toBe(false)
+  })
+  it("admits PostToolUse × Bash × block (D82d retry-feedback channel)", () => {
+    expect(isLegal("PostToolUse", "Bash", "block")).toBe(true)
+  })
+  it("admits PostToolUseFailure × Bash × block (D82d failure recovery)", () => {
+    expect(isLegal("PostToolUseFailure", "Bash", "block")).toBe(true)
+  })
+  it("admits PostToolBatch × * × block (D82d whole-batch retry)", () => {
+    expect(isLegal("PostToolBatch", "*", "block")).toBe(true)
+  })
+  it("rejects PostToolBatch × Bash × block (wildcard-only matcher)", () => {
+    expect(isLegal("PostToolBatch", "Bash", "block")).toBe(false)
   })
   it("rejects Stop × Bash × audit (Stop is wildcard-only)", () => {
     expect(isLegal("Stop", "Bash", "audit")).toBe(false)
@@ -100,8 +116,14 @@ describe("isLegal. mirrors backend matrix", () => {
   })
 
   it("D58 audit-only events accept audit on wildcard and reject block", () => {
-    const auditOnly = [
-      "PostToolUseFailure", "PostToolBatch",
+    // D82d — PostToolUseFailure / PostToolBatch are no longer pure
+    // audit-only on the block dimension: PostToolUseFailure admits
+    // block on per-tool matchers (failure recovery), PostToolBatch
+    // admits block on wildcard (whole-batch retry). The event names
+    // stay in the audit list because audit + wildcard is still legal
+    // on both; we split the block-rejection assertion into the
+    // events whose payload genuinely has no retry-feedback channel.
+    const auditAndBlockBoth = [
       "PermissionDenied",
       "PostCompact", "ElicitationResult",
       "SubagentStart", "StopFailure",
@@ -113,10 +135,17 @@ describe("isLegal. mirrors backend matrix", () => {
       "CwdChanged", "FileChanged",
       "MessageDisplay",
     ] as const
-    for (const ev of auditOnly) {
+    for (const ev of auditAndBlockBoth) {
       expect(isLegal(ev, "*", "audit")).toBe(true)
       expect(isLegal(ev, "*", "block")).toBe(false)
     }
+    // PostToolUseFailure: audit on wildcard legal; block on wildcard
+    // illegal (block is per-tool only on this event).
+    expect(isLegal("PostToolUseFailure", "*", "audit")).toBe(true)
+    expect(isLegal("PostToolUseFailure", "*", "block")).toBe(false)
+    // PostToolBatch: both audit and block legal on wildcard.
+    expect(isLegal("PostToolBatch", "*", "audit")).toBe(true)
+    expect(isLegal("PostToolBatch", "*", "block")).toBe(true)
   })
 
   it("D58 no-tool-context events reject tool matchers", () => {
@@ -163,9 +192,14 @@ describe("validateDraft", () => {
   })
 
   it("rejects illegal matrix combination", () => {
+    // D82d — PostToolUse + Bash + block is now LEGAL (CC retry-feedback
+    // channel). ask stays illegal on post-tool events because there
+    // is no interactive surface to interrupt to. Switch to ask so
+    // the matrix-illegal guard still has a witness here.
     const d = {
       ...DEFAULT_DRAFT, id: "x",
       trigger: { ...DEFAULT_DRAFT.trigger, event: "PostToolUse" as const },
+      action: "ask" as const,
       on_missing: "deny" as const,
     }
     const errs = validateDraft(d)

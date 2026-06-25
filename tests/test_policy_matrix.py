@@ -66,9 +66,12 @@ def test_validate_combination_rejects_illegal_event_matcher():
 
 
 def test_validate_combination_rejects_illegal_action():
-    """PostToolUse cannot block — the tool already ran."""
+    """PostToolUse cannot ask — by the time the tool ran there is no
+    interactive surface to interrupt to. (D82d admits PostToolUse +
+    block on per-tool matchers as the CC retry-feedback channel, so
+    we pin a still-illegal action here.)"""
     with pytest.raises(ValueError, match="illegal combination"):
-        validate_combination("PostToolUse", "Bash", "block")
+        validate_combination("PostToolUse", "Bash", "ask")
 
 
 def test_validate_combination_unknown_matcher_clear_error():
@@ -519,6 +522,77 @@ def test_d70_task_tool_legal_on_pretooluse():
     validate_combination("PreToolUse", "Task", "inject_context")
     validate_combination("PreToolUse", "Task", "audit")
     validate_combination("PreToolUse", "Task", "block")
+
+
+# ── D82d: PostToolUse / PostToolUseFailure / PostToolBatch admit ─────
+#         block as retry-feedback channel ───────────────────────────
+
+
+@pytest.mark.parametrize("event,matcher", [
+    # CC's PostToolUse hook stdout JSON accepts
+    # {"decision":"block","reason":"…"} and surfaces the reason as a
+    # retry-feedback message to the model. The retry-feedback action
+    # surface is real; D82d registers it on the three PostToolUse*
+    # events whose payloads carry a tool name (PostToolUse +
+    # PostToolUseFailure) or whose batch shape covers the whole turn
+    # (PostToolBatch).
+    ("PostToolUse",        "Bash"),
+    ("PostToolUse",        "Edit"),
+    ("PostToolUse",        "Bash|Edit"),
+    ("PostToolUse",        "mcp__court__file"),
+    ("PostToolUseFailure", "Bash"),
+    ("PostToolUseFailure", "Edit"),
+    ("PostToolUseFailure", "mcp__court__file"),
+    ("PostToolBatch",      "*"),
+])
+def test_d82d_block_legal_on_post_tool_events(event, matcher):
+    validate_combination(event, matcher, "block")
+
+
+@pytest.mark.parametrize("event", [
+    # block stays illegal on these end-of-life events. The
+    # retry-feedback message has no downstream session turn to land
+    # in: Stop / SessionEnd fire at end-of-execution / teardown,
+    # SubagentStop fires after the child returned, TaskCompleted
+    # fires once the parent has accepted the child's result.
+    "Stop", "SessionEnd", "SubagentStop", "TaskCompleted",
+])
+def test_d82d_block_still_illegal_on_end_of_life_events(event):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", "block")
+
+
+@pytest.mark.parametrize("event,matcher", [
+    # D82d narrowing: ask is intentionally NOT registered on
+    # PostToolUse* events even though block now is — the timing makes
+    # the "ask a human" affordance confusing (the tool already ran
+    # and the model is mid-turn). Pinning ask refusal here keeps a
+    # future widening from silently coupling block + ask.
+    ("PostToolUse",        "Bash"),
+    ("PostToolUseFailure", "Bash"),
+    ("PostToolBatch",      "*"),
+])
+def test_d82d_ask_still_illegal_on_post_tool_events(event, matcher):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, matcher, "ask")
+
+
+def test_d82d_post_tool_batch_block_wildcard_only():
+    """PostToolBatch + per-tool matcher + block stays illegal — the
+    batch event covers the whole turn's tool calls, no single named
+    tool to scope to. Authoring per-tool block on the batch event
+    would silently fire on every tool in the batch."""
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination("PostToolBatch", "Bash", "block")
+
+
+def test_d82d_post_tool_use_failure_block_excludes_tool_alt():
+    """PostToolUseFailure + tool_alt + block stays illegal — the
+    failure surfaces a single tool name, so authoring "retry on
+    failure of any of A | B | C" should route through PostToolBatch
+    instead. Pin the exclusion so future widening lands here."""
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination("PostToolUseFailure", "Bash|Edit", "block")
 
 
 def test_d58_verified_vs_unverified_event_split():

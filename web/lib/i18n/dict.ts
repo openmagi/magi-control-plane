@@ -818,6 +818,14 @@ const KO_RAW = {
   "nav.scripts": "스크립트",
   "newPolicy.action.runCommand.title": "명령 실행",
   "newPolicy.action.runCommand.description": "이 hook 이 발사될 때 쉘 명령이나 업로드한 스크립트를 실행하고, 명령의 stdout JSON 을 CC 의 hookSpecificOutput 으로 그대로 돌려줍니다.",
+
+  // D82d — block 액션 sub-copy는 lifecycle 에 따라 달라집니다.
+  // PreToolUse 류는 호출 자체를 거부하는 의미; PostToolUse* 류는
+  // 도구 결과를 모델에게 "사용 불가" 로 알리고 사용자가 작성한
+  // reason 을 retry-feedback 메시지로 흘려보내는 의미입니다.
+  "newPolicy.action.block.subcopy.posttool": "도구 결과를 모델에게 \"사용 불가\" 라고 알리고, 입력하신 reason 을 retry-feedback 메시지로 모델에게 돌려보냅니다. 같은 도구가 재시도됩니다.",
+  "newPolicy.action.block.subcopy.posttoolfailure": "실패한 도구 호출을 모델에게 알리고, 입력하신 reason 으로 retry-feedback 을 보냅니다. 모델은 reason 을 보고 다른 입력으로 재시도할 수 있습니다.",
+  "newPolicy.action.block.subcopy.posttoolbatch": "이 턴의 모든 도구 호출 묶음을 모델에게 \"사용 불가\" 라고 알리고, 입력하신 reason 을 retry-feedback 으로 돌려보냅니다.",
   "newPolicy.step4.runCommand.modeInline": "명령 직접 입력",
   "newPolicy.step4.runCommand.modeAttach": "스크립트 파일 첨부",
   "newPolicy.step4.runCommand.runtime": "런타임",
@@ -1713,6 +1721,14 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "nav.scripts": "Scripts",
   "newPolicy.action.runCommand.title": "Run a command",
   "newPolicy.action.runCommand.description": "Execute an inline shell command or an uploaded script when this hook fires. The command's stdout JSON becomes CC's hookSpecificOutput verbatim.",
+
+  // D82d — block sub-copy is lifecycle-aware. PreToolUse refuses the
+  // call outright; PostToolUse* signals the model that the tool result
+  // is unusable and surfaces the operator's reason as a retry-feedback
+  // message via CC's stdout JSON `{"decision":"block","reason":"…"}`.
+  "newPolicy.action.block.subcopy.posttool": "Tell the model the tool result is unusable and let it retry with the reason you supply.",
+  "newPolicy.action.block.subcopy.posttoolfailure": "Surface the failure to the model with the reason you supply. The model retries with the reason as feedback, often choosing different arguments.",
+  "newPolicy.action.block.subcopy.posttoolbatch": "Tell the model the whole batch of tool calls in this turn is unusable and let it redo the batch with the reason you supply.",
   "newPolicy.step4.runCommand.modeInline": "Type a command",
   "newPolicy.step4.runCommand.modeAttach": "Attach a script file",
   "newPolicy.step4.runCommand.runtime": "Runtime",

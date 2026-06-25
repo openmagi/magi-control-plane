@@ -484,7 +484,14 @@ function _withInjectContextIf(
 
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
   before_tool_use: _withInjectContextIf("before_tool_use", ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"]),
-  after_tool_use:  _withInjectContextIf("after_tool_use",  ["audit", "inject_context", "run_command"]),
+  // D82d — after_tool_use (PostToolUse) admits block as the CC
+  // retry-feedback channel. The runtime cannot retract the call
+  // that already ran, but it CAN tell the model the tool result is
+  // unusable and surface the reason as a retry-feedback message
+  // (CC stdout JSON `{"decision":"block","reason":"…"}`). ask
+  // stays excluded — by the time the tool ran there is no
+  // interactive surface to interrupt to.
+  after_tool_use:  _withInjectContextIf("after_tool_use",  ["block", "audit", "inject_context", "run_command"]),
   // D70 — pre_final (Stop) is end-of-execution, no downstream
   // same-session model turn for additionalContext. inject_context
   // dropped by `_withInjectContextIf`.
@@ -518,8 +525,13 @@ const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
   // (elicitation / elicitation_result / worktree_create /
   // message_display + pre_final / stop_failure / session_end /
   // subagent_stop) drop inject_context automatically.
-  post_tool_use_failure: _withInjectContextIf("post_tool_use_failure", ["audit", "inject_context", "run_command"]),
-  post_tool_batch:       _withInjectContextIf("post_tool_batch",       ["audit", "inject_context", "run_command"]),
+  // D82d — PostToolUseFailure / PostToolBatch admit block on the same
+  // retry-feedback channel. Per-event matcher narrowing is enforced by
+  // ACTIONS_BY_COMBINATION below:
+  //   post_tool_use_failure → block on per-tool matchers (tool/mcp_tool)
+  //   post_tool_batch       → block on wildcard only (whole batch retry)
+  post_tool_use_failure: _withInjectContextIf("post_tool_use_failure", ["block", "audit", "inject_context", "run_command"]),
+  post_tool_batch:       _withInjectContextIf("post_tool_batch",       ["block", "audit", "inject_context", "run_command"]),
   permission_denied:     _withInjectContextIf("permission_denied",     ["audit", "inject_context", "run_command"]),
   post_compact:          _withInjectContextIf("post_compact",          ["audit", "inject_context", "run_command"]),
   // D59 — elicitation_result excluded.
@@ -625,8 +637,12 @@ const ACTIONS_BY_COMBINATION: Record<
     wildcard: _filterByCombination("before_tool_use", ["audit", "inject_context", "run_command"]),
   },
   after_tool_use: {
-    tool:     _filterByCombination("after_tool_use", ["audit", "inject_context", "run_command"]),
-    mcp_tool: _filterByCombination("after_tool_use", ["audit", "inject_context", "run_command"]),
+    // D82d — block joins audit / inject_context / run_command on
+    // per-tool matchers for PostToolUse. The wizard authors one tool
+    // per policy; the cloud matrix accepts alternation matchers as a
+    // fold of the single-tool row.
+    tool:     _filterByCombination("after_tool_use", ["block", "audit", "inject_context", "run_command"]),
+    mcp_tool: _filterByCombination("after_tool_use", ["block", "audit", "inject_context", "run_command"]),
     wildcard: [],
   },
   pre_final:     { tool: [], mcp_tool: [], wildcard: _filterByCombination("pre_final",     ["audit", "inject_context", "run_command"]) },
@@ -646,8 +662,20 @@ const ACTIONS_BY_COMBINATION: Record<
   permission_request:    { tool: [], mcp_tool: [], wildcard: _filterByCombination("permission_request",    ["block", "ask", "audit", "inject_context", "run_command"]) },
   elicitation:           { tool: [], mcp_tool: [], wildcard: _filterByCombination("elicitation",           ["block", "ask", "audit", "inject_context", "run_command"]) },
   user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: _filterByCombination("user_prompt_expansion", ["block", "audit", "inject_context", "run_command"]) },
-  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_tool_use_failure", ["audit", "inject_context", "run_command"]) },
-  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_tool_batch",       ["audit", "inject_context", "run_command"]) },
+  // D82d — PostToolUseFailure admits block on per-tool matchers
+  // (failure recovery is scoped to a specific tool); the wildcard
+  // surface stays audit / inject_context / run_command. Cross-tool
+  // batched retry belongs on post_tool_batch.
+  post_tool_use_failure: {
+    tool:     _filterByCombination("post_tool_use_failure", ["block", "audit", "inject_context", "run_command"]),
+    mcp_tool: _filterByCombination("post_tool_use_failure", ["block", "audit", "inject_context", "run_command"]),
+    wildcard: _filterByCombination("post_tool_use_failure", ["audit", "inject_context", "run_command"]),
+  },
+  // D82d — PostToolBatch admits block on wildcard only. The batch
+  // event covers the whole turn's tool calls so there is no single
+  // tool name to scope to; per-tool authoring belongs on
+  // post_tool_use_failure / after_tool_use instead.
+  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_tool_batch",       ["block", "audit", "inject_context", "run_command"]) },
   permission_denied:     { tool: [], mcp_tool: [], wildcard: _filterByCombination("permission_denied",     ["audit", "inject_context", "run_command"]) },
   post_compact:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_compact",          ["audit", "inject_context", "run_command"]) },
   elicitation_result:    { tool: [], mcp_tool: [], wildcard: _filterByCombination("elicitation_result",    ["audit", "inject_context", "run_command"]) },
@@ -4852,8 +4880,28 @@ function Step4Action({
   // D56d (P2 #5): "recommended" badge only renders when block is
   // actually in the legal action set for the current combination.
   const blockLegal = allowed.includes("block")
+  // D82d — block sub-copy clarifies the channel by lifecycle:
+  //   PostToolUse / PostToolUseFailure / PostToolBatch surface the
+  //   reason as a retry-feedback message back to the model
+  //   (CC stdout JSON `{"decision":"block","reason":"…"}`); the tool
+  //   already ran, so "Refuse the call" wording would mislead.
+  //   Every other lifecycle keeps the pre-D82d wording.
+  const blockSub: string = (() => {
+    switch (lifecycle) {
+      case "after_tool_use":
+        return t("newPolicy.action.block.subcopy.posttool")
+      case "post_tool_use_failure":
+        return t("newPolicy.action.block.subcopy.posttoolfailure")
+      case "post_tool_batch":
+        return t("newPolicy.action.block.subcopy.posttoolbatch")
+      default:
+        return ko
+          ? "호출 자체를 거부합니다. 에이전트가 동작을 못합니다."
+          : "Refuse the call. The agent cannot proceed."
+    }
+  })()
   const labels: Record<Action, { label: string; sub: string }> = ko ? {
-    block: { label: "Block",        sub: "호출 자체를 거부합니다. 에이전트가 동작을 못합니다." },
+    block: { label: "Block",        sub: blockSub },
     ask:   { label: "Ask a human",  sub: "리뷰 큐로 보내고 사람이 승인해야 진행됩니다." },
     audit: { label: "Audit",        sub: "원장에만 기록하고 통과시킵니다 (관찰 모드)." },
     strip: { label: "Strip",        sub: "출력에서 매칭된 부분을 제거합니다 (after_tool_use 전용)." },
@@ -4870,7 +4918,7 @@ function Step4Action({
       sub: t("newPolicy.action.runCommand.description"),
     },
   } : {
-    block: { label: "Block",        sub: "Refuse the call. The agent cannot proceed." },
+    block: { label: "Block",        sub: blockSub },
     ask:   { label: "Ask a human",  sub: "Send to the review queue; a human must approve to proceed." },
     audit: { label: "Audit",        sub: "Record to the ledger only; pass through (observe mode)." },
     strip: { label: "Strip",        sub: "Remove the matched span from the output (after_tool_use only)." },

@@ -102,9 +102,23 @@ const LEGAL = ((): Set<string> => {
     }
   }
   out.add("PreToolUse|wildcard|audit")
-  // PostToolUse: tool already ran; only audit.
+  // PostToolUse: tool already ran. audit on every matcher class;
+  // D82d also admits block on per-tool matchers as the CC
+  // retry-feedback channel (stdout JSON `{"decision":"block",
+  // "reason":"…"}` surfaces the reason to the model as feedback).
+  // ask stays excluded — by the time the tool ran there is no
+  // interactive surface to interrupt to.
   out.add("PostToolUse|tool|audit")
   out.add("PostToolUse|mcp_tool|audit")
+  out.add("PostToolUse|tool|block")
+  out.add("PostToolUse|mcp_tool|block")
+  out.add("PostToolUse|tool_alt|block")
+  // D82d — PostToolUseFailure admits block on per-tool matchers
+  // (failure recovery is scoped to the specific tool that failed);
+  // PostToolBatch admits block on wildcard only (whole-batch retry).
+  out.add("PostToolUseFailure|tool|block")
+  out.add("PostToolUseFailure|mcp_tool|block")
+  out.add("PostToolBatch|wildcard|block")
   // Pre-side gate hooks with full block/ask/audit.
   for (const ev of ["UserPromptSubmit", "PermissionRequest", "Elicitation"]) {
     for (const act of ["block", "ask", "audit"]) {
