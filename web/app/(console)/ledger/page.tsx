@@ -4,7 +4,7 @@ import { fmtUtc, clampNonNegInt, LEDGER_PAGE_SIZE } from "@/lib/format"
 import { getIntl, getT } from "@/lib/i18n/server"
 import { ledgerHref, parseVerifierParam } from "@/lib/ledger-url"
 import {
-  Badge, Card, Code, EmptyState, ErrorState, PageHeader,
+  Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -91,11 +91,19 @@ export default async function LedgerPage({
           </Card>
 
           {result.entries.length === 0 ? (
-            <EmptyState
-              title={verifierFilter.length > 0
-                ? t("ledger.filter.empty")
-                : t("ledger.empty")}
-            />
+            verifierFilter.length > 0 ? (
+              <EmptyState title={t("ledger.filter.empty")} />
+            ) : (
+              <EmptyState
+                title={t("ledger.empty.title")}
+                body={t("ledger.empty.body")}
+                action={
+                  <Link href="/rules">
+                    <Button variant="primary">{t("ledger.empty.cta")}</Button>
+                  </Link>
+                }
+              />
+            )
           ) : (
             <Card noPadding className="overflow-x-auto">
               <table>

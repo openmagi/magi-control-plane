@@ -26,7 +26,7 @@ import { cloud, type EndpointEntry, type EndpointListing } from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
 import { getT } from "@/lib/i18n/server"
 import {
-  Badge, Card, EmptyState, ErrorState, PageHeader,
+  Badge, Button, Card, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -116,15 +116,18 @@ export default async function EndpointsPage() {
 
       {items && items.length === 0 && (
         <EmptyState
-          title={isKo ? "Endpoint 없음" : "No endpoints"}
+          title={t("endpoints.empty.title")}
           body={
-            isKo
-              ? `게이트에 MAGI_CP_ENDPOINT_ID와 MAGI_CP_API_KEY를 설정하고 magi-cp-heartbeat를 cron / launchd / systemd-timer에 추가하세요. 권장 주기: ${fmtHoursMinutes(recommendedInterval, true)}. 설치 가이드는 /setup → Step 5 참고.`
-              : `Configure MAGI_CP_ENDPOINT_ID + MAGI_CP_API_KEY on each gate and add magi-cp-heartbeat to cron / launchd / systemd-timer. Recommended interval: ${fmtHoursMinutes(recommendedInterval, false)}. See /setup → Step 5 for platform-specific snippets.`
+            <>
+              {t("endpoints.empty.body")}{" "}
+              {isKo
+                ? `권장 주기: ${fmtHoursMinutes(recommendedInterval, true)}. 설치 가이드는 /setup → Step 5 참고.`
+                : `Recommended interval: ${fmtHoursMinutes(recommendedInterval, false)}. See /setup → Step 5 for platform-specific snippets.`}
+            </>
           }
           action={
-            <Link href="/setup" className="underline text-sm">
-              {isKo ? "설치 가이드" : "Setup guide"}
+            <Link href="/setup">
+              <Button variant="primary">{t("endpoints.empty.cta")}</Button>
             </Link>
           }
         />

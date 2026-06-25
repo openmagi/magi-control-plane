@@ -23,6 +23,7 @@ import { PolicyToggle } from "./_components/PolicyToggle"
 import { PrebuiltToggle } from "./_components/PrebuiltToggle"
 import { ChecksTab } from "./_components/ChecksTab"
 import { EvidenceTab } from "./_components/EvidenceTab"
+import { WelcomeBanner } from "./_components/WelcomeBanner"
 import { togglePolicyAction, togglePrebuiltAction } from "./actions"
 
 export const dynamic = "force-dynamic"
@@ -205,6 +206,7 @@ export default async function RulesPage({
           prebuilt={prebuilt}
           nfFormat={nf.format.bind(nf)}
           t={t}
+          locale={locale}
         />
       )}
       {tab === "checks" && (
@@ -285,13 +287,14 @@ function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
 }
 
 function PoliciesTab({
-  items, err, prebuilt, nfFormat, t,
+  items, err, prebuilt, nfFormat, t, locale,
 }: {
   items: PolicyListItem[]
   err: string | null
   prebuilt: PrebuiltPolicyEntry[]
   nfFormat: (n: number) => string
   t: TFunc
+  locale: import("@/lib/i18n/dict").Locale
 }) {
   // D60 follow-up: GET /policies returns every row including the
   // materialized prebuilt rows (POST /policies/prebuilt/{id}/enable
@@ -304,8 +307,13 @@ function PoliciesTab({
   // rows. Filter at the render boundary (not at the cloud) so a
   // future surface that wants the unfiltered list still sees it.
   const userPolicies = items.filter((p) => !p.id.startsWith("prebuilt/"))
+  // D72: first-time visitor banner. Show only when there is nothing on
+  // this screen to act on — no user policies AND no enabled prebuilt.
+  const showWelcome =
+    !err && userPolicies.length === 0 && prebuilt.every((p) => !p.enabled)
   return (
     <section>
+      {showWelcome && <WelcomeBanner locale={locale} />}
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
         {t("rules.tab.policies.hint")}
       </p>
@@ -320,11 +328,22 @@ function PoliciesTab({
       )}
       {!err && userPolicies.length === 0 && (
         <EmptyState
-          title={t("rules.empty.policies")}
+          title={t("rules.empty.policies.title")}
+          body={t("rules.empty.policies.body")}
           action={
-            <Link href="/policies/new">
-              <Button variant="primary">{t("rules.empty.policies.cta")}</Button>
-            </Link>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <Link href="/policies/new">
+                <Button variant="primary">
+                  {t("rules.empty.policies.cta.primary")}
+                </Button>
+              </Link>
+              <Link
+                href="/policies/new?mode=conversational"
+                className="text-sm font-medium text-[var(--color-accent-light)] hover:underline"
+              >
+                {t("rules.empty.policies.cta.secondary")}
+              </Link>
+            </div>
           }
         />
       )}

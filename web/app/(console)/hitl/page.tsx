@@ -224,7 +224,10 @@ export default async function HitlPage({
         />
       )}
       {items.length === 0 && !err && (
-        <EmptyState title={t("hitl.empty")} />
+        <EmptyState
+          title={t("hitl.empty.title")}
+          body={t("hitl.empty.body")}
+        />
       )}
       <div className="space-y-3">
         {items.map(item => <ItemCard key={item.id} item={item} t={t} />)}

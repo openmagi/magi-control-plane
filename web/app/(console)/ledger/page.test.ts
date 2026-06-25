@@ -119,9 +119,20 @@ describe("ledger page source invariants (D52c)", () => {
     // Two distinct i18n keys so the operator can tell whether the
     // chain is genuinely empty or whether their filter happens to
     // match nothing.
+    //
+    // D72 split the branch: the filter-empty branch keeps the
+    // existing `ledger.filter.empty` key, but the no-entries branch
+    // now renders a richer EmptyState (title + body + CTA) using the
+    // `ledger.empty.title` / `ledger.empty.body` / `ledger.empty.cta`
+    // namespace. The bare `ledger.empty` key was retired from this
+    // page; the test now asserts the new namespace + the
+    // filter-vs-no-data split.
     expect(src).toContain("ledger.filter.empty")
-    expect(src).toContain("ledger.empty")
-    expect(src).toMatch(/verifierFilter\.length\s*>\s*0\s*\?\s*t\("ledger\.filter\.empty"\)/)
+    expect(src).toContain("ledger.empty.title")
+    expect(src).toContain("ledger.empty.body")
+    expect(src).toContain("ledger.empty.cta")
+    expect(src).toMatch(/verifierFilter\.length\s*>\s*0\s*\?/)
+    expect(src).toMatch(/t\("ledger\.filter\.empty"\)/)
   })
 
   it("catalog fetch failure mutes chips but does not break the ledger view", () => {

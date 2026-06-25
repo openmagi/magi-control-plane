@@ -80,12 +80,18 @@ export default async function ScriptsPage() {
 
       {!err && scripts.length === 0 && (
         <EmptyState
-          title={t("scripts.title")}
-          body={t("scripts.empty")}
+          title={t("scripts.empty.title")}
+          body={t("scripts.empty.body")}
           action={
-            <Link href="/policies/new" className="underline text-sm">
-              {t("nav.newPolicy")}
-            </Link>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <UploadScriptButton locale={locale} />
+              <Link
+                href="/policies/new?mode=guided&hint=run_command"
+                className="text-sm font-medium text-[var(--color-accent-light)] hover:underline"
+              >
+                {t("scripts.empty.cta.secondary")}
+              </Link>
+            </div>
           }
         />
       )}

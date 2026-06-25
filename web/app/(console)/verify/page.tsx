@@ -5,7 +5,7 @@ import { codeForError } from "@/lib/flash"
 import { getIntl, getT } from "@/lib/i18n/server"
 import {
   Badge, Button, Card, CardHeader, Code, CodeBlock, CopyButton,
-  ErrorState, Input, PageHeader, Select, SubmitButton, Textarea,
+  EmptyState, ErrorState, Input, PageHeader, Select, SubmitButton, Textarea,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -201,6 +201,21 @@ export default async function VerifyPage({
             {t("verify.error.payloadTooLarge")}
           </p>
         </Card>
+      )}
+
+      {/* D72: when no verifier is wired the form Select would render an
+          empty dropdown. Surface a first-time-visitor empty state that
+          tells the operator where the built-in checks live. */}
+      {!listErr && wired.length === 0 && (
+        <EmptyState
+          title={t("verify.empty.title")}
+          body={t("verify.empty.body")}
+          action={
+            <Link href="/rules?tab=checks">
+              <Button variant="primary">{t("verify.empty.cta")}</Button>
+            </Link>
+          }
+        />
       )}
 
       <form action={runVerify} className="space-y-4 mb-6">

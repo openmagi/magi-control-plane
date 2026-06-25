@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { cloud } from "@/lib/cloud"
 import { getIntl, getT } from "@/lib/i18n/server"
 import {
@@ -50,24 +51,36 @@ export default async function Home() {
           body={t("common.seeServerLogs")}
         />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <KPI
-            label={t("overview.pendingReview")}
-            value={nf.format(summary.pending)}
-          />
-          <KPI
-            label={t("overview.auditChain")}
-            value={
-              summary.chainOk
-                ? <Badge variant="ok">{t("overview.auditChainOk")}</Badge>
-                : <Badge variant="deny">{t("overview.auditChainBroken")}</Badge>
-            }
-          />
-          <KPI
-            label={t("overview.ledgerEntries")}
-            value={nf.format(summary.ledgerEntries)}
-          />
-        </div>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KPI
+              label={t("overview.pendingReview")}
+              value={nf.format(summary.pending)}
+            />
+            <KPI
+              label={t("overview.auditChain")}
+              value={
+                summary.chainOk
+                  ? <Badge variant="ok">{t("overview.auditChainOk")}</Badge>
+                  : <Badge variant="deny">{t("overview.auditChainBroken")}</Badge>
+              }
+            />
+            <KPI
+              label={t("overview.ledgerEntries")}
+              value={nf.format(summary.ledgerEntries)}
+            />
+          </div>
+          {/* D72: link to /ledger for first-time visitors so the KPI
+              card row always has an actionable next step. */}
+          <p className="mt-4 text-xs text-[var(--color-text-tertiary)]">
+            <Link
+              href="/ledger"
+              className="font-medium text-[var(--color-accent-light)] hover:underline"
+            >
+              {t("overview.empty.cta")}
+            </Link>
+          </p>
+        </>
       )}
     </>
   )

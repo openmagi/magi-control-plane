@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Badge, Code, EmptyState, ErrorState } from "@/components/ui"
+import { Badge, Button, Code, EmptyState, ErrorState } from "@/components/ui"
 import type { CheckEntry } from "@/lib/cloud"
 import { VerifierExpander } from "./VerifierExpander"
 
@@ -67,7 +67,15 @@ export function ChecksTab({
         />
       )}
       {!err && items.length === 0 && (
-        <EmptyState title={t("rules.empty.checks")} />
+        <EmptyState
+          title={t("rules.empty.checks.title")}
+          body={t("rules.empty.checks.body")}
+          action={
+            <Link href="/verifiers/new">
+              <Button variant="primary">{t("rules.empty.checks.cta")}</Button>
+            </Link>
+          }
+        />
       )}
       {!err && items.length > 0 && (
         <>

@@ -50,7 +50,14 @@ describe("Endpoints page", () => {
 
   it("shows EmptyState when no endpoint has attested yet", () => {
     expect(src).toMatch(/EmptyState/)
-    expect(src).toMatch(/MAGI_CP_ENDPOINT_ID/)
+    // D72: the empty-state body content moved into the i18n dict
+    // (endpoints.empty.title / endpoints.empty.body / endpoints.empty.cta).
+    // The page references the keys; the literal MAGI_CP_ENDPOINT_ID
+    // string now lives in dict.ts. We assert the page references the
+    // empty-state keys.
+    expect(src).toMatch(/endpoints\.empty\.title/)
+    expect(src).toMatch(/endpoints\.empty\.body/)
+    expect(src).toMatch(/endpoints\.empty\.cta/)
   })
 
   it("links to /setup for gate-side onboarding", () => {

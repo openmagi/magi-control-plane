@@ -65,7 +65,10 @@ export function EvidenceTab({
         />
       )}
       {!err && items.length === 0 && (
-        <EmptyState title={t("rules.empty.evidenceRecords")} />
+        <EmptyState
+          title={t("rules.empty.evidenceRecords.title")}
+          body={t("rules.empty.evidenceRecords.body")}
+        />
       )}
       {!err && items.length > 0 && (
         <>
