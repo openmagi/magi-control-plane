@@ -81,6 +81,14 @@ class TestNormalizeAggregateParams:
         since, _ = normalize_aggregate_params(-1, 3_600)
         assert since == 86_400
 
+    def test_rejects_bucket_larger_than_since(self):
+        # `?since_secs=3600&bucket_secs=86400` collapses to a single
+        # bucket whose nominal width exceeds the requested window —
+        # logically empty. Reject so the dashboard does not silently
+        # mis-label its time range.
+        with pytest.raises(ValueError):
+            normalize_aggregate_params(3_600, 86_400)
+
 
 # ── ledger_aggregate (in-process helper) ────────────────────────────
 def _seed_ledger(engine, rows: list[tuple[int, dict]],
@@ -127,13 +135,15 @@ class TestLedgerAggregateHelper:
     def test_buckets_rows_by_ts(self, tmp_path):
         engine = make_engine(f"sqlite:///{tmp_path / 'b.db'}")
         init_schema(engine)
-        now = 10_000
-        # 5-bucket window of 600s, cutoff = 7_000.
-        # Place rows at 7_100 (bkt 0), 7_700 (bkt 1), 9_950 (bkt 4).
+        # Pick `now` on a bucket boundary so the calendar-aligned grid
+        # starts at exactly `now - since`. With now=10_200 and
+        # bucket=600 we get cutoff = 10_200 - 3_000 = 7_200, buckets
+        # [7_200, 7_800, 8_400, 9_000, 9_600, 10_200).
+        now = 10_200
         _seed_ledger(engine, [
-            (7_100, {"action": "block", "verdict": "deny"}),
-            (7_700, {"action": "audit", "verdict": "pass"}),
-            (9_950, {"action": "ask", "verdict": "review"}),
+            (7_300, {"action": "block", "verdict": "deny"}),
+            (7_900, {"action": "audit", "verdict": "pass"}),
+            (10_100, {"action": "ask", "verdict": "review"}),
         ])
         agg = ledger_aggregate(engine, "default",
                                 since_secs=3_000, bucket_secs=600,
@@ -148,6 +158,110 @@ class TestLedgerAggregateHelper:
         assert agg.buckets[4].count == 1
         assert agg.buckets[4].by_action["ask"] == 1
         assert agg.buckets[4].by_verdict["needs_review"] == 1  # review
+
+    def test_skips_future_stamped_rows(self, tmp_path):
+        """Rows stamped past `now` (clock-drift on a producer host,
+        future-dated test fixture) MUST NOT be silently absorbed into
+        the last bucket — see the comment on the WHERE bound. They are
+        skipped so drift surfaces as missing data rather than as a
+        misleading spike on the "now" hour."""
+        engine = make_engine(f"sqlite:///{tmp_path / 'b_future.db'}")
+        init_schema(engine)
+        now = 10_000
+        _seed_ledger(engine, [
+            # 60s past `now` — should NOT land in any bucket.
+            (now + 60, {"action": "block", "verdict": "deny"}),
+        ])
+        agg = ledger_aggregate(
+            engine, "default",
+            since_secs=86_400, bucket_secs=3_600, now=now,
+        )
+        assert sum(b.count for b in agg.buckets) == 0
+        for b in agg.buckets:
+            assert b.by_action["block"] == 0
+
+    def test_internal_empty_buckets_kept(self, tmp_path):
+        """Empty buckets between two populated buckets MUST stay in
+        the response with count=0 — a regression to a groupby-style
+        omit-empty result would silently change the chart's column
+        count and X-axis ticks."""
+        engine = make_engine(f"sqlite:///{tmp_path / 'b_empty_mid.db'}")
+        init_schema(engine)
+        # 5-bucket window of 600s. Seed bkt 0 + bkt 4 only.
+        now = 10_200
+        _seed_ledger(engine, [
+            (7_300, {"action": "block", "verdict": "deny"}),
+            (10_100, {"action": "audit", "verdict": "pass"}),
+        ])
+        agg = ledger_aggregate(
+            engine, "default",
+            since_secs=3_000, bucket_secs=600, now=now,
+        )
+        assert len(agg.buckets) == 5
+        assert agg.buckets[0].count == 1
+        assert agg.buckets[1].count == 0
+        assert agg.buckets[2].count == 0
+        assert agg.buckets[3].count == 0
+        assert agg.buckets[4].count == 1
+
+    def test_crosses_midnight(self, tmp_path):
+        """Rows seeded on either side of a calendar midnight (UTC)
+        must land in distinct, adjacent buckets — the 24h chart must
+        not collapse the boundary into a single column."""
+        engine = make_engine(f"sqlite:///{tmp_path / 'b_midnight.db'}")
+        init_schema(engine)
+        # Fixed UTC midnight: 2026-06-24 00:00:00 UTC = 1782604800.
+        midnight = 1_782_604_800
+        # `now` ~30 min past midnight; bucket=3600, since=86400 → 24
+        # buckets. After alignment, bucket_end = ceil(now/3600)*3600 =
+        # midnight + 3600. cutoff = midnight + 3600 - 24*3600 =
+        # midnight - 23h. So midnight - 30min lands in bucket 22
+        # (covers [midnight - 1h, midnight)), and midnight + 30min
+        # lands in bucket 23 (covers [midnight, midnight + 1h)).
+        now = midnight + 30 * 60
+        _seed_ledger(engine, [
+            (midnight - 30 * 60, {"action": "block", "verdict": "deny"}),
+            (midnight + 20 * 60, {"action": "audit", "verdict": "pass"}),
+        ])
+        agg = ledger_aggregate(
+            engine, "default",
+            since_secs=86_400, bucket_secs=3_600, now=now,
+        )
+        assert len(agg.buckets) == 24
+        # Find the bucket whose [ts_start, ts_start+bucket) contains
+        # midnight - 30min — that's the bucket starting at midnight - 1h.
+        pre_idx = next(
+            i for i, b in enumerate(agg.buckets)
+            if b.ts_start == midnight - 3600
+        )
+        post_idx = next(
+            i for i, b in enumerate(agg.buckets)
+            if b.ts_start == midnight
+        )
+        assert post_idx == pre_idx + 1
+        assert agg.buckets[pre_idx].count == 1
+        assert agg.buckets[pre_idx].by_action["block"] == 1
+        assert agg.buckets[post_idx].count == 1
+        assert agg.buckets[post_idx].by_action["audit"] == 1
+
+    def test_returns_zero_filled_for_unknown_tenant(self, tmp_path):
+        """A tenant with no rows in the store still gets a fully
+        zero-filled bucket grid — the chart never sees an empty list
+        for "no data for this tenant"."""
+        engine = make_engine(f"sqlite:///{tmp_path / 'b_unknown.db'}")
+        init_schema(engine)
+        _seed_ledger(engine, [
+            (10_100, {"action": "block", "verdict": "deny"}),
+        ], tenant_id="other")
+        agg = ledger_aggregate(
+            engine, "fresh-tenant",
+            since_secs=3_000, bucket_secs=600, now=10_200,
+        )
+        assert len(agg.buckets) == 5
+        for b in agg.buckets:
+            assert b.count == 0
+            assert sum(b.by_action.values()) == 0
+            assert sum(b.by_verdict.values()) == 0
 
     def test_unknown_action_and_verdict_ignored(self, tmp_path):
         engine = make_engine(f"sqlite:///{tmp_path / 'c.db'}")
@@ -190,6 +304,42 @@ class TestLedgerAggregateHelper:
         assert "ts_start" in d["buckets"][0]
         assert "by_action" in d["buckets"][0]
         assert "by_verdict" in d["buckets"][0]
+
+    def test_aggregate_response_carries_no_body_fields(self, tmp_path):
+        """Defense-in-depth redaction gate. The aggregator promises
+        count-only egress: no ledger body bytes ever appear in the
+        response. Seed a row whose body contains a sentinel string +
+        lock the per-bucket allowed key set; a future maintainer
+        adding (say) `sample_body` for a "last emission" affordance
+        trips this guard."""
+        import json
+        sentinel = "SENTINEL_NOT_FOR_EGRESS"
+        engine = make_engine(f"sqlite:///{tmp_path / 'e_redact.db'}")
+        init_schema(engine)
+        _seed_ledger(engine, [
+            (
+                9_700,
+                {
+                    "action": "block",
+                    "verdict": "deny",
+                    "leaked_payload": sentinel,
+                    "another": {"nested": sentinel},
+                },
+            ),
+        ])
+        agg = ledger_aggregate(
+            engine, "default",
+            since_secs=600, bucket_secs=300, now=10_000,
+        )
+        d = ledger_aggregate_to_dict(agg)
+        wire = json.dumps(d)
+        assert sentinel not in wire
+        # Allowed per-bucket key set is locked. Widening it (e.g. for
+        # a 'last emission body' affordance) MUST be a deliberate
+        # change here so the redaction contract is reviewed.
+        allowed = {"ts_start", "count", "by_action", "by_verdict"}
+        for b in d["buckets"]:
+            assert set(b.keys()) == allowed
 
 
 # ── metrics_summary (in-process helper) ─────────────────────────────
@@ -267,6 +417,17 @@ class TestLedgerAggregateRoute:
         # 30d window at 60s buckets → 43_200 buckets ≫ MAX_BUCKETS.
         r = client.get(
             f"/ledger/aggregate?since_secs={MAX_SINCE_SECS}&bucket_secs=60",
+            headers=HEADERS,
+        )
+        assert r.status_code == 400
+
+    def test_rejects_bucket_larger_than_since_request(self, client):
+        # `bucket_secs > since_secs` is a logically empty request that
+        # used to silently widen the SQL window past `now` and clamp
+        # rows into a single oversized bucket. Reject at the route
+        # layer so the chart never quietly mis-labels its window.
+        r = client.get(
+            "/ledger/aggregate?since_secs=3600&bucket_secs=86400",
             headers=HEADERS,
         )
         assert r.status_code == 400

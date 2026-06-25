@@ -3,8 +3,13 @@ import Link from "next/link"
 import { Card } from "@/components/ui"
 import type { LedgerEntry } from "@/lib/cloud"
 
+/** D76: closed-set verdict vocabulary the /overview surface renders.
+ * Mirrors `_VERDICT_BUCKETS_ORDER` in src/magi_cp/cloud/metrics.py.
+ * Raw producer-emitted variants (`deny`, `review`) are projected onto
+ * this set by `toRecentActivityRows` so the chart's stacked-column
+ * counts and the per-row badges below speak the same vocabulary. */
 type Verdict =
-  | "pass" | "fail" | "deny" | "review" | "needs_review" | "not_applicable"
+  | "pass" | "fail" | "needs_review" | "not_applicable"
 
 type Row = {
   id: number
@@ -49,10 +54,10 @@ function verdictBadgeClass(v: Verdict | null): string {
   if (v === "pass") {
     return "bg-[var(--color-bg-success)] text-[var(--color-text-success)]"
   }
-  if (v === "deny" || v === "fail") {
+  if (v === "fail") {
     return "bg-[var(--color-bg-danger)] text-[var(--color-text-danger)]"
   }
-  if (v === "review" || v === "needs_review") {
+  if (v === "needs_review") {
     return "bg-[var(--color-bg-warning)] text-[var(--color-text-warning)]"
   }
   return "bg-[var(--color-bg-muted)] text-[var(--color-text-tertiary)]"
@@ -60,10 +65,23 @@ function verdictBadgeClass(v: Verdict | null): string {
 
 function verdictLabel(v: Verdict | null, labels: Props["labels"]): string {
   if (v === "pass") return labels.pass
-  if (v === "fail" || v === "deny") return labels.fail
-  if (v === "review" || v === "needs_review") return labels.needsReview
+  if (v === "fail") return labels.fail
+  if (v === "needs_review") return labels.needsReview
   if (v === "not_applicable") return labels.notApplicable
   return labels.unknown
+}
+
+/** Project a producer-supplied verdict onto the dashboard's closed
+ * vocabulary. Mirrors `_project_verdict` in
+ * src/magi_cp/cloud/metrics.py so the per-row badge below the chart
+ * speaks the same word the chart's stacked-column count does. */
+function projectVerdict(raw: unknown): Verdict | null {
+  if (typeof raw !== "string") return null
+  if (raw === "pass") return "pass"
+  if (raw === "fail" || raw === "deny") return "fail"
+  if (raw === "review" || raw === "needs_review") return "needs_review"
+  if (raw === "not_applicable") return "not_applicable"
+  return null
 }
 
 export function RecentActivity({ rows, emptyBody, ctaLabel, labels, dtf }: Props) {
@@ -128,9 +146,6 @@ export function toRecentActivityRows(
   const rows: Row[] = []
   for (const e of entries.slice(0, limit)) {
     const body = (e.body ?? {}) as Record<string, unknown>
-    const verdictRaw = typeof body.verdict === "string"
-      ? body.verdict as Verdict
-      : null
     const action = typeof body.action === "string"
       ? body.action as string
       : (typeof body.step === "string" ? body.step as string : null)
@@ -141,7 +156,12 @@ export function toRecentActivityRows(
       id: e.id,
       ts: e.ts,
       action,
-      verdict: verdictRaw,
+      // Project on egress so the chart's `by_verdict.fail` bar above
+      // and this row's badge speak the same vocabulary for the same
+      // ledger row (raw `deny` → `fail`, raw `review` →
+      // `needs_review`). See `_project_verdict` in
+      // src/magi_cp/cloud/metrics.py for the cloud-side mirror.
+      verdict: projectVerdict(body.verdict),
       policyId,
     })
   }

@@ -155,12 +155,21 @@ def normalize_aggregate_params(
 
     Returns the (clamped_since, clamped_bucket) pair the caller uses.
     Raises ValueError when the resulting bucket count would exceed
-    MAX_BUCKETS — the route layer turns that into a 400.
+    MAX_BUCKETS, or when `bucket_secs > since_secs` (a logically empty
+    request — the route layer turns either into a 400).
     """
     since = since_secs if since_secs and since_secs > 0 else DEFAULT_SINCE_SECS
     bucket = bucket_secs if bucket_secs and bucket_secs > 0 else DEFAULT_BUCKET_SECS
     since = min(int(since), MAX_SINCE_SECS)
     bucket = max(int(bucket), MIN_BUCKET_SECS)
+    if bucket > since:
+        # A bucket wider than the window collapses to a single
+        # ill-defined bucket whose width exceeds the requested range.
+        # Reject so the operator's chart never silently mis-represents
+        # the time range it's labelled with.
+        raise ValueError(
+            f"bucket_secs ({bucket}) must not exceed since_secs ({since})",
+        )
     n_buckets = (since + bucket - 1) // bucket
     if n_buckets > MAX_BUCKETS:
         raise ValueError(
@@ -191,8 +200,15 @@ def ledger_aggregate(
     """
     since, bucket = normalize_aggregate_params(since_secs, bucket_secs)
     current = int(now if now is not None else time.time())
-    cutoff = current - since
     n_buckets = (since + bucket - 1) // bucket
+    # Calendar-align the bucket grid to a wall-clock boundary that is a
+    # multiple of `bucket_secs`. Without this, a 1h-bucket chart loaded
+    # at 14:23 would label its columns 14:23 / 15:23 / ..., which makes
+    # "which hour was loud?" hard to read at a glance. After alignment,
+    # `bucket_end` is the most-recent boundary at or after `current` so
+    # the final bucket still includes everything up to `current`.
+    bucket_end = ((current + bucket - 1) // bucket) * bucket
+    cutoff = bucket_end - n_buckets * bucket
     buckets: list[LedgerBucket] = [
         LedgerBucket(
             ts_start=cutoff + i * bucket,
@@ -202,23 +218,35 @@ def ledger_aggregate(
         )
         for i in range(n_buckets)
     ]
-    last_index = n_buckets - 1
     with Session(engine) as s:
         rows: Iterable[LedgerEntry] = s.scalars(
             select(LedgerEntry)
             .where(
                 LedgerEntry.tenant_id == tenant_id,
                 LedgerEntry.ts >= cutoff,
-                LedgerEntry.ts < current + bucket,
+                # Tight upper bound at `current`: rows stamped past
+                # `now` (producer clock-drift, future-dated test rows)
+                # are intentionally NOT folded into the last bucket;
+                # clamping them there silently mis-attributes
+                # drift-affected events to the "now" hour on the
+                # dashboard.
+                LedgerEntry.ts <= current,
             )
             .order_by(LedgerEntry.id)
         )
         for r in rows:
             idx = (int(r.ts) - cutoff) // bucket
-            if idx < 0:
+            if idx < 0 or idx >= n_buckets:
+                # Skip rather than clamp — see comment on the WHERE
+                # clause above. Anything that lands outside [0,
+                # n_buckets) is either a future-stamped row that slid
+                # through the boundary (the WHERE bound is inclusive
+                # at `current`, so a row exactly at `current` lands at
+                # `idx == n_buckets - 1` when bucket-aligned but at
+                # `idx == n_buckets` when `current` itself sits on a
+                # boundary; that single row is correctly skipped here
+                # rather than folded backwards).
                 continue
-            if idx > last_index:
-                idx = last_index
             bkt = buckets[idx]
             bkt.count += 1
             body = r.body if isinstance(r.body, dict) else {}

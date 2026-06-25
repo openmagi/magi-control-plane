@@ -1,5 +1,5 @@
 "use client"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type {
   LedgerAggregateResponse, OverviewActionKey, OverviewSummary,
@@ -77,6 +77,24 @@ function interpolate(s: string, vars: Record<string, string | number>): string {
   return out
 }
 
+// Lazy localStorage initialiser. Read once on first render so the
+// polling useEffect never sets up an interval just to tear it down on
+// the next tick because the operator had previously opted out. SSR is
+// guarded with the `typeof window` check.
+function readEnabledFromStorage(
+  autoRefresh: boolean, storageKey: string,
+): boolean {
+  if (!autoRefresh) return false
+  if (typeof window === "undefined") return autoRefresh
+  try {
+    const v = window.localStorage.getItem(storageKey)
+    if (v === "false") return false
+    return autoRefresh
+  } catch {
+    return autoRefresh
+  }
+}
+
 export function OverviewLive({
   locale, initialSummary, initialAggregate,
   autoRefresh = true,
@@ -88,24 +106,30 @@ export function OverviewLive({
   const [summary, setSummary] = useState<OverviewSummary | null>(initialSummary)
   const [aggregate, setAggregate] = useState<LedgerAggregateResponse>(initialAggregate)
   const [refreshedAtSec, setRefreshedAtSec] = useState<number | null>(null)
-  // Track the operator's opt-out from localStorage. We resolve it lazily
-  // on mount so SSR + first paint stay deterministic.
-  const [enabled, setEnabled] = useState<boolean>(autoRefresh)
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false)
+  // Lazy initialiser — see `readEnabledFromStorage`. Prevents the
+  // create + clearInterval churn that a useEffect-driven init causes.
+  const [enabled, setEnabled] = useState<boolean>(
+    () => readEnabledFromStorage(autoRefresh, storageKey),
+  )
   const [tabVisible, setTabVisible] = useState<boolean>(true)
-  const inFlight = useRef(false)
+  // Holds the currently-in-flight AbortController so a fresh tick can
+  // abort a slow predecessor (last-write-wins) and so unmount can
+  // cancel any pending response that would otherwise call setState on
+  // an unmounted tree.
+  const inFlightCtrl = useRef<AbortController | null>(null)
 
-  // Initialize localStorage-driven enabled flag once on mount. Default
-  // is "respect prop"; if the operator has explicitly set the key to
-  // "false" we honour that.
+  // Cross-tab opt-out propagation. Subscribe to the storage event so
+  // toggling the key in one tab converges the other tabs without a
+  // reload.
   useEffect(() => {
-    if (!autoRefresh) return
-    try {
-      const v = window.localStorage.getItem(storageKey)
-      if (v === "false") setEnabled(false)
-    } catch {
-      // localStorage may throw on private-mode browsers; treat as
-      // "no opt-out" and continue.
+    if (typeof window === "undefined") return
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== storageKey) return
+      setEnabled(e.newValue === "false" ? false : autoRefresh)
     }
+    window.addEventListener("storage", onStorage)
+    return () => window.removeEventListener("storage", onStorage)
   }, [autoRefresh, storageKey])
 
   // Page Visibility wiring.
@@ -117,15 +141,36 @@ export function OverviewLive({
     return () => document.removeEventListener("visibilitychange", onChange)
   }, [])
 
-  const fetchNow = useCallback(async () => {
-    if (inFlight.current) return
-    inFlight.current = true
+  const sinceSecs = initialAggregate.since_secs
+  const bucketSecs = initialAggregate.bucket_secs
+
+  const fetchNow = useCallback(async (externalSignal?: AbortSignal) => {
+    // Last-write-wins: a slow in-flight request is aborted by a fresh
+    // tick so the dashboard never sits "frozen" while an old request
+    // monopolises the inFlight slot. Externally-supplied signals
+    // (effect cleanup) are layered with the per-call controller so
+    // unmount can cancel everything at once.
+    if (inFlightCtrl.current) {
+      inFlightCtrl.current.abort()
+    }
+    const ctrl = new AbortController()
+    inFlightCtrl.current = ctrl
+    const linkExternal = () => ctrl.abort()
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        ctrl.abort()
+      } else {
+        externalSignal.addEventListener("abort", linkExternal, { once: true })
+      }
+    }
+    setIsRefreshing(true)
     try {
       const params = new URLSearchParams()
-      params.set("since_secs", String(initialAggregate.since_secs))
-      params.set("bucket_secs", String(initialAggregate.bucket_secs))
+      params.set("since_secs", String(sinceSecs))
+      params.set("bucket_secs", String(bucketSecs))
       const r = await fetch(`/api/overview-refresh?${params.toString()}`, {
         cache: "no-store",
+        signal: ctrl.signal,
       })
       if (!r.ok) return
       const body = await r.json() as {
@@ -133,21 +178,42 @@ export function OverviewLive({
         aggregate: LedgerAggregateResponse
         ts: number
       }
+      if (ctrl.signal.aborted) return
       setSummary(body.summary)
       setAggregate(body.aggregate)
       setRefreshedAtSec(body.ts)
-    } catch {
-      // Network blip: skip this tick; the next tick will retry.
+    } catch (e) {
+      // AbortError is a signal, not a failure: a fresh tick or unmount
+      // intentionally cancelled this request. Anything else is a
+      // network blip; the next tick will retry.
+      if ((e as { name?: string })?.name === "AbortError") return
     } finally {
-      inFlight.current = false
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", linkExternal)
+      }
+      // Only clear the inFlight slot if it's still ours — a later
+      // tick may have already replaced it.
+      if (inFlightCtrl.current === ctrl) {
+        inFlightCtrl.current = null
+        setIsRefreshing(false)
+      }
     }
-  }, [initialAggregate.since_secs, initialAggregate.bucket_secs])
+  }, [sinceSecs, bucketSecs])
 
-  // Polling loop.
+  // Polling loop. The cleanup aborts any in-flight request via the
+  // controller stored in `inFlightCtrl` so a stale response cannot
+  // call setState on an unmounted (or hidden-then-resumed) component.
   useEffect(() => {
     if (!enabled || !tabVisible) return
-    const id = window.setInterval(() => { void fetchNow() }, refreshIntervalMs)
-    return () => window.clearInterval(id)
+    const ctrl = new AbortController()
+    const id = window.setInterval(
+      () => { void fetchNow(ctrl.signal) },
+      refreshIntervalMs,
+    )
+    return () => {
+      window.clearInterval(id)
+      ctrl.abort()
+    }
   }, [enabled, tabVisible, refreshIntervalMs, fetchNow])
 
   // Headline numbers. Derive from the action / verdict breakdown.
@@ -161,7 +227,10 @@ export function OverviewLive({
   const pending = summary?.hitl_pending ?? 0
   const hasActivity = total > 0 || pending > 0
 
-  const nf = new Intl.NumberFormat(numberFormatLocale)
+  const nf = useMemo(
+    () => new Intl.NumberFormat(numberFormatLocale),
+    [numberFormatLocale],
+  )
   const headlineText = hasActivity
     ? interpolate(t.headlineWithActivity, { n: nf.format(total) })
     : t.headlineNoActivity
@@ -170,6 +239,17 @@ export function OverviewLive({
     pending: nf.format(pending),
     audited: nf.format(audited),
   })
+
+  // Build the SR announcement string once per render and pin it into
+  // an aria-live region. The region is gated to a derived sentence
+  // (block / pending / audited counts + chain state) so only those
+  // operator-meaningful changes re-announce — minor segment-by-segment
+  // chart movement does NOT pump the live region.
+  const chainOk = summary?.ledger_chain_ok ?? true
+  const announcement = useMemo(() => {
+    const chainPart = chainOk ? t.kpi.auditChainOk : t.kpi.auditChainBroken
+    return `${detailText}; ${t.kpi.auditChain}: ${chainPart}`
+  }, [detailText, chainOk, t.kpi.auditChain, t.kpi.auditChainOk, t.kpi.auditChainBroken])
 
   // Last refreshed footer. Show only after the first poll lands so the
   // server-rendered initial state doesn't carry a "0s ago" label.
@@ -180,6 +260,8 @@ export function OverviewLive({
       disabledLabel={t.refreshDisabled}
       refreshNowLabel={t.refreshNow}
       enabled={enabled}
+      isRefreshing={isRefreshing}
+      tabVisible={tabVisible}
       onToggle={() => {
         const next = !enabled
         setEnabled(next)
@@ -195,6 +277,28 @@ export function OverviewLive({
 
   return (
     <>
+      {/* Polite SR announcement region. One sentence, re-announces
+          only when its content (block/pending/audited counts or chain
+          state) actually changes. Sighted users never see it. */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="overview-live-region"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0,0,0,0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {announcement}
+      </div>
+
       <HeadlineCard
         total={total}
         blocked={blocked}
@@ -250,7 +354,7 @@ export function OverviewLive({
           <span className="text-sm text-[var(--color-text-secondary)]">
             {t.kpi.auditChain}
           </span>
-          {summary?.ledger_chain_ok ?? true
+          {chainOk
             ? <Badge variant="ok">{t.kpi.auditChainOk}</Badge>
             : <Badge variant="deny">{t.kpi.auditChainBroken}</Badge>}
         </Card>
@@ -266,6 +370,7 @@ export function OverviewLive({
           actionLabel={t.actionLabel}
           emptyBody={t.chartEmptyBody}
           nf={nf}
+          locale={numberFormatLocale}
         />
       </Card>
     </>
@@ -274,22 +379,28 @@ export function OverviewLive({
 
 function RefreshFooter({
   refreshedAtSec, label, disabledLabel, refreshNowLabel,
-  enabled, onToggle, onRefreshNow,
+  enabled, isRefreshing, tabVisible,
+  onToggle, onRefreshNow,
 }: {
   refreshedAtSec: number
   label: string
   disabledLabel: string
   refreshNowLabel: string
   enabled: boolean
+  isRefreshing: boolean
+  tabVisible: boolean
   onToggle: () => void
   onRefreshNow: () => void
 }) {
-  // Re-render every 5s so the relative-time string ticks.
+  // Re-render every 5s so the relative-time string ticks. Gate on
+  // `tabVisible` so a hidden tab does not keep firing a wakelock-y
+  // setInterval — the parent polling loop is already gated this way.
   const [, setTick] = useState(0)
   useEffect(() => {
+    if (!tabVisible) return
     const id = window.setInterval(() => setTick(t => t + 1), 5_000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [tabVisible])
 
   const now = Math.floor(Date.now() / 1000)
   const ago = Math.max(0, now - refreshedAtSec)
@@ -303,11 +414,24 @@ function RefreshFooter({
     <div className="flex items-center gap-3">
       <span>
         {label}: <span className="font-medium">{agoLabel}</span>
+        {isRefreshing && (
+          <span
+            className="ml-2 text-[var(--color-text-tertiary)]"
+            data-testid="overview-refreshing-indicator"
+          >
+            …
+          </span>
+        )}
       </span>
       <button
         type="button"
         onClick={onRefreshNow}
-        className="text-xs underline text-[var(--color-accent-light)] hover:no-underline"
+        disabled={isRefreshing}
+        aria-busy={isRefreshing}
+        className="text-xs underline text-[var(--color-accent-light)]
+                   hover:no-underline
+                   disabled:no-underline disabled:opacity-60
+                   disabled:cursor-not-allowed"
       >
         {refreshNowLabel}
       </button>

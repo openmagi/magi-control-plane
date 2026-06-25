@@ -309,8 +309,13 @@ _COMMON_TOOL_ENVELOPE: list[FieldDescriptor] = [
     {
         "path": "transcript_path",
         "type": "str",
-        "description": "Filesystem path to the full session transcript "
-                       "(read-only from the gate's perspective).",
+        "description": "Absolute path to a JSONL file containing the "
+                       "conversation transcript so far. A verifier or "
+                       "run_command script can OPEN this file and read "
+                       "prior turns (user prompts, assistant replies, "
+                       "tool calls). The file is owned by the CC session "
+                       "and is readable by the gate process; you do not "
+                       "need extra permissions to inspect it.",
         "example": "/Users/me/.claude/transcripts/abc.jsonl",
     },
     {

@@ -353,7 +353,13 @@ const USER_PROMPT_SUBMIT_FIELDS: FieldDescriptor[] = [
     example: "please push to main",
   },
   { path: "session_id", type: "str", description: "Opaque CC session identifier." },
-  { path: "transcript_path", type: "str", description: "Path to the session transcript." },
+  {
+    path: "transcript_path",
+    type: "str",
+    description:
+      "Absolute path to a JSONL file containing the conversation transcript so far. A verifier or run_command script can OPEN this file and read prior turns (user prompts, assistant replies, tool calls). The file is owned by the CC session and is readable by the gate process; you do not need extra permissions to inspect it.",
+    example: "/tmp/cc-session-abc123/transcript.jsonl",
+  },
 ]
 
 const STOP_FIELDS: FieldDescriptor[] = [
