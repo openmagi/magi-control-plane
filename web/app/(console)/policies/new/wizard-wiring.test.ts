@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
 import path from "node:path"
-import { previousLiveStep } from "./wizard-nav"
+import { previousLiveStep, buildBackHrefFromSearchParams } from "./wizard-nav"
 
 /**
  * P9 (D49) wizard-wiring invariants.
@@ -2045,6 +2045,10 @@ describe("policies/new wizard — D82a top-left Home + Back", () => {
     expect(slice).toContain("total={WIZARD_TOTAL}")
     expect(slice).toContain("locale={locale}")
     expect(slice).toContain("state={state}")
+    // D82b: searchParams threads through so the Back link's URL is
+    // built from the wizard's actual query string (preserving every
+    // field, not just the subset buildWizardHref serializes).
+    expect(slice).toContain("searchParams={searchParams}")
   })
 
   it("StepShell no longer renders the bottom-left Back link", () => {
@@ -2213,5 +2217,206 @@ describe("policies/new wizard — previousLiveStep behavioural cases", () => {
   it("Step 5 -> Step 4 and Step 6 -> Step 5 (no condition-side skips after Step 4)", () => {
     expect(previousLiveStep({ lifecycle: "before_tool_use", action: "block" }, 5)).toBe(4)
     expect(previousLiveStep({ lifecycle: "before_tool_use", action: "inject_context" }, 6)).toBe(5)
+  })
+})
+
+/**
+ * D82b: end-to-end URL contract for the wizard Back link.
+ *
+ * The install review reported "Step 4 wizard Back link is broken
+ * (clicks but page does not navigate)". The brief hypothesised
+ * `buildWizardHref` was emitting the SAME URL as the current page
+ * because the heavy Step 4 query params overshadowed the step
+ * decrement. Pin the real contract with a behavioural test: parse a
+ * Step 4 URL via `buildBackHrefFromSearchParams`, assert the emitted
+ * URL flips `step` to the previous live step AND preserves every
+ * other authoring param (lifecycle / toolScope / conditionKind /
+ * pattern / action) so the Back round-trip never silently drops what
+ * the operator just authored.
+ *
+ * Vanilla Step 4 (condition-bearing action) -> Step 3 is the case
+ * the install review described. We also lock the skip-flavoured
+ * cases (inject_context / input_rewrite / run_command) because those
+ * use `previousLiveStep`'s skip table -- a future regression that
+ * mistakenly returned `step=4` for any of these would let the Back
+ * link no-op, reproducing the install-review symptom.
+ */
+describe("policies/new wizard — D82b backHref URL contract", () => {
+  function parseHref(href: string): { path: string; params: URLSearchParams } {
+    const [path, qs = ""] = href.split("?", 2)
+    return { path, params: new URLSearchParams(qs) }
+  }
+
+  it("Step 4 + action=block + tool lifecycle -> step=3 with same lifecycle/scope/condition", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "regex",
+      pattern: "rm -rf",
+      action: "block",
+    })
+    expect(href).not.toBeNull()
+    const { path, params } = parseHref(href!)
+    expect(path).toBe("/policies/new")
+    expect(params.get("step")).toBe("3")
+    // Preserve every authoring field the operator already populated.
+    expect(params.get("lifecycle")).toBe("before_tool_use")
+    expect(params.get("toolScope")).toBe("Bash")
+    expect(params.get("conditionKind")).toBe("regex")
+    expect(params.get("pattern")).toBe("rm -rf")
+    expect(params.get("action")).toBe("block")
+    // mode=guided rides through so the Back navigation lands on the
+    // wizard rather than bouncing back to the authoring picker.
+    expect(params.get("mode")).toBe("guided")
+  })
+
+  it("Step 4 + action=block + no-tool-scope lifecycle -> step=3 (Step 2 is already skipped forward by the wizard)", () => {
+    // user_prompt has no tool scope so Step 2 is skipped on the way
+    // forward; the Back arrow still lands on Step 3 (a live step)
+    // when the action keeps Step 3 live.
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "user_prompt",
+      conditionKind: "regex",
+      pattern: "hello",
+      action: "block",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("step")).toBe("3")
+    expect(params.get("lifecycle")).toBe("user_prompt")
+    expect(params.get("conditionKind")).toBe("regex")
+    expect(params.get("pattern")).toBe("hello")
+  })
+
+  it("Step 4 + action=inject_context + tool lifecycle -> step=2 (Step 3 is skipped backward)", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "none",
+      action: "inject_context",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("step")).toBe("2")
+    expect(params.get("lifecycle")).toBe("before_tool_use")
+    expect(params.get("toolScope")).toBe("Bash")
+    expect(params.get("action")).toBe("inject_context")
+  })
+
+  it("Step 4 + action=run_command + no-tool-scope lifecycle -> step=1 (both Steps 2 and 3 are skipped)", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "4",
+      lifecycle: "user_prompt",
+      action: "run_command",
+      runCommandMode: "inline",
+    })
+    const { params } = parseHref(href!)
+    expect(params.get("step")).toBe("1")
+    expect(params.get("lifecycle")).toBe("user_prompt")
+    expect(params.get("action")).toBe("run_command")
+    expect(params.get("runCommandMode")).toBe("inline")
+  })
+
+  it("Step 4 backHref never equals the current URL's step (regression guard)", () => {
+    // The install-review hypothesis was that buildWizardHref emitted
+    // the same URL as the current page -- pin the inverse so any
+    // future regression that left `step=4` in the backHref fails
+    // here instead of being a silent no-op for the operator.
+    const cases: Array<Record<string, string>> = [
+      { mode: "guided", step: "4", lifecycle: "before_tool_use", toolScope: "Bash", conditionKind: "regex", pattern: "x", action: "block" },
+      { mode: "guided", step: "4", lifecycle: "after_tool_use", toolScope: "Bash", conditionKind: "llm_critic", llmCriterion: "ok?", action: "audit" },
+      { mode: "guided", step: "4", lifecycle: "user_prompt", conditionKind: "regex", pattern: "x", action: "block" },
+      { mode: "guided", step: "4", lifecycle: "before_tool_use", toolScope: "Bash", action: "inject_context", injectTemplate: "hello" },
+      { mode: "guided", step: "4", lifecycle: "before_tool_use", toolScope: "Bash", action: "input_rewrite", rewriterKind: "prefix" },
+      { mode: "guided", step: "4", lifecycle: "before_tool_use", toolScope: "Bash", action: "run_command", runCommandMode: "inline" },
+    ]
+    for (const sp of cases) {
+      const href = buildBackHrefFromSearchParams(sp)
+      expect(href).not.toBeNull()
+      const { params } = parseHref(href!)
+      expect(params.get("step")).not.toBe("4")
+    }
+  })
+
+  it("Step 1 backHref is null (no live previous step -> caller renders a disabled button)", () => {
+    const href = buildBackHrefFromSearchParams({
+      mode: "guided",
+      step: "1",
+      lifecycle: "before_tool_use",
+    })
+    expect(href).toBeNull()
+  })
+
+  it("Step 4 backHref carries authoring side-fields the URL accumulated", () => {
+    // Larger pin: conditionKind+pattern+llmCriterion+evidence_refs+
+    // description+id all need to ride through; previously these
+    // could be silently dropped on a buggy back nav. Lock the
+    // round-trip here.
+    const sp: Record<string, string> = {
+      mode: "guided",
+      step: "4",
+      lifecycle: "before_tool_use",
+      toolScope: "Bash",
+      conditionKind: "regex",
+      pattern: "rm -rf",
+      llmCriterion: "is this destructive?",
+      evidence_refs: "ev_a,ev_b",
+      action: "block",
+      description: "guard rm -rf",
+      id: "draft.guard-rm",
+    }
+    const href = buildBackHrefFromSearchParams(sp)
+    const { params } = parseHref(href!)
+    expect(params.get("step")).toBe("3")
+    for (const k of [
+      "lifecycle", "toolScope", "conditionKind", "pattern",
+      "llmCriterion", "evidence_refs", "action", "description", "id",
+    ]) {
+      expect(params.get(k)).toBe(sp[k])
+    }
+  })
+})
+
+/**
+ * D82b: the "Just inject extra context" shortcut on Step 3 has been
+ * removed because it conflated condition kind (Step 3) with action
+ * archetype (Step 4). The shortcut behaviour (jump to Step 4 with
+ * action=inject_context and conditionKind=none) is still reachable
+ * via "No condition" -> Next -> "Inject extra context" at Step 4, so
+ * we pin the removal at the source level so a regression cannot
+ * silently re-add it.
+ */
+describe("policies/new wizard — D82b Step 3 shortcut removal", () => {
+  const src = readFileSync(
+    path.join(__dirname, "page.tsx"),
+    "utf-8",
+  )
+
+  it("Step 3 no longer renders the 'Just inject extra context' shortcut card", () => {
+    // The testid was the canonical hook for the card; its absence is
+    // the strongest signal the card is gone. The user-visible copy
+    // ("Just inject extra context" / "조건 없이 컨텍스트만 추가하기")
+    // intentionally still appears inside a removal-note comment so a
+    // future reader sees WHY the card was dropped; we therefore pin
+    // the JSX surface specifically, not the source-text presence.
+    expect(src).not.toMatch(/step3-inject-context-shortcut/)
+    // The shortcut card always rendered the Badge labelled "지름길"
+    // ("shortcut") next to the headline — its removal pins the card
+    // is gone from any rendered surface, not just one locale.
+    expect(src).not.toContain('"지름길"')
+    expect(src).not.toContain('"shortcut"')
+  })
+
+  it("Step 3 no longer synthesizes action=inject_context from the shortcut link", () => {
+    // The shortcut Link previously spread `{ ...state, action:
+    // "inject_context", conditionKind: "none" }` into buildWizardHref
+    // as a one-shot rewrite. No other surface needs that exact
+    // synthesis, so its absence is a clean removal.
+    expect(src).not.toMatch(/action:\s*"inject_context",\s*conditionKind:\s*"none"/)
   })
 })

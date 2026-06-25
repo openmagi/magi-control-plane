@@ -14,7 +14,7 @@ import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
-import { previousLiveStep } from "./wizard-nav"
+import { previousLiveStep, buildBackHrefFromSearchParams } from "./wizard-nav"
 import { codeForError, resolveFlash, type Step3ErrCode, type Step4ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -2970,7 +2970,7 @@ function HiddenState({ state }: { state: WizardState }) {
  *  inside this file keep working untouched. */
 
 function WizardHeader({
-  t, step, total, locale, state,
+  t, step, total, locale, state, searchParams,
 }: {
   step: number; total: number
   /** D57g: forwarded to the HandoffLink so the chat label renders in
@@ -2980,6 +2980,18 @@ function WizardHeader({
    *  LIVE step (honoring the same skip rules GuidedWizard uses to
    *  advance forward). */
   state: WizardState
+  /** D82b: pass-through of the wizard's `searchParams` so the Back
+   *  link rebuilds the URL from the operator's actual URL state
+   *  rather than the `state` projection, which silently dropped
+   *  fields that `buildWizardHref` does not serialize (run_command*
+   *  in particular). The install review reported "Back from Step 4
+   *  stays on Step 4" — the root cause was the projection: rebuilding
+   *  from `state` could emit a URL identical to the current one for
+   *  the no-op fields. Routing the Back link through
+   *  `buildBackHrefFromSearchParams` flips only `step` and preserves
+   *  every other param verbatim, so the URL always differs and the
+   *  navigation always fires. */
+  searchParams: Record<string, string | undefined>
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   // D82a: two top-left affordances side by side — Home (pick different
@@ -2987,8 +2999,14 @@ function WizardHeader({
   // Back → wizard body → Next, so a keyboard operator on Step 4 can
   // reach Back with one Tab from Home and never see the broken legacy
   // Step 3 jump.
+  // D82b: `backStep` still flows through `state` for the disabled-vs-
+  // enabled rendering check, but the Back href is derived from
+  // `searchParams` so every URL field — including run_command* which
+  // `buildWizardHref` does not emit — rides through the Back nav.
   const backStep = previousLiveStep(state, step)
-  const backHref = backStep != null ? buildWizardHref(state, backStep) : null
+  const backHref = backStep != null
+    ? buildBackHrefFromSearchParams({ ...searchParams, step: String(step) })
+    : null
   return (
     <div className="flex items-center justify-between mb-6">
       <div className="flex items-center gap-1">
@@ -3289,7 +3307,7 @@ function GuidedWizard({
 
   return (
     <div className="max-w-2xl mx-auto">
-      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} locale={locale} state={state} />
+      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} locale={locale} state={state} searchParams={searchParams} />
 
       {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 2 && <Step2ToolScope t={t} locale={locale} state={state} action={advanceAction} />}
@@ -4199,42 +4217,18 @@ function Step3Condition({
             : `Verifier(s) that do not fire on ${lifecycleLabel} were removed: ${state._droppedEvidenceRefs.join(", ")}. Pick a different verifier or change the lifecycle.`}
         </div>
       )}
-      {/* P1 follow-up (wizard-flow): "Just inject context" shortcut so
-          the operator can route to Step 4 without picking a condition
-          kind that saveWizard will discard the moment they pick
-          inject_context on Step 4. The card sits ABOVE the condition
-          picker so a fresh authoring path discovers the
-          context_injection archetype without wasted clicks. The link
-          jumps straight to Step 4 with state.action=inject_context
-          (GuidedWizard's effectiveStep gate then keeps the operator
-          on Step 4 even if they navigate back). */}
-      <Link
-        data-testid="step3-inject-context-shortcut"
-        href={buildWizardHref(
-          { ...state, action: "inject_context", conditionKind: "none" },
-          4,
-        )}
-        className="block rounded-xl border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/[0.04] p-4 transition-colors hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.08]"
-      >
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <span className="text-sm font-semibold text-[var(--color-text-primary)]">
-            {ko
-              ? "조건 없이 컨텍스트만 추가하기"
-              : "Just inject extra context"}
-          </span>
-          <Badge variant="info">{ko ? "지름길" : "shortcut"}</Badge>
-        </div>
-        <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-          {ko
-            ? "검사 없이 모델에 정적인 텍스트만 추가하고 싶다면 바로 다음 단계로 넘어가세요."
-            : "If you only want to add static text to the model's context (no gating, no checks), skip ahead to Step 4."}
-        </p>
-      </Link>
-      <p className="text-xs text-[var(--color-text-tertiary)] leading-relaxed m-0">
-        {ko
-          ? "또는 아래에서 검사 조건을 선택하세요:"
-          : "Or pick a condition below to gate on:"}
-      </p>
+      {/* D82b: the "Just inject extra context" shortcut card that
+          previously sat above the condition picker has been removed.
+          It conflated condition kind (Step 3) with action archetype
+          (Step 4): picking the card silently rewrote state.action to
+          `inject_context` and jumped past Step 3, which read as a
+          condition-picker choice even though it lived a step above the
+          radios. Operators who actually want a context-injection
+          policy now express it explicitly: pick "No condition" at
+          Step 3 -> Next -> pick "Inject extra context" at Step 4.
+          The Step 4 surface (with its disabled-card tooltip on
+          excluded lifecycles) is the canonical place to discover the
+          archetype; Step 3 no longer second-guesses it. */}
       {/* D62: precise inline error banner. Replaces the previous
           generic "Invalid input" page-level flash that fired from
           Step 5 with no pointer. The specific input's red ring +
