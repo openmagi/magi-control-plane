@@ -113,39 +113,76 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 # keys` / unknown-hook-event error. Until then the candidate stays in
 # `_UNVERIFIED_EVENTS`.
 #
-# The 30 names split into 5 families:
+# The 30 names split into 5 families (gate-action availability;
+# inject_context + run_command are layered on top per D63 + D69 and
+# follow the additionalContext channel rule, not the gate-action rule):
 #
 #   tool-context events       — Pre/Post/Failure/Batch. Tool name in
 #                               the payload, so tool / mcp_tool /
 #                               tool_alt matchers apply on the pre/post
 #                               pair; the failure + batch variants are
-#                               audit-only.
+#                               audit-only for the gate actions but
+#                               still accept inject_context + run_command
+#                               (failure recovery scripts are common).
 #   permission gate events    — PermissionRequest (pre) /
 #                               PermissionDenied (post). The pre side
 #                               accepts block/ask/audit because the
 #                               PreToolUse "override permission"
 #                               contract is the same channel; the post
-#                               side is audit-only.
+#                               side is audit-only for gate actions.
 #   content-flow events       — UserPromptSubmit / UserPromptExpansion
 #                               / PreCompact / PostCompact /
 #                               Elicitation / ElicitationResult. The
 #                               *pre* sides accept gate actions; the
-#                               *post* sides audit-only.
+#                               *post* sides audit-only for gate actions.
 #   subagent / stop boundary  — SubagentStart / SubagentStop / Stop /
-#                               StopFailure. Audit-only — by the time
-#                               these fire the runtime cannot rewind.
+#                               StopFailure. Audit-only for gate actions
+#                               — by the time these fire the runtime
+#                               cannot rewind. SubagentStart still
+#                               accepts inject_context + run_command
+#                               (carry mandate over to the child).
 #   lifecycle / observability — Setup / Notification / SessionStart /
 #                               SessionEnd / TeammateIdle / TaskCreated
 #                               / TaskCompleted / ConfigChange /
 #                               WorktreeCreate / WorktreeRemove /
 #                               InstructionsLoaded / CwdChanged /
 #                               FileChanged / MessageDisplay. Boundary
-#                               markers; audit-only.
+#                               markers; audit-only for gate actions.
+#                               All except WorktreeCreate + MessageDisplay
+#                               also accept inject_context (the four
+#                               D59-excluded events route additional
+#                               output through a specialized
+#                               hookSpecificOutput field instead).
 #
 # Action availability rule remains the same: pre-event hooks (PreTool,
 # PermissionRequest, UserPromptSubmit, UserPromptExpansion, PreCompact,
 # Elicitation) can block/ask/audit; post-event + observability hooks
-# audit-only. Every event can audit.
+# audit-only for the gate-style actions. Every event can audit.
+#
+# D69 — matrix re-audit:
+#   The action vocabulary on `LEGAL_COMBINATIONS` is widened to surface
+#   `inject_context` and `run_command` on the observational hooks too.
+#   Today's `_AUDIT_ONLY_WILDCARD_EVENTS` list was over-narrow: the
+#   D58 re-audit treated TaskCreated / TaskCompleted / SubagentStart /
+#   PostToolUseFailure / Notification / Setup / TeammateIdle /
+#   ConfigChange / InstructionsLoaded / CwdChanged / FileChanged as
+#   pure audit slots. The CC hook stdout JSON (decision /
+#   updatedInput / additionalContext / continue / hookSpecificOutput)
+#   is uniform across every hook — so an operator authoring "fire a
+#   recovery script after a failed tool" (run_command on
+#   PostToolUseFailure) or "carry an audit summary back into the next
+#   turn" (inject_context on TaskCompleted) is a legal hook stdout
+#   pattern. The 26 inject_context-bearing events are exactly the
+#   `_CONTEXT_EVENT_LITERALS` set from ir.py (D59 narrowing keeps
+#   Elicitation / ElicitationResult / WorktreeCreate / MessageDisplay
+#   off the inject_context surface because their hookSpecificOutput
+#   uses a specialized field that ignores additionalContext at runtime).
+#   run_command is uniformly legal on all 30 hooks (D63).
+#   block + ask stay narrow: blocking only fires on pre-event channels
+#   the runtime can still interrupt (PreToolUse, PostToolUse causes a
+#   retry feedback loop, UserPromptSubmit, PreCompact, PermissionRequest,
+#   Elicitation); `ask` requires a routable interactive surface
+#   (PreToolUse, UserPromptSubmit, PermissionRequest, Elicitation).
 _BLOCK_ASK_AUDIT = ("block", "ask", "audit")
 _BLOCK_AUDIT = ("block", "audit")
 _AUDIT_ONLY = ("audit",)
@@ -280,7 +317,7 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
     })
     # Use _SUPPORTED_EVENTS as the canonical list of 30. Import lazily
     # at call time to avoid an import cycle with ir.py.
-    from .ir import _SUPPORTED_EVENTS
+    from .ir import _SUPPORTED_EVENTS, _CONTEXT_INJECTION_EXCLUDED_EVENTS
     for ev in _SUPPORTED_EVENTS:
         if ev in _TOOL_CONTEXT_EVENTS_RC:
             for kls in (
@@ -292,6 +329,32 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
                 out.add((ev, kls, "run_command"))
         else:
             out.add((ev, MatcherClass.wildcard, "run_command"))
+
+    # D69 — inject_context. The CC hook stdout JSON contract accepts
+    # `additionalContext` on every hook EXCEPT four whose
+    # hookSpecificOutput shape is specialized (Elicitation /
+    # ElicitationResult / WorktreeCreate / MessageDisplay). The list is
+    # owned by ir.py::_CONTEXT_INJECTION_EXCLUDED_EVENTS so the matrix
+    # and the ContextInjectionPolicy gate stay in lockstep. Today's
+    # `_AUDIT_ONLY_WILDCARD_EVENTS` only registered (event, wildcard,
+    # audit) for observational hooks; D69 adds inject_context on the 26
+    # non-excluded events. Tool-context events still also accept per-tool
+    # / mcp_tool / tool_alt matchers so a hook authored on PreToolUse +
+    # Bash + inject_context survives the matrix gate (ContextInjection
+    # already accepts those classes on the tool-context family).
+    for ev in _SUPPORTED_EVENTS:
+        if ev in _CONTEXT_INJECTION_EXCLUDED_EVENTS:
+            continue
+        if ev in _TOOL_CONTEXT_EVENTS_RC:
+            for kls in (
+                MatcherClass.tool,
+                MatcherClass.mcp_tool,
+                MatcherClass.tool_alt,
+                MatcherClass.wildcard,
+            ):
+                out.add((ev, kls, "inject_context"))
+        else:
+            out.add((ev, MatcherClass.wildcard, "inject_context"))
 
     return frozenset(out)
 

@@ -3382,7 +3382,7 @@ function lifecycleCardCopy(
     },
     task_completed: {
       label: "백그라운드 태스크 완료 (TaskCompleted)",
-      sub: "백그라운드 태스크가 종료될 때. 완료 메타데이터 감사용.",
+      sub: "Task 도구가 끝났을 때 발동. 결과를 본세션 컨텍스트에 다시 주입하거나, 태스크 실행 로그를 기록할 때 사용하세요.",
     },
     config_change: {
       label: "설정 변경 (ConfigChange)",
@@ -3504,7 +3504,7 @@ function lifecycleCardCopy(
     },
     task_completed: {
       label: "Background task done (TaskCompleted)",
-      sub: "Fires when a background task finishes. Audit completion metadata.",
+      sub: "Fires after a Task tool finishes. Use this to inject results back into the main session or to log the task run.",
     },
     config_change: {
       label: "Config change (ConfigChange)",
@@ -3577,10 +3577,12 @@ function Step1Lifecycle({
   // D61: layered-disclosure picker. The Step 1 surface used to show
   // every one of the 30 hook events at once; this collapses the screen
   // to a default-expanded "Common" group (PreToolUse, PostToolUse,
-  // UserPromptSubmit, Stop) with the remaining 26 events tucked into
-  // collapsed Advanced groups + a search filter. LIFECYCLE_GROUPS (the
-  // legacy data shape) is kept for the i18n drift gate but no longer
-  // drives the rendered surface; Step1LifecyclePicker owns the layout.
+  // UserPromptSubmit, Stop, TaskCompleted — D69 added the 5th entry
+  // because end-of-task automation is one of the most common operator
+  // patterns) with the remaining 25 events tucked into collapsed
+  // Advanced groups + a search filter. LIFECYCLE_GROUPS (the legacy
+  // data shape) is kept for the i18n drift gate but no longer drives
+  // the rendered surface; Step1LifecyclePicker owns the layout.
   const current = state.lifecycle ?? "before_tool_use"
   // Stable per-locale reference: `lifecycleCardCopy` returns a fresh
   // object every call. The picker memoizes `visibilityByGroup` on

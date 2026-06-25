@@ -85,9 +85,14 @@ def test_legal_combinations_are_tuples_of_three():
         assert isinstance(kls, MatcherClass)
         # D57f-2 widened the action vocabulary to include input_rewrite
         # (PreToolUse only). D63 added run_command (legal on every
-        # supported event). Earlier rounds covered block / ask / audit.
+        # supported event). D69 added inject_context as a legal action
+        # on the LEGAL_COMBINATIONS triples (26 of 30 events; the four
+        # D59-excluded events route additionalContext through a
+        # specialized hookSpecificOutput field instead). Earlier
+        # rounds covered block / ask / audit.
         assert action in {
             "block", "ask", "audit", "input_rewrite", "run_command",
+            "inject_context",
         }
 
 
@@ -309,6 +314,123 @@ def test_d58_supported_events_count_is_30():
     # count being changed.
     assert CC_VERSION == "2.1.170"
     assert CC_SHA == "1cda84def004ef3a8f569f8e8284a153a6b98c3a"
+
+
+# ── D69: matrix re-audit ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("event", [
+    # Observational hooks that today's matrix narrowed to audit-only +
+    # run_command. CC's stdout JSON (additionalContext) is uniform on
+    # all 26 inject_context-capable events, so operators authoring
+    # "carry context over to the next turn" should be able to attach
+    # inject_context to any of these without a runtime refusal.
+    "PreToolUse", "PostToolUse",
+    "PostToolUseFailure", "PostToolBatch",
+    "PermissionRequest", "PermissionDenied",
+    "UserPromptSubmit", "UserPromptExpansion",
+    "PreCompact", "PostCompact",
+    "SubagentStart", "SubagentStop",
+    "Stop", "StopFailure",
+    "Setup", "Notification",
+    "SessionStart", "SessionEnd",
+    "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange",
+    "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged", "FileChanged",
+])
+def test_d69_inject_context_legal_on_26_events(event):
+    """D69: inject_context joins LEGAL_COMBINATIONS as a 6th legal
+    action. The 26 events are exactly `_SUPPORTED_EVENTS -
+    _CONTEXT_INJECTION_EXCLUDED_EVENTS`. Both wildcard and (for the
+    four tool-context events) per-tool matchers are accepted."""
+    validate_combination(event, "*", "inject_context")
+
+
+@pytest.mark.parametrize("event", [
+    # D59 excludes these four from additionalContext-bearing hooks.
+    # The hookSpecificOutput shape is specialized and CC silently
+    # drops additionalContext on them at runtime; the matrix must
+    # mirror the runtime gate.
+    "Elicitation", "ElicitationResult",
+    "WorktreeCreate", "MessageDisplay",
+])
+def test_d69_inject_context_rejected_on_excluded_events(event):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", "inject_context")
+
+
+@pytest.mark.parametrize("event,matcher", [
+    # The four tool-context events accept per-tool + mcp_tool
+    # matchers on inject_context, same shape they already accept for
+    # block / audit / input_rewrite / run_command.
+    ("PreToolUse",          "Bash"),
+    ("PreToolUse",          "mcp__court__file"),
+    ("PostToolUse",         "Bash"),
+    ("PostToolUseFailure",  "Bash"),
+    ("PostToolBatch",       "mcp__court__file"),
+])
+def test_d69_inject_context_tool_matcher_on_tool_context_events(event, matcher):
+    validate_combination(event, matcher, "inject_context")
+
+
+@pytest.mark.parametrize("event,action", [
+    # D69: widen observational hooks to accept inject_context +
+    # run_command beyond the prior audit-only narrowing. Pin a
+    # representative slice of the explicit corrections called out
+    # in the brief so a future audit cannot silently re-narrow them.
+    ("TaskCreated",          "inject_context"),
+    ("TaskCreated",          "run_command"),
+    ("TaskCompleted",        "inject_context"),
+    ("TaskCompleted",        "run_command"),
+    ("SubagentStart",        "inject_context"),
+    ("SubagentStart",        "run_command"),
+    ("PostToolUseFailure",   "inject_context"),
+    ("PostToolUseFailure",   "run_command"),
+    ("Notification",         "inject_context"),
+    ("Notification",         "run_command"),
+    ("Setup",                "inject_context"),
+    ("Setup",                "run_command"),
+    ("TeammateIdle",         "inject_context"),
+    ("TeammateIdle",         "run_command"),
+    ("ConfigChange",         "inject_context"),
+    ("ConfigChange",         "run_command"),
+    ("FileChanged",          "inject_context"),
+    ("FileChanged",          "run_command"),
+    ("CwdChanged",           "inject_context"),
+    ("CwdChanged",           "run_command"),
+    ("InstructionsLoaded",   "inject_context"),
+    ("InstructionsLoaded",   "run_command"),
+])
+def test_d69_observational_hooks_widened(event, action):
+    validate_combination(event, "*", action)
+
+
+@pytest.mark.parametrize("event,bad_action", [
+    # WorktreeCreate stays inject_context-excluded (hookSpecificOutput
+    # carries worktreePath); MessageDisplay too (display-only, no
+    # model-context channel). They still accept run_command + audit.
+    ("WorktreeCreate", "inject_context"),
+    ("MessageDisplay", "inject_context"),
+    ("Elicitation",    "inject_context"),
+    ("ElicitationResult", "inject_context"),
+])
+def test_d69_inject_context_excluded_events_still_refused(event, bad_action):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", bad_action)
+
+
+@pytest.mark.parametrize("event", [
+    # Even after D69 widening, observational hooks still cannot block.
+    # The runtime cannot retract a Notification, undo a WorktreeCreate,
+    # or refuse a TaskCompleted that already fired.
+    "Notification", "WorktreeCreate", "TaskCompleted",
+    "FileChanged", "InstructionsLoaded", "SessionStart",
+])
+def test_d69_observational_hooks_still_refuse_block(event):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", "block")
 
 
 def test_d58_verified_vs_unverified_event_split():

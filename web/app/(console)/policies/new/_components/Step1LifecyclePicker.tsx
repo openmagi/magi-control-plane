@@ -15,11 +15,13 @@
  *     across both Common and Advanced. Matching groups auto-expand;
  *     non-matching groups stay collapsed (or auto-collapse when their
  *     children all hide).
- *   - A default-expanded "Common" group with the 4 recommended events.
+ *   - A default-expanded "Common" group with the 5 recommended events
+ *     (D69 widened from 4 to add TaskCompleted, since end-of-task
+ *     automation is one of the most common hook patterns).
  *     PreToolUse carries a "recommended" / "추천" badge identical to
  *     the original wizard surface (visual parity with prior D58/D59
  *     behaviour).
- *   - Collapsed-by-default "Advanced" groups for the remaining 26
+ *   - Collapsed-by-default "Advanced" groups for the remaining 25
  *     events. Each group header shows its plain label, child count,
  *     and a caret. Click toggles expand. Multiple groups can be open
  *     simultaneously.

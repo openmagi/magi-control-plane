@@ -67,9 +67,16 @@ export const ADVANCED_GROUP_PREVIEWS: Record<string, readonly string[]> = {
     ["WorktreeCreate", "TaskCreated", "FileChanged"],
 }
 
-/** Default-expanded "Common" group with the 4 most-used events
- * (PreToolUse / PostToolUse / UserPromptSubmit / Stop). PreToolUse
- * carries a "recommended" badge to match prior behaviour. */
+/** Default-expanded "Common" group with the 5 most-used events
+ * (PreToolUse / PostToolUse / UserPromptSubmit / Stop / TaskCompleted).
+ * PreToolUse carries a "recommended" badge to match prior behaviour.
+ *
+ * D69: TaskCompleted joined the Common tier. End-of-task automation
+ * ("when a /workflows background task finishes, inject the summary
+ * back into the next turn" or "run a recovery script") is one of the
+ * most common hook patterns operators ask for; the prior layout
+ * tucked it deep inside the workspace Advanced group where the search
+ * filter was the only way to find it. */
 export const COMMON_GROUP: LifecycleGroup = {
   key: "newPolicy.wizard.step1.group.common",
   kind: "common",
@@ -78,6 +85,7 @@ export const COMMON_GROUP: LifecycleGroup = {
     "after_tool_use",
     "user_prompt",
     "pre_final",
+    "task_completed",
   ],
 }
 
@@ -117,7 +125,7 @@ export const ADVANCED_GROUPS: ReadonlyArray<LifecycleGroup> = [
     kind: "advanced",
     members: [
       "setup", "notification",
-      "teammate_idle", "task_created", "task_completed",
+      "teammate_idle", "task_created",
       "config_change",
       "worktree_create", "worktree_remove",
       "instructions_loaded",

@@ -12,12 +12,13 @@ import {
 } from "./step1-lifecycle-groups"
 
 /**
- * D61: Step 1 lifecycle picker invariants.
+ * D61 + D69: Step 1 lifecycle picker invariants.
  *
  * The picker collapses 30 hook events into a default-expanded
- * "Common" group (4) plus 6 collapsed-by-default "Advanced" groups
- * (26). Behaviour is exercised below; source-level invariants guard
- * the wiring that a future refactor is most likely to silently break:
+ * "Common" group (5 as of D69; 4 in the original D61 layout) plus
+ * 6 collapsed-by-default "Advanced" groups (25). Behaviour is
+ * exercised below; source-level invariants guard the wiring that a
+ * future refactor is most likely to silently break:
  *
  *   - "use client" pragma (otherwise it server-renders and
  *     toggle/search regress).
@@ -37,13 +38,19 @@ function read(rel: string): string {
 }
 
 describe("Step1LifecyclePicker | group composition", () => {
-  it("Common group exposes the 4 recommended events in order", () => {
+  it("Common group exposes the 5 recommended events in order (D69)", () => {
+    // D69: TaskCompleted joined Common because end-of-task automation
+    // ("inject task results back into the session", "run a recovery
+    // script when a background task finishes") is one of the most
+    // common operator patterns. PreToolUse stays first so the
+    // "recommended" badge still anchors the new-policy entry path.
     expect(COMMON_GROUP.kind).toBe("common")
     expect(COMMON_GROUP.members).toEqual([
       "before_tool_use",
       "after_tool_use",
       "user_prompt",
       "pre_final",
+      "task_completed",
     ])
   })
 
@@ -53,7 +60,7 @@ describe("Step1LifecyclePicker | group composition", () => {
     }
   })
 
-  it("Common (4) + Advanced (26) cover all 30 lifecycle events with no overlap", () => {
+  it("Common (5) + Advanced (25) cover all 30 lifecycle events with no overlap", () => {
     const all: LifecycleSlug[] = [
       ...COMMON_GROUP.members,
       ...ADVANCED_GROUPS.flatMap((g) => g.members),
@@ -68,7 +75,7 @@ describe("Step1LifecyclePicker | group composition", () => {
     }
   })
 
-  it("PreToolUse / PostToolUse / UserPromptSubmit / Stop live in Common (not Advanced)", () => {
+  it("PreToolUse / PostToolUse / UserPromptSubmit / Stop / TaskCompleted live in Common (not Advanced)", () => {
     const advancedSet = new Set(
       ADVANCED_GROUPS.flatMap((g) => g.members as readonly LifecycleSlug[]),
     )
@@ -76,6 +83,7 @@ describe("Step1LifecyclePicker | group composition", () => {
     expect(advancedSet.has("after_tool_use")).toBe(false)
     expect(advancedSet.has("user_prompt")).toBe(false)
     expect(advancedSet.has("pre_final")).toBe(false)
+    expect(advancedSet.has("task_completed")).toBe(false)
   })
 
   it("uses the documented localStorage key", () => {
@@ -295,6 +303,8 @@ describe("Step1LifecyclePicker | helpers", () => {
     expect(findOwningAdvancedGroup("after_tool_use")).toBeNull()
     expect(findOwningAdvancedGroup("user_prompt")).toBeNull()
     expect(findOwningAdvancedGroup("pre_final")).toBeNull()
+    // D69: task_completed is now in Common.
+    expect(findOwningAdvancedGroup("task_completed")).toBeNull()
   })
 
   it("ADVANCED_GROUP_PREVIEWS covers every Advanced group with at least one example", () => {
