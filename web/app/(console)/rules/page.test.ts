@@ -172,22 +172,47 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc).toContain("setExpanded")
   })
 
-  it("PrebuiltRow expander click toggles aria-expanded", () => {
-    // The row itself carries the role=button + aria-expanded + click
-    // handler. Toggling via onRowClick flips the expanded state which
-    // the JSX reads back into aria-expanded.
-    expect(prebuiltRowSrc).toContain('role="button"')
-    expect(prebuiltRowSrc).toContain("onClick={onRowClick}")
+  it("PrebuiltRow expander uses dedicated <button> elements (no role=button on outer div)", () => {
+    // D82a follow-up: the prior revision wrapped the outer <div> with
+    // role="button" + tabIndex={0} + onKeyDown, which violates WAI-ARIA
+    // (interactive descendants — PrebuiltToggle's switch, the Edit
+    // link — are not allowed inside role=button). The new layout makes
+    // the identity block AND the caret real <button> elements; the
+    // outer <div> has no role. AT announces two interactive controls
+    // with clear labels instead of one giant overloaded button.
+    expect(prebuiltRowSrc).not.toMatch(/role="button"/)
+    expect(prebuiltRowSrc).not.toContain("tabIndex={0}")
     expect(prebuiltRowSrc).toMatch(/aria-expanded=\{expanded\}/)
+    // aria-controls must point at the summary region so AT users hear
+    // WHAT is being expanded.
+    expect(prebuiltRowSrc).toContain("aria-controls={summaryId}")
+    // The identity block and the caret are <button type="button">.
+    expect(prebuiltRowSrc).toMatch(/<button[\s\S]{0,400}aria-expanded=\{expanded\}/)
   })
 
-  it("PrebuiltRow toggle click does NOT propagate to row expander", () => {
-    // The control wrapper around PrebuiltToggle uses onClick={stop}
-    // which calls stopPropagation, so clicking the toggle does not
-    // also flip expand state.
-    expect(prebuiltRowSrc).toContain("stopPropagation")
-    // The toggle sits inside the click-isolated wrapper.
-    expect(prebuiltRowSrc).toMatch(/onClick=\{stop\}[\s\S]{0,400}PrebuiltToggle/)
+  it("PrebuiltRow no longer needs stopPropagation (toggle/link are siblings, not descendants)", () => {
+    // D82a follow-up: since the outer <div> is no longer role=button,
+    // the click on PrebuiltToggle / Edit link does not bubble into a
+    // row-level click handler. The stopPropagation guards are gone
+    // and the layout passes WAI-ARIA's "no interactive descendants in
+    // button" rule by construction.
+    expect(prebuiltRowSrc).not.toContain("stopPropagation")
+  })
+
+  it("PrebuiltRow animates the summary expander (no instant DOM swap)", () => {
+    // D82a follow-up: the prior revision conditionally rendered the
+    // summary block via `{expanded && (<p>...</p>)}`, which added
+    // ~24-44px of vertical height in a single frame on click. In the
+    // row-density scenario (5+ rows in the first viewport) the abrupt
+    // layout shift could push rows below off-screen. The new wrapper
+    // renders the summary unconditionally and eases the height via a
+    // `grid-template-rows` 0fr <-> 1fr transition matching the
+    // caret's `transition-transform duration-150`.
+    expect(prebuiltRowSrc).toContain("transition-[grid-template-rows]")
+    expect(prebuiltRowSrc).toMatch(/gridTemplateRows:\s*expanded\s*\?\s*"1fr"\s*:\s*"0fr"/)
+    // The summary <p> must be rendered unconditionally inside the
+    // animation wrapper — the old `{expanded && (<p ...>` form is gone.
+    expect(prebuiltRowSrc).not.toMatch(/\{expanded && \(\s*<p/)
   })
 
   it("PrebuiltRow renders a status pill right after the name", () => {

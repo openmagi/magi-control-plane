@@ -69,11 +69,11 @@ export async function togglePackAction(formData: FormData): Promise<void> {
     // → the "partial success" OK flash (banner is visible but tone is
     // warning-ish).
     if (succeeded.length === 0) {
-      redirect(`/rules?tab=policies&err=pack_partial_failure`)
+      redirect(`/rules?tab=packs&err=pack_partial_failure`)
     }
-    redirect(`/rules?tab=policies&msg=pack_partial_success`)
+    redirect(`/rules?tab=packs&msg=pack_partial_success`)
   }
-  redirect(`/rules?tab=policies&msg=toggled`)
+  redirect(`/rules?tab=packs&msg=toggled`)
 }
 
 /** D75: create a user pack from the New Pack page. The cloud derives
@@ -94,7 +94,7 @@ export async function createPackAction(formData: FormData): Promise<void> {
     redirect(`/policy-packs/new?err=${codeForError(e)}`)
   }
   revalidatePath("/rules")
-  redirect(`/rules?tab=policies&msg=pack_created`)
+  redirect(`/rules?tab=packs&msg=pack_created`)
 }
 
 /** Toggle a stored policy's enabled flag. The only mutating action on

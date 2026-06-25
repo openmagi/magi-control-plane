@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, type KeyboardEvent } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import type { PrebuiltPolicyEntry } from "@/lib/cloud"
 import { Code } from "@/components/ui/Code"
@@ -25,21 +25,28 @@ type TFunc = (
  *
  *   [BUILT-IN] [Name + status pill]  verifier · trigger  Action  [toggle]  [Edit before enabling >]  [caret]
  *
- * The summary hides behind a chevron expander on the right of the row.
- * Clicking the row body OR the caret expands; clicking the toggle does
- * NOT propagate (we call stopPropagation on the toggle wrapper). The
- * Edit-before-enabling link is also click-isolated so a click on it
- * navigates without toggling expansion state.
+ * The summary hides behind a real <button> chevron expander on the
+ * right of the row. The outer row is a plain <div> (NOT role=button) —
+ * WAI-ARIA disallows interactive descendants (PrebuiltToggle's switch,
+ * the Edit link) inside role=button, and the original outer-role-button
+ * form announced as one giant button to AT and broke focus order.
+ *
+ * D82a follow-up: the row also no longer uses an instant DOM swap for
+ * the summary; the summary is rendered unconditionally inside a
+ * grid-template-rows transition wrapper so the row height eases from
+ * 0fr <-> 1fr over 150ms (matching the caret rotation). In the row-
+ * density scenario (5+ rows in the first viewport) clicking a row no
+ * longer abruptly pushes the rows below off-screen.
  *
  * Status pill mapping (right after the name):
- *   enabled + setup_required        → "Needs setup" amber
- *   enabled + !setup_required       → "Active"      emerald
- *   !enabled + setup_required       → "Needs setup" amber (same chip,
+ *   enabled + setup_required        -> "Needs setup" amber
+ *   enabled + !setup_required       -> "Active"      emerald
+ *   !enabled + setup_required       -> "Needs setup" amber (same chip,
  *                                                          off-state
  *                                                          renders
  *                                                          identical
  *                                                          framing)
- *   !enabled + !setup_required      → "Off"         neutral
+ *   !enabled + !setup_required      -> "Off"         neutral
  */
 export function PrebuiltRow({
   entry, draftHref, t,
@@ -53,35 +60,26 @@ export function PrebuiltRow({
     ? "rules.prebuilt.row.collapseAria"
     : "rules.prebuilt.row.expandAria"
   const expandLabel = t(expandLabelKey, { title: entry.title })
-
-  function onRowClick(): void {
-    setExpanded((v) => !v)
-  }
-  function onRowKey(ev: KeyboardEvent<HTMLDivElement>): void {
-    if (ev.key === "Enter" || ev.key === " ") {
-      ev.preventDefault()
-      setExpanded((v) => !v)
-    }
-  }
-  // Click on the toggle (or any of its inner elements / dialogs) must
-  // not bubble up to the row click handler — otherwise flipping the
-  // toggle would also expand the description, which is jarring.
-  function stop(ev: { stopPropagation(): void }): void {
-    ev.stopPropagation()
-  }
+  // D82a follow-up: aria-controls target id for the summary region so
+  // AT users hear WHAT is being expanded, not just that "expanded" is
+  // true on an unrelated element.
+  const summaryId = `prebuilt-row-${entry.id}-summary`
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-expanded={expanded}
-      onClick={onRowClick}
-      onKeyDown={onRowKey}
-      className="group flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
-    >
+    <div className="group flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02]">
       <div className="flex flex-wrap items-center gap-3">
-        {/* Identity block: badge + name + status pill. */}
-        <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+        {/* Identity block: badge + name + status pill. Mouse users can
+            still click anywhere in this block to toggle expansion; the
+            click target is a real <button> wrapping the identity row so
+            AT users see one interactive control with a clear label. */}
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={summaryId}
+          aria-label={expandLabel}
+          onClick={() => setExpanded((v) => !v)}
+          className="flex flex-wrap items-center gap-2 min-w-0 flex-1 cursor-pointer text-left bg-transparent border-0 p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40 rounded-md"
+        >
           <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
             {t("rules.prebuilt.badge")}
           </span>
@@ -89,7 +87,7 @@ export function PrebuiltRow({
             {entry.title}
           </span>
           <PrebuiltStatusPill entry={entry} t={t} />
-        </div>
+        </button>
 
         {/* Meta block: verifier · trigger · action. Single-line, hides
             on narrow widths to give name + toggle room (wrap on tiny
@@ -112,9 +110,12 @@ export function PrebuiltRow({
           ) : null}
         </div>
 
-        {/* Control block: toggle + edit link + caret. Each control is
-            click-isolated so the row expander does not fight it. */}
-        <div className="flex items-center gap-2" onClick={stop}>
+        {/* Control block: toggle + edit link + caret. The toggle and
+            link are siblings (not descendants of an outer role=button)
+            so WAI-ARIA's "no interactive descendants inside button"
+            rule is satisfied. No click-bubble guards are needed because
+            no parent listens for the click. */}
+        <div className="flex items-center gap-2">
           <PrebuiltToggle
             prebuiltId={entry.id}
             enabled={entry.enabled}
@@ -136,15 +137,34 @@ export function PrebuiltRow({
           <Link
             href={draftHref}
             aria-label={t("rules.prebuilt.editBeforeAria", { title: entry.title })}
-            onClick={stop}
             className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline whitespace-nowrap"
           >
             {t("rules.prebuilt.editBefore")}
           </Link>
-          <Caret
-            expanded={expanded}
-            label={expandLabel}
-          />
+          {/* Caret as a sibling <button> — keeps a discoverable click
+              target on the right of the row even when the identity
+              block is hard to read (no focus target overlap with the
+              identity button because both buttons toggle the same
+              state; only one of them needs focus at a time). */}
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={summaryId}
+            aria-label={expandLabel}
+            onClick={() => setExpanded((v) => !v)}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-black/[0.04] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
+          >
+            <svg
+              viewBox="0 0 12 12"
+              className={`h-3 w-3 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              aria-hidden="true"
+            >
+              <path d="M4 2 L8 6 L4 10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -168,11 +188,24 @@ export function PrebuiltRow({
         ) : null}
       </div>
 
-      {expanded && (
-        <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          {entry.summary}
-        </p>
-      )}
+      {/* D82a follow-up: animated expander. Render the summary
+          unconditionally inside a grid-template-rows transition so the
+          height eases from 0fr <-> 1fr over 150ms (matching the caret
+          rotation). The inner <div overflow-hidden> hides the text
+          while the wrapper is collapsed; aria-hidden when collapsed so
+          AT doesn't read invisible content. */}
+      <div
+        id={summaryId}
+        className="grid transition-[grid-template-rows] duration-150 ease-out"
+        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
+        aria-hidden={!expanded}
+      >
+        <div className="overflow-hidden">
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+            {entry.summary}
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -211,21 +244,3 @@ function PrebuiltStatusPill({
   )
 }
 
-function Caret({ expanded, label }: { expanded: boolean; label: string }) {
-  // Visually a chevron — rotates 90 degrees when expanded. No button
-  // element: the entire row is the toggle target so a nested button
-  // would create a duplicate (and overlapping) click target. The
-  // aria-hidden span is for screen readers (the row carries
-  // aria-expanded; this caret is decorative).
-  return (
-    <span
-      aria-hidden="true"
-      title={label}
-      className={`inline-block h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
-    >
-      <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M4 2 L8 6 L4 10" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </span>
-  )
-}

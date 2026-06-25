@@ -14,6 +14,7 @@ import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
+import { previousLiveStep } from "./wizard-nav"
 import { codeForError, resolveFlash, type Step3ErrCode, type Step4ErrCode } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import {
@@ -2949,11 +2950,8 @@ function HiddenState({ state }: { state: WizardState }) {
   )
 }
 
-/** D82a: returns the wizard URL for the previous LIVE step, honoring the
- *  skip rules in GuidedWizard (Step 2 skipped for non-tool-context
- *  lifecycles, Step 3 skipped for inject_context / input_rewrite /
- *  run_command actions). Returns `null` when there is no live previous
- *  step (i.e. we are on the first effective step, which is Step 1).
+/** D82a: previous LIVE step, honouring the same skip rules GuidedWizard
+ *  uses to advance forward.
  *
  *  The pre-D82a Back link inside StepShell pointed at `step - 1`
  *  unconditionally, which broke when GuidedWizard auto-skipped that
@@ -2961,32 +2959,15 @@ function HiddenState({ state }: { state: WizardState }) {
  *  the back arrow targeted Step 3 which auto-skipped right back to
  *  Step 4 — the operator saw nothing happen ("Step 4 Back is broken"
  *  per the install review). Walking BACKWARD through the same skip
- *  table keeps the Back arrow honest. */
-function previousLiveStep(state: WizardState, current: number): number | null {
-  // No previous step from Step 1.
-  if (current <= 1) return null
-  // Step 6 → Step 5 → Step 4: condition-side skips never apply on
-  // these jumps because every action is past Step 4 anyway.
-  if (current === 6) return 5
-  if (current === 5) return 4
-  if (current === 4) {
-    // From Step 4: inject_context / input_rewrite / run_command auto-
-    // skipped Step 3, so back must land on Step 2 (or Step 1 if the
-    // lifecycle also lacks tool scope).
-    const a = state.action
-    const skipsStep3 = a === "inject_context" || a === "input_rewrite" || a === "run_command"
-    if (skipsStep3) {
-      return state.lifecycle && lifecycleHasToolScope(state.lifecycle) ? 2 : 1
-    }
-    return 3
-  }
-  if (current === 3) {
-    // Step 2 skipped for non-tool-context lifecycles.
-    return state.lifecycle && !lifecycleHasToolScope(state.lifecycle) ? 1 : 2
-  }
-  if (current === 2) return 1
-  return null
-}
+ *  table keeps the Back arrow honest.
+ *
+ *  D82a follow-up: the implementation lives in `./wizard-nav.ts` as a
+ *  pure helper so wizard-wiring.test.ts can import it and assert
+ *  table-driven (state, current) -> expected tuples directly. The
+ *  prior revision only source-text-grepped the function body, which
+ *  let math regressions land silently. Re-exported here (the top-of-
+ *  file import does the actual binding) so the existing call sites
+ *  inside this file keep working untouched. */
 
 function WizardHeader({
   t, step, total, locale, state,
@@ -3037,14 +3018,24 @@ function WizardHeader({
             <ArrowLeftIcon className="h-4 w-4" />
           </Link>
         ) : (
-          <span
-            aria-disabled="true"
+          /* D82a follow-up: render the disabled Back as a real
+           *  <button disabled> so keyboard focus order stays stable
+           *  across steps (Step 1 included). A bare <span aria-disabled>
+           *  is not focusable, so Tab on Step 1 skipped the Back slot
+           *  entirely and NVDA/JAWS announced nothing — the operator
+           *  silently lost their place in the Tab order. The disabled
+           *  button still carries aria-label/title so AT users get the
+           *  standard "dimmed, disabled button" affordance. */
+          <button
+            type="button"
+            disabled
+            aria-label={t("newPolicy.wizard.nav.back.aria")}
             title={t("newPolicy.wizard.nav.back.tip")}
             data-testid="wizard-nav-back-disabled"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)]/40"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)] opacity-40 cursor-not-allowed"
           >
             <ArrowLeftIcon className="h-4 w-4" />
-          </span>
+          </button>
         )}
       </div>
       <div className="flex items-center gap-3">
@@ -3313,19 +3304,16 @@ function GuidedWizard({
 function StepShell({
   heading, helper, children,
 }: {
-  /** D82a: `prevHref` is retained for type-shape backwards-compat with
-   *  existing call sites (each step passes the legacy prev step here)
-   *  but the bottom-left Back link is REMOVED in favor of the top-left
-   *  Back arrow in WizardHeader. The arrow honors skip rules; the old
-   *  bottom-left link did not, so on Step 4 with action=inject_context
-   *  clicking Back landed on Step 3 which auto-advanced right back to
-   *  Step 4. Drop the affordance so the operator's only Back is the
-   *  honest one. */
-  prevHref?: string | null
+  /** D82a: the bottom-left Back link is gone (the top-left Back arrow
+   *  in WizardHeader is now the only Back affordance and honours the
+   *  forward skip rules). `prevHref` and `t` are deliberately NOT props
+   *  here any more — no call site needs them, the previous revision
+   *  kept them as silent dead props that misled readers into thinking
+   *  the bottom-left Back was still wired. Reintroduce them only if a
+   *  new bottom-left affordance ever reappears. */
   heading: string
   helper?: string
   children: React.ReactNode
-  t?: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   return (
     <div className="space-y-6">
@@ -3803,8 +3791,6 @@ function Step1Lifecycle({
   const labels = LIFECYCLE_LABELS_BY_LOCALE[locale]
   return (
     <StepShell
-      t={t}
-      prevHref={null}
       heading={t("newPolicy.wizard.step1.heading")}
       helper={t("newPolicy.wizard.step1.helper")}
     >
@@ -3863,8 +3849,6 @@ function Step2ToolScope({
   const droppedAlternation = state._droppedAlternation
   return (
     <StepShell
-      t={t}
-      prevHref={buildWizardHref(state, 1)}
       heading={ko ? "어떤 도구에 적용할까요?" : "Which tool does this policy apply to?"}
       helper={ko
         ? "정책 한 건은 도구 하나만 다룹니다. 모든 도구에 적용하려면 'Any tool' 을 고르세요."
@@ -4111,9 +4095,8 @@ function Step3Condition({
     shacl:             { label: "SHACL shape",     sub: "Fires when the evidence graph doesn't conform to a Turtle shape." },
   }
   const previewBadge = ko ? "프리뷰" : "preview"
-  // D56c: every no-tool-context lifecycle skips Step 2, so the
-  // "Back" link from Step 3 jumps to Step 1.
-  const prevStep = lifecycleHasToolScope(state.lifecycle) ? 2 : 1
+  // D82a: bottom-left Back is gone; the top-left WizardHeader Back arrow
+  // calls previousLiveStep() and owns the prev-step math now.
 
   // P9 (D49): the per-kind cumulative-judgment tip lives in a client
   // island (SteeringAwareField). It needs two same-page hrefs as a
@@ -4184,8 +4167,6 @@ function Step3Condition({
 
   return (
     <StepShell
-      t={t}
-      prevHref={buildWizardHref(state, prevStep)}
       heading={ko ? "어떤 조건일 때 검사하나요?" : "Under what condition?"}
       helper={ko
         ? "조건을 고르면 바로 아래에 기준 입력 칸이 열립니다."
@@ -4810,8 +4791,6 @@ function Step4Action({
       : errRingFor("input_rewrite", "scheme_force")
   return (
     <StepShell
-      t={t}
-      prevHref={buildWizardHref(state, 3)}
       heading={t("newPolicy.wizard.step4.heading")}
       helper={header + (ko ? " 어떤 동작을 할까요?" : " what should this policy do?")}
     >
@@ -5503,8 +5482,6 @@ function Step5Naming({
   const idDefault = state.id ?? suggestPolicyId(state)
   return (
     <StepShell
-      t={t}
-      prevHref={buildWizardHref(state, 4)}
       heading={t("newPolicy.wizard.step5.heading")}
       helper={t("newPolicy.wizard.step5.helper")}
     >
@@ -5768,8 +5745,6 @@ function Step6Review({
   // INSIDE the IR but isn't a wizard step) an inline editor.
   return (
     <StepShell
-      t={t}
-      prevHref={buildWizardHref(state, 5)}
       heading={t("newPolicy.wizard.step6.heading")}
       helper={t("newPolicy.wizard.step6.helper")}
     >

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { readFileSync } from "node:fs"
 import path from "node:path"
+import { previousLiveStep } from "./wizard-nav"
 
 /**
  * P9 (D49) wizard-wiring invariants.
@@ -2027,25 +2028,23 @@ describe("policies/new wizard — D82a top-left Home + Back", () => {
     expect(homeIdx).toBeLessThan(backIdx)
   })
 
-  it("previousLiveStep helper honors the same skip rules as GuidedWizard advance", () => {
-    const start = src.indexOf("function previousLiveStep(")
-    expect(start).toBeGreaterThan(-1)
-    const end = src.indexOf("\nfunction WizardHeader(", start)
-    const body = src.slice(start, end)
-    // Step 4 + action that skipped Step 3 -> back to Step 2 (or 1).
-    expect(body).toContain("inject_context")
-    expect(body).toContain("input_rewrite")
-    expect(body).toContain("run_command")
-    expect(body).toMatch(/lifecycleHasToolScope\(state\.lifecycle\)/)
-    // Step 3 -> Step 2 unless lifecycle skipped Step 2.
-    expect(body).toMatch(/current === 3/)
-    // No previous step from Step 1.
-    expect(body).toMatch(/current <= 1/)
-  })
-
   it("WizardHeader threads state so Back can compute the live previous step", () => {
-    // The render block at the GuidedWizard call site must pass state.
-    expect(src).toMatch(/<WizardHeader\s+t=\{t\}\s+step=\{effectiveStep\}\s+total=\{WIZARD_TOTAL\}\s+locale=\{locale\}\s+state=\{state\}\s*\/>/)
+    // D82a follow-up: the WizardHeader JSX call site must thread `state`
+    // (so previousLiveStep can run). The previous revision pinned an
+    // exact single-line regex with strict prop order, which is brittle
+    // under Prettier rewrap or any future prop addition. Slice the
+    // `<WizardHeader ... />` block by index scan and assert each prop
+    // appears anywhere within — that survives wrap + reorder.
+    const open = src.indexOf("<WizardHeader")
+    expect(open).toBeGreaterThan(-1)
+    const close = src.indexOf("/>", open)
+    expect(close).toBeGreaterThan(open)
+    const slice = src.slice(open, close + 2)
+    expect(slice).toContain("t={t}")
+    expect(slice).toContain("step={effectiveStep}")
+    expect(slice).toContain("total={WIZARD_TOTAL}")
+    expect(slice).toContain("locale={locale}")
+    expect(slice).toContain("state={state}")
   })
 
   it("StepShell no longer renders the bottom-left Back link", () => {
@@ -2076,6 +2075,37 @@ describe("policies/new wizard — D82a top-left Home + Back", () => {
     expect(body).not.toContain("ArrowLeftIcon")
   })
 
+  it("StepShell no longer accepts the dead prevHref / t props on its signature", () => {
+    // D82a follow-up: the prior revision kept `prevHref?` and `t?` as
+    // type-shape backwards-compat props that the body ignored. There
+    // are no external call sites — every consumer is in the same file.
+    // The retention misled readers into thinking the bottom-left Back
+    // was still wired and made every call site emit a dead
+    // `buildWizardHref(state, n)` URL. Pin the cleanup at the source
+    // level so a future regression cannot silently re-add the noise.
+    const start = src.indexOf("function StepShell(")
+    expect(start).toBeGreaterThan(-1)
+    // Slice up to the first opening brace of the function body so we
+    // only inspect the props typedef, not the body.
+    const sig = src.slice(start, src.indexOf("}) {", start) + 4)
+    expect(sig).not.toMatch(/prevHref\?:/)
+    expect(sig).not.toMatch(/t\?:/)
+  })
+
+  it("no StepShell call site passes prevHref= or t= any more", () => {
+    // Pin the cleanup at every consumer — the JSX surface must be
+    // free of dead `prevHref={...}` and `t={t}` props after D82a's
+    // bottom-left Back removal. (The wizard already threads `t` via
+    // closure inside each Step component; StepShell never used it.)
+    const callRegex = /<StepShell\b[\s\S]*?>/g
+    const calls = src.match(callRegex) ?? []
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call).not.toMatch(/\bprevHref=/)
+      expect(call).not.toMatch(/\bt=\{t\}/)
+    }
+  })
+
   it("the legacy top-left 'Pick different' text link is gone from the wizard", () => {
     // The link lived inside WizardHeader before D82a. After D82a the
     // Home icon (with the same /policies/new target) replaces it; the
@@ -2086,5 +2116,102 @@ describe("policies/new wizard — D82a top-left Home + Back", () => {
     const end = src.indexOf("\n}\n", start)
     const body = src.slice(start, end)
     expect(body).not.toContain('"newPolicy.pickDifferent"')
+  })
+})
+
+/**
+ * D82a follow-up: table-driven behaviour pin for previousLiveStep.
+ *
+ * The prior revision substring-grepped page.tsx for the function body
+ * (`inject_context`, `input_rewrite`, `run_command`, `lifecycleHasToolScope`,
+ * `current === 3`, `current <= 1`). None of those grepped the return
+ * value, so a future refactor that mangled the math (e.g. returned 1
+ * from Step 4 when only Step 3 should be skipped, or returned 3 from
+ * Step 3 when the lifecycle skipped Step 2) would keep every substring
+ * and pass silently. Behavioural assertions over (state, current) ->
+ * expected tuples catch a real regression.
+ *
+ * The Step 4 + action=inject_context + excluded-lifecycle case is the
+ * one the install review surfaced: forward auto-skip is gated on
+ * `lifecycleAllowsInjectContext(state.lifecycle)`, but the prior
+ * previousLiveStep treated inject_context as unconditionally skipping
+ * Step 3 backward. For the eight excluded lifecycles Step 3 is a LIVE
+ * step and Back must return 3, not 2/1.
+ */
+describe("policies/new wizard — previousLiveStep behavioural cases", () => {
+  // tool-context lifecycles (Step 2 is live).
+  const TOOL_LIFECYCLES = ["before_tool_use", "after_tool_use"] as const
+  // non-tool-context lifecycles where inject_context IS allowed (so the
+  // forward Step 3 -> Step 4 skip fires).
+  const NON_TOOL_INJECT_OK_LIFECYCLE = "user_prompt" as const
+  // inject_context excluded lifecycles (CONTEXT_INJECTION_EXCLUDED_LIFECYCLES)
+  const INJECT_EXCLUDED_LIFECYCLES = [
+    "elicitation", "elicitation_result",
+    "worktree_create", "message_display",
+    "pre_final", "stop_failure", "session_end", "subagent_stop",
+  ] as const
+
+  it("returns null on Step 1 (no live previous step)", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "block" }, 1)).toBeNull()
+    expect(previousLiveStep({}, 1)).toBeNull()
+    expect(previousLiveStep({}, 0)).toBeNull()
+  })
+
+  it("Step 2 -> Step 1 unconditionally", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use" }, 2)).toBe(1)
+    expect(previousLiveStep({ lifecycle: "user_prompt" }, 2)).toBe(1)
+  })
+
+  it("Step 3 -> Step 2 when lifecycle has tool scope", () => {
+    for (const lc of TOOL_LIFECYCLES) {
+      expect(previousLiveStep({ lifecycle: lc }, 3)).toBe(2)
+    }
+  })
+
+  it("Step 3 -> Step 1 when lifecycle skips Step 2 (no tool scope)", () => {
+    expect(previousLiveStep({ lifecycle: NON_TOOL_INJECT_OK_LIFECYCLE }, 3)).toBe(1)
+    expect(previousLiveStep({ lifecycle: "session_start" }, 3)).toBe(1)
+  })
+
+  it("Step 4 + action=block -> Step 3 (no condition-side skip)", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "block" }, 4)).toBe(3)
+    expect(previousLiveStep({ lifecycle: "after_tool_use", action: "audit" }, 4)).toBe(3)
+  })
+
+  it("Step 4 + action=inject_context + tool-context lifecycle -> Step 2", () => {
+    for (const lc of TOOL_LIFECYCLES) {
+      expect(previousLiveStep({ lifecycle: lc, action: "inject_context" }, 4)).toBe(2)
+    }
+  })
+
+  it("Step 4 + action=inject_context + non-tool-context lifecycle (inject allowed) -> Step 1", () => {
+    expect(
+      previousLiveStep(
+        { lifecycle: NON_TOOL_INJECT_OK_LIFECYCLE, action: "inject_context" },
+        4,
+      ),
+    ).toBe(1)
+  })
+
+  // The bug the install review surfaced. Pin every excluded lifecycle.
+  for (const lc of INJECT_EXCLUDED_LIFECYCLES) {
+    it(`Step 4 + action=inject_context + excluded lifecycle ${lc} -> Step 3 (NOT 1/2)`, () => {
+      expect(previousLiveStep({ lifecycle: lc, action: "inject_context" }, 4)).toBe(3)
+    })
+  }
+
+  it("Step 4 + action=input_rewrite skips Step 3 regardless of lifecycle", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "input_rewrite" }, 4)).toBe(2)
+    expect(previousLiveStep({ lifecycle: NON_TOOL_INJECT_OK_LIFECYCLE, action: "input_rewrite" }, 4)).toBe(1)
+  })
+
+  it("Step 4 + action=run_command skips Step 3 regardless of lifecycle", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "run_command" }, 4)).toBe(2)
+    expect(previousLiveStep({ lifecycle: NON_TOOL_INJECT_OK_LIFECYCLE, action: "run_command" }, 4)).toBe(1)
+  })
+
+  it("Step 5 -> Step 4 and Step 6 -> Step 5 (no condition-side skips after Step 4)", () => {
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "block" }, 5)).toBe(4)
+    expect(previousLiveStep({ lifecycle: "before_tool_use", action: "inject_context" }, 6)).toBe(5)
   })
 })

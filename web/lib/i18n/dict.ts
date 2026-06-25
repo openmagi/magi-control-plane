@@ -121,7 +121,6 @@ const KO_RAW = {
   "newPolicy.guided.field.sentinelTag": "Sentinel 태그",
   "newPolicy.guided.field.sentinelTagHint": "도구 호출 본문에서 매칭할 prefix, 패턴 자동 생성:",
   "newPolicy.wizard.next": "다음",
-  "newPolicy.wizard.back": "이전",
   "newPolicy.wizard.savePolicy": "정책 저장",
   /* D82a: wizard chrome — top-left Home (pick different) + Back (one step). */
   "newPolicy.wizard.nav.home.aria": "다른 작성 방식 선택",
@@ -1032,7 +1031,6 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.guided.field.sentinelTag": "Sentinel tag",
   "newPolicy.guided.field.sentinelTagHint": "Prefix matched in the tool-call body. Pattern auto-built:",
   "newPolicy.wizard.next": "Next",
-  "newPolicy.wizard.back": "Back",
   "newPolicy.wizard.nav.home.aria": "Choose a different authoring mode",
   "newPolicy.wizard.nav.home.tip": "Choose a different authoring mode",
   "newPolicy.wizard.nav.back.aria": "Previous step",
