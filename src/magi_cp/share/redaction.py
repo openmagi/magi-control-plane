@@ -299,7 +299,8 @@ def build_public_run_view(view: Mapping[str, object]) -> dict:
 
     return {
         "schemaVersion": view.get("schemaVersion"),
-        "sessionId": view.get("sessionId"),
+        # Client-controlled; scrub like every other free-text field (fail-closed).
+        "sessionId": _scrub_opt(view.get("sessionId")),
         "summary": _public_summary(summary) if isinstance(summary, Mapping) else None,
         "results": [
             _public_result(r)

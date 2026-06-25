@@ -53,7 +53,7 @@ from .script_store import (
     ScriptStoreInUseError, serialize as serialize_script_entry,
 )
 from .db import (
-    EndpointHeartbeatRepo, HitlRepo, LedgerRepo,
+    EndpointHeartbeatRepo, HitlRepo, LedgerRepo, SharedRunRepo,
     init_schema, is_stale, make_engine,
 )
 from .keys import KeyStore
@@ -658,6 +658,7 @@ def create_app(
     init_schema(engine)
     ledger = LedgerRepo(engine)
     hitl = HitlRepo(engine)
+    share_repo = SharedRunRepo(engine)
     policy_store = PolicyStore(path=policy_store_path or os.environ.get(
         "MAGI_CP_POLICY_STORE", str(Path.home() / ".magi-cp" / "policies.json")))
     custom_verifier_store = CustomVerifierStore(
@@ -715,6 +716,47 @@ def create_app(
     @app.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok"}
+
+    # ── run-share links ──────────────────────────────────────────────
+    # The CLI (`magi-cp share`) uploads an already-redacted openmagi.runView.v1
+    # view; we RE-SCRUB on ingest (defense in depth — never trust the client to
+    # have redacted) and store it under an opaque token. The public GET serves
+    # it without auth (the dashboard fetches it server-side; CORS stays deny-all).
+    _SHARE_BASE_URL = os.environ.get(
+        "MAGI_CP_SHARE_BASE_URL", "https://cloud.openmagi.ai"
+    ).rstrip("/")
+    _SHARE_TTL_SECONDS = int(os.environ.get("MAGI_CP_SHARE_TTL_SECONDS", "0")) or None
+
+    @app.post("/v1/runs/share", dependencies=[Depends(require_tenant_auth)])
+    async def runs_share(request: Request) -> dict:
+        from ..share.redaction import build_public_run_view
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(400, "body must be valid JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be an object")
+        view = body.get("view")
+        if not isinstance(view, dict):
+            raise HTTPException(400, "missing 'view' object")
+        if view.get("schemaVersion") != "openmagi.runView.v1":
+            raise HTTPException(400, "unsupported view schemaVersion")
+        # Re-scrub: the stored view is always the server's own projection.
+        redacted = build_public_run_view(view)
+        token = share_repo.create(
+            tenant_id=request.state.tenant_id,
+            view=redacted,
+            ttl_seconds=_SHARE_TTL_SECONDS,
+        )
+        return {"token": token, "url": f"{_SHARE_BASE_URL}/r/{token}"}
+
+    @app.get("/share/run/{token}")
+    def share_run_get(token: str) -> dict:
+        row = share_repo.get_active(token)
+        if row is None:
+            raise HTTPException(404, "not found")
+        return {"view": row.view, "createdAt": row.created_at}
 
     @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
     async def policies_compile(req: "CompileReq") -> dict:

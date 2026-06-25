@@ -26,6 +26,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import secrets
 import time
 from typing import Any
 
@@ -207,6 +208,70 @@ class HitlItem(Base):
     __table_args__ = (
         Index("ix_hitl_subject_status", "subject", "status"),
     )
+
+
+class SharedRun(Base):
+    """A public run-share link: a redacted run view served by an opaque token.
+
+    Only the token's sha256 is stored (the cleartext token is the URL secret,
+    returned once at creation), mirroring ``ApiKey`` in ``tenants.py``. The
+    stored ``view`` is the already-redacted ``openmagi.runView.v1`` projection.
+    """
+    __tablename__ = "shared_run"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    view: Mapped[dict] = mapped_column(JsonCol, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInt, nullable=False)
+    expires_at: Mapped[int | None] = mapped_column(BigInt, nullable=True)
+    revoked_at: Mapped[int | None] = mapped_column(BigInt, nullable=True)
+
+
+class SharedRunRepo:
+    """Create + read public run-share links. Token is minted here and only its
+    hash persisted; ``get_active`` enforces revoke + expiry."""
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+    @staticmethod
+    def _hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create(self, *, tenant_id: str, view: dict, ttl_seconds: int | None = None) -> str:
+        """Persist a redacted view and return the cleartext token (shown once)."""
+        token = secrets.token_urlsafe(24)
+        now = int(time.time())
+        row = SharedRun(
+            token_hash=self._hash(token),
+            tenant_id=tenant_id,
+            view=view,
+            created_at=now,
+            expires_at=(now + ttl_seconds) if ttl_seconds and ttl_seconds > 0 else None,
+        )
+        with Session(self.engine) as s:
+            s.add(row)
+            s.commit()
+        return token
+
+    def get_active(self, token: str) -> SharedRun | None:
+        """Return the row for a token if it exists, is not revoked, and not expired."""
+        with Session(self.engine) as s:
+            row = s.get(SharedRun, self._hash(token))
+            if row is None or row.revoked_at is not None:
+                return None
+            if row.expires_at is not None and row.expires_at <= int(time.time()):
+                return None
+            s.expunge(row)
+            return row
+
+    def revoke(self, token: str) -> bool:
+        with Session(self.engine) as s:
+            row = s.get(SharedRun, self._hash(token))
+            if row is None or row.revoked_at is not None:
+                return False
+            row.revoked_at = int(time.time())
+            s.commit()
+            return True
 
 
 # ── engine ───────────────────────────────────────────────────────────
