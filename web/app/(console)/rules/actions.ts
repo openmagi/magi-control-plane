@@ -33,16 +33,46 @@ export async function togglePackAction(formData: FormData): Promise<void> {
     redirect("/rules?err=invalid_id")
   }
   const enabled = formData.get("enabled") === "true"
+  // D75 follow-up: the cloud cascade reports per-member outcomes in
+  // `results[]`. The original action threw the array away and only
+  // distinguished success vs. transport failure, so a partial cascade
+  // (one un-enableable member among several) flashed the generic
+  // `toggled` banner with no signal which member failed or why.
+  // Inspect `results[]` and route to a distinct flash code on
+  // partial-success or all-failed, logging the failed member ids to
+  // server stderr so an operator hitting the issue has a forensic
+  // trail.
+  let result
   try {
     if (enabled) {
-      await cloud.enablePack(id)
+      result = await cloud.enablePack(id)
     } else {
-      await cloud.disablePack(id)
+      result = await cloud.disablePack(id)
     }
   } catch (e: unknown) {
     redirect(`/rules?err=${codeForError(e)}`)
   }
+  const failed = result.results.filter(
+    (r) => r.ok === false,
+  )
+  const succeeded = result.results.filter(
+    (r) => r.ok === true && r.skipped !== true,
+  )
   revalidatePath("/rules")
+  if (failed.length > 0) {
+    const ids = failed.map((r) => r.id).join(", ")
+    console.error(
+      `rules: pack cascade ${id} ${enabled ? "enable" : "disable"} `
+        + `partial — failed members: ${ids}`,
+    )
+    // All members failed → distinct error flash. Mixed success/failure
+    // → the "partial success" OK flash (banner is visible but tone is
+    // warning-ish).
+    if (succeeded.length === 0) {
+      redirect(`/rules?tab=policies&err=pack_partial_failure`)
+    }
+    redirect(`/rules?tab=policies&msg=pack_partial_success`)
+  }
   redirect(`/rules?tab=policies&msg=toggled`)
 }
 

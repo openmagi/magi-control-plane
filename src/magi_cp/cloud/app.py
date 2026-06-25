@@ -2606,6 +2606,123 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             )
         return new_enforcement
 
+    def _enable_prebuilt_locked(slug: str) -> dict:
+        """Lock-held body of enable_prebuilt_policy. Extracted so the
+        pack cascade (which holds policy_lock for the entire loop to
+        keep `only_missing` and post-cascade status snapshots
+        consistent under concurrent admin requests) can re-use the
+        materialization path without nesting the same non-reentrant
+        asyncio.Lock.
+        """
+        from ..policy.prebuilt import (
+            build_prebuilt_evidence_policy,
+            prebuilt_spec_by_id,
+        )
+        prebuilt_id = f"prebuilt/{slug}"
+        spec = prebuilt_spec_by_id(prebuilt_id)
+        if spec is None:
+            raise HTTPException(404, f"prebuilt {prebuilt_id!r} not found")
+        existing = store.load()
+        target: PolicyOverride | None = None
+        for ov in existing:
+            if ov.policy.id == prebuilt_id:
+                target = ov
+                break
+        if target is not None and target.enabled:
+            saved_enforcement = (
+                target.enforcement
+                or _resolve_enforcement_for(target.policy)
+            )
+            return {
+                "id": target.policy.id,
+                "enabled": True,
+                "source": target.source,
+                "enforcement": saved_enforcement,
+                "setup_required": spec.setup_required,
+            }
+        if target is None:
+            policy = build_prebuilt_evidence_policy(prebuilt_id)
+            assert policy is not None
+            _assert_policy_lifecycle_endorsed(policy)
+            saved_enforcement = _resolve_enforcement_for(policy)
+            saved_source = "bot"
+            existing.append(PolicyOverride(
+                policy=policy,
+                source=saved_source,
+                enabled=True,
+                enforcement=saved_enforcement,
+            ))
+        else:
+            saved_enforcement = _revalidate_for_reenable(target)
+            _assert_policy_lifecycle_endorsed(target.policy)
+            saved_source = target.source
+            existing = [ov for ov in existing if ov.policy.id != prebuilt_id]
+            existing.append(PolicyOverride(
+                policy=target.policy,
+                source=saved_source,
+                enabled=True,
+                enforcement=saved_enforcement,
+            ))
+        store.save(existing)
+        return {
+            "id": prebuilt_id,
+            "enabled": True,
+            "source": saved_source,
+            "enforcement": saved_enforcement,
+            "setup_required": spec.setup_required,
+        }
+
+    def _disable_prebuilt_locked(slug: str) -> dict:
+        """Lock-held body of disable_prebuilt_policy. See
+        _enable_prebuilt_locked for why this is split."""
+        from ..policy.prebuilt import (
+            build_prebuilt_evidence_policy,
+            prebuilt_spec_by_id,
+        )
+        prebuilt_id = f"prebuilt/{slug}"
+        spec = prebuilt_spec_by_id(prebuilt_id)
+        if spec is None:
+            raise HTTPException(404, f"prebuilt {prebuilt_id!r} not found")
+        existing = store.load()
+        new_list: list[PolicyOverride] = []
+        changed = False
+        target_after: PolicyOverride | None = None
+        for ov in existing:
+            if ov.policy.id == prebuilt_id and ov.enabled:
+                new_ov = PolicyOverride(
+                    policy=ov.policy,
+                    source=ov.source,
+                    enabled=False,
+                    enforcement=ov.enforcement,
+                )
+                new_list.append(new_ov)
+                target_after = new_ov
+                changed = True
+            else:
+                new_list.append(ov)
+                if ov.policy.id == prebuilt_id:
+                    target_after = ov
+        if changed:
+            store.save(new_list)
+        if target_after is not None:
+            source = target_after.source
+            enforcement = (
+                target_after.enforcement
+                or _resolve_enforcement_for(target_after.policy)
+            )
+        else:
+            fresh_policy = build_prebuilt_evidence_policy(prebuilt_id)
+            assert fresh_policy is not None
+            source = "bot"
+            enforcement = _resolve_enforcement_for(fresh_policy)
+        return {
+            "id": prebuilt_id,
+            "enabled": False,
+            "source": source,
+            "enforcement": enforcement,
+            "setup_required": spec.setup_required,
+        }
+
     @app.post(
         "/policies/prebuilt/{slug}/enable",
         dependencies=[Depends(require_admin_key)],
@@ -2787,29 +2904,75 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
 
     def _pack_locale(accept_language: str | None) -> str:
         """Return 'ko' when the request Accept-Language prefers Korean,
-        else 'en'. The dashboard always sets Accept-Language explicitly
-        (server component fetches), so a missing header defaults to en.
+        else 'en'.
+
+        Fix follow-up: walk the full quality-ordered list instead of
+        taking only the first segment. `en-US,ko;q=0.9` previously
+        returned 'en' even when the operator's primary UI is Korean and
+        the dashboard had set the cookie to ko; the server component
+        forwards the cookie locale on dashboard fetches so the bug only
+        bit operators driving the admin HTTP surface from curl /
+        scripted tooling. Now we score each comma-separated tag by its
+        `q=` value (default 1.0) and pick the first tag whose primary
+        subtag matches ko or en. Anything else (or no header at all)
+        falls back to 'en'.
         """
         if not accept_language:
             return "en"
-        head = accept_language.split(",")[0].strip().lower()
-        if head.startswith("ko"):
-            return "ko"
+        ranked: list[tuple[float, int, str]] = []
+        for idx, raw_tag in enumerate(accept_language.split(",")):
+            tag = raw_tag.strip()
+            if not tag:
+                continue
+            quality = 1.0
+            parts = [p.strip() for p in tag.split(";")]
+            head = parts[0].lower()
+            for param in parts[1:]:
+                if param.startswith("q="):
+                    try:
+                        quality = float(param[2:])
+                    except ValueError:
+                        quality = 0.0
+                    break
+            if quality <= 0:
+                continue
+            # Negate idx so a tie on quality preserves header order via
+            # max() (lower idx wins among equal-quality tags).
+            ranked.append((quality, -idx, head))
+        # Stable sort by descending quality + ascending header position.
+        ranked.sort(key=lambda r: (-r[0], -r[1]))
+        for _q, _idx, head in ranked:
+            if head.startswith("ko"):
+                return "ko"
+            if head.startswith("en"):
+                return "en"
         return "en"
 
     def _enabled_id_set() -> set[str]:
         return {ov.policy.id for ov in store.load() if ov.enabled}
+
+    def _all_policy_id_set() -> set[str]:
+        """Every policy id currently saved in the store (enabled OR not).
+
+        Used by `user_pack_to_dict` to flag a member id as stale when
+        it is neither a known prebuilt nor present in the store. A
+        stale id reports `ok: false` on cascade enable and would pin
+        the pack at status=partial forever; the dashboard renders a
+        chip so the operator can see why."""
+        return {ov.policy.id for ov in store.load()}
 
     def _list_user_packs_dict(locale: str) -> list[dict]:
         from ..policy.pack import user_pack_to_dict
         if pack_store is None:
             return []
         enabled = _enabled_id_set()
+        store_ids = _all_policy_id_set()
         out: list[dict] = []
         for row in pack_store.load():
             pack = user_pack_to_dict(
                 row.id, row.name, row.description,
                 row.policy_ids, enabled,
+                store_policy_ids=store_ids,
             )
             out.append(dict(pack))
             del locale  # locale doesn't affect user-pack copy
@@ -2879,11 +3042,13 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             return envelope
         # User.
         if pack_store is not None:
+            store_ids = _all_policy_id_set()
             for row in pack_store.load():
                 if row.id == pack_id:
                     p = user_pack_to_dict(
                         row.id, row.name, row.description,
                         row.policy_ids, enabled,
+                        store_policy_ids=store_ids,
                     )
                     envelope = dict(p)
                     envelope["members"] = [
@@ -3046,23 +3211,25 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             pack_store.save(kept)
         return {"id": pack_id, "deleted": True}
 
-    async def _enable_one_member(
+    def _enable_one_member_locked(
         member_id: str, pack_id: str,
     ) -> dict:
-        """Enable a single member id under the given pack. Returns
-        a dict with `id`, `enabled`, `ok`, and `error` (when not ok).
-        Routes prebuilt members through the prebuilt enable path so
-        the lifecycle gate + setup_required surface stays consistent;
-        routes inline pack-owned IRs through the same PolicyOverride
-        materialization; routes user-policy ids through a simple
-        enabled-flag flip.
+        """Lock-held inner work to enable a single member.
+
+        Called by `_cascade` while the cascade holds `policy_lock` for
+        the full loop — this is what makes the `only_missing` snapshot
+        + post-cascade status read consistent under concurrent admin
+        requests. Returns the same per-member envelope as the original
+        async `_enable_one_member` so the cascade result shape is
+        wire-stable.
         """
         from ..policy.pack import inline_policy_for
-        # Prebuilt member.
+        # Prebuilt member: route through the lock-free helper that
+        # mirrors `enable_prebuilt_policy`'s body.
         if member_id.startswith("prebuilt/"):
             slug = member_id[len("prebuilt/"):]
             try:
-                result = await enable_prebuilt_policy(slug)
+                result = _enable_prebuilt_locked(slug)
                 return {
                     "id": member_id, "enabled": True, "ok": True,
                     "source": result.get("source"),
@@ -3077,37 +3244,36 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         inline = inline_policy_for(pack_id, member_id)
         if inline is not None:
             try:
-                async with policy_lock:
-                    existing = store.load()
-                    target: PolicyOverride | None = None
-                    for ov in existing:
-                        if ov.policy.id == member_id:
-                            target = ov
-                            break
-                    if target is not None and target.enabled:
-                        return {"id": member_id, "enabled": True, "ok": True}
-                    if target is None:
-                        _assert_policy_lifecycle_endorsed(inline)
-                        saved_enforcement = _resolve_enforcement_for(inline)
-                        existing.append(PolicyOverride(
-                            policy=inline,
-                            source="bot",
-                            enabled=True,
-                            enforcement=saved_enforcement,
-                        ))
-                    else:
-                        saved_enforcement = _revalidate_for_reenable(target)
-                        _assert_policy_lifecycle_endorsed(target.policy)
-                        existing = [
-                            ov for ov in existing if ov.policy.id != member_id
-                        ]
-                        existing.append(PolicyOverride(
-                            policy=target.policy,
-                            source=target.source,
-                            enabled=True,
-                            enforcement=saved_enforcement,
-                        ))
-                    store.save(existing)
+                existing = store.load()
+                target: PolicyOverride | None = None
+                for ov in existing:
+                    if ov.policy.id == member_id:
+                        target = ov
+                        break
+                if target is not None and target.enabled:
+                    return {"id": member_id, "enabled": True, "ok": True}
+                if target is None:
+                    _assert_policy_lifecycle_endorsed(inline)
+                    saved_enforcement = _resolve_enforcement_for(inline)
+                    existing.append(PolicyOverride(
+                        policy=inline,
+                        source="bot",
+                        enabled=True,
+                        enforcement=saved_enforcement,
+                    ))
+                else:
+                    saved_enforcement = _revalidate_for_reenable(target)
+                    _assert_policy_lifecycle_endorsed(target.policy)
+                    existing = [
+                        ov for ov in existing if ov.policy.id != member_id
+                    ]
+                    existing.append(PolicyOverride(
+                        policy=target.policy,
+                        source=target.source,
+                        enabled=True,
+                        enforcement=saved_enforcement,
+                    ))
+                store.save(existing)
                 return {"id": member_id, "enabled": True, "ok": True}
             except HTTPException as e:
                 return {"id": member_id, "enabled": False, "ok": False,
@@ -3117,32 +3283,31 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                         "error": str(e)}
         # User-policy member.
         try:
-            async with policy_lock:
-                existing = store.load()
-                target = None
-                for ov in existing:
-                    if ov.policy.id == member_id:
-                        target = ov
-                        break
-                if target is None:
-                    return {
-                        "id": member_id, "enabled": False, "ok": False,
-                        "error": "member policy not found in store",
-                    }
-                if target.enabled:
-                    return {"id": member_id, "enabled": True, "ok": True}
-                saved_enforcement = _revalidate_for_reenable(target)
-                _assert_policy_lifecycle_endorsed(target.policy)
-                new_list = [
-                    ov for ov in existing if ov.policy.id != member_id
-                ]
-                new_list.append(PolicyOverride(
-                    policy=target.policy,
-                    source=target.source,
-                    enabled=True,
-                    enforcement=saved_enforcement,
-                ))
-                store.save(new_list)
+            existing = store.load()
+            target = None
+            for ov in existing:
+                if ov.policy.id == member_id:
+                    target = ov
+                    break
+            if target is None:
+                return {
+                    "id": member_id, "enabled": False, "ok": False,
+                    "error": "member policy not found in store",
+                }
+            if target.enabled:
+                return {"id": member_id, "enabled": True, "ok": True}
+            saved_enforcement = _revalidate_for_reenable(target)
+            _assert_policy_lifecycle_endorsed(target.policy)
+            new_list = [
+                ov for ov in existing if ov.policy.id != member_id
+            ]
+            new_list.append(PolicyOverride(
+                policy=target.policy,
+                source=target.source,
+                enabled=True,
+                enforcement=saved_enforcement,
+            ))
+            store.save(new_list)
             return {"id": member_id, "enabled": True, "ok": True}
         except HTTPException as e:
             return {"id": member_id, "enabled": False, "ok": False,
@@ -3151,12 +3316,14 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             return {"id": member_id, "enabled": False, "ok": False,
                     "error": str(e)}
 
-    async def _disable_one_member(member_id: str) -> dict:
+    def _disable_one_member_locked(member_id: str) -> dict:
+        """Lock-held inner work to disable a single member. See
+        _enable_one_member_locked for why this is split."""
         # Prebuilt member.
         if member_id.startswith("prebuilt/"):
             slug = member_id[len("prebuilt/"):]
             try:
-                await disable_prebuilt_policy(slug)
+                _disable_prebuilt_locked(slug)
                 return {"id": member_id, "enabled": False, "ok": True}
             except HTTPException as e:
                 return {"id": member_id, "enabled": True, "ok": False,
@@ -3168,23 +3335,22 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         # flip the row's enabled flag to False if present, no-op
         # otherwise.
         try:
-            async with policy_lock:
-                existing = store.load()
-                changed = False
-                new_list: list[PolicyOverride] = []
-                for ov in existing:
-                    if ov.policy.id == member_id and ov.enabled:
-                        new_list.append(PolicyOverride(
-                            policy=ov.policy,
-                            source=ov.source,
-                            enabled=False,
-                            enforcement=ov.enforcement,
-                        ))
-                        changed = True
-                    else:
-                        new_list.append(ov)
-                if changed:
-                    store.save(new_list)
+            existing = store.load()
+            changed = False
+            new_list: list[PolicyOverride] = []
+            for ov in existing:
+                if ov.policy.id == member_id and ov.enabled:
+                    new_list.append(PolicyOverride(
+                        policy=ov.policy,
+                        source=ov.source,
+                        enabled=False,
+                        enforcement=ov.enforcement,
+                    ))
+                    changed = True
+                else:
+                    new_list.append(ov)
+            if changed:
+                store.save(new_list)
             return {"id": member_id, "enabled": False, "ok": True}
         except HTTPException as e:
             return {"id": member_id, "enabled": True, "ok": False,
@@ -3196,24 +3362,56 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
     async def _cascade(
         pack_id: str, action: str, *, only_missing: bool = False,
     ) -> dict:
+        """Run an enable / disable / enable-missing cascade over every
+        member of `pack_id`.
+
+        Fix follow-up (concurrency): hold `policy_lock` for the entire
+        member loop AND for the post-cascade status recompute. Before
+        this change each member call took the lock independently, so a
+        concurrent admin request (single-policy toggle, sibling pack
+        cascade, PATCH /policies/{id}/enabled) could interleave between
+        two members of the same cascade — the `only_missing` snapshot
+        would drift mid-loop and the post-cascade `status` could
+        publish a state that did not match the operator's intent. The
+        prebuilt enable/disable routes still acquire the lock at the
+        request boundary; the cascade reuses `_enable_prebuilt_locked`
+        / `_disable_prebuilt_locked` so we never nest the
+        non-reentrant asyncio.Lock.
+
+        Blunt-cascade semantics (every member is flipped to the target
+        regardless of cross-pack ownership) are unchanged. The
+        membership-conflict invariant is pinned by
+        `test_blunt_cascade_overrides_shared_member`.
+        """
         members = _resolve_pack_members(pack_id)
         if members is None:
             raise HTTPException(404, f"pack {pack_id!r} not found")
         results: list[dict] = []
-        if action == "enable":
-            enabled_now = _enabled_id_set() if only_missing else set()
-            for mid in members:
-                if only_missing and mid in enabled_now:
-                    results.append({"id": mid, "enabled": True, "ok": True,
-                                     "skipped": True})
-                    continue
-                results.append(await _enable_one_member(mid, pack_id))
-        else:
-            for mid in members:
-                results.append(await _disable_one_member(mid))
-        # Recompute status post-attempt.
-        from ..policy.pack import compute_status
-        enabled_after = _enabled_id_set()
+        async with policy_lock:
+            if action == "enable":
+                # Snapshot is taken inside the lock so it cannot drift.
+                if only_missing:
+                    enabled_now = {ov.policy.id for ov in store.load()
+                                    if ov.enabled}
+                else:
+                    enabled_now = set()
+                for mid in members:
+                    if only_missing and mid in enabled_now:
+                        results.append({
+                            "id": mid, "enabled": True, "ok": True,
+                            "skipped": True,
+                        })
+                        continue
+                    results.append(_enable_one_member_locked(mid, pack_id))
+            else:
+                for mid in members:
+                    results.append(_disable_one_member_locked(mid))
+            # Recompute status post-attempt INSIDE the lock so the
+            # status read sees the cascade's own writes and nothing
+            # else.
+            from ..policy.pack import compute_status
+            enabled_after = {ov.policy.id for ov in store.load()
+                              if ov.enabled}
         status, enabled_count = compute_status(members, enabled_after)
         return {
             "id": pack_id,

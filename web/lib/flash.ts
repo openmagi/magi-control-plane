@@ -12,6 +12,18 @@ const OK_CODES: Record<string, string> = {
   toggled: "Policy updated.",
   saved: "Saved.",
   verifier_created: "Custom verifier created.",
+  // D75 follow-up: createPackAction redirects with
+  // `?msg=pack_created` on the happy path. Without an entry here
+  // resolveFlash returned null and the first-time visitor who
+  // followed the empty-state CTA and submitted the form landed back
+  // on /rules with zero confirmation.
+  pack_created: "Policy pack created.",
+  // D75 follow-up: enable/disable cascade reports per-member
+  // outcomes in `results[]`; the action surfaces a "partial
+  // success" banner via this msg code when at least one member
+  // succeeded. Distinct from the bare `toggled` code so the
+  // operator knows not every member committed.
+  pack_partial_success: "Pack toggled. Some members did not apply — check the pack card.",
 }
 
 const ERR_CODES: Record<string, string> = {
@@ -26,6 +38,17 @@ const ERR_CODES: Record<string, string> = {
   conflict: "Action conflicted with current state.",
   template_too_long: "Inject template is too long (max 16000 chars).",
   strip_unsupported: "Strip action is not available for this lifecycle.",
+  // D75 follow-up: createPackAction redirected with
+  // `?err=name_required` when the form's name field was empty, but
+  // the page only rendered a banner when resolveFlash returned a
+  // non-null value — the visitor saw nothing and assumed the click
+  // had no effect.
+  name_required: "Pack name is required.",
+  // D75 follow-up: togglePackAction reads the cloud cascade's
+  // `results[]` and reroutes here when at least one member failed
+  // outright (no successes either). Distinct from `pack_partial_success`
+  // (which is an OK_CODE for "some succeeded, some didn't").
+  pack_partial_failure: "Pack cascade failed — check the pack card for failed members.",
   // D62 follow-up: the seven Step 3 specifics codes (pick_condition,
   // missing_criterion, missing_pattern, missing_shacl, missing_domain,
   // missing_allowlist, missing_evidence) DELIBERATELY do not appear

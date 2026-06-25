@@ -23,6 +23,31 @@ describe("resolveFlash", () => {
     expect(r.kind).toBe("error")
     expect(r.text).not.toContain("MAGI_CP")
   })
+
+  it("renders pack_created ok flash", () => {
+    // D75 follow-up: createPackAction redirects with msg=pack_created.
+    // Before this code was added resolveFlash returned null and the
+    // visitor landed on /rules with zero confirmation.
+    const r = resolveFlash("pack_created", undefined)!
+    expect(r.kind).toBe("ok")
+    expect(r.text).toMatch(/pack/i)
+  })
+
+  it("renders name_required error flash", () => {
+    // D75 follow-up: createPackAction redirects with err=name_required
+    // on empty form submits; the new-pack page only renders a banner
+    // when resolveFlash returns non-null.
+    const r = resolveFlash(undefined, "name_required")!
+    expect(r.kind).toBe("error")
+    expect(r.text).toMatch(/name/i)
+  })
+
+  it("renders the pack cascade partial-success + partial-failure codes", () => {
+    const ok = resolveFlash("pack_partial_success", undefined)!
+    expect(ok.kind).toBe("ok")
+    const err = resolveFlash(undefined, "pack_partial_failure")!
+    expect(err.kind).toBe("error")
+  })
 })
 
 describe("codeForError", () => {

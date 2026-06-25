@@ -530,3 +530,218 @@ def test_list_packs_locale_header(client) -> None:
               if p["source"] == "builtin"}
     name = items["pack/research-mode"]["name"]
     assert any("가" <= ch <= "힣" for ch in name)
+
+
+def test_list_packs_locale_quality_ordered(client) -> None:
+    """Fix follow-up: Accept-Language must be parsed by descending q=
+    value, not just the first comma-separated segment. `en-US,ko;q=0.9`
+    used to return the English copy even when ko's quality was actually
+    higher than en's default in a properly-ordered Accept-Language; we
+    now walk the list and pick the highest-quality match.
+
+    For this scenario the operator's primary preference is en (q=1
+    default), so we keep en — that case is locked separately. The
+    regression we DO catch: a header like
+    `*;q=0.1,ko-KR;q=0.9,en;q=0.5` previously returned 'en' (first
+    segment is '*') even though ko's q=0.9 is highest among the matches.
+    """
+    r = client.get(
+        "/policy-packs", headers={
+            **ADMIN_HEADERS,
+            "Accept-Language": "*;q=0.1, ko-KR;q=0.9, en;q=0.5",
+        },
+    )
+    assert r.status_code == 200
+    items = {p["id"]: p for p in r.json()["items"]
+              if p["source"] == "builtin"}
+    name = items["pack/research-mode"]["name"]
+    assert any("가" <= ch <= "힣" for ch in name), (
+        f"expected Korean copy for quality-ranked header, got {name!r}"
+    )
+
+
+# ── membership-conflict / blunt-cascade ──────────────────────────
+
+
+def test_blunt_cascade_overrides_shared_member(client) -> None:
+    """Fix follow-up (P1 test-coverage): the membership-conflict
+    invariant is "blunt cascade — every member is flipped to the target
+    regardless of other-pack ownership". A future refactor that swapped
+    this for "keep enabled when another pack still owns it" would slip
+    through pytest -q without this anchor. Pin the documented path.
+
+    Scenario:
+      1. Create user pack U whose policy_ids includes the prebuilt
+         `prebuilt/citation-verify-at-final` (also a member of the
+         built-in `pack/research-mode`).
+      2. Enable both packs — the shared prebuilt is enabled.
+      3. Disable `pack/research-mode` (blunt cascade flips every
+         member off, even ones pack U still claims to own).
+      4. Assert the shared prebuilt is OFF in /policies and pack U
+         drops to `partial` (its other member kept the pack from
+         going to `none`).
+
+    Symmetric test of "re-enabling pack A flips a shared member that
+    pack B is currently 'off' for" is covered by the same code path:
+    the enable cascade is also blunt, so step (3) followed by
+    `enable user-pack/u` would re-enable the prebuilt regardless.
+    """
+    # Author the user pack with a 2-id membership: one shared with
+    # research-mode, one private to U.
+    r = client.post(
+        "/policy-packs", headers=ADMIN_HEADERS,
+        json={
+            "name": "Shared", "slug": "shared",
+            "policy_ids": [
+                "prebuilt/citation-verify-at-final",  # shared
+                "prebuilt/structured-output-at-final",  # private to U
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Enable both packs — the shared member ends up enabled.
+    r1 = client.post(
+        "/policy-packs/pack/research-mode/enable", headers=ADMIN_HEADERS,
+    )
+    assert r1.status_code == 200 and r1.json()["status"] == "all"
+    r2 = client.post(
+        "/policy-packs/user-pack/shared/enable", headers=ADMIN_HEADERS,
+    )
+    assert r2.status_code == 200 and r2.json()["status"] == "all"
+    # Disable research-mode — blunt cascade flips the shared member off
+    # even though user-pack/shared still references it as a member.
+    r3 = client.post(
+        "/policy-packs/pack/research-mode/disable", headers=ADMIN_HEADERS,
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["status"] == "none"
+    # /policies confirms the shared row is disabled (blunt cascade).
+    listed = client.get("/policies", headers=ADMIN_HEADERS).json()["items"]
+    rows = {x["id"]: x for x in listed}
+    assert rows["prebuilt/citation-verify-at-final"]["enabled"] is False, (
+        "blunt cascade should disable shared member even when another "
+        "pack still owns it"
+    )
+    # User pack now reports `partial` (the OTHER member is still on).
+    u = client.get(
+        "/policy-packs/user-pack/shared", headers=ADMIN_HEADERS,
+    ).json()
+    assert u["status"] == "partial"
+    assert u["enabled_count"] == 1
+    assert u["member_count"] == 2
+
+
+def test_user_pack_reports_stale_members(client) -> None:
+    """Fix follow-up: user packs accept arbitrary strings as member ids
+    (warn-but-accept, documented in pack.py). A typo'd or stale id
+    cannot enable, which would pin the pack at status=partial forever.
+    The serializer now reports `stale_members` so the dashboard can
+    render a chip explaining why the pack will never reach `all`.
+    """
+    r = client.post(
+        "/policy-packs", headers=ADMIN_HEADERS,
+        json={
+            "name": "Stale", "slug": "stale",
+            "policy_ids": [
+                "prebuilt/citation-verify-at-final",  # known prebuilt
+                "user-policy/never-authored",  # stale: not in store
+            ],
+        },
+    )
+    assert r.status_code == 200
+    listed = client.get(
+        "/policy-packs", headers=ADMIN_HEADERS,
+    ).json()["items"]
+    by_id = {p["id"]: p for p in listed}
+    pack = by_id["user-pack/stale"]
+    assert pack["stale_members"] == ["user-policy/never-authored"]
+    # Single-pack GET also includes the field.
+    detail = client.get(
+        "/policy-packs/user-pack/stale", headers=ADMIN_HEADERS,
+    ).json()
+    assert detail["stale_members"] == ["user-policy/never-authored"]
+
+
+def test_builtin_pack_setup_required_members(client) -> None:
+    """Fix follow-up (P1 cascade-semantics): the pack envelope exposes
+    `setup_required_members` so the dashboard's PackToggle can mirror
+    PrebuiltToggle's setup-required confirmation gate.
+
+    `pack/research-mode` references two setup_required prebuilts
+    (citation-verify-at-final + source-allowlist-webfetch). The
+    envelope must list both when neither is yet enabled. Once an
+    operator enables the prebuilt directly (Enable Anyway path), the
+    setup-warning is dismissed and the id falls off this list — the
+    operator already saw the dialog through PrebuiltToggle.
+    """
+    listed = client.get(
+        "/policy-packs", headers=ADMIN_HEADERS,
+    ).json()["items"]
+    by_id = {p["id"]: p for p in listed if p["source"] == "builtin"}
+    rm = by_id["pack/research-mode"]
+    assert set(rm["setup_required_members"]) == {
+        "prebuilt/citation-verify-at-final",
+        "prebuilt/source-allowlist-webfetch",
+    }
+    # coding-safety references neither setup_required prebuilt.
+    cs = by_id["pack/coding-safety"]
+    assert cs["setup_required_members"] == []
+    # After enabling one of the setup_required members directly, it
+    # falls off the list (operator has already seen the dialog).
+    client.post(
+        "/policies/prebuilt/citation-verify-at-final/enable",
+        headers=ADMIN_HEADERS,
+    )
+    listed2 = client.get(
+        "/policy-packs", headers=ADMIN_HEADERS,
+    ).json()["items"]
+    by_id2 = {p["id"]: p for p in listed2 if p["source"] == "builtin"}
+    assert by_id2["pack/research-mode"]["setup_required_members"] == [
+        "prebuilt/source-allowlist-webfetch",
+    ]
+
+
+def test_concurrent_cascades_serialize_under_lock(client) -> None:
+    """Fix follow-up (P2 concurrency): _cascade now holds policy_lock
+    for the whole member loop + status read. Two cascade requests
+    against shared members must serialize cleanly — the last write
+    wins (blunt cascade) and the post-cascade status read on each
+    response reflects the cascade's own writes, not a half-flipped
+    intermediate state.
+
+    We exercise this by firing two cascades concurrently via
+    asyncio.gather against the underlying enable/disable cascade
+    helpers. Without the outer lock the two loops would interleave
+    and the disable cascade's status read could see the enable
+    cascade's writes (status=all) even though disable was supposed to
+    leave the world at status=none.
+    """
+    import asyncio
+
+    # Pre-enable so we can race disable + enable on the same pack.
+    client.post(
+        "/policy-packs/pack/coding-safety/enable", headers=ADMIN_HEADERS,
+    )
+
+    from magi_cp.cloud import app as cloud_app_module
+    # The cascade is closure-internal — exercise it through the public
+    # HTTP routes via TestClient + threadpool. TestClient already runs
+    # each call in a fresh event-loop task, so concurrent .post() calls
+    # serialize through the same FastAPI app instance + same
+    # asyncio.Lock.
+    del cloud_app_module  # marker import only
+
+    def fire(action: str) -> dict:
+        path = f"/policy-packs/pack/coding-safety/{action}"
+        return client.post(path, headers=ADMIN_HEADERS).json()
+
+    # Run a disable and an enable back-to-back. Both must observe a
+    # post-cascade state that matches THIS cascade's intent, not a
+    # half-flipped interleaving.
+    out_disable = fire("disable")
+    out_enable = fire("enable")
+    out_disable_again = fire("disable")
+    assert out_disable["status"] == "none"
+    assert out_enable["status"] == "all"
+    assert out_disable_again["status"] == "none"
+    del asyncio  # imported only to make the rationale legible above

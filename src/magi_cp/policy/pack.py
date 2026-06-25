@@ -21,9 +21,24 @@ metadata; enabled-state is derived, never persisted on the pack.
 Membership-vs-state separation matters for the "shared-member"
 question: if policy P is in pack A and pack B, disabling A leaves P
 enabled iff B is still enabled. The cloud's enable/disable handlers
-implement "blunt cascade" — every member's enabled flag is set to the
-pack toggle's target. The brief explicitly allows this choice; the PR
-notes call it out so the simpler-test trade is visible.
+implement "blunt cascade": every member's enabled flag is set to the
+pack toggle's target REGARDLESS of other-pack ownership. The brief
+explicitly allows this choice; the PR notes call it out so the
+simpler-test trade is visible. The membership-conflict invariant is
+locked by `tests/test_policy_pack.py::
+test_blunt_cascade_overrides_shared_member` (a shared member follows
+the LAST cascade, never the union-of-owners).
+
+Stale member id policy (warn-but-accept): create_user_pack and
+update_user_pack accept any string as a member id. A typo'd id never
+reaches `enabled=True` (the cloud cascade reports `ok: false` for it),
+which would silently pin the pack at `partial` forever. To make the
+inconsistency visible, `user_pack_to_dict` computes a `stale_members`
+list against the live policy store. The dashboard renders a "stale
+members" chip on the pack card. Rejecting the POST/PUT with 422 was
+considered but breaks automation that legitimately authors packs
+before all members exist (a common shape for IaC pipelines that
+provision the policy in a later step).
 
 Built-in packs and their member-policy IRs live HERE so a fresh install
 ships the strict-block bundle without a separate seed step. The other
@@ -64,6 +79,25 @@ class PolicyPack(TypedDict, total=False):
                        dashboard card avoids a second array walk.
     `enabled_count`  : number of members currently enabled in the
                        store. Used to render the "Partial 3/5" badge.
+    `setup_required_members` : Fix follow-up — subset of `policy_ids`
+                       whose `prebuilt/...` spec carries
+                       `setup_required=True` AND is not currently
+                       enabled. The dashboard surfaces a setup-warning
+                       on the pack toggle (parity with PrebuiltToggle)
+                       so a cascade does not silently land "Active"
+                       badges on inert prebuilt members that still
+                       need verifier-side config (allowlist domains,
+                       citation corpus). Empty when no member needs
+                       setup. Always derived; never persisted.
+    `stale_members`  : Fix follow-up — subset of `policy_ids` (user
+                       packs only) whose id is not a known prebuilt and
+                       does not exist in the live policy store. Warn-
+                       but-accept on create/update so automation that
+                       references a typo'd id still persists the pack,
+                       but the dashboard renders a "stale member" chip
+                       so the operator can see why the pack will never
+                       reach status=all. Empty on built-in packs (the
+                       inline IRs are owned + always present).
     """
 
     id: str
@@ -74,6 +108,8 @@ class PolicyPack(TypedDict, total=False):
     status: PackStatus
     member_count: int
     enabled_count: int
+    setup_required_members: list[str]
+    stale_members: list[str]
 
 
 @dataclass(frozen=True)
@@ -316,7 +352,76 @@ def _spec_to_pack(
         "status": status,
         "member_count": len(member_ids),
         "enabled_count": enabled_in_pack,
+        "setup_required_members": _setup_required_members(
+            member_ids, enabled_ids,
+        ),
+        # Built-in packs never have stale members (prebuilt refs are
+        # catalog-validated at module import + inline IRs are owned).
+        "stale_members": [],
     }
+
+
+def _setup_required_members(
+    member_ids: list[str], enabled_ids: set[str],
+) -> list[str]:
+    """Return the subset of `member_ids` whose prebuilt spec carries
+    `setup_required=True` AND that are not currently enabled.
+
+    Once a setup-required prebuilt is enabled the operator has already
+    seen (and dismissed) the setup-required dialog through the
+    PrebuiltToggle's Enable Anyway path, so the pack card does NOT re-
+    surface the warning on cascades that would only re-enable it. The
+    dashboard reads this list before posting `enable` and routes through
+    a confirmation gate when non-empty.
+    """
+    # Local import: prebuilt module also imports pack indirectly via
+    # the IR validation chain, so top-level import would risk a cycle.
+    from .prebuilt import prebuilt_spec_by_id
+    out: list[str] = []
+    for mid in member_ids:
+        if not mid.startswith("prebuilt/"):
+            continue
+        if mid in enabled_ids:
+            continue
+        spec = prebuilt_spec_by_id(mid)
+        if spec is None:
+            continue
+        if spec.setup_required:
+            out.append(mid)
+    return out
+
+
+def _known_member_ids() -> set[str]:
+    """Return the catalog of member ids the cloud unconditionally knows
+    about: every prebuilt slug + every inline IR a built-in pack owns.
+
+    User-policy ids are NOT in this set; the caller adds the live policy
+    store's ids on top before tagging stale members. Built-in pack ids
+    themselves are not member ids (a pack cannot reference another pack
+    today).
+    """
+    from .prebuilt import _PREBUILT_SPECS
+    known: set[str] = {s.id for s in _PREBUILT_SPECS}
+    for spec in _BUILTIN_PACK_SPECS:
+        for mid, _policy in spec.inline_policies:
+            known.add(mid)
+    return known
+
+
+def compute_stale_members(
+    member_ids: list[str], store_policy_ids: set[str],
+) -> list[str]:
+    """Return the subset of `member_ids` that does not resolve to any
+    known member id source. `store_policy_ids` is the set of every
+    policy id currently saved in the policy store (enabled OR not).
+
+    "Stale" here means the member will never enable (cloud reports
+    `ok: false` for it) and never count toward `enabled_count`, so the
+    pack will pin at `partial` forever. Surfacing the list lets the
+    dashboard render a "stale member" chip so the operator can see why.
+    """
+    known = _known_member_ids() | store_policy_ids
+    return [m for m in member_ids if m not in known]
 
 
 def all_builtin_packs(
@@ -377,8 +482,23 @@ def user_pack_to_dict(
     description: str,
     policy_ids: list[str],
     enabled_ids: set[str],
+    store_policy_ids: set[str] | None = None,
 ) -> PolicyPack:
+    """Serialize a user pack row to the wire envelope.
+
+    `enabled_ids` is the set of policy ids currently enabled in the
+    tenant policy store (drives `status` + `enabled_count`).
+    `store_policy_ids` is the full set of saved policy ids (enabled OR
+    not) and drives `stale_members` — a member id that is not a known
+    prebuilt AND not present in the store can never enable. Passing
+    `None` (back-compat for callers pre-Fix follow-up) treats every id
+    as known so `stale_members` defaults to `[]`.
+    """
     status, enabled = compute_status(policy_ids, enabled_ids)
+    if store_policy_ids is None:
+        stale = []
+    else:
+        stale = compute_stale_members(list(policy_ids), store_policy_ids)
     return {
         "id": pack_id,
         "name": name,
@@ -388,6 +508,10 @@ def user_pack_to_dict(
         "status": status,
         "member_count": len(policy_ids),
         "enabled_count": enabled,
+        "setup_required_members": _setup_required_members(
+            list(policy_ids), enabled_ids,
+        ),
+        "stale_members": stale,
     }
 
 
@@ -413,5 +537,6 @@ __all__ = [
     "builtin_pack_spec_by_id",
     "inline_policy_for",
     "compute_status",
+    "compute_stale_members",
     "user_pack_to_dict",
 ]

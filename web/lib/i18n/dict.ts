@@ -531,6 +531,8 @@ const KO_RAW = {
   /* D75: 정책 묶음 (policy packs) — 단일 토글로 여러 정책을 한 번에 켜고 끔. */
   "rules.pack.section.title": "정책 묶음",
   "rules.pack.section.hint": "리서치/코딩/컴플라이언스처럼 여러 정책을 같이 켜고 싶을 때 한 번에 토글합니다. 카드 하단 \"멤버 보기\"로 어떤 정책이 묶였는지 확인할 수 있습니다.",
+  "rules.pack.section.cloudErrorHint": "묶음 정보를 불러오지 못했습니다. 위쪽 오류 배너를 확인하고, 우측 \"새 묶음\"으로 직접 만들 수도 있습니다.",
+  "rules.pack.builtinsOnlyHint": "기본 묶음만 보이고 있어요. 우측 \"새 묶음\"으로 직접 만들 수 있습니다.",
   "rules.pack.empty.title": "묶음 없음",
   "rules.pack.empty.body": "아직 정책 묶음이 없습니다. 우측 \"새 묶음\"으로 직접 만들 수 있습니다.",
   "rules.pack.empty.cta": "새 묶음 만들기",
@@ -545,6 +547,22 @@ const KO_RAW = {
   "rules.pack.toggle.aria": "{name} 묶음 토글",
   "rules.pack.expand.toggle": "멤버 보기",
   "rules.pack.expand.aria": "{name} 묶음 멤버 보기",
+  /* D75 follow-up: 묶음 토글이 setup_required 프리빌트를 묵묵히 켜지 않도록
+   * PrebuiltToggle 과 동일한 확인 다이얼로그 + 카드 chip. */
+  "rules.pack.setupRequired.chip": "사전 설정 필요 {n}",
+  "rules.pack.setupRequired.chip.title": "이 묶음의 일부 멤버는 verifier 설정이 필요합니다 (allowlist 도메인, 인용 코퍼스 등). 설정 전에는 비활성 상태로 머뭅니다.",
+  "rules.pack.setupRequired.inlineBadge": "사전 설정 필요",
+  "rules.pack.setupRequired.title": "활성화 전에 verifier 설정이 필요합니다",
+  "rules.pack.setupRequired.body": "\"{name}\" 묶음을 켜면 사전 설정이 필요한 멤버 {n}개도 함께 활성화됩니다. 설정 전까지는 동작하지 않습니다.",
+  "rules.pack.setupRequired.membersHeader": "해당 멤버:",
+  "rules.pack.partialReach.title": "교차 묶음 영향 확인",
+  "rules.pack.partialReach.body": "\"{name}\" 묶음을 켜면 현재 다른 묶음이 의도적으로 꺼둔 멤버까지 함께 켜집니다. 그래도 진행할까요?",
+  "rules.pack.enableAnyway": "그래도 활성화",
+  "rules.pack.cancel": "취소",
+  /* D75 follow-up: 사용자 묶음의 미존재 멤버 id ("stale" 멤버) chip. */
+  "rules.pack.stale.chip": "미존재 멤버 {n}",
+  "rules.pack.stale.chip.title": "이 묶음은 더 이상 존재하지 않는 정책 id 를 참조합니다. 해당 멤버는 절대 활성화되지 않아 묶음 상태가 \"부분\"으로 고정됩니다.",
+  "rules.pack.stale.inlineBadge": "미존재",
   "packs.new.title": "새 정책 묶음",
   "packs.new.hint": "정책 여러 개를 하나의 묶음으로 만들어 한 번에 켜고 끕니다. 이름, 설명, 묶을 정책을 선택하세요.",
   "packs.new.cta": "+ 새 묶음",
@@ -1355,7 +1373,12 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.transportError": "Toggle failed. Network or cloud error. Please retry.",
   /* D75: policy packs — single toggle that cascades to every member. */
   "rules.pack.section.title": "Policy packs",
-  "rules.pack.section.hint": "Toggle a group of policies on or off in one click. Use Expand on a card to see which policies the pack bundles.",
+  /* D75 follow-up: the rendered control on each card is labelled
+   * "View members", not "Expand". The original copy referenced a
+   * non-existent affordance; KO copy was already correct. */
+  "rules.pack.section.hint": "Toggle a group of policies on or off in one click. Use \"View members\" on a card to see which policies the pack bundles.",
+  "rules.pack.section.cloudErrorHint": "Could not load the pack list. See the error banner above; you can still build a custom one with \"New pack\" on the right.",
+  "rules.pack.builtinsOnlyHint": "Only the built-in packs are visible. Build your own with \"New pack\" on the right.",
   "rules.pack.empty.title": "No packs yet",
   "rules.pack.empty.body": "No policy packs yet. Use \"New pack\" on the right to build one from existing policies and prebuilts.",
   "rules.pack.empty.cta": "Create a pack",
@@ -1370,6 +1393,25 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.pack.toggle.aria": "Toggle the {name} pack",
   "rules.pack.expand.toggle": "View members",
   "rules.pack.expand.aria": "Expand {name} pack to view members",
+  /* D75 follow-up: confirm dialog + card chip wiring for the pack
+   * cascade. Mirrors the existing PrebuiltToggle setup-required gate
+   * so a single click enable does not silently land "Active" badges
+   * on inert prebuilt members. */
+  "rules.pack.setupRequired.chip": "{n} need setup",
+  "rules.pack.setupRequired.chip.title": "Some members of this pack reference verifier-side configuration (allowlist domains, citation corpus) that is not in place yet. Cascading enable will materialize them, but they stay inert until you configure the verifier.",
+  "rules.pack.setupRequired.inlineBadge": "Needs setup",
+  "rules.pack.setupRequired.title": "Verifier-side setup required before enabling",
+  "rules.pack.setupRequired.body": "Enabling the \"{name}\" pack will also enable {n} member(s) that need verifier-side configuration to do anything. They will land in the policy store as enabled-but-inert until you configure the verifier.",
+  "rules.pack.setupRequired.membersHeader": "Affected members:",
+  "rules.pack.partialReach.title": "Cross-pack reach",
+  "rules.pack.partialReach.body": "Enabling \"{name}\" will also re-enable members another pack may have just disabled. The cascade applies bluntly across packs. Continue?",
+  "rules.pack.enableAnyway": "Enable anyway",
+  "rules.pack.cancel": "Cancel",
+  /* D75 follow-up: stale-member chip for user packs whose
+   * referenced ids are not in the catalog or the store. */
+  "rules.pack.stale.chip": "{n} stale",
+  "rules.pack.stale.chip.title": "This pack references policy ids that no longer exist. Those members can never enable, so the pack pins at status=partial. Edit the pack or recreate the missing policy.",
+  "rules.pack.stale.inlineBadge": "Stale",
   "packs.new.title": "New policy pack",
   "packs.new.hint": "Bundle several policies under one toggle so a single click flips the whole group. Pick a name, a description, and the member policies.",
   "packs.new.cta": "+ New pack",

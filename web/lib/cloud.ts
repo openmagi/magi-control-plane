@@ -358,6 +358,22 @@ export type PolicyPackEntry = {
   status: "all" | "partial" | "none"
   member_count: number
   enabled_count: number
+  /** D75 follow-up: subset of `policy_ids` whose prebuilt spec
+   * carries `setup_required=true` AND is not currently enabled. The
+   * PackToggle shows a confirm dialog (parity with PrebuiltToggle's
+   * `setupRequired`/`enableAnyway` gate) before cascading so a one-
+   * click pack enable does not silently land "Active" badges on
+   * prebuilt members that will no-op until the operator configures
+   * the verifier (allowlist domains, citation corpus). Empty when
+   * no member needs setup. Optional so older cloud versions deserialize.
+   */
+  setup_required_members?: string[]
+  /** D75 follow-up: subset of `policy_ids` (user packs only) that
+   * is neither a known prebuilt nor present in the live policy store.
+   * The dashboard renders a "stale members" chip on the pack card so
+   * the operator can see why the pack pins at `partial`. Empty on
+   * built-in packs. Optional for forward-compat. */
+  stale_members?: string[]
 }
 
 /** D75: GET /policy-packs/{id} envelope with member-resolved state. */
