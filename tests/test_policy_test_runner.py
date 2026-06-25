@@ -205,9 +205,16 @@ def test_evidence_audit_emit_archetype():
 
 
 # ── PermissionPolicy ───────────────────────────────────────────────
+#
+# Brief P2 #5 fix: PermissionPolicy compiles to managed-settings
+# `permissions.{allow,deny,ask}` and CC's permission engine matches
+# the pattern via its internal grammar. The simulator does NOT
+# re-implement that grammar; it returns INDETERMINATE with a per-
+# archetype explanation (mirroring dry_run.py's
+# `archetype-not-dry-runnable` honesty posture).
 
 
-def test_permission_deny_returns_deny():
+def test_permission_deny_returns_indeterminate_with_explanation():
     p = PermissionPolicy(
         id="test/deny",
         description="test",
@@ -221,13 +228,18 @@ def test_permission_deny_returns_deny():
         "tool_input": {"command": "rm -rf /"},
     }
     r = run_policy_test(p, payload)
-    assert r.verdict == "deny"
-    assert r.action == "block"
-    hso = r.hook_specific_output["hookSpecificOutput"]
-    assert hso["permissionDecision"] == "deny"
+    assert r.verdict == "indeterminate"
+    assert r.action == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
+    # The explanation must surface that CC owns the decision and the
+    # pattern that would compile into managed-settings.
+    joined = " ".join(r.evidence_match_reasons)
+    assert "PermissionPolicy" in joined
+    assert "Bash(rm -rf /*)" in joined
+    assert "deny" in joined.lower()
 
 
-def test_permission_ask_returns_review():
+def test_permission_ask_returns_indeterminate():
     p = PermissionPolicy(
         id="test/ask",
         description="test",
@@ -237,11 +249,11 @@ def test_permission_ask_returns_review():
     )
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash"}
     r = run_policy_test(p, payload)
-    assert r.verdict == "review"
-    assert r.action == "ask"
+    assert r.verdict == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
-def test_permission_allow_returns_pass():
+def test_permission_allow_returns_indeterminate():
     p = PermissionPolicy(
         id="test/allow",
         description="test",
@@ -251,8 +263,8 @@ def test_permission_allow_returns_pass():
     )
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Read"}
     r = run_policy_test(p, payload)
-    assert r.verdict == "pass"
-    assert r.action == "allow"
+    assert r.verdict == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
 # ── ContextInjectionPolicy ─────────────────────────────────────────
@@ -350,9 +362,13 @@ def test_run_command_surfaces_command_but_does_not_execute():
 
 
 # ── SubagentPolicy ─────────────────────────────────────────────────
+#
+# Brief P2 #6 fix: SubagentPolicy + McpGatingPolicy also return
+# INDETERMINATE because CC's Agent dispatch + MCP server gating happen
+# in places the hook payload does not authoritatively cover.
 
 
-def test_subagent_policy_denies_matching_subagent():
+def test_subagent_policy_returns_indeterminate():
     p = SubagentPolicy(
         id="test/sub",
         description="test",
@@ -363,11 +379,12 @@ def test_subagent_policy_denies_matching_subagent():
         "tool_input": {"subagent_type": "research-bot"},
     }
     r = run_policy_test(p, payload)
-    assert r.verdict == "deny"
-    assert r.action == "block"
+    assert r.verdict == "indeterminate"
+    assert r.action == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
-def test_subagent_policy_allows_non_matching():
+def test_subagent_policy_returns_indeterminate_for_non_matching_too():
     p = SubagentPolicy(
         id="test/sub",
         description="test",
@@ -378,14 +395,14 @@ def test_subagent_policy_allows_non_matching():
         "tool_input": {"subagent_type": "writer-bot"},
     }
     r = run_policy_test(p, payload)
-    assert r.verdict == "pass"
-    assert r.action == "allow"
+    assert r.verdict == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
 # ── McpGatingPolicy ────────────────────────────────────────────────
 
 
-def test_mcp_gating_deny_matches_server_prefix():
+def test_mcp_gating_returns_indeterminate():
     p = McpGatingPolicy(
         id="test/mcp",
         description="test",
@@ -394,11 +411,12 @@ def test_mcp_gating_deny_matches_server_prefix():
     )
     payload = {"tool_name": "mcp__risky-server__do_thing"}
     r = run_policy_test(p, payload)
-    assert r.verdict == "deny"
-    assert r.action == "block"
+    assert r.verdict == "indeterminate"
+    assert r.action == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
-def test_mcp_gating_allow_does_not_fire_on_other_server():
+def test_mcp_gating_returns_indeterminate_for_other_server_too():
     p = McpGatingPolicy(
         id="test/mcp",
         description="test",
@@ -407,8 +425,8 @@ def test_mcp_gating_allow_does_not_fire_on_other_server():
     )
     payload = {"tool_name": "mcp__safe-server__do_thing"}
     r = run_policy_test(p, payload)
-    assert r.verdict == "pass"
-    assert r.action == "allow"
+    assert r.verdict == "indeterminate"
+    assert r.skipped_reason == "declarative-archetype-cc-owned"
 
 
 # ── result_to_dict ─────────────────────────────────────────────────
@@ -456,3 +474,222 @@ def test_event_kwarg_normalises_onto_payload():
     r = run_policy_test(p, payload, event="UserPromptSubmit")
     # action fires on the unconditional audit signal
     assert r.action == "audit"
+
+
+# ── P2 #5 fix: payload's hook_event_name wins over caller event ─────
+
+
+def test_payload_event_overrides_caller_event_kwarg():
+    """An operator hand-edits the JSON to a different event; the
+    panel still posts the template's default event. The simulator
+    MUST prefer the payload value so the operator's edit is honoured.
+    """
+    p = _ev(event="PostToolUse", matcher="Bash", action="audit",
+              requires=[])
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+    # Caller-passed event is the template default; the JSON edit wins.
+    r = run_policy_test(p, payload, event="PreToolUse")
+    # Trigger frame is PostToolUse, payload is PostToolUse → fires.
+    assert r.action == "audit"
+
+
+# ── P2 #6 fix: trigger frame fail-closed when no event supplied ────
+
+
+def test_no_event_supplied_returns_skipped_with_clear_reason():
+    """Both the caller's event AND the payload lack hook_event_name.
+    The runtime gate would never reach this policy without an event;
+    emitting a fabricated verdict would lie."""
+    p = _ev(event="PreToolUse", matcher="Bash", action="block",
+              requires=[])
+    payload = {"tool_input": {"command": "rm -rf /"}}  # no hook_event_name
+    r = run_policy_test(p, payload)
+    assert r.verdict == "skipped"
+    assert r.skipped_reason == "no-event-supplied"
+
+
+# ── P2 #9 fix: tool-context event missing tool_name → indeterminate ─
+
+
+def test_tool_context_event_missing_tool_name_returns_skipped():
+    """The policy targets a tool-context event but the payload omits
+    tool_name. CC always populates tool_name on this event family at
+    runtime; the simulator surfaces the gap rather than silently
+    admit wildcard matchers as a hit. Matcher='*' + action='audit'
+    is the only triple legal for PreToolUse wildcard."""
+    p = _ev(event="PreToolUse", matcher="*", action="audit", requires=[])
+    payload = {"hook_event_name": "PreToolUse"}  # tool_name missing
+    r = run_policy_test(p, payload)
+    assert r.verdict == "skipped"
+    assert r.skipped_reason == "payload-missing-tool-name"
+
+
+# ── P1 #1 + #3 fix: deny shape is the gate's canonical shape ───────
+
+
+def test_evidence_deny_shape_byte_equal_to_gate_emit():
+    """The simulator's hook_specific_output MUST be byte-equal to the
+    runtime gate's `_emit_deny_payload` for the same reason + event
+    (P1 review wire-shape drift). We hit the regex-fail path which
+    propagates the verifier reason into the deny shape."""
+    from magi_cp.local.gate import _emit_deny_payload
+    p = _ev(action="block", requires=[
+        EvidenceReq(kind="regex", pattern=r"sudo"),
+    ])
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls -al"},
+    }
+    r = run_policy_test(p, payload)
+    assert r.verdict == "deny"
+    # The reason comes from the first failing requires entry, not a
+    # policy-id boilerplate.
+    expected_reason_substring = "regex did not match"
+    hso_reason = r.hook_specific_output["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
+    assert expected_reason_substring in hso_reason
+    # Pre-side hook uses hookSpecificOutput.permissionDecision shape.
+    expected_shape = _emit_deny_payload(
+        hso_reason.removeprefix("MAGI: "),
+        hook_event_name="PreToolUse",
+    )
+    assert r.hook_specific_output == expected_shape
+
+
+def test_evidence_deny_shape_uses_top_level_decision_for_post_tool():
+    """PostToolUse / PostToolUseFailure / PostToolBatch must use the
+    top-level `{decision, reason}` shape, NOT
+    hookSpecificOutput.permissionDecision (the channel CC reads on
+    this event family). Drift would mean the dashboard panel lies."""
+    p = _ev(event="PostToolUse", matcher="Bash", action="block",
+              requires=[EvidenceReq(kind="regex", pattern=r"never")])
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+        "tool_response": {"output": "foo"},
+    }
+    r = run_policy_test(p, payload)
+    assert r.verdict == "deny"
+    # Top-level decision shape, NOT hookSpecificOutput.
+    assert r.hook_specific_output["decision"] == "block"
+    assert "reason" in r.hook_specific_output
+    assert r.hook_specific_output["reason"].startswith("MAGI:")
+    assert "hookSpecificOutput" not in r.hook_specific_output
+
+
+# ── P1 #2 fix: scoped regex resolves dict leaves via runtime helper ─
+
+
+def test_evidence_regex_field_path_resolves_dict_leaf_same_as_runtime():
+    """Brief P1 #2: scoped regex against a dict leaf (e.g.
+    field_path='tool_input') must format the value identically to the
+    runtime via `_format_value_for_prompt`. Same policy + same
+    payload → same verdict at the simulator and at /verify_inline.
+    """
+    p = _ev(
+        action="block",
+        requires=[EvidenceReq(
+            kind="regex", pattern=r'"command"\s*:',
+            field_path="tool_input",
+        )],
+    )
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf /"},
+    }
+    r = run_policy_test(p, payload)
+    # Regex matches the JSON-formatted dict leaf, requires passes,
+    # action does NOT fire (allow).
+    assert r.verdict == "pass"
+    assert r.action == "allow"
+
+
+def test_evidence_regex_field_path_missing_fails_with_clear_reason():
+    """P1 #2 corollary: field absent on the payload → deny with a
+    clear "field absent" reason, byte-equal to /verify_inline's
+    "field <path> absent from payload"."""
+    p = _ev(
+        action="block",
+        requires=[EvidenceReq(
+            kind="regex", pattern=r"never",
+            field_path="tool_response.output",
+        )],
+    )
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+    r = run_policy_test(p, payload)
+    assert r.verdict == "deny"
+    assert any(
+        "absent from payload" in s for s in r.evidence_match_reasons
+    )
+
+
+# ── P1 #4 fix: unscoped regex does NOT see tool_response ───────────
+
+
+def test_unscoped_regex_mirrors_verify_inline_projection():
+    """Brief P1 #4: the simulator MUST mirror /verify_inline's
+    unscoped projection (text → JSON dump) byte-for-byte. The runtime
+    projects `text` or JSON dump. The fixture has no `text` so
+    projection = JSON dump of the whole payload; substring 'passwd'
+    appears in the JSON dump (tool_response.output contains it),
+    therefore the regex DOES match.
+
+    Pre-D77-fix, the simulator's projection over-included
+    tool_response strings via concatenation; an operator authoring an
+    unscoped regex would see DIFFERENT verdicts at simulator vs
+    runtime. This test pins the byte-equal contract.
+    """
+    p = _ev(
+        event="PostToolUse",
+        action="block",
+        requires=[EvidenceReq(kind="regex", pattern=r"passwd")],
+    )
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls /etc"},
+        "tool_response": {"output": "group\nhosts\npasswd\nshadow\n"},
+    }
+    # Whole-payload projection = JSON dump; 'passwd' appears in it.
+    r = run_policy_test(p, payload)
+    assert r.verdict == "pass"  # regex matched → requires passed → allow
+
+
+# ── multi-requires honesty ─────────────────────────────────────────
+
+
+def test_multi_requires_returns_indeterminate_with_breakdown():
+    """Brief P2 #7: multi-requires policies cannot be honestly
+    replayed entry-by-entry (mirrors dry_run.py); pin headline to
+    indeterminate but keep the per-entry breakdown for the operator."""
+    p = _ev(action="block", requires=[
+        EvidenceReq(kind="regex", pattern=r"sudo"),
+        EvidenceReq(kind="step", step="citation_verify", verdict="pass"),
+    ])
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "sudo rm -rf /"},
+    }
+    r = run_policy_test(p, payload)
+    assert r.verdict == "indeterminate"
+    assert r.action == "indeterminate"
+    assert r.skipped_reason == "multi-requires-not-replayable"
+    # Per-entry breakdown is still surfaced so the operator can see
+    # how each requires entry would have evaluated.
+    assert len(r.requires_results) == 2
+    statuses = {rr["status"] for rr in r.requires_results}
+    assert "pass" in statuses  # regex match
+    assert "indeterminate" in statuses  # step without hint

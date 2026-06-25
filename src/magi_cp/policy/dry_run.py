@@ -116,12 +116,12 @@ unit test can drive it with literal LedgerEntry-shaped dicts.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
 from .ir import AnyPolicy, EvidencePolicy, EvidenceReq
+from .payload_projection import project_snapshot_for_regex
 from .verdicts import LEDGER_VERDICTS, LEDGER_VERDICTS_ORDERED
 
 
@@ -479,45 +479,13 @@ def _payload_text(snapshot: object) -> str:
     """Project the runtime-written `body['__payload_snapshot__']` to
     a flat string the regex can scan.
 
-    The snapshot is the original verifier payload the runtime saw at
-    `/verify_inline` / `/verify/{step}` time (a JSON-serialisable
-    dict, or a string). We mirror the runtime's /verify_inline regex
-    slicing here:
-      - dict → `text` then `command` then `prompt`, then string-typed
-        values inside `tool_input`, then a JSON dump fallback.
-      - string → returned verbatim (trimmed to 8000 chars).
-
-    Returns empty string when the snapshot is absent / null / a type
-    we can't safely project; the caller treats empty as INDETERMINATE
-    so the dry-run never claims to have matched when there was nothing
-    to match against.
+    Delegates to the shared `project_snapshot_for_regex` helper so the
+    offline replay, the live `/verify_inline` route, and the synthetic
+    `test_runner` simulator stay in lockstep on what counts as
+    projectable text. See
+    `magi_cp/policy/payload_projection.py` for the canonical contract;
+    a regression test in
+    `tests/test_policy_payload_projection.py` pins byte-equality across
+    the three surfaces.
     """
-    if isinstance(snapshot, str):
-        return snapshot[:8000]
-    if not isinstance(snapshot, dict):
-        return ""
-    parts: list[str] = []
-    text = snapshot.get("text")
-    if isinstance(text, str):
-        parts.append(text)
-    cmd = snapshot.get("command")
-    if isinstance(cmd, str):
-        parts.append(cmd)
-    prompt = snapshot.get("prompt")
-    if isinstance(prompt, str):
-        parts.append(prompt)
-    tool_input = snapshot.get("tool_input")
-    if isinstance(tool_input, dict):
-        for v in tool_input.values():
-            if isinstance(v, str):
-                parts.append(v)
-    if parts:
-        return "\n".join(parts)
-    # Fall back to a JSON projection so a regex targeting a less
-    # common field still has something to match against. Bounded so
-    # an over-long body row doesn't pin the CPU under an adversarial
-    # regex (Policy.__post_init__ already caps pattern length).
-    try:
-        return json.dumps(snapshot, ensure_ascii=False)[:8000]
-    except (TypeError, ValueError):
-        return ""
+    return project_snapshot_for_regex(snapshot)

@@ -12,45 +12,88 @@ Why this exists:
     actually be blocked?").
   - The runtime gate (gate.py + the compiled managed-settings.json) is
     the source of truth for what CC sees. This module REUSES the same
-    matrix coherence + matcher predicates + rewriter applier so the
-    answer is structurally identical to what the runtime would emit.
-  - Pure function. No subprocess, no fetch, no LLM round-trip. SHACL
-    + llm_critic are surfaced as INDETERMINATE rather than silently
-    "would fire" / "would not" because we cannot evaluate them
-    offline without the configured LLM provider.
+    shared modules every other surface reuses:
+      - regex projection → `payload_projection` (shared with
+        /verify_inline + dry_run).
+      - CC hook stdout JSON → `cc_shapes` (shared with gate.py's
+        runtime emitter).
+      - matcher coverage → `matrix.matcher_covers`.
+    Drift fires loudly via the contract tests in
+    `tests/test_policy_payload_projection.py` +
+    `tests/test_policy_cc_shapes.py`.
+  - Pure function. No subprocess, no fetch, no LLM round-trip.
+
+Declarative-archetype honesty (P2 cleanup):
+  PermissionPolicy / SubagentPolicy / McpGatingPolicy compile to
+  managed-settings the CC engine resolves internally; we cannot
+  authoritatively predict the verdict offline (the grammar lives in
+  CC, and Agent invocations / MCP-server gating do not always surface
+  via the hook payload at all). We mirror `dry_run.py`'s
+  "archetype-not-dry-runnable" posture: the simulator returns
+  INDETERMINATE with a per-archetype explanation rather than a
+  fabricated verdict pill. Operators read the explanation and know
+  "CC owns this decision; the rule is in your settings.json".
+
+Multi-requires honesty:
+  When `len(policy.requires) > 1`, the simulator pins the headline
+  verdict to INDETERMINATE (mirroring `dry_run.py`'s
+  `multi-requires-not-replayable` skip). The runtime fires
+  `gate_binary` once per (subject, payload_hash) and combines N
+  verdicts inside the shell script; the simulator cannot reconstruct
+  that join honestly. We DO keep the per-requires breakdown in
+  `requires_results` so the operator still sees which entry would
+  have failed individually.
+
+Trigger-fail-closed (P2 #6 fix):
+  When the request has no `event` body field AND the payload also
+  lacks `hook_event_name`, the trigger-frame check would otherwise
+  be bypassed and the per-archetype evaluator would run
+  unconditionally. We now return SKIPPED with `no-event-supplied` so
+  the operator sees the gap.
 
 Output schema (the cloud route wraps this verbatim):
     {
       verdict: "pass" | "fail" | "deny" | "review" | "skipped" |
                "indeterminate",
       action:  "block" | "ask" | "audit" | "allow" | "rewrite" |
-               "inject_context" | "run_command" | "skipped",
+               "inject_context" | "run_command" | "skipped" |
+               "indeterminate",
       evidence_match_reasons: [str, ...],   # one human-readable line per
-                                            # requires entry (kind=step
-                                            # passes/fails by exact
-                                            # comparison; regex by
-                                            # search; llm_critic/shacl
-                                            # marked indeterminate).
+                                            # requires entry.
       hook_specific_output: { ...as the runtime would emit at the gate },
       would_run: { command: str, runtime: str } | None,
-                                            # for run_command policies:
-                                            # surfaces the command WITHOUT
-                                            # executing it.
-      new_tool_input: dict | None,          # for input_rewrite policies:
-                                            # the new tool_input the
-                                            # rewriter would emit.
+      new_tool_input: dict | None,
+      inject_context: str | None,
       skipped_reason: str | None,           # populated when the
-                                            # (event, matcher) frame
-                                            # does not cover the
-                                            # incoming payload.
+                                            # frame/payload combination
+                                            # does not produce an
+                                            # honest verdict.
+      requires_results: [{kind, status, reason}, ...]
     }
 
 Skipped reasons:
-  - "trigger-mismatch"     payload's hook_event_name or matcher does
-                           not fall under the policy's trigger frame.
-  - "archetype-no-test"    archetype has no meaningful runtime
-                           prediction we can simulate offline (rare;
-                           kept for forward compatibility).
+  - "trigger-mismatch"                  payload's hook_event_name or
+                                        matcher does not fall under
+                                        the policy's trigger frame.
+  - "no-event-supplied"                 neither the request nor the
+                                        payload carry a hook event
+                                        name; honest evaluation needs
+                                        one.
+  - "payload-missing-tool-name"         the policy targets a tool-
+                                        context event but the payload
+                                        omitted tool_name.
+  - "multi-requires-not-replayable"     policy.requires has >1 entry;
+                                        the runtime AND-combines via
+                                        gate_binary which we can't
+                                        reconstruct.
+  - "declarative-archetype-cc-owned"    PermissionPolicy /
+                                        SubagentPolicy / McpGatingPolicy:
+                                        CC's permission engine owns
+                                        the decision; we cannot
+                                        honestly replay it offline.
+  - "archetype-no-test"                 archetype has no offline
+                                        prediction we can simulate
+                                        (rare; forward compat).
 
 This module is pure logic (no FastAPI imports, no DB) so the unit
 tests can drive it with literal dicts. The cloud route layer is
@@ -59,17 +102,27 @@ the HTTP envelope.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .cc_shapes import (
+    RETRY_FEEDBACK_EVENTS,
+    emit_allow_payload,
+    emit_ask_payload,
+    emit_deny_payload,
+)
 from .ir import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, EvidenceReq,
     InputRewritePolicy, McpGatingPolicy, PermissionPolicy,
     RunCommandPolicy, SubagentPolicy,
 )
 from .matrix import matcher_covers
+from .payload_projection import (
+    FIELD_MISSING,
+    project_payload_for_regex,
+    resolve_field_for_regex,
+)
 from .rewriters import apply_rewriter
 
 
@@ -114,23 +167,17 @@ class PolicyTestResult:
     requires_results: list[dict] = field(default_factory=list)
 
 
-# Trigger-frame events that do NOT carry a `tool_name` in the CC
-# payload. Matcher must be wildcard or absent for these events; the
-# simulator treats any non-"*" matcher as a coverage hit only when the
-# payload omits tool_name (i.e. the operator chose to ignore the
-# matcher value on a non-tool-context event).
+# Trigger-frame events that DO carry a `tool_name` in the CC payload.
+# When the policy targets one of these events, the simulator must see
+# tool_name on the payload to honestly evaluate the matcher; missing
+# tool_name on this event family returns SKIPPED instead of silently
+# admitting wildcard matchers as a hit (the runtime CC always supplies
+# tool_name on these events).
 _TOOL_CONTEXT_EVENTS = frozenset({
     "PreToolUse", "PostToolUse",
     "PostToolUseFailure", "PostToolBatch",
     "PermissionRequest", "PermissionDenied",
 })
-
-
-# Length cap for evidence-snapshot regex projection. Same as the
-# runtime's `_payload_text` projection cap in dry_run.py — keeps any
-# adversarial fixture from pinning CPU on `re.search` and matches the
-# offline-replay character profile.
-_REGEX_SNAPSHOT_MAX = 8000
 
 
 def _payload_event(payload: dict) -> str:
@@ -164,8 +211,12 @@ def _payload_tool_name(payload: dict) -> str:
 
 def _trigger_covers(
     policy_event: str, policy_matcher: str, payload: dict,
-) -> bool:
+) -> tuple[bool, str]:
     """Does the policy's (event, matcher) frame cover the payload?
+
+    Returns (covered, skip_reason). `skip_reason` is informational —
+    callers surface it as the verdict's `skipped_reason` when
+    `covered` is False.
 
     - event: must match `payload.hook_event_name` exactly. Empty
       hook_event_name on the payload is treated as a free pass on
@@ -173,73 +224,41 @@ def _trigger_covers(
       payload; the template selection already pinned the event).
     - matcher: only meaningful on tool-context events. We compare via
       `matcher_covers` which is the runtime's source of truth.
+      Missing tool_name on a tool-context event → skipped with
+      `payload-missing-tool-name` (P2 #9 honesty fix; CC always
+      populates tool_name on this event family).
     """
     pay_event = _payload_event(payload)
     if pay_event and pay_event != policy_event:
-        return False
+        return (False, "trigger-mismatch")
     if policy_event not in _TOOL_CONTEXT_EVENTS:
         # Non-tool events: matcher is informational only.
-        return True
+        return (True, "")
     tool_name = _payload_tool_name(payload)
     if not tool_name:
-        # The operator omitted tool_name on a tool-context event.
-        # We accept wildcard matchers as a coverage hit (matches every
-        # tool); anything else needs the tool_name to compare against.
-        return policy_matcher == "*"
-    return matcher_covers(policy_matcher, tool_name)
+        # The operator omitted tool_name on a tool-context event. CC
+        # ALWAYS populates tool_name on these events at runtime, so we
+        # cannot honestly evaluate the matcher offline. Surface the
+        # gap rather than silently admit wildcard as a hit.
+        return (False, "payload-missing-tool-name")
+    if matcher_covers(policy_matcher, tool_name):
+        return (True, "")
+    return (False, "trigger-mismatch")
 
 
 # ── EvidencePolicy evaluator ────────────────────────────────────────
 
 
-def _project_payload_text(payload: dict) -> str:
-    """Flatten a synthetic payload into a single string for
-    regex-based requires evaluation.
+def _resolve_field_path(payload: dict, path: str) -> str | object:
+    """Walk a dotted path on a payload, returning the formatted leaf.
 
-    Mirrors the runtime `/verify_inline` projection + dry_run.py's
-    `_payload_text`: walk the canonical CC fields (`text`, `command`,
-    `prompt`, `final_message`, `tool_input.*` string values), fall back
-    to a JSON dump for less-common fields. Bounded so an adversarial
-    fixture cannot pin CPU.
+    Delegates to the shared `resolve_field_for_regex` so the simulator,
+    /verify_inline, and dry_run all resolve and format the same way.
+    Returns either a string (resolved + formatted leaf) or the
+    `FIELD_MISSING` sentinel (caller distinguishes "field absent" from
+    "field present, empty").
     """
-    parts: list[str] = []
-    for k in ("text", "command", "prompt", "final_message"):
-        v = payload.get(k)
-        if isinstance(v, str):
-            parts.append(v)
-    tool_input = payload.get("tool_input")
-    if isinstance(tool_input, dict):
-        for v in tool_input.values():
-            if isinstance(v, str):
-                parts.append(v)
-    tool_response = payload.get("tool_response")
-    if isinstance(tool_response, dict):
-        for v in tool_response.values():
-            if isinstance(v, str):
-                parts.append(v)
-    if parts:
-        joined = "\n".join(parts)
-        return joined[:_REGEX_SNAPSHOT_MAX]
-    try:
-        return json.dumps(payload, ensure_ascii=False)[:_REGEX_SNAPSHOT_MAX]
-    except (TypeError, ValueError):
-        return ""
-
-
-def _resolve_field_path(payload: dict, path: str) -> str:
-    """Walk a dotted path on a payload and return the string at the
-    leaf. Empty / non-string / missing leaf → "".
-    """
-    if not path:
-        return ""
-    cur: Any = payload
-    for seg in path.split("."):
-        if not isinstance(cur, dict):
-            return ""
-        cur = cur.get(seg)
-    if isinstance(cur, str):
-        return cur
-    return ""
+    return resolve_field_for_regex(payload, path)
 
 
 def _evaluate_requires(
@@ -288,12 +307,26 @@ def _evaluate_requires(
             compiled = re.compile(req.pattern)
         except re.error as e:
             return ("indeterminate", f"regex pattern fails to compile: {e}")
-        # field_path scoping: pull the named field if present, else
-        # project the whole payload.
+        # field_path scoping: resolve via the shared helper so the
+        # simulator, /verify_inline, and dry_run see byte-equal
+        # projections.
         if req.field_path:
-            text = _resolve_field_path(payload, req.field_path)
+            resolved = _resolve_field_path(payload, req.field_path)
+            if resolved is FIELD_MISSING:
+                # Mirror /verify_inline runtime: field absent → deny
+                # the requires entry with a clear reason. The
+                # EvidencePolicy combine semantics interpret
+                # status='fail' as "policy fires" so the operator
+                # sees the same outcome the runtime gate would emit.
+                return (
+                    "fail",
+                    f"regex did not match: field {req.field_path!r} "
+                    f"absent from payload",
+                )
+            assert isinstance(resolved, str)
+            text = resolved
         else:
-            text = _project_payload_text(payload)
+            text = project_payload_for_regex(payload)
         if not text:
             return (
                 "indeterminate",
@@ -327,6 +360,24 @@ def _evaluate_requires(
     return ("indeterminate", f"unknown evidence kind: {req.kind!r}")
 
 
+# ── EvidencePolicy decision combine ─────────────────────────────────
+
+
+def _build_first_failing_reason(
+    requires_results: list[dict], policy_id: str,
+) -> str:
+    """Compose a `permissionDecisionReason`-style string from the
+    first failing requires entry. Mirrors the runtime gate's deny
+    reason format which echoes the verifier's literal reason (e.g.
+    "MAGI: pattern matched: rm -rf"), not a policy-id boilerplate.
+    """
+    for rr in requires_results:
+        if rr.get("status") == "fail":
+            reason = rr.get("reason") or "requires failed"
+            return f"{reason} (policy {policy_id!r})"
+    return f"policy {policy_id!r} requires not satisfied"
+
+
 def _evidence_policy_test(
     policy: EvidencePolicy, payload: dict,
 ) -> PolicyTestResult:
@@ -353,44 +404,46 @@ def _evidence_policy_test(
             "reason": "no requires (unconditional signal)",
         })
 
-    # Decision combine:
-    #   any fail → action fires (block/ask/audit per policy.action)
-    #   else any indeterminate → simulator cannot honestly decide
-    #   else → policy would allow (no action emitted)
+    # Multi-requires honesty (mirrors dry_run.py:228-237). The runtime
+    # fires gate_binary once per (subject, payload_hash) and combines
+    # N verdicts inside the shell script; the simulator cannot
+    # reconstruct that join honestly. We still keep the per-requires
+    # breakdown in `requires_results` so the operator sees which entry
+    # would have failed individually, but pin the headline verdict to
+    # indeterminate.
+    if len(policy.requires) > 1:
+        return PolicyTestResult(
+            verdict="indeterminate",
+            action="indeterminate",
+            evidence_match_reasons=reasons,
+            hook_specific_output={},
+            requires_results=requires_results,
+            skipped_reason="multi-requires-not-replayable",
+        )
+
     event = policy.trigger.event
     if any_fail:
+        first_reason = _build_first_failing_reason(
+            requires_results, policy.id,
+        )
         if policy.action == "block":
-            hso = {
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"MAGI: policy '{policy.id}' requires not satisfied"
-                    ),
-                },
-            }
             return PolicyTestResult(
                 verdict="deny",
                 action="block",
                 evidence_match_reasons=reasons,
-                hook_specific_output=hso,
+                hook_specific_output=emit_deny_payload(
+                    first_reason, hook_event_name=event,
+                ),
                 requires_results=requires_results,
             )
         if policy.action == "ask":
-            hso = {
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "permissionDecision": "ask",
-                    "permissionDecisionReason": (
-                        f"MAGI: policy '{policy.id}' awaits HITL approval"
-                    ),
-                },
-            }
             return PolicyTestResult(
                 verdict="review",
                 action="ask",
                 evidence_match_reasons=reasons,
-                hook_specific_output=hso,
+                hook_specific_output=emit_ask_payload(
+                    first_reason, hook_event_name=event,
+                ),
                 requires_results=requires_results,
             )
         # audit: silent ledger entry, no permission decision.
@@ -409,16 +462,19 @@ def _evidence_policy_test(
             hook_specific_output={},
             requires_results=requires_results,
         )
+    # Pre-side allow shape only on the permission-lane channel; the
+    # PostToolUse* channel doesn't carry an explicit allow at runtime
+    # (silent gate-exit means CC continues normal flow), so we emit
+    # nothing and let the action='allow' pill carry the meaning.
+    if event in RETRY_FEEDBACK_EVENTS:
+        hso: dict = {}
+    else:
+        hso = emit_allow_payload(hook_event_name=event)
     return PolicyTestResult(
         verdict="pass",
         action="allow",
         evidence_match_reasons=reasons,
-        hook_specific_output={
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "permissionDecision": "allow",
-            },
-        },
+        hook_specific_output=hso,
         requires_results=requires_results,
     )
 
@@ -426,113 +482,88 @@ def _evidence_policy_test(
 # ── declarative archetype evaluators ────────────────────────────────
 
 
+def _declarative_indeterminate(
+    *,
+    policy_id: str,
+    archetype: str,
+    explanation: str,
+    requires_results: list[dict] | None = None,
+) -> PolicyTestResult:
+    """Shared honesty-posture result for declarative archetypes.
+
+    PermissionPolicy / SubagentPolicy / McpGatingPolicy compile to
+    managed-settings the CC engine resolves internally. The simulator
+    cannot authoritatively predict the verdict offline because:
+
+      - PermissionPolicy: CC owns the permission grammar
+        (`Bash(rm -rf /*)` etc.); we would have to re-implement the
+        engine to predict the decision.
+      - SubagentPolicy: Agent invocations may not surface as
+        `tool_name='Agent'` at all (CC routes some agent kinds
+        through different hook events).
+      - McpGatingPolicy: MCP server gating happens BEFORE the
+        tool_name string lands in the hook payload, so the payload
+        we see at hook time is not the right artifact to inspect.
+
+    Returning INDETERMINATE with a per-archetype explanation matches
+    the honesty posture of dry_run.py's `archetype-not-dry-runnable`
+    skip; the dashboard renders "CC owns this decision" instead of a
+    fabricated verdict pill.
+    """
+    return PolicyTestResult(
+        verdict="indeterminate",
+        action="indeterminate",
+        evidence_match_reasons=[
+            f"{archetype} '{policy_id}': {explanation}",
+            "estimated: CC's permission engine owns this decision — "
+            "the simulator cannot authoritatively replay declarative "
+            "archetypes offline. Run the policy live to observe CC's "
+            "actual verdict.",
+        ],
+        hook_specific_output={},
+        requires_results=requires_results or [],
+        skipped_reason="declarative-archetype-cc-owned",
+    )
+
+
 def _permission_policy_test(
     policy: PermissionPolicy, payload: dict,
 ) -> PolicyTestResult:
-    """PermissionPolicy compiles into managed-settings; CC handles the
-    decision before the gate fires. The simulator surfaces what CC
-    would do based on the operator-authored pattern + permission verb.
-
-    We do NOT pattern-match the CC permission grammar at the level of
-    `Bash(rm -rf /*)` (the grammar is CC-internal). Instead we report
-    the verb directly and let the dashboard render "would <verb> with
-    pattern <pattern>". The dashboard's "Test this policy" panel is
-    designed as an authoring aid for the operator who already knows
-    what their pattern means; deep semantic prediction would require
-    re-implementing the CC permission engine.
+    """PermissionPolicy compiles to managed-settings
+    `permissions.{allow,deny,ask}`. CC's permission engine matches the
+    pattern against tool calls using its internal grammar BEFORE the
+    gate fires; we cannot re-implement that grammar offline without
+    drift risk. Return INDETERMINATE with an explanation.
     """
-    event = policy.trigger.event
-    reason = (
-        f"PermissionPolicy '{policy.id}': CC would {policy.permission!r} "
-        f"matching tool calls (pattern {policy.pattern!r})"
-    )
-    if policy.permission == "deny":
-        return PolicyTestResult(
-            verdict="deny",
-            action="block",
-            evidence_match_reasons=[reason],
-            hook_specific_output={
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"MAGI: matched permission pattern {policy.pattern!r}"
-                    ),
-                },
-            },
-        )
-    if policy.permission == "ask":
-        return PolicyTestResult(
-            verdict="review",
-            action="ask",
-            evidence_match_reasons=[reason],
-            hook_specific_output={
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "permissionDecision": "ask",
-                    "permissionDecisionReason": (
-                        f"MAGI: matched permission pattern {policy.pattern!r}"
-                    ),
-                },
-            },
-        )
-    # allow
-    return PolicyTestResult(
-        verdict="pass",
-        action="allow",
-        evidence_match_reasons=[reason],
-        hook_specific_output={
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "permissionDecision": "allow",
-            },
-        },
+    return _declarative_indeterminate(
+        policy_id=policy.id,
+        archetype="PermissionPolicy",
+        explanation=(
+            f"would compile to permissions.{policy.permission} = "
+            f"[{policy.pattern!r}] in managed-settings; CC matches "
+            "the pattern against incoming tool calls via its internal "
+            "permission grammar"
+        ),
     )
 
 
 def _subagent_policy_test(
     policy: SubagentPolicy, payload: dict,
 ) -> PolicyTestResult:
-    """SubagentPolicy compiles to `permissions.deny: ["Agent(<name>)"]`.
-
-    The simulator predicts deny when the payload's tool_name is Agent
-    and `tool_input.subagent_type` matches; otherwise allow.
+    """SubagentPolicy compiles to
+    `permissions.deny: ["Agent(<name>)"]`. CC owns Agent dispatch and
+    may surface subagent invocations through hook events other than
+    PreToolUse / tool_name='Agent'. Return INDETERMINATE.
     """
-    tool_name = _payload_tool_name(payload)
-    sub_type = ""
-    ti = payload.get("tool_input")
-    if isinstance(ti, dict):
-        st = ti.get("subagent_type")
-        if isinstance(st, str):
-            sub_type = st
-    if tool_name == "Agent" and sub_type == policy.subagent_type:
-        reason = (
-            f"SubagentPolicy '{policy.id}': CC would deny subagent "
-            f"'{policy.subagent_type}' (fleet-wide disable)"
-        )
-        return PolicyTestResult(
-            verdict="deny",
-            action="block",
-            evidence_match_reasons=[reason],
-            hook_specific_output={
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"MAGI: subagent '{policy.subagent_type}' is disabled"
-                    ),
-                },
-            },
-        )
-    return PolicyTestResult(
-        verdict="pass",
-        action="allow",
-        evidence_match_reasons=[
-            f"SubagentPolicy '{policy.id}': only fires when "
-            f"tool_name=='Agent' and "
-            f"tool_input.subagent_type=='{policy.subagent_type}'",
-        ],
-        hook_specific_output={},
+    return _declarative_indeterminate(
+        policy_id=policy.id,
+        archetype="SubagentPolicy",
+        explanation=(
+            f"would deny subagent '{policy.subagent_type}' fleet-wide "
+            "via managed-settings; CC's Agent dispatch may surface "
+            "subagent calls through hook events the simulator cannot "
+            "model offline"
+        ),
     )
 
 
@@ -540,53 +571,18 @@ def _mcp_gating_policy_test(
     policy: McpGatingPolicy, payload: dict,
 ) -> PolicyTestResult:
     """McpGatingPolicy compiles to top-level allowedMcpServers /
-    deniedMcpServers arrays. The simulator predicts the verdict by
-    inspecting the payload's tool_name prefix `mcp__<server>__<tool>`.
+    deniedMcpServers arrays. CC enforces these BEFORE the MCP tool
+    name reaches the hook payload, so the hook payload is not the
+    right artifact to inspect.
     """
-    tool_name = _payload_tool_name(payload)
-    if tool_name.startswith(f"mcp__{policy.server}__"):
-        if policy.action == "deny":
-            reason = (
-                f"McpGatingPolicy '{policy.id}': CC would deny MCP server "
-                f"'{policy.server}' (tool_name prefix matched)"
-            )
-            return PolicyTestResult(
-                verdict="deny",
-                action="block",
-                evidence_match_reasons=[reason],
-                hook_specific_output={
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            f"MAGI: MCP server '{policy.server}' is denied"
-                        ),
-                    },
-                },
-            )
-        # allow
-        return PolicyTestResult(
-            verdict="pass",
-            action="allow",
-            evidence_match_reasons=[
-                f"McpGatingPolicy '{policy.id}': CC would allow MCP server "
-                f"'{policy.server}'",
-            ],
-            hook_specific_output={
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                },
-            },
-        )
-    return PolicyTestResult(
-        verdict="pass",
-        action="allow",
-        evidence_match_reasons=[
-            f"McpGatingPolicy '{policy.id}': tool_name does not start with "
-            f"'mcp__{policy.server}__'; policy does not fire",
-        ],
-        hook_specific_output={},
+    return _declarative_indeterminate(
+        policy_id=policy.id,
+        archetype="McpGatingPolicy",
+        explanation=(
+            f"would {policy.action} MCP server '{policy.server}' via "
+            "top-level allowedMcpServers/deniedMcpServers; CC enforces "
+            "these BEFORE the tool_name reaches the hook payload"
+        ),
     )
 
 
@@ -718,28 +714,61 @@ def test_policy(policy: AnyPolicy, payload: dict, event: str = "") -> PolicyTest
 
     `payload` is the JSON-serialisable CC hook payload the operator
     authored (the synthetic templates produce these). `event` is the
-    CC hook event name the operator picked; when empty we read it from
-    `payload.hook_event_name`. The two paths converge: the cloud route
-    accepts both and normalises here.
+    CC hook event name the operator picked; when empty we read it
+    from `payload.hook_event_name`. The two paths converge here:
+
+      - if the caller passes `event` AND the payload omits
+        hook_event_name, we mirror it onto the payload so per-
+        archetype evaluators see a consistent shape.
+      - if the payload carries hook_event_name we PREFER it over the
+        caller-supplied event (P2 #5 fix: dashboard sends the
+        template's default event, the operator may have edited the
+        JSON to a different event — the JSON wins).
+      - if BOTH are empty AND the policy has a trigger frame we
+        return SKIPPED with `no-event-supplied` (P2 #6 fix: the
+        runtime would NEVER reach this policy without an event, so
+        emitting a fabricated verdict would lie).
 
     Returns a `PolicyTestResult` the cloud route serialises into JSON.
     """
-    # Normalise event: if the caller passed one, mirror it onto the
-    # payload so the trigger-frame check + per-archetype evaluators
-    # see a consistent shape.
+    # P2 #5: payload's hook_event_name wins over the caller's `event`
+    # so an operator who hand-edits the JSON sees their edit honoured.
     pay_event = _payload_event(payload)
-    eff_event = event or pay_event
-    if eff_event and not pay_event:
-        payload = dict(payload)
-        payload["hook_event_name"] = eff_event
+    if pay_event:
+        eff_event = pay_event
+    else:
+        eff_event = event
+        if eff_event:
+            payload = dict(payload)
+            payload["hook_event_name"] = eff_event
 
     # Resolve the policy's trigger frame. Declarative archetypes that
     # don't carry a `trigger` (ContextInjectionPolicy, McpGatingPolicy,
     # SubagentPolicy) skip the frame check — they fire on their own
     # archetype-specific predicate.
     trig = getattr(policy, "trigger", None)
-    if trig is not None and eff_event:
-        if not _trigger_covers(trig.event, trig.matcher, payload):
+    if trig is not None:
+        # P2 #6 fix: fail closed when no event was supplied at all.
+        # The runtime gate would NEVER reach this policy without an
+        # event; emitting a fabricated verdict against an event-less
+        # payload would lie.
+        if not eff_event:
+            return PolicyTestResult(
+                verdict="skipped",
+                action="skipped",
+                evidence_match_reasons=[
+                    f"policy fires on event={trig.event!r}; payload "
+                    "has no hook_event_name and the request supplied "
+                    "no event override — supply hook_event_name on "
+                    "the payload to simulate",
+                ],
+                hook_specific_output={},
+                skipped_reason="no-event-supplied",
+            )
+        covered, skip_reason = _trigger_covers(
+            trig.event, trig.matcher, payload,
+        )
+        if not covered:
             return PolicyTestResult(
                 verdict="skipped",
                 action="skipped",
@@ -748,9 +777,16 @@ def test_policy(policy: AnyPolicy, payload: dict, event: str = "") -> PolicyTest
                     f"on event={trig.event!r} matcher={trig.matcher!r}; "
                     f"payload event={eff_event!r} "
                     f"tool_name={_payload_tool_name(payload)!r}"
+                    + (
+                        " (CC always populates tool_name on this "
+                        "event family; populate it to simulate the "
+                        "matcher)"
+                        if skip_reason == "payload-missing-tool-name"
+                        else ""
+                    ),
                 ],
                 hook_specific_output={},
-                skipped_reason="trigger-mismatch",
+                skipped_reason=skip_reason,
             )
 
     if isinstance(policy, EvidencePolicy):

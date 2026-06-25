@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
-  SYNTHETIC_PAYLOAD_TEMPLATES, templateById,
+  SUPPORTED_EVENTS,
+  SYNTHETIC_PAYLOAD_TEMPLATES, coveredEvents, templateById,
 } from "./synthetic-payloads"
 
 /**
@@ -22,6 +23,27 @@ describe("synthetic-payloads catalog", () => {
     expect(events.has("SessionStart")).toBe(true)
   })
 
+  // P1 review fix: lockstep gate against the EventKind union. Adds the
+  // same regression-gate the Python side uses
+  // (tests/test_policy_matrix.py) so a future EventKind member added
+  // without a template fires a test failure.
+  it("every EventKind member has at least one starter template", () => {
+    const covered = coveredEvents()
+    const missing: string[] = []
+    for (const ev of SUPPORTED_EVENTS) {
+      if (!covered.has(ev)) missing.push(ev)
+    }
+    expect(missing, `missing templates for: ${missing.join(", ")}`).toEqual([])
+  })
+
+  it("ships at least 30 templates (full event matrix)", () => {
+    // Sanity floor; we expect at least one per EventKind plus the
+    // custom-empty fallback.
+    expect(SYNTHETIC_PAYLOAD_TEMPLATES.length).toBeGreaterThanOrEqual(
+      SUPPORTED_EVENTS.length,
+    )
+  })
+
   it("every template carries both ko + en display labels", () => {
     for (const t of SYNTHETIC_PAYLOAD_TEMPLATES) {
       expect(t.displayLabel.ko.length).toBeGreaterThan(0)
@@ -31,9 +53,17 @@ describe("synthetic-payloads catalog", () => {
     }
   })
 
-  it("every template carries a hook_event_name in the payload", () => {
+  it("every template carries a hook_event_name field in the payload", () => {
     for (const t of SYNTHETIC_PAYLOAD_TEMPLATES) {
-      expect(t.payload.hook_event_name).toBe(t.event)
+      // custom-empty deliberately ships an empty hook_event_name so
+      // the operator types it. Every other template MUST pin the
+      // event name to match its declared event so the simulator's
+      // trigger-frame check passes.
+      if (t.id === "custom-empty") {
+        expect(t.payload.hook_event_name).toBe("")
+      } else {
+        expect(t.payload.hook_event_name).toBe(t.event)
+      }
     }
   })
 
@@ -56,5 +86,58 @@ describe("synthetic-payloads catalog", () => {
     const ti = (tpl!.payload as { tool_input?: { command?: string } })
       .tool_input
     expect(ti?.command).toContain("rm -rf")
+  })
+
+  // P2 review fix: realistic /etc shape so the operator's regex
+  // policies aren't trained on space-joined fixture data that
+  // doesn't match real CC output.
+  it("post-bash-ls-etc ships newline-delimited /etc output", () => {
+    const tpl = SYNTHETIC_PAYLOAD_TEMPLATES.find(
+      (t) => t.id === "post-bash-ls-etc",
+    )
+    expect(tpl).toBeDefined()
+    const out = (tpl!.payload as {
+      tool_response?: { output?: string }
+    }).tool_response?.output
+    expect(out).toBeDefined()
+    expect(out).toContain("passwd")
+    expect(out).toContain("\n")
+  })
+
+  // P2 review fix: mcp tool template carries a clearly-placeholder
+  // slug + hint copy that tells the operator to swap for a real
+  // mcp__<server>__<tool> name.
+  it("pre-mcp-tool template uses a placeholder slug + explanatory hint", () => {
+    const tpl = SYNTHETIC_PAYLOAD_TEMPLATES.find(
+      (t) => t.id === "pre-mcp-tool",
+    )
+    expect(tpl).toBeDefined()
+    const tn = (tpl!.payload as { tool_name?: string }).tool_name
+    expect(tn).toContain("mcp__example__")
+    expect(tpl!.hint.en.toLowerCase()).toContain("replace")
+  })
+
+  // P2 review fix: custom-empty leaves hook_event_name blank so the
+  // operator types it; the simulator surfaces no-event-supplied
+  // until they do.
+  it("custom-empty template ships empty hook_event_name", () => {
+    const tpl = SYNTHETIC_PAYLOAD_TEMPLATES.find(
+      (t) => t.id === "custom-empty",
+    )
+    expect(tpl).toBeDefined()
+    expect(tpl!.payload.hook_event_name).toBe("")
+    // Hint must tell the operator the event must be filled in first.
+    expect(tpl!.hint.en.toLowerCase()).toContain("hook_event_name")
+  })
+
+  // P2 review fix: Notification template specifically requested - is
+  // a high-traffic audit-only hook the operator is likely to author
+  // against.
+  it("has a Notification template", () => {
+    const tpl = SYNTHETIC_PAYLOAD_TEMPLATES.find(
+      (t) => t.event === "Notification",
+    )
+    expect(tpl).toBeDefined()
+    expect(tpl!.payload.hook_event_name).toBe("Notification")
   })
 })

@@ -123,37 +123,14 @@ SENTINEL_RE = re.compile(r"\bFILE_COURT_([A-Za-z0-9]+)_([A-Za-z0-9]+)(?!_)\b")
 # stdout. The retry-feedback the wizard copy promised would never fire.
 #
 # Routing by `hook_event_name` from the inbound payload closes that
-# gap. The retry-feedback event set lives in `_RETRY_FEEDBACK_EVENTS`
-# below so a future widening (or narrowing) lands in one place.
-_RETRY_FEEDBACK_EVENTS: frozenset[str] = frozenset({
-    "PostToolUse", "PostToolUseFailure", "PostToolBatch",
-})
-
-
-def _emit_deny_payload(reason: str, *, hook_event_name: str) -> dict:
-    """Pure helper — return the canonical deny JSON for a given event.
-
-    Split out from `_deny` so tests can pin the byte shape per event
-    without going through `SystemExit`.
-    """
-    if hook_event_name in _RETRY_FEEDBACK_EVENTS:
-        # CC's PostToolUse* channel reads top-level decision + reason
-        # and surfaces the reason to the model as retry-feedback.
-        return {
-            "decision": "block",
-            "reason": f"MAGI: {reason}",
-        }
-    # PreToolUse + the rest of the pre-side gate hooks consume
-    # hookSpecificOutput.permissionDecision. We default unknown event
-    # names to this shape because the historical default was PreToolUse;
-    # CC's authoring contract guards the unknown-name case server-side.
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": hook_event_name or "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"MAGI: {reason}",
-        }
-    }
+# gap. The retry-feedback event set + canonical shape live in
+# `magi_cp.policy.cc_shapes` so the synthetic `test_runner` simulator
+# (D77 "Test this policy") and the runtime stay in lockstep on what
+# CC sees.
+from ..policy.cc_shapes import (
+    RETRY_FEEDBACK_EVENTS as _RETRY_FEEDBACK_EVENTS,
+    emit_deny_payload as _emit_deny_payload,
+)
 
 
 def _deny(reason: str, *, hook_event_name: str = "PreToolUse") -> None:

@@ -74,18 +74,68 @@ def test_policy_test_endpoint_422_on_missing_payload(client):
     assert r.status_code == 422
 
 
-def test_policy_test_endpoint_returns_block_envelope(client):
+def test_policy_test_endpoint_returns_deny_envelope_for_evidence(client):
+    # P1 review fix: PermissionPolicy now returns INDETERMINATE
+    # (CC owns the decision; we cannot honestly replay it offline);
+    # the "deny envelope" surface contract is now pinned via
+    # EvidencePolicy with a regex requires that resolves to a
+    # missing-field deny. The runtime gate emits the
+    # `hookSpecificOutput.permissionDecision='deny'` shape on this
+    # path (cc_shapes.emit_deny_payload) and the simulator now reuses
+    # that helper.
     _put_policy(client, "d77/deny-rmrf", {
         "id": "d77/deny-rmrf",
+        "type": "evidence",
+        "description": "block rm -rf via regex",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                    "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": r"rm\s+-rf",
+                       "field_path": "tool_input.command"}],
+        "action": "block",
+    })
+    r = client.post(
+        "/policies/d77/deny-rmrf/test",
+        # Payload's command lacks "rm -rf" so the regex requires
+        # FAILS, which under the EvidencePolicy combine semantics
+        # means the action fires (block → deny envelope). This is the
+        # path the cloud route's deny-shape contract pins.
+        json={
+            "payload": {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls -al"},
+            },
+        },
+        headers=HEADERS_ADMIN,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["verdict"] == "deny"
+    assert data["action"] == "block"
+    assert data["policy_id"] == "d77/deny-rmrf"
+    assert data["policy_type"] == "evidence"
+    # gate.py + cc_shapes.emit_deny_payload contract: PreToolUse
+    # carries the hookSpecificOutput envelope.
+    hso = data["hook_specific_output"]
+    assert "hookSpecificOutput" in hso
+    assert hso["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_policy_test_endpoint_permission_archetype_indeterminate(client):
+    # Companion contract: PermissionPolicy returns INDETERMINATE with
+    # the per-archetype explanation. The dashboard renders "CC owns
+    # this decision" instead of a fabricated verdict pill.
+    _put_policy(client, "d77/permission-deny", {
+        "id": "d77/permission-deny",
         "type": "permission",
-        "description": "block rm -rf",
+        "description": "deny rm -rf via managed-settings",
         "trigger": {"host": "claude-code", "event": "PreToolUse",
                     "matcher": "Bash"},
         "permission": "deny",
         "pattern": "Bash(rm -rf /*)",
     })
     r = client.post(
-        "/policies/d77/deny-rmrf/test",
+        "/policies/d77/permission-deny/test",
         json={
             "payload": {
                 "hook_event_name": "PreToolUse",
@@ -97,11 +147,9 @@ def test_policy_test_endpoint_returns_block_envelope(client):
     )
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["verdict"] == "deny"
-    assert data["action"] == "block"
-    assert data["policy_id"] == "d77/deny-rmrf"
-    assert data["policy_type"] == "permission"
-    assert "hookSpecificOutput" in data["hook_specific_output"]
+    assert data["verdict"] == "indeterminate"
+    assert data["action"] == "indeterminate"
+    assert data["skipped_reason"] == "declarative-archetype-cc-owned"
 
 
 def test_policy_test_endpoint_returns_skipped_on_trigger_mismatch(client):

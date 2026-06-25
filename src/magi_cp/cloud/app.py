@@ -1330,17 +1330,16 @@ def create_app(
         kind = req.kind
         step_label = f"inline_{kind}"
         # Pull the text-typed slice of payload for regex / llm_critic;
-        # SHACL works on the dict shape directly.
-        payload_text = ""
-        try:
-            txt = req.payload.get("text") if isinstance(req.payload, dict) else None
-            if isinstance(txt, str):
-                payload_text = txt
-            else:
-                import json as _json
-                payload_text = _json.dumps(req.payload, ensure_ascii=False)[:8000]
-        except Exception:
-            payload_text = ""
+        # SHACL works on the dict shape directly. Delegated to the
+        # shared `payload_projection` module so /verify_inline,
+        # `dry_run`, and the synthetic `test_runner` simulator all
+        # project the same payload to the same string.
+        from magi_cp.policy.payload_projection import (
+            FIELD_MISSING,
+            project_payload_for_regex,
+            resolve_field_for_regex,
+        )
+        payload_text = project_payload_for_regex(req.payload)
 
         verdict_status: str = "deny"
         reasons: list[str] = []
@@ -1357,15 +1356,11 @@ def create_app(
             # with pattern `\bSSN\b` would match an SSN appearing in
             # `tool_input.command` / `tool_input.description` /
             # anywhere else in the payload (overmatch / fail-OPEN).
-            scoped_text: str
             if req.field_path:
-                from magi_cp.policy.payload_schemas import (
-                    _MISSING,
-                    _format_value_for_prompt,
-                    _resolve_dotted_path,
+                resolved = resolve_field_for_regex(
+                    req.payload, req.field_path,
                 )
-                val = _resolve_dotted_path(req.payload, req.field_path)
-                if val is _MISSING:
+                if resolved is FIELD_MISSING:
                     # Field absent on this payload → cannot match. Deny
                     # with a clear reason instead of silently scanning
                     # the whole payload.
@@ -1376,13 +1371,8 @@ def create_app(
                         f"absent from payload",
                     ]
                 else:
-                    # Strings keep their literal text; dict / list / bool /
-                    # int reuse the prompt formatter so the projection is
-                    # deterministic across kinds. Bounded the same way the
-                    # whole-payload projection is bounded above (8000
-                    # chars) so a giant tool_input.content cannot pin the
-                    # CPU under an adversarial regex.
-                    scoped_text = _format_value_for_prompt(val)[:8000]
+                    assert isinstance(resolved, str)
+                    scoped_text = resolved
                     if rx.search(scoped_text):
                         verdict_status = "pass"
                         reasons = [
@@ -3912,6 +3902,13 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
         above so member resolution stays consistent).
         """
         from ..policy.test_runner import result_to_dict, test_policy
+        # P2 fix: mirror the get_policy_pack prefix guard so a typo'd
+        # / hostile pack_id doesn't catch the path-typed match and
+        # echo the operator-supplied id back through the 404 string.
+        if not pack_id.startswith("pack/") and not pack_id.startswith(
+            "user-pack/"
+        ):
+            raise HTTPException(404, f"pack {pack_id!r} not found")
         if not isinstance(body, dict):
             raise HTTPException(422, "body must be a JSON object")
         payload = body.get("payload")

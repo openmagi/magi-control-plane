@@ -121,13 +121,23 @@ export function PolicyTestPanel({
     setPackResult(null)
     try {
       const parsed = JSON.parse(payloadText) as Record<string, unknown>
+      // P2 fix: read hook_event_name out of the parsed JSON and prefer
+      // it over the selected template's default event. Otherwise an
+      // operator who picks the PreToolUse template, edits the JSON to
+      // hook_event_name='PostToolUse', and clicks Run would see the
+      // simulator evaluate as PreToolUse (silently mismatching the
+      // policy frame).
+      const payloadEvent = typeof parsed.hook_event_name === "string"
+        ? parsed.hook_event_name
+        : ""
+      const effectiveEvent = payloadEvent || selectedTemplate.event
       const r = await fetch("/api/policies/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
         body: JSON.stringify({
           kind, id, payload: parsed,
-          event: selectedTemplate.event,
+          event: effectiveEvent,
         }),
       })
       if (!r.ok) {
@@ -154,6 +164,9 @@ export function PolicyTestPanel({
   }, [
     payloadText, payloadParseError, kind, id,
     selectedTemplate.event, t,
+    // selectedTemplate is captured via .event above; payloadText
+    // re-renders whenever the editor mutates and onRun re-reads the
+    // hook_event_name from the parsed JSON each time.
   ])
 
   return (
