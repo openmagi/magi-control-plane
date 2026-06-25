@@ -73,7 +73,7 @@ export function PoliciesTab({
        * concrete enable surfaces rather than two overlapping bundles
        * (packs vs prebuilts) competing for attention. */}
       {prebuilt.length > 0 && (
-        <PrebuiltSection items={prebuilt} t={t} />
+        <PrebuiltSection items={prebuilt} t={t} locale={locale} />
       )}
       {err && (
         <ErrorState
@@ -162,10 +162,11 @@ export function PoliciesTab({
  * /policies/prebuilt/{id}/enable) and the "Edit before enabling" Link
  * as the secondary path. */
 function PrebuiltSection({
-  items, t,
+  items, t, locale,
 }: {
   items: PrebuiltPolicyEntry[]
   t: TFunc
+  locale: Locale
 }) {
   return (
     <div className="mb-6 rounded-2xl border border-black/[0.06] bg-[var(--color-surface-1,#f9fafb)]/40 p-4">
@@ -180,7 +181,7 @@ function PrebuiltSection({
       <ul role="list" className="flex flex-col divide-y divide-black/[0.06] overflow-hidden rounded-xl border border-black/[0.06] bg-white">
         {items.map((p) => (
           <li key={p.id}>
-            <PrebuiltRow entry={p} draftHref={prebuiltDraftHref(p)} t={t} />
+            <PrebuiltRow entry={p} draftHref={prebuiltDraftHref(p)} locale={locale} />
           </li>
         ))}
       </ul>

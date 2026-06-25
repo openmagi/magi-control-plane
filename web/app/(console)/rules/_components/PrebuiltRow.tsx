@@ -1,14 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import Link from "next/link"
 import type { PrebuiltPolicyEntry } from "@/lib/cloud"
 import { Code } from "@/components/ui/Code"
 import { PrebuiltToggle } from "./PrebuiltToggle"
 import { togglePrebuiltAction } from "../actions"
+import { translate, type Locale, type TKey } from "@/lib/i18n/dict"
 
 type TFunc = (
-  k: import("@/lib/i18n/dict").TKey,
+  k: TKey,
   v?: Record<string, string | number>,
 ) => string
 
@@ -49,12 +50,19 @@ type TFunc = (
  *   !enabled + !setup_required      -> "Off"         neutral
  */
 export function PrebuiltRow({
-  entry, draftHref, t,
+  entry, draftHref, locale,
 }: {
   entry: PrebuiltPolicyEntry
   draftHref: string
-  t: TFunc
+  /** D82a hotfix: take locale instead of t closure so this client
+   * component does not violate the RSC boundary. Rebuild t locally
+   * via the pure translate() from dict.ts. */
+  locale: Locale
 }) {
+  const t: TFunc = useCallback(
+    (key, vars) => translate(locale, key, vars),
+    [locale],
+  )
   const [expanded, setExpanded] = useState(false)
   const expandLabelKey = expanded
     ? "rules.prebuilt.row.collapseAria"
