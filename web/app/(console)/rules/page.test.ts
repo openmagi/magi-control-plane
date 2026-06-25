@@ -3,17 +3,18 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * D56e: Source-level invariants for the rules page after the
- * three-tab reorganization (Policies / Checks / Evidence records).
+ * D82a (replaces D56e for the rules-page invariants): the tab nav got a
+ * fourth entry — Packs — and PackSection moved out of the Policies tab
+ * into a dedicated PacksTab. PoliciesTab + PrebuiltSection moved into
+ * their own component file (PoliciesTab.tsx) and prebuilts now render
+ * as ROWS (PrebuiltRow.tsx), not a card grid.
  *
- * The Verifiers + Conditions tabs collapsed into a single Checks tab.
- * The new evidence record-types catalog lives under the dedicated
- * `tab=evidence-types` URL parameter (NOT `tab=evidence`, which used
- * to render the Verifiers tab pre-D56e and would silently land on a
- * different page after the rename). Legacy `tab=conditions`,
- * `tab=verifiers`, and `tab=evidence` URLs redirect for bookmark grace.
+ * The Verifiers + Conditions tabs collapsed into a single Checks tab
+ * (D56e). The new evidence record-types catalog still lives under
+ * `tab=evidence-types`. Legacy `tab=conditions`, `tab=verifiers`, and
+ * `tab=evidence` URLs continue to redirect for bookmark grace.
  */
-describe("rules page source invariants (D56e)", () => {
+describe("rules page source invariants (D82a)", () => {
   const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
   const checksSrc = readFileSync(
     path.join(__dirname, "_components/ChecksTab.tsx"), "utf-8",
@@ -21,20 +22,43 @@ describe("rules page source invariants (D56e)", () => {
   const evidenceSrc = readFileSync(
     path.join(__dirname, "_components/EvidenceTab.tsx"), "utf-8",
   )
+  const policiesTabSrc = readFileSync(
+    path.join(__dirname, "_components/PoliciesTab.tsx"), "utf-8",
+  )
+  const packsTabSrc = readFileSync(
+    path.join(__dirname, "_components/PacksTab.tsx"), "utf-8",
+  )
+  const prebuiltRowSrc = readFileSync(
+    path.join(__dirname, "_components/PrebuiltRow.tsx"), "utf-8",
+  )
 
   // ── Tab structure ─────────────────────────────────────────────
-  it("declares the three-tab structure: policies, checks, evidence-types", () => {
+  it("declares the four-tab structure: policies, packs, checks, evidence-types", () => {
     expect(src).toMatch(
-      /Tab\s*=\s*"policies"\s*\|\s*"checks"\s*\|\s*"evidence-types"/,
+      /Tab\s*=\s*"policies"\s*\|\s*"packs"\s*\|\s*"checks"\s*\|\s*"evidence-types"/,
     )
     expect(src).toContain('"policies"')
+    expect(src).toContain('"packs"')
     expect(src).toContain('"checks"')
     expect(src).toContain('"evidence-types"')
   })
 
-  it("renders Checks + Evidence tab components and threads page state", () => {
+  it("nav lists four entries with packs route param", () => {
+    // The TABS array drives the SubTabNav render; pin it includes
+    // packs so a future refactor that drops the literal from the
+    // array fails loudly.
+    expect(src).toMatch(/TABS:\s*readonly Tab\[\]\s*=\s*\[\s*"policies"\s*,\s*"packs"\s*,\s*"checks"\s*,\s*"evidence-types"\s*\]/)
+    // SubTabNav label switch: packs maps to the new label key.
+    expect(src).toContain('"rules.tab.packs"')
+  })
+
+  it("renders Checks + Evidence + Policies + Packs tab components", () => {
     expect(src).toContain("ChecksTab")
     expect(src).toContain("EvidenceTab")
+    expect(src).toContain("PoliciesTab")
+    expect(src).toContain("PacksTab")
+    expect(src).toContain("tab === \"policies\"")
+    expect(src).toContain("tab === \"packs\"")
     expect(src).toContain("tab === \"checks\"")
     expect(src).toContain("tab === \"evidence-types\"")
   })
@@ -47,14 +71,39 @@ describe("rules page source invariants (D56e)", () => {
   })
 
   it("redirects legacy ?tab=evidence to a sensible successor", () => {
-    // Pre-D56e the `evidence` slug rendered the Verifiers tab; without
-    // an explicit redirect it would silently land on the unrelated new
-    // evidence-records page. msg=verifier_created (the prior verifier
-    // success URL) routes to ?tab=checks; every other evidence URL
-    // routes to ?tab=evidence-types.
     expect(src).toContain('searchParams.tab === "evidence"')
     expect(src).toContain('"verifier_created"')
     expect(src).toContain('"evidence-types"')
+  })
+
+  // ── D82a tab content boundaries ───────────────────────────────
+  it("PacksTab mounts PackSection", () => {
+    expect(packsTabSrc).toContain("PackSection")
+    expect(packsTabSrc).toContain('import { PackSection } from "./PackSection"')
+    expect(packsTabSrc).toContain('"rules.tab.packs.hint"')
+  })
+
+  it("PoliciesTab does NOT mount PackSection", () => {
+    // PackSection's home moved entirely to PacksTab (D82a). Any
+    // re-introduction of the PackSection import or render on the
+    // Policies tab brings back the duplicate-bundle UX confusion.
+    expect(policiesTabSrc).not.toContain('from "./PackSection"')
+    expect(policiesTabSrc).not.toMatch(/<\s*PackSection\b/)
+    // The page-level fetch only runs listPacks on the packs tab.
+    expect(src).toMatch(/tab === "packs"[\s\S]{0,400}cloud\.listPacks/)
+  })
+
+  it("rules/page.tsx fetches packs only on the packs tab", () => {
+    // The Policies tab should not pay the listPacks round-trip
+    // anymore. Source-grep pins that listPacks lives behind the
+    // tab === "packs" branch.
+    const policiesBranch = src.indexOf('if (tab === "policies")')
+    const packsBranch = src.indexOf('else if (tab === "packs")')
+    expect(policiesBranch).toBeGreaterThan(-1)
+    expect(packsBranch).toBeGreaterThan(policiesBranch)
+    // Find the chunk between the policies branch and packs branch.
+    const policiesChunk = src.slice(policiesBranch, packsBranch)
+    expect(policiesChunk).not.toContain("listPacks")
   })
 
   // ── Data plumbing ─────────────────────────────────────────────
@@ -64,16 +113,12 @@ describe("rules page source invariants (D56e)", () => {
   })
 
   it("batches ledger counts in a single round-trip per tab", () => {
-    // One ledgerCounts() call per tab so the cloud sees one GROUP BY
-    // query regardless of how many rows the catalog returns.
     expect(src).toContain("cloud.ledgerCounts")
   })
 
   // ── Checks tab ────────────────────────────────────────────────
   it("ChecksTab reuses VerifierExpander for built-in and custom rows", () => {
     expect(checksSrc).toContain("VerifierExpander")
-    // Inline rows render a lighter body-preview panel, not the full
-    // descriptor expander.
     expect(checksSrc).toContain("InlineBodyPanel")
   })
 
@@ -96,74 +141,94 @@ describe("rules page source invariants (D56e)", () => {
   // ── Regressions on the still-shipping bits ────────────────────
   it("PoliciesTab still renders the prebuilt section above user policies", () => {
     expect(src).toContain("cloud.listPrebuiltPolicies")
-    expect(src).toContain("PrebuiltSection")
-    const idxPrebuilt = src.indexOf("<PrebuiltSection")
-    const idxPolicyList = src.indexOf("rules.summary.policies")
+    expect(policiesTabSrc).toContain("PrebuiltSection")
+    const idxPrebuilt = policiesTabSrc.indexOf("<PrebuiltSection")
+    const idxPolicyList = policiesTabSrc.indexOf("rules.summary.policies")
     expect(idxPrebuilt).toBeGreaterThan(-1)
     expect(idxPolicyList).toBeGreaterThan(-1)
     expect(idxPrebuilt).toBeLessThan(idxPolicyList)
   })
 
   it("prebuiltDraftHref still double-encodes and lands on wizard step 6", () => {
-    expect(src).toContain("prebuiltDraftHref")
-    expect(src).toMatch(/encodeURIComponent\(encodeURIComponent\(/)
-    expect(src).toContain("mode=guided")
-    expect(src).toContain("step=6")
+    expect(policiesTabSrc).toContain("prebuiltDraftHref")
+    expect(policiesTabSrc).toMatch(/encodeURIComponent\(encodeURIComponent\(/)
+    expect(policiesTabSrc).toContain("mode=guided")
+    expect(policiesTabSrc).toContain("step=6")
   })
 
-  // ── D60: prebuilt = toggle list ───────────────────────────────
-  it("D60: PrebuiltSection renders the PrebuiltToggle on each card", () => {
-    expect(src).toContain("PrebuiltToggle")
-    expect(src).toContain("togglePrebuiltAction")
-    // The toggle is wired with the enabled / setupRequired / setupHint
-    // fields the cloud now returns. Without these the toggle would
-    // render in the wrong state or skip the inline callout.
-    expect(src).toContain("enabled={p.enabled}")
-    expect(src).toContain("setupRequired={p.setup_required}")
-    expect(src).toContain("setupHint={p.setup_hint}")
+  // ── D82a: prebuilt = rows, not card grid ──────────────────────
+  it("PrebuiltSection renders rows (PrebuiltRow), not a card grid", () => {
+    // The pre-D82a section emitted `<Card key=...>` per entry inside
+    // a `grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3` wrapper.
+    // The new layout is a `<ul>` of `PrebuiltRow` items.
+    expect(policiesTabSrc).toContain("PrebuiltRow")
+    expect(policiesTabSrc).toMatch(/items\.map\(\s*\(\s*p\s*\)\s*=>\s*\(\s*<li\s/)
+    expect(policiesTabSrc).not.toMatch(/grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3[\s\S]{0,200}items\.map/)
   })
 
-  it("D60: the wizard handoff is kept as a SECONDARY 'Edit before enabling' Link", () => {
-    // The brief explicitly keeps the Edit-before-enabling shortcut as
-    // a secondary affordance so an operator who wants to tweak the IR
-    // still has the wizard path. It must not block the primary toggle.
-    expect(src).toContain("rules.prebuilt.editBefore")
-    expect(src).toContain("prebuiltDraftHref(p)")
+  it("PrebuiltRow is a client component with an expander", () => {
+    expect(prebuiltRowSrc.startsWith('"use client"')).toBe(true)
+    expect(prebuiltRowSrc).toContain("aria-expanded")
+    expect(prebuiltRowSrc).toContain("setExpanded")
   })
 
-  it("D60: cards visually mark the enabled state with an 'Active' pill", () => {
-    // Operator scans the section and sees at a glance which prebuilts
-    // are on; the pill mirrors the toggle's checked state.
-    expect(src).toContain("rules.prebuilt.active")
-    expect(src).toMatch(/p\.enabled/)
+  it("PrebuiltRow expander click toggles aria-expanded", () => {
+    // The row itself carries the role=button + aria-expanded + click
+    // handler. Toggling via onRowClick flips the expanded state which
+    // the JSX reads back into aria-expanded.
+    expect(prebuiltRowSrc).toContain('role="button"')
+    expect(prebuiltRowSrc).toContain("onClick={onRowClick}")
+    expect(prebuiltRowSrc).toMatch(/aria-expanded=\{expanded\}/)
   })
 
-  it("D60 follow-up: user-policies grid drops prebuilt rows to avoid double render", () => {
-    // GET /policies returns every row including the materialized
-    // prebuilt rows (POST /policies/prebuilt/{id}/enable saves into
-    // the same store under `prebuilt/...` ids). Without filtering
-    // the user-policies grid renders TWICE per enabled prebuilt
-    // (once with the PrebuiltToggle, once with the PolicyToggle),
-    // and the two toggles diverge on enable state.
-    expect(src).toMatch(/\.filter\(.*p\.id\.startsWith\(['"]prebuilt\/['"]\)/)
-    expect(src).toContain("userPolicies")
+  it("PrebuiltRow toggle click does NOT propagate to row expander", () => {
+    // The control wrapper around PrebuiltToggle uses onClick={stop}
+    // which calls stopPropagation, so clicking the toggle does not
+    // also flip expand state.
+    expect(prebuiltRowSrc).toContain("stopPropagation")
+    // The toggle sits inside the click-isolated wrapper.
+    expect(prebuiltRowSrc).toMatch(/onClick=\{stop\}[\s\S]{0,400}PrebuiltToggle/)
   })
 
-  it("D60 follow-up: PrebuiltSection renders a persistent 'Needs setup' chip", () => {
-    // The chip lets an operator scanning the grid see the
-    // prerequisite without clicking the toggle first. The big
-    // callout still appears on click; the chip is the discovery
-    // affordance.
-    expect(src).toContain("rules.prebuilt.needsSetup")
-    expect(src).toMatch(/p\.setup_required/)
+  it("PrebuiltRow renders a status pill right after the name", () => {
+    expect(prebuiltRowSrc).toContain("PrebuiltStatusPill")
+    expect(prebuiltRowSrc).toContain("rules.prebuilt.row.statusActive")
+    expect(prebuiltRowSrc).toContain("rules.prebuilt.row.statusNeedsSetup")
+    expect(prebuiltRowSrc).toContain("rules.prebuilt.row.statusOff")
+  })
+
+  it("PrebuiltRow still renders the 'Edit before enabling' secondary link", () => {
+    expect(prebuiltRowSrc).toContain("rules.prebuilt.editBefore")
+    expect(prebuiltRowSrc).toContain("editBeforeAria")
+  })
+
+  // ── D60 / D67 invariants preserved on the new component file ──
+  it("D60: PrebuiltRow renders the PrebuiltToggle wired with cloud action", () => {
+    expect(prebuiltRowSrc).toContain("PrebuiltToggle")
+    expect(prebuiltRowSrc).toContain("togglePrebuiltAction")
+    expect(prebuiltRowSrc).toContain("enabled={entry.enabled}")
+    expect(prebuiltRowSrc).toContain("setupRequired={entry.setup_required}")
+    expect(prebuiltRowSrc).toContain("setupHint={entry.setup_hint}")
+  })
+
+  it("D67: user-policies grid filters prebuilt rows before mapping", () => {
+    expect(policiesTabSrc).toMatch(
+      /\.filter\(\s*\(\s*p\s*\)\s*=>\s*!\s*p\.id\.startsWith\(['"]prebuilt\/['"]\)\s*\)/,
+    )
+    expect(policiesTabSrc).toContain("userPolicies.map(")
+    expect(policiesTabSrc).toContain("nfFormat(userPolicies.length)")
+    expect(policiesTabSrc).toMatch(/userPolicies\.length\s*===\s*0/)
+  })
+
+  it("D67: a literal items.map<Card> is NOT present in PoliciesTab", () => {
+    expect(policiesTabSrc).not.toMatch(
+      /\bitems\.map\(\s*\(\s*\w+\s*\)\s*=>\s*\(?\s*<Card key=\{/,
+    )
   })
 
   it("D60 follow-up: page no longer references the retired useThis.aria key", () => {
-    // The 'Use this' wizard handoff was retired in D60. The
-    // secondary link is now the 'Edit before enabling' Link and
-    // uses its own aria-label key.
-    expect(src).not.toContain("rules.prebuilt.useThis")
-    expect(src).toContain("rules.prebuilt.editBeforeAria")
+    expect(policiesTabSrc).not.toContain("rules.prebuilt.useThis")
+    expect(prebuiltRowSrc).not.toContain("rules.prebuilt.useThis")
   })
 
   it("keeps the + New policy CTA on every tab", () => {
@@ -175,103 +240,5 @@ describe("rules page source invariants (D56e)", () => {
     expect(src).toContain("rules.newVerifierButton")
     expect(src).toMatch(/tab === "checks"/)
     expect(src).toContain('href="/verifiers/new"')
-  })
-
-  // ── D67: lock prebuilt-row dedup with regression tests ────────
-  //
-  // These tests scope their assertions to the PoliciesTab function
-  // body so the invariants they claim (filter precedes map, count
-  // badge is fed by filtered length, no unfiltered items.map renders
-  // a Card) hold at the actual render boundary, not anywhere in the
-  // file. A refactor that moves the filter into a sibling helper but
-  // re-introduces a raw items.map inside PoliciesTab must fail here.
-  const policiesTabBody = (() => {
-    const start = src.indexOf("function PoliciesTab(")
-    expect(start).toBeGreaterThan(-1)
-    // Brace-balance scan from the function body brace so we slice
-    // exactly the PoliciesTab function body and nothing downstream
-    // (PrebuiltSection, helper components, etc.). The signature
-    // contains a destructured `{ items, err, ... }` params block and
-    // a `{ ... }` type annotation, so we anchor on the opening
-    // `}) {` that closes the param/type list and starts the body.
-    const bodyAnchor = src.indexOf("}) {", start)
-    expect(bodyAnchor).toBeGreaterThan(start)
-    let i = bodyAnchor + 3 // position at the body-opening `{`
-    expect(src[i]).toBe("{")
-    let depth = 0
-    let end = -1
-    for (; i < src.length; i++) {
-      const ch = src[i]
-      if (ch === "{") depth++
-      else if (ch === "}") {
-        depth--
-        if (depth === 0) {
-          end = i + 1
-          break
-        }
-      }
-    }
-    expect(end).toBeGreaterThan(start)
-    return src.slice(start, end)
-  })()
-
-  it("D67: items.filter(prebuilt/) precedes the user-policies .map call site", () => {
-    // Regression for the D60 follow-up. The filter must run BEFORE
-    // the .map that renders the user-policies grid, otherwise the
-    // grid silently re-renders every materialized prebuilt row.
-    // Scope everything to the PoliciesTab body so a sibling helper
-    // that hosts the filter cannot satisfy this invariant.
-    const filterMatch = policiesTabBody.match(
-      /\.filter\(\s*\(\s*p\s*\)\s*=>\s*!\s*p\.id\.startsWith\(['"]prebuilt\/['"]\)\s*\)/,
-    )
-    expect(filterMatch).not.toBeNull()
-    const filterIdx = filterMatch
-      ? policiesTabBody.indexOf(filterMatch[0])
-      : -1
-    expect(filterIdx).toBeGreaterThan(-1)
-    // The user-policies grid maps over `userPolicies`, the variable
-    // the filter assigns to. Any rendered `userPolicies.map` must
-    // appear AFTER the filter call site, within the same body.
-    const mapIdx = policiesTabBody.indexOf("userPolicies.map(")
-    expect(mapIdx).toBeGreaterThan(-1)
-    expect(filterIdx).toBeLessThan(mapIdx)
-  })
-
-  it("D67: count badge uses the filtered userPolicies length, not raw items", () => {
-    // Without this the summary badge claims a higher policy count
-    // than the grid actually renders, and the operator sees a stale
-    // number for every enabled prebuilt. Two independent assertions
-    // (key present, formatter call present) keep the intent explicit
-    // and avoid a greedy regex that could span unrelated translated
-    // strings.
-    expect(policiesTabBody).toContain("rules.summary.policies")
-    expect(policiesTabBody).toContain("nfFormat(userPolicies.length)")
-    // Empty-state branch must also key off userPolicies.length so
-    // a tenant with only prebuilt rows still sees the empty state.
-    expect(policiesTabBody).toMatch(/userPolicies\.length\s*===\s*0/)
-  })
-
-  it("D67: a prebuilt/ id never renders inside the user-policies grid", () => {
-    // Concrete-id regression. If someone reintroduces an unfiltered
-    // items.map in the PoliciesTab grid the source no longer
-    // guarantees the filter. Assert that the only place a literal
-    // `prebuilt/` id token can appear in the PoliciesTab grid path
-    // is via the filter predicate itself.
-    //
-    // Positive form: the rendered <Card key={...}> in the grid must
-    // iterate `userPolicies`. We do not constrain the arg name, just
-    // that the map source is userPolicies and the body renders a
-    // <Card key=...> directly.
-    expect(policiesTabBody).toMatch(
-      /\{userPolicies\.map\(\(\s*\w+\s*\)\s*=>\s*\(\s*<Card key=\{/,
-    )
-    // Negative form (structural): there must NOT be any `items.map`
-    // anywhere inside PoliciesTab that renders a <Card key=...>
-    // directly. Arg name is unconstrained so a future refactor that
-    // writes `items.map((p) => <Card key={p.id}>...)` is still
-    // caught, not just the historical `(item)` arg shape.
-    expect(policiesTabBody).not.toMatch(
-      /\bitems\.map\(\s*\(\s*\w+\s*\)\s*=>\s*\(?\s*<Card key=\{/,
-    )
   })
 })

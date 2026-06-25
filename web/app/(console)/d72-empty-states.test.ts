@@ -28,10 +28,13 @@ function read(rel: string): string {
 }
 
 describe("D72: /rules Policies tab empty state", () => {
-  const src = read("rules/page.tsx")
+  // D82a: PoliciesTab + WelcomeBanner mount moved into the dedicated
+  // PoliciesTab component file when Packs got promoted to its own tab.
+  // The D72 invariants still live; their source-grep target shifted.
+  const src = read("rules/_components/PoliciesTab.tsx")
 
   it("mounts the WelcomeBanner client component", () => {
-    expect(src).toContain('from "./_components/WelcomeBanner"')
+    expect(src).toContain('from "./WelcomeBanner"')
     expect(src).toContain("WelcomeBanner")
   })
 

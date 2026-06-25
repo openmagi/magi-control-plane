@@ -1974,3 +1974,117 @@ describe("policies/new wizard — P9 steering wiring", () => {
     })
   })
 })
+
+/**
+ * D82a: wizard chrome — top-left Home + Back replace the legacy
+ * top-left "Pick different" text link AND the bottom-left "Back" link
+ * inside StepShell.
+ *
+ *   - Home    -> /policies/new (same target the legacy pickDifferent
+ *                link pointed at) using the home icon.
+ *   - Back    -> previousLiveStep(state, current) — honors the same
+ *                skip rules GuidedWizard uses to advance forward, so
+ *                Back from Step 4 with action=inject_context lands on
+ *                Step 2 (or Step 1 if the lifecycle skipped Step 2)
+ *                rather than bouncing through the now-skipped Step 3.
+ *   - StepShell no longer renders the bottom-left back affordance.
+ */
+describe("policies/new wizard — D82a top-left Home + Back", () => {
+  const src = readFileSync(
+    path.join(__dirname, "page.tsx"),
+    "utf-8",
+  )
+
+  it("imports HomeIcon for the wizard nav", () => {
+    expect(src).toMatch(/HomeIcon[\s,]/)
+    expect(src).toMatch(/from "@heroicons\/react\/24\/outline"/)
+  })
+
+  it("WizardHeader renders Home then Back as the top-left affordances", () => {
+    const start = src.indexOf("function WizardHeader(")
+    expect(start).toBeGreaterThan(-1)
+    const end = src.indexOf("\n}\n", start)
+    const body = src.slice(start, end)
+    // Home: targets /policies/new (the picker landing), uses HomeIcon,
+    // carries the new aria/title keys.
+    expect(body).toContain('href="/policies/new"')
+    expect(body).toContain('"newPolicy.wizard.nav.home.aria"')
+    expect(body).toContain('"newPolicy.wizard.nav.home.tip"')
+    expect(body).toContain("<HomeIcon")
+    expect(body).toContain('data-testid="wizard-nav-home"')
+    // Back: targets the previous live step, carries the new aria/title
+    // keys, uses ArrowLeftIcon, exposes a data-testid for e2e harness.
+    expect(body).toContain('"newPolicy.wizard.nav.back.aria"')
+    expect(body).toContain('"newPolicy.wizard.nav.back.tip"')
+    expect(body).toContain("<ArrowLeftIcon")
+    expect(body).toContain('data-testid="wizard-nav-back"')
+    // Home comes before Back in the rendered order so Tab order is
+    // Home -> Back -> wizard body -> Next.
+    const homeIdx = body.indexOf("wizard-nav-home")
+    const backIdx = body.indexOf("wizard-nav-back")
+    expect(homeIdx).toBeGreaterThan(-1)
+    expect(backIdx).toBeGreaterThan(-1)
+    expect(homeIdx).toBeLessThan(backIdx)
+  })
+
+  it("previousLiveStep helper honors the same skip rules as GuidedWizard advance", () => {
+    const start = src.indexOf("function previousLiveStep(")
+    expect(start).toBeGreaterThan(-1)
+    const end = src.indexOf("\nfunction WizardHeader(", start)
+    const body = src.slice(start, end)
+    // Step 4 + action that skipped Step 3 -> back to Step 2 (or 1).
+    expect(body).toContain("inject_context")
+    expect(body).toContain("input_rewrite")
+    expect(body).toContain("run_command")
+    expect(body).toMatch(/lifecycleHasToolScope\(state\.lifecycle\)/)
+    // Step 3 -> Step 2 unless lifecycle skipped Step 2.
+    expect(body).toMatch(/current === 3/)
+    // No previous step from Step 1.
+    expect(body).toMatch(/current <= 1/)
+  })
+
+  it("WizardHeader threads state so Back can compute the live previous step", () => {
+    // The render block at the GuidedWizard call site must pass state.
+    expect(src).toMatch(/<WizardHeader\s+t=\{t\}\s+step=\{effectiveStep\}\s+total=\{WIZARD_TOTAL\}\s+locale=\{locale\}\s+state=\{state\}\s*\/>/)
+  })
+
+  it("StepShell no longer renders the bottom-left Back link", () => {
+    const start = src.indexOf("function StepShell(")
+    expect(start).toBeGreaterThan(-1)
+    // Brace-balance scan from the function signature so we slice
+    // exactly the StepShell function body.
+    const bodyAnchor = src.indexOf("}) {", start)
+    expect(bodyAnchor).toBeGreaterThan(start)
+    let i = bodyAnchor + 3
+    let depth = 0
+    let end = -1
+    for (; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === "{") depth++
+      else if (ch === "}") {
+        depth--
+        if (depth === 0) { end = i + 1; break }
+      }
+    }
+    expect(end).toBeGreaterThan(start)
+    const body = src.slice(start, end)
+    // The old form was `{prevHref && (<div><Link href={prevHref}>...
+    // <ArrowLeftIcon/>{t("newPolicy.wizard.back")}</Link></div>)}`.
+    // None of those tokens may appear inside StepShell now.
+    expect(body).not.toContain("prevHref &&")
+    expect(body).not.toContain('"newPolicy.wizard.back"')
+    expect(body).not.toContain("ArrowLeftIcon")
+  })
+
+  it("the legacy top-left 'Pick different' text link is gone from the wizard", () => {
+    // The link lived inside WizardHeader before D82a. After D82a the
+    // Home icon (with the same /policies/new target) replaces it; the
+    // bare "newPolicy.pickDifferent" text key must NOT appear inside
+    // WizardHeader.
+    const start = src.indexOf("function WizardHeader(")
+    expect(start).toBeGreaterThan(-1)
+    const end = src.indexOf("\n}\n", start)
+    const body = src.slice(start, end)
+    expect(body).not.toContain('"newPolicy.pickDifferent"')
+  })
+})

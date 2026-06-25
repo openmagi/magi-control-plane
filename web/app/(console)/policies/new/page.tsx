@@ -5,7 +5,7 @@ import PayloadFieldChipsClient from "./_components/PayloadFieldChipsClient"
 import SteeringAwareField from "./_components/SteeringAwareField"
 import Step1LifecyclePicker from "./_components/Step1LifecyclePicker"
 import ToolCombobox from "./_components/ToolCombobox"
-import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline"
+import { XMarkIcon, ArrowLeftIcon, CodeBracketIcon, AdjustmentsHorizontalIcon, CheckIcon, ChatBubbleLeftRightIcon, HomeIcon } from "@heroicons/react/24/outline"
 import { VerifierFieldChecks } from "../../_components/VerifierFieldChecks"
 import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
 import { DryRunPanel } from "../_components/DryRunPanel"
@@ -2949,22 +2949,103 @@ function HiddenState({ state }: { state: WizardState }) {
   )
 }
 
+/** D82a: returns the wizard URL for the previous LIVE step, honoring the
+ *  skip rules in GuidedWizard (Step 2 skipped for non-tool-context
+ *  lifecycles, Step 3 skipped for inject_context / input_rewrite /
+ *  run_command actions). Returns `null` when there is no live previous
+ *  step (i.e. we are on the first effective step, which is Step 1).
+ *
+ *  The pre-D82a Back link inside StepShell pointed at `step - 1`
+ *  unconditionally, which broke when GuidedWizard auto-skipped that
+ *  step forward. Concretely: from Step 4 with action=inject_context,
+ *  the back arrow targeted Step 3 which auto-skipped right back to
+ *  Step 4 — the operator saw nothing happen ("Step 4 Back is broken"
+ *  per the install review). Walking BACKWARD through the same skip
+ *  table keeps the Back arrow honest. */
+function previousLiveStep(state: WizardState, current: number): number | null {
+  // No previous step from Step 1.
+  if (current <= 1) return null
+  // Step 6 → Step 5 → Step 4: condition-side skips never apply on
+  // these jumps because every action is past Step 4 anyway.
+  if (current === 6) return 5
+  if (current === 5) return 4
+  if (current === 4) {
+    // From Step 4: inject_context / input_rewrite / run_command auto-
+    // skipped Step 3, so back must land on Step 2 (or Step 1 if the
+    // lifecycle also lacks tool scope).
+    const a = state.action
+    const skipsStep3 = a === "inject_context" || a === "input_rewrite" || a === "run_command"
+    if (skipsStep3) {
+      return state.lifecycle && lifecycleHasToolScope(state.lifecycle) ? 2 : 1
+    }
+    return 3
+  }
+  if (current === 3) {
+    // Step 2 skipped for non-tool-context lifecycles.
+    return state.lifecycle && !lifecycleHasToolScope(state.lifecycle) ? 1 : 2
+  }
+  if (current === 2) return 1
+  return null
+}
+
 function WizardHeader({
-  t, step, total, locale,
+  t, step, total, locale, state,
 }: {
   step: number; total: number
   /** D57g: forwarded to the HandoffLink so the chat label renders in
    *  the operator's preferred language. */
   locale: "ko" | "en"
+  /** D82a: needed so the top-left Back arrow can target the previous
+   *  LIVE step (honoring the same skip rules GuidedWizard uses to
+   *  advance forward). */
+  state: WizardState
   t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
+  // D82a: two top-left affordances side by side — Home (pick different
+  // authoring mode) and Back (previous live step). Tab order is Home →
+  // Back → wizard body → Next, so a keyboard operator on Step 4 can
+  // reach Back with one Tab from Home and never see the broken legacy
+  // Step 3 jump.
+  const backStep = previousLiveStep(state, step)
+  const backHref = backStep != null ? buildWizardHref(state, backStep) : null
   return (
     <div className="flex items-center justify-between mb-6">
-      <div className="flex items-center gap-3">
-        <Link href="/policies/new" className="inline-flex items-center gap-1 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-          <ArrowLeftIcon className="h-4 w-4" />
-          {t("newPolicy.pickDifferent")}
+      <div className="flex items-center gap-1">
+        {/* Home — returns the operator to the authoring-mode picker.
+         *  Same target as the legacy "Pick different" text link; the
+         *  icon-only treatment frees the row for the new Back arrow. */}
+        <Link
+          href="/policies/new"
+          aria-label={t("newPolicy.wizard.nav.home.aria")}
+          title={t("newPolicy.wizard.nav.home.tip")}
+          data-testid="wizard-nav-home"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-black/[0.04] hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
+        >
+          <HomeIcon className="h-4 w-4" />
         </Link>
+        {/* Back — previous live step (honors skips). Disabled visually
+         *  on the first effective step. The legacy bottom-left Back
+         *  link in StepShell is gone (D82a). */}
+        {backHref ? (
+          <Link
+            href={backHref}
+            aria-label={t("newPolicy.wizard.nav.back.aria")}
+            title={t("newPolicy.wizard.nav.back.tip")}
+            data-testid="wizard-nav-back"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-black/[0.04] hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+          </Link>
+        ) : (
+          <span
+            aria-disabled="true"
+            title={t("newPolicy.wizard.nav.back.tip")}
+            data-testid="wizard-nav-back-disabled"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)]/40"
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2">
@@ -3217,7 +3298,7 @@ function GuidedWizard({
 
   return (
     <div className="max-w-2xl mx-auto">
-      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} locale={locale} />
+      <WizardHeader t={t} step={effectiveStep} total={WIZARD_TOTAL} locale={locale} state={state} />
 
       {effectiveStep === 1 && <Step1Lifecycle t={t} locale={locale} state={state} action={advanceAction} />}
       {effectiveStep === 2 && <Step2ToolScope t={t} locale={locale} state={state} action={advanceAction} />}
@@ -3230,11 +3311,21 @@ function GuidedWizard({
 }
 
 function StepShell({
-  t, prevHref, heading, helper, children,
+  heading, helper, children,
 }: {
-  prevHref: string | null; heading: string; helper?: string
+  /** D82a: `prevHref` is retained for type-shape backwards-compat with
+   *  existing call sites (each step passes the legacy prev step here)
+   *  but the bottom-left Back link is REMOVED in favor of the top-left
+   *  Back arrow in WizardHeader. The arrow honors skip rules; the old
+   *  bottom-left link did not, so on Step 4 with action=inject_context
+   *  clicking Back landed on Step 3 which auto-advanced right back to
+   *  Step 4. Drop the affordance so the operator's only Back is the
+   *  honest one. */
+  prevHref?: string | null
+  heading: string
+  helper?: string
   children: React.ReactNode
-  t: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+  t?: (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 }) {
   return (
     <div className="space-y-6">
@@ -3249,14 +3340,6 @@ function StepShell({
         )}
       </div>
       {children}
-      {prevHref && (
-        <div>
-          <Link href={prevHref} className="inline-flex items-center gap-1 text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">
-            <ArrowLeftIcon className="h-4 w-4" />
-            {t("newPolicy.wizard.back")}
-          </Link>
-        </div>
-      )}
     </div>
   )
 }
