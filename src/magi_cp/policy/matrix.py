@@ -20,9 +20,27 @@ class MatcherClass(enum.Enum):
     tool_alt = "tool_alt"     # "Bash|Edit|..." pipe alternation
 
 
+# D70 — built-in tool registry. Source = the same CC 2.1.170 binary
+# strings extraction D58 used for the event surface; pulling matchers
+# from the same artifact keeps the audit symmetric across events and
+# tools. Adding tools here lets the wizard's per-tool matcher classes
+# (`MatcherClass.tool` / `tool_alt`) cover the full built-in surface
+# instead of refusing legitimate tool names at IR load time.
+#
+# The previous floor (10 tools) was the pre-D58 wizard chip-grid
+# subset; the binary actually surfaces 17 named built-ins. The 7 added
+# below (Task / MultiEdit / BashOutput / KillBash / NotebookRead /
+# ExitPlanMode / AskUser) all appear in CC 2.1.170's tool registry and
+# in the strings(1) output. The D69 Common-tier TaskCompleted promo
+# implicitly tells operators that `Task` is a legal matcher value;
+# refusing it at `matcher_class_of("Task")` would land that promo on a
+# silent-fail-open path.
 _BUILTIN_TOOLS = frozenset({
     "Bash", "Read", "Edit", "Write", "Glob", "Grep",
     "NotebookEdit", "TodoWrite", "WebFetch", "WebSearch",
+    # D70 additions — CC 2.1.170 binary tool registry catch-up.
+    "Task", "MultiEdit", "BashOutput", "KillBash",
+    "NotebookRead", "ExitPlanMode", "AskUser",
 })
 _MCP_TOOL_RE = re.compile(r"^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$")
 
@@ -172,17 +190,72 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 #   recovery script after a failed tool" (run_command on
 #   PostToolUseFailure) or "carry an audit summary back into the next
 #   turn" (inject_context on TaskCompleted) is a legal hook stdout
-#   pattern. The 26 inject_context-bearing events are exactly the
-#   `_CONTEXT_EVENT_LITERALS` set from ir.py (D59 narrowing keeps
-#   Elicitation / ElicitationResult / WorktreeCreate / MessageDisplay
-#   off the inject_context surface because their hookSpecificOutput
-#   uses a specialized field that ignores additionalContext at runtime).
-#   run_command is uniformly legal on all 30 hooks (D63).
+#   pattern. run_command is uniformly legal on all 30 hooks (D63).
+#
+# D69 widening accounting (replaces the prior conservative "9 widened"
+# commit subject — the actual blast radius is larger):
+#   - inject_context is registered on 22 events
+#     (`_SUPPORTED_EVENTS - _CONTEXT_INJECTION_EXCLUDED_EVENTS`). The
+#     excluded set was 4 in the original D69 cut (Elicitation /
+#     ElicitationResult / WorktreeCreate / MessageDisplay — specialized
+#     hookSpecificOutput shapes); D70 extends it by 4 more end-of-life
+#     events (Stop / StopFailure / SessionEnd / SubagentStop) because
+#     CC silently drops `additionalContext` at end-of-execution / session
+#     teardown / child return — there is no downstream model turn to
+#     inject into within the same session.
+#   - Of the 22 inject_context-legal events, the four tool-context
+#     events (PreToolUse / PostToolUse / PostToolUseFailure /
+#     PostToolBatch) also accept per-tool / mcp_tool / tool_alt
+#     matchers; the other 18 are wildcard-only.
+#   - 18 of the 22 widened events were previously audit-only-wildcard
+#     (the legacy `_AUDIT_ONLY_WILDCARD_EVENTS` list minus the four
+#     D70 end-of-life additions); 4 were already on richer-matcher
+#     surfaces. D58's pin-the-audit goal stands: the widened set is
+#     enumerated below as the difference of two named frozensets so a
+#     future re-narrow has to drop a name explicitly.
+#
+# D70 — _CONTEXT_INJECTION_EXCLUDED_EVENTS extended for end-of-life:
+#   D69 narrowed only the four specialized-channel events. Stop /
+#   StopFailure / SessionEnd / SubagentStop still routed
+#   inject_context through the matrix gate, which created a silent-
+#   fail-open: CC's stdout JSON DOES carry the `additionalContext`
+#   field uniformly, but at these four end-of-life events there is no
+#   downstream model turn to inject into within the same session
+#   (Stop fires at end-of-execution; SessionEnd at session teardown;
+#   SubagentStop after the child returned; StopFailure mirrors Stop's
+#   timing). CC silently drops the additional context, the operator
+#   sees a green check, and zero enforcement fires — exactly the
+#   silent-fail-open this module docstring warned about. D70 promotes
+#   these four to the excluded set so the matrix and
+#   `ContextInjectionPolicy.validate()` refuse them at authoring time.
+#   To promote any of these back to legal, a binary fixture must
+#   confirm CC actually surfaces SessionEnd / Stop additionalContext
+#   to a downstream message inside the same session.
+#
+# D69 matrix-internal-coherence fix:
+#   The original D69 loop widened PostToolUseFailure / PostToolBatch +
+#   per-tool matcher + run_command / inject_context to legal while the
+#   matching audit triple stayed wildcard-only. The wizard now refused
+#   "audit Edit-only failures" but accepted "inject context on Edit-only
+#   failures", which was hard to reason about. D70 brings the audit side
+#   into lockstep: PostToolUseFailure / PostToolBatch now accept the
+#   full tool-context matcher set on audit too, mirroring run_command /
+#   inject_context. _AUDIT_ONLY_WILDCARD_EVENTS retains only the events
+#   whose payload genuinely has no tool name to filter on.
+#
 #   block + ask stay narrow: blocking only fires on pre-event channels
-#   the runtime can still interrupt (PreToolUse, PostToolUse causes a
-#   retry feedback loop, UserPromptSubmit, PreCompact, PermissionRequest,
-#   Elicitation); `ask` requires a routable interactive surface
-#   (PreToolUse, UserPromptSubmit, PermissionRequest, Elicitation).
+#   the runtime can still interrupt (PreToolUse, UserPromptSubmit,
+#   PreCompact, PermissionRequest, Elicitation); `ask` requires a
+#   routable interactive surface (PreToolUse, UserPromptSubmit,
+#   PermissionRequest, Elicitation). PostToolUse is NOT registered for
+#   block — the prior comment claimed "PostToolUse causes a retry
+#   feedback loop" as a blocking channel, but `_build_legal()` never
+#   registers (PostToolUse, *, block). A future audit reading the
+#   comment alone would conclude block is exposed and start hunting for
+#   the missing wiring. The matrix's actual stance is: PostToolUse +
+#   block is reserved for a future cycle (CC's PostToolUse decision
+#   channel can technically request a retry via deny, but the matrix
+#   does not surface that yet).
 _BLOCK_ASK_AUDIT = ("block", "ask", "audit")
 _BLOCK_AUDIT = ("block", "audit")
 _AUDIT_ONLY = ("audit",)
@@ -226,14 +299,15 @@ _UNVERIFIED_EVENTS: frozenset[str] = frozenset({
 })
 
 # Lifecycle / boundary observability hooks — wildcard + audit-only.
+#
+# D70 — PostToolUseFailure and PostToolBatch are removed from this list
+# and routed through `_AUDIT_TOOL_CONTEXT_EVENTS` below so the audit
+# triple stays in lockstep with the run_command / inject_context triples
+# that D63 + D69 already widened to per-tool matchers. Without this,
+# "audit Edit-only failures" was refused while "inject context on
+# Edit-only failures" was accepted — same event, sibling actions,
+# opposite verdicts at the matrix gate.
 _AUDIT_ONLY_WILDCARD_EVENTS = (
-    # Tool-context observability variants (no per-tool matcher in v1;
-    # the Failure + Batch payloads do carry tool data but the wizard
-    # doesn't expose a per-tool surface for them yet — they round-trip
-    # as wildcard audit). The base Pre/PostToolUse entries below
-    # still carry their richer matcher set.
-    "PostToolUseFailure",
-    "PostToolBatch",
     # Permission gate post-side
     "PermissionDenied",
     # Content-flow post-side
@@ -261,6 +335,16 @@ _AUDIT_ONLY_WILDCARD_EVENTS = (
     "MessageDisplay",
 )
 
+# D70 — tool-context observability events whose payload carries a tool
+# name. The audit archetype now accepts the same matcher set the
+# run_command + inject_context archetypes do, so the matrix triples
+# stay in lockstep across actions. Mirrors `_TOOL_CONTEXT_EVENTS_RC`
+# inside `_build_legal()`.
+_AUDIT_TOOL_CONTEXT_EVENTS = (
+    "PostToolUseFailure",
+    "PostToolBatch",
+)
+
 
 def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
     out: set[tuple[str, MatcherClass, str]] = set()
@@ -286,6 +370,23 @@ def _build_legal() -> frozenset[tuple[str, MatcherClass, str]]:
     # land here in a follow-up once verifier-protocol mutation lands.)
     out.add(("PostToolUse", MatcherClass.tool, "audit"))
     out.add(("PostToolUse", MatcherClass.mcp_tool, "audit"))
+    out.add(("PostToolUse", MatcherClass.tool_alt, "audit"))
+    out.add(("PostToolUse", MatcherClass.wildcard, "audit"))
+
+    # D70 — Tool-context observability events keep audit in lockstep
+    # with run_command + inject_context. PostToolUseFailure / PostToolBatch
+    # payloads carry a tool name; the prior matrix accepted per-tool
+    # matchers on the newer actions but refused them on audit, which
+    # was hard to reason about for operators authoring "audit Edit-only
+    # failures".
+    for ev in _AUDIT_TOOL_CONTEXT_EVENTS:
+        for kls in (
+            MatcherClass.tool,
+            MatcherClass.mcp_tool,
+            MatcherClass.tool_alt,
+            MatcherClass.wildcard,
+        ):
+            out.add((ev, kls, "audit"))
 
     # Pre-side gate hooks (no-tool-context) — block / ask / audit on
     # wildcard.

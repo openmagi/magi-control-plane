@@ -313,29 +313,43 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // pre_final + subagent_stop + session_start + session_end are
       // audit-only per matrix.LEGAL_COMBINATIONS. Saving with block
       // on one of those must be refused before the round-trip.
-      // D57f-1: inject_context is a 5th archetype universally legal
-      // on every lifecycle (CC accepts additionalContext on every
-      // hook event). The pin shifts from "audit-only" to "block
-      // refused, inject_context allowed."
+      // D57f-1: inject_context is a 5th archetype legal on every
+      // lifecycle whose CC hookSpecificOutput accepts
+      // additionalContext. The pin shifts from "audit-only" to "block
+      // refused, inject_context allowed where channel applies."
+      // D63: run_command joins inject_context as a 6th archetype legal
+      // on every lifecycle (uniform CC stdout JSON contract).
+      // D70: pre_final / subagent_stop / session_end / stop_failure
+      // are now in `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES` because
+      // they fire at end-of-life with no downstream same-session
+      // model turn for additionalContext to land in. Their
+      // `inject_context` entry is dropped by `_withInjectContextIf`.
+      // session_start stays legal (the session is still alive). The
+      // base ACTIONS_BY_LIFECYCLE input lists are pinned below; the
+      // derivation through `_withInjectContextIf` then strips
+      // inject_context for the excluded rows.
       const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
       expect(m).not.toBeNull()
       const body = m![1]
-      // D63: run_command joins inject_context as a 6th archetype legal
-      // on every lifecycle (uniform CC stdout JSON contract). The pin
-      // shifts to admit the trailing "run_command" entry on every list.
-      expect(body).toMatch(/pre_final:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
-      expect(body).toMatch(/subagent_stop:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
-      expect(body).toMatch(/session_start:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
-      expect(body).toMatch(/session_end:\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      // The wizard now keys each row through `_withInjectContextIf`
+      // so the same exclusion set governs both `ACTIONS_BY_LIFECYCLE`
+      // and `ACTIONS_BY_COMBINATION`. The base array per row is still
+      // present inside the helper call; the call is the on-disk
+      // shape; the helper filters at module load.
+      expect(body).toMatch(/_withInjectContextIf\("pre_final",\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
+      expect(body).toMatch(/_withInjectContextIf\("subagent_stop",\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
+      expect(body).toMatch(/_withInjectContextIf\("session_start",\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
+      expect(body).toMatch(/_withInjectContextIf\("session_end",\s*\[\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
       // user_prompt has the full pre-event action set + inject_context + run_command.
-      expect(body).toMatch(/user_prompt:\s*\[\s*"block",\s*"ask",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      expect(body).toMatch(/_withInjectContextIf\("user_prompt",\s*\[\s*"block",\s*"ask",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
       // pre_compact has block + audit + inject_context + run_command.
-      expect(body).toMatch(/pre_compact:\s*\[\s*"block",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]/)
+      expect(body).toMatch(/_withInjectContextIf\("pre_compact",\s*\[\s*"block",\s*"audit",\s*"inject_context",\s*"run_command"\s*\]\)/)
       // D57f-1: block / ask are still NOT legal on the audit-only
       // lifecycles — the new archetype rides alongside audit, it
-      // doesn't loosen the block/ask gates.
-      expect(body).not.toMatch(/pre_final:\s*\[\s*"block"/)
-      expect(body).not.toMatch(/session_start:\s*\[\s*"block"/)
+      // doesn't loosen the block/ask gates. Pin against the lifecycle
+      // entry to its closing paren so a future widening lands here.
+      expect(body).not.toMatch(/_withInjectContextIf\("pre_final",\s*\[\s*"block"/)
+      expect(body).not.toMatch(/_withInjectContextIf\("session_start",\s*\[\s*"block"/)
     })
 
     it("saveWizard refuses matrix-illegal action choices", () => {
@@ -827,19 +841,41 @@ describe("policies/new wizard — P9 steering wiring", () => {
       )
     })
 
-    it("ACTIONS_BY_LIFECYCLE legalizes inject_context on every lifecycle", () => {
+    it("ACTIONS_BY_LIFECYCLE legalizes inject_context on every non-excluded lifecycle", () => {
       const m = src.match(/ACTIONS_BY_LIFECYCLE[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
       expect(m).not.toBeNull()
       const body = m![1]
-      // Every lifecycle row must include inject_context. We pin a
-      // sample across the 5 family bands the matrix recognizes so a
-      // future narrowing landing on only a subset is loud.
-      expect(body).toMatch(/before_tool_use:\s*\[[^\]]*"inject_context"[^\]]*\]/)
-      expect(body).toMatch(/after_tool_use:\s*\[[^\]]*"inject_context"[^\]]*\]/)
-      expect(body).toMatch(/user_prompt:\s*\[[^\]]*"inject_context"[^\]]*\]/)
-      expect(body).toMatch(/session_start:\s*\[[^\]]*"inject_context"[^\]]*\]/)
-      expect(body).toMatch(/notification:\s*\[[^\]]*"inject_context"[^\]]*\]/)
-      expect(body).toMatch(/file_changed:\s*\[[^\]]*"inject_context"[^\]]*\]/)
+      // Every non-excluded lifecycle row must include inject_context in
+      // its base array. We pin a sample across the 5 family bands the
+      // matrix recognizes so a future narrowing landing on only a
+      // subset is loud. The `_withInjectContextIf` wrapper filters
+      // out the excluded set at module load.
+      expect(body).toMatch(/_withInjectContextIf\("before_tool_use",[^\]]*"inject_context"/)
+      expect(body).toMatch(/_withInjectContextIf\("after_tool_use",[^\]]*"inject_context"/)
+      expect(body).toMatch(/_withInjectContextIf\("user_prompt",[^\]]*"inject_context"/)
+      expect(body).toMatch(/_withInjectContextIf\("session_start",[^\]]*"inject_context"/)
+      expect(body).toMatch(/_withInjectContextIf\("notification",[^\]]*"inject_context"/)
+      expect(body).toMatch(/_withInjectContextIf\("file_changed",[^\]]*"inject_context"/)
+    })
+
+    it("CONTEXT_INJECTION_EXCLUDED_LIFECYCLES carries the 8 silent-fail-open lifecycles (D59 + D70)", () => {
+      // The exclusion set drives both ACTIONS_BY_LIFECYCLE and
+      // ACTIONS_BY_COMBINATION so a future re-add of any of these
+      // cannot silently re-introduce the D69 wizard-matrix
+      // divergence. Pin the literal members so a deletion is loud.
+      const m = src.match(/CONTEXT_INJECTION_EXCLUDED_LIFECYCLES[\s\S]*?new Set<Lifecycle>\(\[([\s\S]+?)\]\)/)
+      expect(m).not.toBeNull()
+      const body = m![1]
+      // D59 specialized-channel set.
+      expect(body).toContain('"elicitation"')
+      expect(body).toContain('"elicitation_result"')
+      expect(body).toContain('"worktree_create"')
+      expect(body).toContain('"message_display"')
+      // D70 end-of-life set.
+      expect(body).toContain('"pre_final"')
+      expect(body).toContain('"stop_failure"')
+      expect(body).toContain('"session_end"')
+      expect(body).toContain('"subagent_stop"')
     })
 
     it("WizardState carries inject template + KO/EN label fields", () => {
@@ -1133,6 +1169,11 @@ describe("policies/new wizard — P9 steering wiring", () => {
       // rows so a future widening of input_rewrite onto wildcard is
       // loud (the cloud's IR validator would refuse, but the wizard
       // must not preview an option the cloud cannot honor).
+      //
+      // D70: each per-class entry is now wrapped in
+      // `_filterByCombination` so the inject_context exclusion stays
+      // in lockstep with ACTIONS_BY_LIFECYCLE. The pinned slice
+      // narrows on the wrapper call before reading the inner array.
       const m = src.match(/const ACTIONS_BY_COMBINATION[\s\S]*?=\s*\{([\s\S]+?)\n\}/)
       expect(m).not.toBeNull()
       const body = m![1]
@@ -1142,8 +1183,14 @@ describe("policies/new wizard — P9 steering wiring", () => {
       const btu = body.slice(btuStart, btuEnd)
       expect(btu).toMatch(/tool:[^\]]*"input_rewrite"/)
       expect(btu).toMatch(/mcp_tool:[^\]]*"input_rewrite"/)
-      // wildcard line must NOT carry input_rewrite.
-      const wildcardLine = btu.match(/wildcard:\s*\[([^\]]*)\]/)
+      // wildcard line must NOT carry input_rewrite. Read the inner
+      // array passed to `_filterByCombination` (the wrapper does not
+      // add archetypes; it only filters inject_context per excluded
+      // set), so a wildcard list without input_rewrite stays the
+      // canonical surface.
+      const wildcardLine = btu.match(
+        /wildcard:\s*_filterByCombination\("before_tool_use",\s*\[([^\]]*)\]\)/,
+      )
       expect(wildcardLine).not.toBeNull()
       expect(wildcardLine![1]).not.toContain("input_rewrite")
     })

@@ -60,6 +60,7 @@ import {
   ADVANCED_OPEN_STORAGE_KEY,
   COMMON_GROUP,
   findOwningAdvancedGroup,
+  isUnverifiedLifecycle,
   matchesQuery,
   normalizeQuery,
   type LifecycleLabels,
@@ -75,7 +76,9 @@ export {
   ADVANCED_OPEN_STORAGE_KEY,
   COMMON_GROUP,
   findOwningAdvancedGroup,
+  isUnverifiedLifecycle,
   matchesQuery,
+  UNVERIFIED_LIFECYCLE_SLUGS,
 } from "./step1-lifecycle-groups"
 export type {
   LifecycleSlug,
@@ -185,6 +188,31 @@ function RecommendedBadge({ locale }: { locale: "ko" | "en" }) {
   )
 }
 
+/** D70 — "unverified candidate" badge rendered next to any lifecycle
+ * whose canonical CC event sits in `_UNVERIFIED_EVENTS` (matrix.py).
+ * The Common-tier promotion of TaskCompleted (D69) put a candidate
+ * row next to four `_VERIFIED_EVENTS` rows; without the badge a
+ * defensive operator could conclude that the Task pair has the same
+ * settings.json round-trip proof as PreToolUse. The badge plus the
+ * tooltip name the asymmetry so the policy authoring path stays
+ * honest. */
+function UnverifiedBadge({ locale }: { locale: "ko" | "en" }) {
+  const text = locale === "ko" ? "검증 전" : "unverified"
+  const tip = locale === "ko"
+    ? "CC 바이너리 fixture 로 authorability 가 아직 검증되지 않은 hook 입니다. CC settings load 가 조용히 drop 할 수 있어요."
+    : "Authorability against a real CC binary has not been demonstrated yet. CC settings load may silently drop this hook."
+  return (
+    <span
+      data-testid="step1-unverified-badge"
+      title={tip}
+      aria-label={tip}
+      className="inline-flex items-center rounded-full bg-amber-100 px-2 py-[1px] text-[10px] font-semibold uppercase tracking-wider text-amber-800"
+    >
+      {text}
+    </span>
+  )
+}
+
 /** One lifecycle row. Visually mirrors the original server <RadioCard>
  * (border + selected-state + sub-copy) but mounts the radio input
  * unconditionally so the surrounding <form> always sees the picked
@@ -209,11 +237,18 @@ function LifecycleRow({
   onPick?: (slug: LifecycleSlug) => void
   hidden: boolean
 }) {
+  // D70 — defensive: every row checks the unverified set at render
+  // time. The Common-tier promo for TaskCompleted (D69) sits next to
+  // four verified rows; without this affordance an operator would
+  // read "Task pair is in Common" as "Task pair is verified", which
+  // is the silent-fail-open path the matrix.py docstring warned about.
+  const unverified = isUnverifiedLifecycle(slug)
   return (
     <label
       data-testid={`step1-row-${slug}`}
       data-lifecycle={slug}
       data-hidden={hidden ? "true" : "false"}
+      data-unverified={unverified ? "true" : "false"}
       className={
         "block cursor-pointer " + (hidden ? "hidden" : "")
       }
@@ -238,7 +273,10 @@ function LifecycleRow({
           <span className="text-sm font-semibold text-[var(--color-text-primary)]">
             {label}
           </span>
-          {showBadge && <RecommendedBadge locale={locale} />}
+          <span className="inline-flex items-center gap-1">
+            {showBadge && <RecommendedBadge locale={locale} />}
+            {unverified && <UnverifiedBadge locale={locale} />}
+          </span>
         </span>
         <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">
           {sub}

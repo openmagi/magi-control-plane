@@ -8,6 +8,8 @@ import {
   ADVANCED_GROUPS,
   ADVANCED_OPEN_STORAGE_KEY,
   findOwningAdvancedGroup,
+  isUnverifiedLifecycle,
+  UNVERIFIED_LIFECYCLE_SLUGS,
   type LifecycleSlug,
 } from "./step1-lifecycle-groups"
 
@@ -38,18 +40,25 @@ function read(rel: string): string {
 }
 
 describe("Step1LifecyclePicker | group composition", () => {
-  it("Common group exposes the 5 recommended events in order (D69)", () => {
+  it("Common group exposes the 6 recommended events in order (D70)", () => {
     // D69: TaskCompleted joined Common because end-of-task automation
     // ("inject task results back into the session", "run a recovery
     // script when a background task finishes") is one of the most
     // common operator patterns. PreToolUse stays first so the
     // "recommended" badge still anchors the new-policy entry path.
+    //
+    // D70: TaskCreated paired with TaskCompleted in Common because
+    // the Task-tool lifecycle is almost always authored as a pair
+    // (audit at dispatch + react at completion). Splitting the pair
+    // across Common + Advanced surfaced the pair across two tiers
+    // without a cross-reference.
     expect(COMMON_GROUP.kind).toBe("common")
     expect(COMMON_GROUP.members).toEqual([
       "before_tool_use",
       "after_tool_use",
       "user_prompt",
       "pre_final",
+      "task_created",
       "task_completed",
     ])
   })
@@ -60,7 +69,7 @@ describe("Step1LifecyclePicker | group composition", () => {
     }
   })
 
-  it("Common (5) + Advanced (25) cover all 30 lifecycle events with no overlap", () => {
+  it("Common (6) + Advanced (24) cover all 30 lifecycle events with no overlap", () => {
     const all: LifecycleSlug[] = [
       ...COMMON_GROUP.members,
       ...ADVANCED_GROUPS.flatMap((g) => g.members),
@@ -75,7 +84,7 @@ describe("Step1LifecyclePicker | group composition", () => {
     }
   })
 
-  it("PreToolUse / PostToolUse / UserPromptSubmit / Stop / TaskCompleted live in Common (not Advanced)", () => {
+  it("PreToolUse / PostToolUse / UserPromptSubmit / Stop / TaskCreated / TaskCompleted live in Common (not Advanced)", () => {
     const advancedSet = new Set(
       ADVANCED_GROUPS.flatMap((g) => g.members as readonly LifecycleSlug[]),
     )
@@ -83,11 +92,61 @@ describe("Step1LifecyclePicker | group composition", () => {
     expect(advancedSet.has("after_tool_use")).toBe(false)
     expect(advancedSet.has("user_prompt")).toBe(false)
     expect(advancedSet.has("pre_final")).toBe(false)
+    // D70: both halves of the Task-tool lifecycle pair must be in Common.
+    expect(advancedSet.has("task_created")).toBe(false)
     expect(advancedSet.has("task_completed")).toBe(false)
   })
 
   it("uses the documented localStorage key", () => {
     expect(ADVANCED_OPEN_STORAGE_KEY).toBe("magi_cp.step1_advanced_open")
+  })
+})
+
+describe("Step1LifecyclePicker | D70 unverified badge", () => {
+  // D70 — verification-status surface. Common-tier promo for
+  // TaskCompleted (D69) sits next to four _VERIFIED_EVENTS rows; an
+  // operator who reads the promo as "Task pair is verified" would
+  // hit a silent-fail-open if CC drops `hooks.TaskCompleted` at
+  // settings load. The picker reads the verification status from the
+  // mirror set and renders an "unverified" badge so the asymmetry
+  // is on screen.
+  it("UNVERIFIED_LIFECYCLE_SLUGS covers the 22 _UNVERIFIED_EVENTS slugs", () => {
+    expect(UNVERIFIED_LIFECYCLE_SLUGS.size).toBe(22)
+  })
+
+  it("isUnverifiedLifecycle returns true for TaskCompleted (D69 Common promo) and TaskCreated (D70 Common promo)", () => {
+    expect(isUnverifiedLifecycle("task_completed")).toBe(true)
+    expect(isUnverifiedLifecycle("task_created")).toBe(true)
+  })
+
+  it("isUnverifiedLifecycle returns false for the four pre-D58 verified Common slugs", () => {
+    // The other Common-tier slugs are _VERIFIED_EVENTS members and
+    // must NOT carry the unverified affordance.
+    expect(isUnverifiedLifecycle("before_tool_use")).toBe(false)
+    expect(isUnverifiedLifecycle("after_tool_use")).toBe(false)
+    expect(isUnverifiedLifecycle("user_prompt")).toBe(false)
+    expect(isUnverifiedLifecycle("pre_final")).toBe(false)
+  })
+
+  it("UNVERIFIED_LIFECYCLE_SLUGS + 8 verified slugs partitions all 30 lifecycles", () => {
+    const all: LifecycleSlug[] = [
+      ...COMMON_GROUP.members,
+      ...ADVANCED_GROUPS.flatMap((g) => g.members),
+    ]
+    // The 8 _VERIFIED_EVENTS slugs are exactly the pre-D58 surface.
+    const verifiedSlugs: LifecycleSlug[] = [
+      "before_tool_use", "after_tool_use",
+      "pre_final", "subagent_stop",
+      "user_prompt",
+      "pre_compact",
+      "session_start", "session_end",
+    ]
+    const verifiedCount = all.filter((s) => verifiedSlugs.includes(s)).length
+    const unverifiedCount = all.filter((s) =>
+      UNVERIFIED_LIFECYCLE_SLUGS.has(s)).length
+    expect(verifiedCount).toBe(8)
+    expect(unverifiedCount).toBe(22)
+    expect(verifiedCount + unverifiedCount).toBe(30)
   })
 })
 
@@ -305,6 +364,8 @@ describe("Step1LifecyclePicker | helpers", () => {
     expect(findOwningAdvancedGroup("pre_final")).toBeNull()
     // D69: task_completed is now in Common.
     expect(findOwningAdvancedGroup("task_completed")).toBeNull()
+    // D70: task_created paired with task_completed in Common.
+    expect(findOwningAdvancedGroup("task_created")).toBeNull()
   })
 
   it("ADVANCED_GROUP_PREVIEWS covers every Advanced group with at least one example", () => {

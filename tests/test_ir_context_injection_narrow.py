@@ -44,18 +44,24 @@ from magi_cp.policy.ir import (
 # ── narrowing invariants ─────────────────────────────────────────────
 
 
-def test_context_event_literals_excludes_the_four_specialized_hooks():
-    """The narrowed set is _SUPPORTED_EVENTS minus the four hooks
-    whose hookSpecificOutput shape uses a different channel."""
+def test_context_event_literals_excludes_specialized_and_end_of_life_hooks():
+    """The narrowed set is _SUPPORTED_EVENTS minus eight hooks:
+    four whose hookSpecificOutput shape uses a different channel
+    (D59 specialized-channel set) plus four whose timing has no
+    downstream same-session model turn for additionalContext to land
+    in (D70 end-of-life set)."""
     assert _CONTEXT_INJECTION_EXCLUDED_EVENTS == frozenset({
+        # D59 — specialized hookSpecificOutput shape
         "Elicitation", "ElicitationResult",
         "WorktreeCreate", "MessageDisplay",
+        # D70 — end-of-life events with no downstream same-session turn
+        "Stop", "StopFailure", "SessionEnd", "SubagentStop",
     })
     expected = _SUPPORTED_EVENTS - _CONTEXT_INJECTION_EXCLUDED_EVENTS
     assert set(_CONTEXT_EVENT_LITERALS) == expected
-    # Sanity: the narrowed surface is 30 - 4 = 26 events.
-    assert len(_CONTEXT_EVENT_LITERALS) == 26
-    # And the full surface is 30 (locks the matrix asymmetry: 30 / 26).
+    # Sanity: the narrowed surface is 30 - 8 = 22 events.
+    assert len(_CONTEXT_EVENT_LITERALS) == 22
+    # And the full surface is 30 (locks the matrix asymmetry: 30 / 22).
     assert len(_SUPPORTED_EVENTS) == 30
 
 
@@ -180,10 +186,10 @@ def test_context_injection_refuses_message_display():
     assert "—" not in msg
 
 
-# ── 26 still-legal events ───────────────────────────────────────────
+# ── 22 still-legal events ───────────────────────────────────────────
 
 
-def test_context_injection_still_accepts_the_other_26_events():
+def test_context_injection_still_accepts_the_other_22_events():
     """Every event in `_CONTEXT_EVENT_LITERALS` must still construct
     cleanly. We pick a benign matcher per event-family because
     `ContextInjectionPolicy.validate()` also runs a matrix-coherence
@@ -203,18 +209,18 @@ def test_context_injection_still_accepts_the_other_26_events():
         )
         assert p.event == ev
         constructed += 1
-    assert constructed == 26
+    assert constructed == 22
 
 
 # ── asymmetry: EvidencePolicy still works on all 30 events ──────────
 
 
 def test_evidence_policy_audit_still_legal_on_elicitation():
-    """The asymmetry test: ContextInjectionPolicy is narrowed to 26,
+    """The asymmetry test: ContextInjectionPolicy is narrowed to 22,
     but EvidencePolicy (audit-only) keeps all 30 events. Audit just
     records the trigger firing, so it does not need
     `additionalContext` at all — the matrix.LEGAL_COMBINATIONS table
-    keeps the four excluded events for the audit archetype.
+    keeps the eight excluded events for the audit archetype.
     """
     p = EvidencePolicy(
         id="elicit-audit/v1",
@@ -228,11 +234,16 @@ def test_evidence_policy_audit_still_legal_on_elicitation():
     assert p.action == "audit"
 
 
-def test_evidence_policy_audit_still_legal_on_the_other_three_excluded():
-    """ElicitationResult / WorktreeCreate / MessageDisplay also keep
-    the audit archetype legal — the narrowing is per-archetype, not
+def test_evidence_policy_audit_still_legal_on_the_other_seven_excluded():
+    """ElicitationResult / WorktreeCreate / MessageDisplay (D59) plus
+    Stop / StopFailure / SessionEnd / SubagentStop (D70) all keep the
+    audit archetype legal — the narrowing is per-archetype, not
     per-event."""
-    for ev in ("ElicitationResult", "WorktreeCreate", "MessageDisplay"):
+    excluded_minus_elicitation = (
+        "ElicitationResult", "WorktreeCreate", "MessageDisplay",
+        "Stop", "StopFailure", "SessionEnd", "SubagentStop",
+    )
+    for ev in excluded_minus_elicitation:
         p = EvidencePolicy(
             id=f"{ev.lower()}-audit/v1",
             description=f"record every {ev}",
@@ -243,6 +254,51 @@ def test_evidence_policy_audit_still_legal_on_the_other_three_excluded():
         )
         assert p.trigger.event == ev
         assert p.action == "audit"
+
+
+# ── D70: end-of-life events refused with the alternate-channel error ─
+
+
+@pytest.mark.parametrize("event,expected_token", [
+    ("Stop",         "no downstream same-session model turn"),
+    ("StopFailure",  "no downstream same-session model turn"),
+    ("SessionEnd",   "no downstream same-session model turn"),
+    ("SubagentStop", "no downstream same-session model turn"),
+])
+def test_d70_end_of_life_events_refused_with_named_reason(event, expected_token):
+    """D70: end-of-life events take the alternate-channel branch with
+    a reason-named token so the operator knows why the channel does
+    not apply (different from the D59 specialized-channel branch,
+    which names hookSpecificOutput fields)."""
+    with pytest.raises(ValueError) as ei:
+        ContextInjectionPolicy(
+            id=f"ctx-{event.lower()}/v1",
+            description="should be refused at end-of-life",
+            event=event,  # type: ignore[arg-type]
+            template="hello",
+        )
+    msg = str(ei.value)
+    assert f"'{event}'" in msg
+    assert expected_token in msg
+    # EvidencePolicy audit is still the operator's fallback for these.
+    assert "EvidencePolicy" in msg
+    # No em-dash per CLAUDE.md hard rule.
+    assert "—" not in msg
+
+
+def test_d70_subagent_stop_message_points_at_subagent_start():
+    """SubagentStop's reason copy specifically recommends SubagentStart
+    for parent-side carry-over so the operator has a concrete pivot
+    without re-reading the docs."""
+    with pytest.raises(ValueError) as ei:
+        ContextInjectionPolicy(
+            id="ctx-subagent-stop/v1",
+            description="should redirect to SubagentStart",
+            event="SubagentStop",  # type: ignore[arg-type]
+            template="hello",
+        )
+    msg = str(ei.value)
+    assert "SubagentStart" in msg
 
 
 # ── unknown event name still raises the original error ─────────────

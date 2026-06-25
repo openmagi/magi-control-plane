@@ -338,17 +338,44 @@ _MCP_ACTION_LITERALS = ("allow", "deny")
 #                        without changing the stored message or feeding
 #                        anything back into the model context.
 #
-# EvidencePolicy (audit-only) is NOT narrowed on these four — see
+# D70 — four MORE hooks are excluded for a separate reason: there is
+# no downstream model turn within the same session for the
+# `additionalContext` to land in. CC's stdout JSON does carry the
+# `additionalContext` field uniformly, but the runtime can only feed
+# additional context into a future model turn that has not yet
+# materialized — at these four end-of-life events the next turn lives
+# in a different session (Stop = end of execution; SessionEnd =
+# session teardown; SubagentStop = the child has returned; StopFailure
+# mirrors Stop's timing). CC silently drops the additional context;
+# the operator sees a green check and nothing fires. To re-admit any
+# of these, a binary fixture must confirm CC actually surfaces
+# `additionalContext` from one of them to a downstream message within
+# the same session.
+#
+#   Stop          — fires at end-of-execution; no downstream model turn
+#                   inside the same session for additionalContext.
+#   StopFailure   — mirrors Stop's timing.
+#   SessionEnd    — fires at session teardown.
+#   SubagentStop  — fires after the child has returned; the spawning
+#                   parent's next turn is not bound to the child's
+#                   additionalContext output (use SubagentStart for
+#                   the parent-side carry-over).
+#
+# EvidencePolicy (audit-only) is NOT narrowed on these eight — see
 # matrix.LEGAL_COMBINATIONS — because audit only records the trigger
 # firing; it does not need `additionalContext` at all.
 #
 # The wizard authoring surface mirrors this set — see
 # web/app/(console)/policies/new/page.tsx Step 4 "Inject extra
-# context" action card; the picker is greyed out for these four
-# lifecycles with a tooltip naming the alternate output channel.
+# context" action card; the picker is greyed out for these eight
+# lifecycles with a tooltip naming the alternate output channel /
+# reason the channel does not apply.
 _CONTEXT_INJECTION_EXCLUDED_EVENTS: frozenset[str] = frozenset({
+    # D59 — specialized hookSpecificOutput shape
     "Elicitation", "ElicitationResult",
     "WorktreeCreate", "MessageDisplay",
+    # D70 — end-of-life events with no downstream same-session model turn
+    "Stop", "StopFailure", "SessionEnd", "SubagentStop",
 })
 _CONTEXT_EVENT_LITERALS: tuple[str, ...] = tuple(sorted(
     _SUPPORTED_EVENTS - _CONTEXT_INJECTION_EXCLUDED_EVENTS,
@@ -374,13 +401,9 @@ ContextEventLiteral = Literal[
     "PostToolUseFailure",
     "PreCompact",
     "PreToolUse",
-    "SessionEnd",
     "SessionStart",
     "Setup",
-    "Stop",
-    "StopFailure",
     "SubagentStart",
-    "SubagentStop",
     "TaskCompleted",
     "TaskCreated",
     "TeammateIdle",
@@ -400,6 +423,7 @@ ContextEventLiteral = Literal[
 # field that feeds the model view; the operator's options are EvidencePolicy
 # audit or a different hook event. No em-dashes per CLAUDE.md hard rule.
 _CONTEXT_INJECTION_ALTERNATE_CHANNEL: dict[str, str] = {
+    # D59 — specialized hookSpecificOutput shape.
     "Elicitation": (
         "hookSpecificOutput.elicitationDecision (accept / decline an "
         "MCP elicitation request)"
@@ -416,6 +440,31 @@ _CONTEXT_INJECTION_ALTERNATE_CHANNEL: dict[str, str] = {
         "no model-context channel (this hook is display-only; CC "
         "replaces the on-screen delta without changing the stored "
         "message)"
+    ),
+    # D70 — end-of-life events. The channel exists in the JSON but
+    # there is no downstream same-session model turn for CC to inject
+    # the context into, so the additionalContext field is silently
+    # dropped. Noun-phrase form keeps the spliced sentence ("this hook
+    # uses {channel}, not additionalContext") grammatical.
+    "Stop": (
+        "no downstream same-session model turn (this hook fires at "
+        "end-of-execution; CC silently drops additionalContext because "
+        "there is no future turn to inject into)"
+    ),
+    "StopFailure": (
+        "no downstream same-session model turn (this hook mirrors "
+        "Stop's end-of-execution timing; CC silently drops "
+        "additionalContext for the same reason)"
+    ),
+    "SessionEnd": (
+        "no downstream same-session model turn (this hook fires at "
+        "session teardown; CC silently drops additionalContext because "
+        "the session is closing)"
+    ),
+    "SubagentStop": (
+        "no downstream same-session model turn (this hook fires after "
+        "the child has returned; for parent-side carry-over, author "
+        "the injection on SubagentStart instead)"
     ),
 }
 _SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$")

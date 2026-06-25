@@ -268,9 +268,14 @@ def test_d58_audit_only_events_reject_gate_actions(event, bad_action):
 
 def test_d58_extended_events_reject_tool_matcher():
     """Every D58 no-tool-context event must reject a tool matcher.
-    Same constraint the pre-D58 6 events carried."""
+    Same constraint the pre-D58 6 events carried.
+
+    D70 — PostToolUseFailure / PostToolBatch are tool-context events
+    (their payload carries a tool name) so they accept per-tool audit
+    matchers. They're excluded from this list and covered by
+    `test_d70_post_tool_failure_batch_audit_per_tool_lockstep` below.
+    """
     new_events = [
-        "PostToolUseFailure", "PostToolBatch",
         "PermissionRequest", "PermissionDenied",
         "UserPromptExpansion", "PostCompact",
         "Elicitation", "ElicitationResult",
@@ -322,27 +327,34 @@ def test_d58_supported_events_count_is_30():
 @pytest.mark.parametrize("event", [
     # Observational hooks that today's matrix narrowed to audit-only +
     # run_command. CC's stdout JSON (additionalContext) is uniform on
-    # all 26 inject_context-capable events, so operators authoring
+    # all 22 inject_context-capable events, so operators authoring
     # "carry context over to the next turn" should be able to attach
     # inject_context to any of these without a runtime refusal.
+    #
+    # D70 — the inject_context-legal set is now 22 (was 26): the
+    # original D59 four (Elicitation / ElicitationResult /
+    # WorktreeCreate / MessageDisplay) plus the D70 four end-of-life
+    # events (Stop / StopFailure / SessionEnd / SubagentStop) are
+    # excluded. Stop / SessionEnd / SubagentStop were removed from
+    # this list and moved into
+    # `test_d70_inject_context_rejected_on_end_of_life_events`.
     "PreToolUse", "PostToolUse",
     "PostToolUseFailure", "PostToolBatch",
     "PermissionRequest", "PermissionDenied",
     "UserPromptSubmit", "UserPromptExpansion",
     "PreCompact", "PostCompact",
-    "SubagentStart", "SubagentStop",
-    "Stop", "StopFailure",
+    "SubagentStart",
     "Setup", "Notification",
-    "SessionStart", "SessionEnd",
+    "SessionStart",
     "TeammateIdle", "TaskCreated", "TaskCompleted",
     "ConfigChange",
     "WorktreeRemove",
     "InstructionsLoaded",
     "CwdChanged", "FileChanged",
 ])
-def test_d69_inject_context_legal_on_26_events(event):
+def test_d69_inject_context_legal_on_22_events(event):
     """D69: inject_context joins LEGAL_COMBINATIONS as a 6th legal
-    action. The 26 events are exactly `_SUPPORTED_EVENTS -
+    action. The 22 events are exactly `_SUPPORTED_EVENTS -
     _CONTEXT_INJECTION_EXCLUDED_EVENTS`. Both wildcard and (for the
     four tool-context events) per-tool matchers are accepted."""
     validate_combination(event, "*", "inject_context")
@@ -431,6 +443,82 @@ def test_d69_inject_context_excluded_events_still_refused(event, bad_action):
 def test_d69_observational_hooks_still_refuse_block(event):
     with pytest.raises(ValueError, match="illegal combination"):
         validate_combination(event, "*", "block")
+
+
+# ── D70: end-of-life inject_context exclusion + audit lockstep ──────
+
+
+@pytest.mark.parametrize("event", [
+    # D70 — end-of-life events have no downstream same-session model
+    # turn for additionalContext to land in. CC's stdout JSON does
+    # carry the field uniformly but silently drops it at these four
+    # timings. The matrix must refuse the triple at authoring time so
+    # the operator does not see a green check and zero enforcement.
+    "Stop", "StopFailure", "SessionEnd", "SubagentStop",
+])
+def test_d70_inject_context_rejected_on_end_of_life_events(event):
+    with pytest.raises(ValueError, match="illegal combination"):
+        validate_combination(event, "*", "inject_context")
+
+
+@pytest.mark.parametrize("event,matcher", [
+    # D70 — PostToolUseFailure / PostToolBatch payloads carry a tool
+    # name; the audit archetype now accepts the same matcher set
+    # run_command + inject_context already accepted in D63 + D69. The
+    # asymmetry prior to D70 ("inject context on Edit-only failures"
+    # legal, "audit Edit-only failures" refused) is gone.
+    ("PostToolUseFailure",  "Bash"),
+    ("PostToolUseFailure",  "Edit"),
+    ("PostToolUseFailure",  "Bash|Edit"),
+    ("PostToolUseFailure",  "*"),
+    ("PostToolUseFailure",  "mcp__court__file"),
+    ("PostToolBatch",       "Bash"),
+    ("PostToolBatch",       "Bash|Read"),
+    ("PostToolBatch",       "*"),
+    ("PostToolBatch",       "mcp__court__file"),
+])
+def test_d70_post_tool_failure_batch_audit_per_tool_lockstep(event, matcher):
+    validate_combination(event, matcher, "audit")
+
+
+@pytest.mark.parametrize("event,matcher,action", [
+    # D70 — sibling actions on the same (event, matcher) must all be
+    # legal together. Pin a representative slice across audit /
+    # run_command / inject_context so a future widening of one loop
+    # without the others cannot silently re-introduce the asymmetry.
+    ("PostToolUseFailure", "Edit", "audit"),
+    ("PostToolUseFailure", "Edit", "run_command"),
+    ("PostToolUseFailure", "Edit", "inject_context"),
+    ("PostToolBatch",      "Bash|Edit", "audit"),
+    ("PostToolBatch",      "Bash|Edit", "run_command"),
+    ("PostToolBatch",      "Bash|Edit", "inject_context"),
+])
+def test_d70_audit_run_command_inject_context_in_lockstep(event, matcher, action):
+    validate_combination(event, matcher, action)
+
+
+@pytest.mark.parametrize("tool", [
+    # D70 — _BUILTIN_TOOLS expansion. The D69 Common-tier TaskCompleted
+    # promo implicitly tells operators "Task is a thing"; the matcher
+    # registry must classify it as a tool matcher (not raise unknown
+    # matcher class). The other CC 2.1.170 binary-string tools are
+    # added at the same time so the audit is symmetric across events
+    # and tools.
+    "Task", "MultiEdit", "BashOutput", "KillBash",
+    "NotebookRead", "ExitPlanMode", "AskUser",
+])
+def test_d70_builtin_tools_expanded(tool):
+    assert matcher_class_of(tool) is MatcherClass.tool
+
+
+def test_d70_task_tool_legal_on_pretooluse():
+    """An operator following the D69 Common-tier copy "inject results
+    back when the Task tool finishes" and authoring PreToolUse + Task
+    + inject_context must reach a legal triple, not the prior unknown-
+    matcher refusal at IR load time."""
+    validate_combination("PreToolUse", "Task", "inject_context")
+    validate_combination("PreToolUse", "Task", "audit")
+    validate_combination("PreToolUse", "Task", "block")
 
 
 def test_d58_verified_vs_unverified_event_split():

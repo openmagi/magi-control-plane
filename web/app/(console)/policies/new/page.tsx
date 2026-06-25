@@ -192,19 +192,29 @@ function lifecycleHasToolScope(life: Lifecycle | undefined): boolean {
   return life !== undefined && TOOL_CONTEXT_LIFECYCLES.has(life)
 }
 
-// D59: four lifecycles map to CC hooks whose hookSpecificOutput shape
-// is SPECIALIZED — additionalContext is ignored at runtime and the
-// hook uses a different channel. Mirrors
+// D59 + D70: eight lifecycles map to CC hooks where authoring an
+// inject_context policy is silent-fail-open. Mirrors
 // `_CONTEXT_INJECTION_EXCLUDED_EVENTS` in src/magi_cp/policy/ir.py;
 // adding a row there must add the lifecycle slug here too.
 //
-//   elicitation         — hookSpecificOutput.elicitationDecision
-//   elicitation_result  — hookSpecificOutput action / content override
-//   worktree_create     — hookSpecificOutput.worktreePath
-//   message_display     — display-only (no model-context channel)
+//   D59 — specialized hookSpecificOutput shape (additionalContext
+//   ignored at runtime in favor of an alternate field):
+//     elicitation         — hookSpecificOutput.elicitationDecision
+//     elicitation_result  — hookSpecificOutput action / content override
+//     worktree_create     — hookSpecificOutput.worktreePath
+//     message_display     — display-only (no model-context channel)
+//
+//   D70 — end-of-life events with no downstream same-session model
+//   turn for additionalContext to land in (CC silently drops the
+//   field at these timings):
+//     pre_final     (Stop)         — end of execution
+//     stop_failure  (StopFailure)  — end of execution (failure variant)
+//     session_end   (SessionEnd)   — session teardown
+//     subagent_stop (SubagentStop) — child returned; parent-side
+//                                    carry-over belongs on subagent_start
 //
 // Step 4's "Inject extra context" card is rendered with a disabled
-// state + tooltip on these four lifecycles. EvidencePolicy (audit) is
+// state + tooltip on these eight lifecycles. EvidencePolicy (audit) is
 // still legal on every one of them — only the inject_context
 // archetype is gated. The matching ContextInjectionPolicy.validate()
 // raise is the canonical refusal; this set drives the dashboard's
@@ -212,8 +222,11 @@ function lifecycleHasToolScope(life: Lifecycle | undefined): boolean {
 // 4xx flash.
 const CONTEXT_INJECTION_EXCLUDED_LIFECYCLES: ReadonlySet<Lifecycle> =
   new Set<Lifecycle>([
+    // D59 — specialized hookSpecificOutput shape
     "elicitation", "elicitation_result",
     "worktree_create", "message_display",
+    // D70 — end-of-life events with no downstream same-session turn
+    "pre_final", "stop_failure", "session_end", "subagent_stop",
   ])
 
 function lifecycleAllowsInjectContext(life: Lifecycle | undefined): boolean {
@@ -223,15 +236,25 @@ function lifecycleAllowsInjectContext(life: Lifecycle | undefined): boolean {
 
 // D59 follow-up (#14 code-hygiene): explicit narrow union for the
 // excluded lifecycles so the switch below is compile-time exhaustive.
-// A future 5th excluded lifecycle widens this union, which propagates
-// to `injectContextDisabledCopy` and the `never`-guard in the default
+// A future excluded lifecycle widens this union, which propagates to
+// `injectContextDisabledCopy` and the `never`-guard in the default
 // branch, making the missing case loud at TS build time instead of
 // silently falling through to the generic copy at runtime.
+//
+// D70 — extended to include the four end-of-life events (pre_final /
+// stop_failure / session_end / subagent_stop). The reason copy differs
+// per category: D59 entries name the alternate hookSpecificOutput
+// field; D70 entries explain that there is no downstream same-session
+// model turn for additionalContext to land in.
 type ContextInjectionExcludedLifecycle =
   | "elicitation"
   | "elicitation_result"
   | "worktree_create"
   | "message_display"
+  | "pre_final"
+  | "stop_failure"
+  | "session_end"
+  | "subagent_stop"
 
 // Per-lifecycle tooltip explaining the alternate channel (mirror of
 // `_CONTEXT_INJECTION_ALTERNATE_CHANNEL` in src/magi_cp/policy/ir.py).
@@ -262,6 +285,22 @@ function injectContextDisabledCopy(
       return ko
         ? "이 hook 은 표시 전용입니다. 화면의 delta 만 바꾸고 저장된 메시지나 모델 컨텍스트는 건드리지 않습니다. 추가 정보 주입은 불가합니다."
         : "This hook is display-only. It replaces the on-screen delta without changing the stored message or feeding the model context. Inject extra context is not available."
+    case "pre_final":
+      return ko
+        ? "이 hook 은 실행 종료 시점에 fire 됩니다. 같은 세션 안에 additionalContext 를 주입할 다음 모델 턴이 없어서 CC 는 이 필드를 무시합니다. 추가 정보 주입은 불가합니다."
+        : "This hook fires at end-of-execution. There is no downstream same-session model turn for additionalContext to land in, so CC silently drops the field. Inject extra context is not available."
+    case "stop_failure":
+      return ko
+        ? "이 hook 은 Stop 의 실패 변형으로 실행 종료 시점에 fire 됩니다. 같은 세션 안에 additionalContext 를 주입할 다음 모델 턴이 없어서 CC 는 이 필드를 무시합니다. 추가 정보 주입은 불가합니다."
+        : "This hook mirrors Stop's end-of-execution timing (failure variant). There is no downstream same-session model turn for additionalContext to land in. Inject extra context is not available."
+    case "session_end":
+      return ko
+        ? "이 hook 은 세션 종료 시점에 fire 됩니다. 세션이 닫히는 중이라 additionalContext 를 받을 모델 턴이 없습니다. 추가 정보 주입은 불가합니다."
+        : "This hook fires at session teardown. The session is closing so there is no future model turn to receive additionalContext. Inject extra context is not available."
+    case "subagent_stop":
+      return ko
+        ? "이 hook 은 child 가 반환된 직후 fire 됩니다. 부모 쪽으로 컨텍스트를 넘기려면 subagent_start 에 inject_context 를 다세요. 같은 세션 안에 additionalContext 가 들어갈 모델 턴이 없습니다."
+        : "This hook fires after the child has returned. For parent-side carry-over, author the injection on subagent_start instead. There is no downstream same-session model turn for additionalContext on subagent_stop."
     default: {
       const _exhaustive: never = life
       return _exhaustive
@@ -281,6 +320,10 @@ function asContextInjectionExcludedLifecycle(
     case "elicitation_result":
     case "worktree_create":
     case "message_display":
+    case "pre_final":
+    case "stop_failure":
+    case "session_end":
+    case "subagent_stop":
       return life
     default:
       return null
@@ -412,50 +455,88 @@ const ALL_REWRITER_KINDS: readonly RewriterKind[] = [
 //   user_prompt     → block / ask / audit (prompt hasn't reached the LLM)
 //   pre_compact     → block / audit (compaction hasn't fired yet)
 //   subagent_stop / session_* → audit only (boundary markers)
+// D70: derive `inject_context` membership from
+// `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES` so the wizard's action
+// surface stays in lockstep with the runtime matrix. D57f-1's prior
+// "inject_context is universally legal" assumption baked the excluded
+// rows in by hand on both tables (`ACTIONS_BY_LIFECYCLE` and
+// `ACTIONS_BY_COMBINATION`), letting D69's matrix narrowing diverge
+// from the wizard's Step 4 surface (operator picked "Inject extra
+// context" on elicitation, saw the action card, then hit a generic
+// `illegal combination` save error). Centralizing the per-lifecycle
+// derivation here means a future widening / re-narrowing of the
+// excluded set propagates to both tables automatically.
+function _allowsInjectContext(life: Lifecycle): boolean {
+  return !CONTEXT_INJECTION_EXCLUDED_LIFECYCLES.has(life)
+}
+function _withInjectContextIf(
+  life: Lifecycle,
+  base: readonly Action[],
+): readonly Action[] {
+  return _allowsInjectContext(life)
+    ? base
+    : base.filter((a) => a !== "inject_context")
+}
+
 const ACTIONS_BY_LIFECYCLE: Record<Lifecycle, readonly Action[]> = {
-  before_tool_use: ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
-  after_tool_use:  ["audit", "inject_context", "run_command"],
-  pre_final:       ["audit", "inject_context", "run_command"],
-  subagent_stop:   ["audit", "inject_context", "run_command"],
-  user_prompt:     ["block", "ask", "audit", "inject_context", "run_command"],
-  pre_compact:     ["block", "audit", "inject_context", "run_command"],
-  session_start:   ["audit", "inject_context", "run_command"],
-  session_end:     ["audit", "inject_context", "run_command"],
+  before_tool_use: _withInjectContextIf("before_tool_use", ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"]),
+  after_tool_use:  _withInjectContextIf("after_tool_use",  ["audit", "inject_context", "run_command"]),
+  // D70 — pre_final (Stop) is end-of-execution, no downstream
+  // same-session model turn for additionalContext. inject_context
+  // dropped by `_withInjectContextIf`.
+  pre_final:       _withInjectContextIf("pre_final",       ["audit", "inject_context", "run_command"]),
+  // D70 — subagent_stop similarly excluded; parent-side carry-over
+  // belongs on subagent_start.
+  subagent_stop:   _withInjectContextIf("subagent_stop",   ["audit", "inject_context", "run_command"]),
+  user_prompt:     _withInjectContextIf("user_prompt",     ["block", "ask", "audit", "inject_context", "run_command"]),
+  pre_compact:     _withInjectContextIf("pre_compact",     ["block", "audit", "inject_context", "run_command"]),
+  session_start:   _withInjectContextIf("session_start",   ["audit", "inject_context", "run_command"]),
+  // D70 — session_end is session teardown; inject_context dropped.
+  session_end:     _withInjectContextIf("session_end",     ["audit", "inject_context", "run_command"]),
   // D58: pre-side gate hooks where CC supports decision overrides
   // (block) plus optional human review (ask). Same channel
   // PreToolUse uses.
-  permission_request:    ["block", "ask", "audit", "inject_context", "run_command"],
-  elicitation:           ["block", "ask", "audit", "inject_context", "run_command"],
+  permission_request:    _withInjectContextIf("permission_request",    ["block", "ask", "audit", "inject_context", "run_command"]),
+  // D59 — elicitation hookSpecificOutput uses .elicitationDecision;
+  // inject_context dropped.
+  elicitation:           _withInjectContextIf("elicitation",           ["block", "ask", "audit", "inject_context", "run_command"]),
   // D58: pre-side gates where there is no interactive surface to
   // interrupt to (the prompt is mid-expansion, the compaction is
   // already running). block + audit only.
-  user_prompt_expansion: ["block", "audit", "inject_context", "run_command"],
+  user_prompt_expansion: _withInjectContextIf("user_prompt_expansion", ["block", "audit", "inject_context", "run_command"]),
   // D58: everything else is audit-only — by the time CC fires the
   // hook the runtime cannot rewind.
-  // D57f-1: inject_context is universally legal because CC's
-  // hookSpecificOutput JSON schema accepts `additionalContext` on
-  // every hook event, so the wizard surfaces it on every lifecycle.
-  // D63: run_command is also universally legal (CC stdout JSON
-  // contract is the same on every hook).
-  post_tool_use_failure: ["audit", "inject_context", "run_command"],
-  post_tool_batch:       ["audit", "inject_context", "run_command"],
-  permission_denied:     ["audit", "inject_context", "run_command"],
-  post_compact:          ["audit", "inject_context", "run_command"],
-  elicitation_result:    ["audit", "inject_context", "run_command"],
-  subagent_start:        ["audit", "inject_context", "run_command"],
-  stop_failure:          ["audit", "inject_context", "run_command"],
-  setup:                 ["audit", "inject_context", "run_command"],
-  notification:          ["audit", "inject_context", "run_command"],
-  teammate_idle:         ["audit", "inject_context", "run_command"],
-  task_created:          ["audit", "inject_context", "run_command"],
-  task_completed:        ["audit", "inject_context", "run_command"],
-  config_change:         ["audit", "inject_context", "run_command"],
-  worktree_create:       ["audit", "inject_context", "run_command"],
-  worktree_remove:       ["audit", "inject_context", "run_command"],
-  instructions_loaded:   ["audit", "inject_context", "run_command"],
-  cwd_changed:           ["audit", "inject_context", "run_command"],
-  file_changed:          ["audit", "inject_context", "run_command"],
-  message_display:       ["audit", "inject_context", "run_command"],
+  // D63: run_command is universally legal (CC stdout JSON contract is
+  // the same on every hook).
+  // D57f-1 / D59 / D70: inject_context is NOT universally legal — it
+  // is gated by `_withInjectContextIf` against
+  // `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES`. The 8 excluded rows
+  // (elicitation / elicitation_result / worktree_create /
+  // message_display + pre_final / stop_failure / session_end /
+  // subagent_stop) drop inject_context automatically.
+  post_tool_use_failure: _withInjectContextIf("post_tool_use_failure", ["audit", "inject_context", "run_command"]),
+  post_tool_batch:       _withInjectContextIf("post_tool_batch",       ["audit", "inject_context", "run_command"]),
+  permission_denied:     _withInjectContextIf("permission_denied",     ["audit", "inject_context", "run_command"]),
+  post_compact:          _withInjectContextIf("post_compact",          ["audit", "inject_context", "run_command"]),
+  // D59 — elicitation_result excluded.
+  elicitation_result:    _withInjectContextIf("elicitation_result",    ["audit", "inject_context", "run_command"]),
+  subagent_start:        _withInjectContextIf("subagent_start",        ["audit", "inject_context", "run_command"]),
+  // D70 — stop_failure end-of-life excluded.
+  stop_failure:          _withInjectContextIf("stop_failure",          ["audit", "inject_context", "run_command"]),
+  setup:                 _withInjectContextIf("setup",                 ["audit", "inject_context", "run_command"]),
+  notification:          _withInjectContextIf("notification",          ["audit", "inject_context", "run_command"]),
+  teammate_idle:         _withInjectContextIf("teammate_idle",         ["audit", "inject_context", "run_command"]),
+  task_created:          _withInjectContextIf("task_created",          ["audit", "inject_context", "run_command"]),
+  task_completed:        _withInjectContextIf("task_completed",        ["audit", "inject_context", "run_command"]),
+  config_change:         _withInjectContextIf("config_change",         ["audit", "inject_context", "run_command"]),
+  // D59 — worktree_create excluded.
+  worktree_create:       _withInjectContextIf("worktree_create",       ["audit", "inject_context", "run_command"]),
+  worktree_remove:       _withInjectContextIf("worktree_remove",       ["audit", "inject_context", "run_command"]),
+  instructions_loaded:   _withInjectContextIf("instructions_loaded",   ["audit", "inject_context", "run_command"]),
+  cwd_changed:           _withInjectContextIf("cwd_changed",           ["audit", "inject_context", "run_command"]),
+  file_changed:          _withInjectContextIf("file_changed",          ["audit", "inject_context", "run_command"]),
+  // D59 — message_display excluded.
+  message_display:       _withInjectContextIf("message_display",       ["audit", "inject_context", "run_command"]),
 }
 
 // D56d (P1 #1 + #2 fidelity follow-up): matrix.py LEGAL_COMBINATIONS
@@ -507,6 +588,20 @@ function toolScopeIsMulti(scope: string | undefined): boolean {
   return parseCsv(raw).length > 1
 }
 
+// D70: derive each `inject_context` membership from the same exclusion
+// set as ACTIONS_BY_LIFECYCLE above so the two tables cannot drift.
+// The prior hand-rolled rows surfaced `inject_context` on every
+// lifecycle including the four D59-excluded ones, which let Step 4
+// accept "Inject extra context" on (e.g.) elicitation before the
+// cloud refused it via matrix.LEGAL_COMBINATIONS on save. A future
+// re-add MUST go through `_filterByCombination` so the lockstep
+// holds for both tables.
+function _filterByCombination(
+  life: Lifecycle, actions: readonly Action[],
+): readonly Action[] {
+  return _withInjectContextIf(life, actions)
+}
+
 // Per (lifecycle, matcher_class) action allowlist. Mirror of
 // matrix.LEGAL_COMBINATIONS in src/magi_cp/policy/matrix.py — adding a
 // new event/matcher there must be reflected here too.
@@ -514,52 +609,51 @@ const ACTIONS_BY_COMBINATION: Record<
   Lifecycle, Record<MatcherClassKey, readonly Action[]>
 > = {
   before_tool_use: {
-    tool:     ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
-    mcp_tool: ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"],
-    wildcard: ["audit", "inject_context", "run_command"],
+    tool:     _filterByCombination("before_tool_use", ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"]),
+    mcp_tool: _filterByCombination("before_tool_use", ["block", "ask", "audit", "inject_context", "input_rewrite", "run_command"]),
+    wildcard: _filterByCombination("before_tool_use", ["audit", "inject_context", "run_command"]),
   },
   after_tool_use: {
-    tool:     ["audit", "inject_context", "run_command"],
-    mcp_tool: ["audit", "inject_context", "run_command"],
+    tool:     _filterByCombination("after_tool_use", ["audit", "inject_context", "run_command"]),
+    mcp_tool: _filterByCombination("after_tool_use", ["audit", "inject_context", "run_command"]),
     wildcard: [],
   },
-  pre_final:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  subagent_stop: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  user_prompt:   { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
-  pre_compact:   { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context", "run_command"] },
-  session_start: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  session_end:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  pre_final:     { tool: [], mcp_tool: [], wildcard: _filterByCombination("pre_final",     ["audit", "inject_context", "run_command"]) },
+  subagent_stop: { tool: [], mcp_tool: [], wildcard: _filterByCombination("subagent_stop", ["audit", "inject_context", "run_command"]) },
+  user_prompt:   { tool: [], mcp_tool: [], wildcard: _filterByCombination("user_prompt",   ["block", "ask", "audit", "inject_context", "run_command"]) },
+  pre_compact:   { tool: [], mcp_tool: [], wildcard: _filterByCombination("pre_compact",   ["block", "audit", "inject_context", "run_command"]) },
+  session_start: { tool: [], mcp_tool: [], wildcard: _filterByCombination("session_start", ["audit", "inject_context", "run_command"]) },
+  session_end:   { tool: [], mcp_tool: [], wildcard: _filterByCombination("session_end",   ["audit", "inject_context", "run_command"]) },
   // D58 extensions — every new lifecycle is wildcard-only at the
   // matcher level (the new payloads either carry no tool name or
   // the wizard doesn't yet surface per-tool authoring on them).
   // Action set follows matrix.LEGAL_COMBINATIONS exactly.
-  // D57f-1: inject_context is universally legal at the wildcard
-  // surface; the matrix doesn't constrain it because CC accepts
-  // additionalContext on every event JSON.
-  // D63: run_command is also universally legal (uniform CC stdout
-  // JSON contract).
-  permission_request:    { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
-  elicitation:           { tool: [], mcp_tool: [], wildcard: ["block", "ask", "audit", "inject_context", "run_command"] },
-  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: ["block", "audit", "inject_context", "run_command"] },
-  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  permission_denied:     { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  post_compact:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  elicitation_result:    { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  subagent_start:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  stop_failure:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  setup:                 { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  notification:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  teammate_idle:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  task_created:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  task_completed:        { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  config_change:         { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  worktree_create:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  worktree_remove:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  cwd_changed:           { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  file_changed:          { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
-  message_display:       { tool: [], mcp_tool: [], wildcard: ["audit", "inject_context", "run_command"] },
+  // D63: run_command is universally legal at the wildcard surface
+  // (uniform CC stdout JSON contract).
+  // D57f-1 / D59 / D70: inject_context is gated by
+  // `_filterByCombination` against `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES`.
+  permission_request:    { tool: [], mcp_tool: [], wildcard: _filterByCombination("permission_request",    ["block", "ask", "audit", "inject_context", "run_command"]) },
+  elicitation:           { tool: [], mcp_tool: [], wildcard: _filterByCombination("elicitation",           ["block", "ask", "audit", "inject_context", "run_command"]) },
+  user_prompt_expansion: { tool: [], mcp_tool: [], wildcard: _filterByCombination("user_prompt_expansion", ["block", "audit", "inject_context", "run_command"]) },
+  post_tool_use_failure: { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_tool_use_failure", ["audit", "inject_context", "run_command"]) },
+  post_tool_batch:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_tool_batch",       ["audit", "inject_context", "run_command"]) },
+  permission_denied:     { tool: [], mcp_tool: [], wildcard: _filterByCombination("permission_denied",     ["audit", "inject_context", "run_command"]) },
+  post_compact:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("post_compact",          ["audit", "inject_context", "run_command"]) },
+  elicitation_result:    { tool: [], mcp_tool: [], wildcard: _filterByCombination("elicitation_result",    ["audit", "inject_context", "run_command"]) },
+  subagent_start:        { tool: [], mcp_tool: [], wildcard: _filterByCombination("subagent_start",        ["audit", "inject_context", "run_command"]) },
+  stop_failure:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("stop_failure",          ["audit", "inject_context", "run_command"]) },
+  setup:                 { tool: [], mcp_tool: [], wildcard: _filterByCombination("setup",                 ["audit", "inject_context", "run_command"]) },
+  notification:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("notification",          ["audit", "inject_context", "run_command"]) },
+  teammate_idle:         { tool: [], mcp_tool: [], wildcard: _filterByCombination("teammate_idle",         ["audit", "inject_context", "run_command"]) },
+  task_created:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("task_created",          ["audit", "inject_context", "run_command"]) },
+  task_completed:        { tool: [], mcp_tool: [], wildcard: _filterByCombination("task_completed",        ["audit", "inject_context", "run_command"]) },
+  config_change:         { tool: [], mcp_tool: [], wildcard: _filterByCombination("config_change",         ["audit", "inject_context", "run_command"]) },
+  worktree_create:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("worktree_create",       ["audit", "inject_context", "run_command"]) },
+  worktree_remove:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("worktree_remove",       ["audit", "inject_context", "run_command"]) },
+  instructions_loaded:   { tool: [], mcp_tool: [], wildcard: _filterByCombination("instructions_loaded",   ["audit", "inject_context", "run_command"]) },
+  cwd_changed:           { tool: [], mcp_tool: [], wildcard: _filterByCombination("cwd_changed",           ["audit", "inject_context", "run_command"]) },
+  file_changed:          { tool: [], mcp_tool: [], wildcard: _filterByCombination("file_changed",          ["audit", "inject_context", "run_command"]) },
+  message_display:       { tool: [], mcp_tool: [], wildcard: _filterByCombination("message_display",       ["audit", "inject_context", "run_command"]) },
 }
 
 function allowedActionsForCombination(
@@ -3309,11 +3403,11 @@ function lifecycleCardCopy(
     },
     pre_final: {
       label: "에이전트 턴 종료 (Stop)",
-      sub: "메인 에이전트 턴 종료 시점. 감사용으로만 사용합니다 (런타임은 차단 불가).",
+      sub: "메인 에이전트 턴 종료 시점. 감사용으로만 사용합니다 (런타임은 차단 불가). 실행 종료 시점이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     subagent_stop: {
       label: "서브에이전트 종료 (SubagentStop)",
-      sub: "서브에이전트(Task) 호출이 응답을 마쳤을 때 발동. 결과 트랜스크립트 감사 용도.",
+      sub: "서브에이전트(Task) 호출이 응답을 마쳤을 때 발동. 결과 트랜스크립트 감사 용도. child 가 이미 반환됐기 때문에 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다 (부모 측 주입은 SubagentStart 에서).",
     },
     session_start: {
       label: "세션 시작 (SessionStart)",
@@ -3321,7 +3415,7 @@ function lifecycleCardCopy(
     },
     session_end: {
       label: "세션 종료 (SessionEnd)",
-      sub: "세션이 종료될 때 한 번 발동. 감사 경계 마커로 사용합니다.",
+      sub: "세션이 종료될 때 한 번 발동. 감사 경계 마커로 사용합니다. 세션이 닫히는 중이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     // D58
     post_tool_use_failure: {
@@ -3362,7 +3456,7 @@ function lifecycleCardCopy(
     },
     stop_failure: {
       label: "에이전트 종료 실패 (StopFailure)",
-      sub: "Stop 훅 처리 중 실패가 발생했을 때. 감사용.",
+      sub: "Stop 훅 처리 중 실패가 발생했을 때. 감사용. Stop 과 마찬가지로 실행 종료 시점이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     setup: {
       label: "최초 셋업 (Setup)",
@@ -3431,11 +3525,11 @@ function lifecycleCardCopy(
     },
     pre_final: {
       label: "When the agent stops (Stop)",
-      sub: "Main agent turn ends. Audit-only (the runtime cannot rewind the answer).",
+      sub: "Main agent turn ends. Audit-only (the runtime cannot rewind the answer). End-of-execution timing means there is no downstream same-session model turn, so “Inject extra context” is not available here.",
     },
     subagent_stop: {
       label: "When a subagent stops (SubagentStop)",
-      sub: "Fires when a subagent task ends. Use it to audit child transcripts.",
+      sub: "Fires when a subagent task ends. Use it to audit child transcripts. The child has already returned, so there is no downstream same-session model turn for additionalContext; “Inject extra context” is not available here (use SubagentStart for parent-side carry-over).",
     },
     session_start: {
       label: "When the session opens (SessionStart)",
@@ -3443,7 +3537,7 @@ function lifecycleCardCopy(
     },
     session_end: {
       label: "When the session closes (SessionEnd)",
-      sub: "Fires once at session end. Audit boundary marker.",
+      sub: "Fires once at session end. Audit boundary marker. The session is closing so there is no downstream model turn for additionalContext; “Inject extra context” is not available here.",
     },
     // D58
     post_tool_use_failure: {
@@ -3484,7 +3578,7 @@ function lifecycleCardCopy(
     },
     stop_failure: {
       label: "Stop failure (StopFailure)",
-      sub: "Fires when the Stop hook chain itself errored out. Audit-only.",
+      sub: "Fires when the Stop hook chain itself errored out. Audit-only. Same end-of-execution timing as Stop, so “Inject extra context” is not available here.",
     },
     setup: {
       label: "Workspace setup (Setup)",
