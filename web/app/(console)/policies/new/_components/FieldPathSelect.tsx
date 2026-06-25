@@ -61,25 +61,37 @@ export function FieldPathSelect({
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
+  // D80 follow-up (react/perf #4 + #7): the page-side caller builds
+  // `options` via an inline IIFE so the array identity is new on every
+  // render of the surrounding Step 3 surface, even when its contents
+  // are identical. Stashing the latest `options` in a ref lets the
+  // chip-event effect (below) depend only on [chipEventName] and read
+  // the live options reference at call time, instead of tearing down
+  // and re-binding the document listener on every parent render.
+  const optionsRef = useRef(options)
+  optionsRef.current = options
   const reactId = useId()
   const listboxId = id ? `${id}-listbox` : `field-path-${reactId}-listbox`
 
   // Listen for chip-click events that should set the value without
-  // popping the listbox open.
+  // popping the listbox open. The listener mounts exactly once per
+  // chipEventName (see optionsRef rationale above): a new `options`
+  // array on every parent re-render must NOT churn the document-
+  // level addEventListener / removeEventListener pair.
   useEffect(() => {
     function onChip(e: Event) {
       const ce = e as CustomEvent<{ value?: string }>
       const next = (ce.detail?.value ?? "").trim()
       if (!next) return
       setValue(next)
-      const idx = options.findIndex((o) => o.path === next)
+      const idx = optionsRef.current.findIndex((o) => o.path === next)
       if (idx >= 0) setHighlight(idx)
     }
     document.addEventListener(chipEventName, onChip as EventListener)
     return () => {
       document.removeEventListener(chipEventName, onChip as EventListener)
     }
-  }, [chipEventName, options])
+  }, [chipEventName])
 
   // Close on outside click.
   useEffect(() => {
@@ -100,6 +112,19 @@ export function FieldPathSelect({
     const row = list.querySelectorAll<HTMLElement>("[role='option']")[highlight]
     if (row) row.scrollIntoView({ block: "nearest" })
   }, [open, highlight])
+
+  // D80 follow-up (a11y-keyboard #10): explicitly focus the listbox on
+  // every open transition. React's `autoFocus` prop only fires on the
+  // element's mount, and when the trigger is a mouse-click the browser
+  // may steal focus back to the button before React's autoFocus runs.
+  // The result: Escape / ArrowDown / ArrowUp on the listbox went
+  // nowhere because focus stayed on the button. Driving focus from
+  // an effect on every `open` transition guarantees keyboard nav works
+  // regardless of whether the trigger was mouse, keyboard, or
+  // programmatic.
+  useEffect(() => {
+    if (open) listRef.current?.focus()
+  }, [open])
 
   const selected = useMemo(
     () => options.find((o) => o.path === value) ?? null,
@@ -196,7 +221,6 @@ export function FieldPathSelect({
           tabIndex={-1}
           aria-label={ariaLabel}
           onKeyDown={onListKey}
-          autoFocus
           className={
             "absolute z-20 mt-1 max-h-72 w-full overflow-y-auto " +
             "rounded-lg border border-black/[0.08] bg-white shadow-lg " +

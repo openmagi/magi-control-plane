@@ -2751,8 +2751,15 @@ describe("policies/new wizard — D80 polish (Step 3 picker + Step 4 layered + S
       path.join(__dirname, "_components", "Step4ActionAdvanced.tsx"),
       "utf-8",
     )
-    // Mount default is closed (SSR-stable), localStorage hydrates.
-    expect(advSrc).toMatch(/useState<boolean>\(false\)/)
+    // D80 follow-up (SSR-hydration #5): mount uses a lazy initializer
+    // seeded from `forceOpen` so the first paint matches the post-
+    // hydration state when the operator's pick already lives in the
+    // Advanced tier (no display:none flash before localStorage
+    // hydrates). `forceOpen` is a server-rendered prop, identical on
+    // server and client, so this does not produce a hydration
+    // mismatch. localStorage hydration still runs in the effect for
+    // the persisted-open-without-forceOpen case.
+    expect(advSrc).toMatch(/useState<boolean>\(\(\) => Boolean\(forceOpen\)\)/)
     // Toggle button carries aria-expanded for SR users.
     expect(advSrc).toMatch(/aria-expanded=\{open\}/)
     // Matrix gating: forceOpen pulls the section open when the

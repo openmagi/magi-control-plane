@@ -2156,10 +2156,14 @@ async function saveWizard(formData: FormData): Promise<void> {
     fetchDomain: String(formData.get("fetchDomain") ?? "").trim() || undefined,
     allowlist: String(formData.get("allowlist") ?? "").trim() || undefined,
     pattern: String(formData.get("pattern") ?? "").trim() || undefined,
-    // D82c: regex condition picker, chip-picked or default-typed field
-    // path the runtime should run the pattern against. Empty default
-    // ("tool_response.output") is supplied client-side in the <select>
-    // so this carries through even when the operator never touches it.
+    // D82c / D80: regex condition picker, chip-picked or default-typed
+    // field path the runtime should run the pattern against. The picker
+    // is now FieldPathSelect (a custom listbox + hidden input), not a
+    // native <select>; the `initialValue` prop (computed as
+    // state.regexFieldPath ?? defaultRegexFieldFor(state) ??
+    // payloadFields[0]?.path ?? "") seeds the controlled hidden input
+    // so FormData.get("regexFieldPath") carries the default through
+    // even when the operator never opens the listbox.
     regexFieldPath: String(formData.get("regexFieldPath") ?? "").trim() || undefined,
     llmCriterion: String(formData.get("llmCriterion") ?? "").trim() || undefined,
     evidenceRefs: _evidenceRefsKept,
@@ -5099,22 +5103,613 @@ function Step4Action({
   const ADVANCED_ACTION_TIER: ReadonlySet<Action> = new Set<Action>([
     "inject_context", "input_rewrite", "run_command",
   ])
+  // D80 follow-up (partition-exhaustiveness #9): a parallel
+  // Record<Action, ...> map drives exhaustiveness off the Action
+  // union itself. If a future widening adds an 8th archetype to the
+  // Action union (e.g. a new row in actions.py / matrix.ts), tsc fails
+  // here on the missing key. Without this, the partition above would
+  // silently drop the new value from Step 4's render (allowed.filter
+  // → empty) and the matrix-gating contract
+  // (`allowedActionsForCombination` returns a value that the wizard
+  // renders) would break silently. The Sets above remain the canonical
+  // membership tests; the Record is a type-only guard.
+  const _ACTION_TIER_EXHAUSTIVE: Record<Action, "common" | "advanced"> = {
+    block: "common",
+    ask: "common",
+    audit: "common",
+    strip: "common",
+    inject_context: "advanced",
+    input_rewrite: "advanced",
+    run_command: "advanced",
+  }
+  // Runtime parity check (DEV-only-ish): the Record must agree with
+  // the Sets. A drifted entry (e.g. ACTION_TIER says "common" but the
+  // Set says "advanced") fails this check loudly so the two sources of
+  // truth cannot quietly diverge. This is a cheap guard; we do it
+  // once per Step 4 render which is acceptable.
+  for (const a of Object.keys(_ACTION_TIER_EXHAUSTIVE) as Action[]) {
+    const tier = _ACTION_TIER_EXHAUSTIVE[a]
+    const inCommon = COMMON_ACTION_TIER.has(a)
+    const inAdvanced = ADVANCED_ACTION_TIER.has(a)
+    if (tier === "common" && !inCommon) {
+      throw new Error(`ACTION_TIER drift: ${a} marked common but not in COMMON_ACTION_TIER`)
+    }
+    if (tier === "advanced" && !inAdvanced) {
+      throw new Error(`ACTION_TIER drift: ${a} marked advanced but not in ADVANCED_ACTION_TIER`)
+    }
+  }
   const commonActions: Action[] = allowed.filter((a) => COMMON_ACTION_TIER.has(a))
   const advancedActions: Action[] = allowed.filter((a) => ADVANCED_ACTION_TIER.has(a))
   // When the operator's currently-picked action lives in the Advanced
   // tier (Edit mode or back-nav from Step 5), force the expander open
   // so the selected card is visible without the operator having to
   // hunt for the disclosure.
-  const advancedForceOpen: boolean = defaultPick != null
-    && ADVANCED_ACTION_TIER.has(defaultPick)
+  //
+  // D80 follow-up (ux-regression #2): also force-open when the Advanced
+  // tier carries a disabled-but-relevant inject_context card the
+  // operator should see. When the operator picks a
+  // CONTEXT_INJECTION_EXCLUDED_LIFECYCLES lifecycle and lands on Step 4
+  // with defaultPick=audit (because inject_context is filtered out of
+  // pickableForDefault), the disabled inject_context card and its
+  // "why is this grayed out?" tooltip would otherwise be buried inside
+  // the collapsed-by-default Advanced expander. Forcing the expander
+  // open in this case keeps the D59 matrix-driven explanation surface
+  // visible by default. That is the whole point of D59.
+  const advancedHasDisabledInjectContext: boolean =
+    !lifecycleAllowsInjectContext(lifecycle)
+    && advancedActions.includes("inject_context")
+  const advancedForceOpen: boolean = (
+    defaultPick != null && ADVANCED_ACTION_TIER.has(defaultPick)
+  ) || advancedHasDisabledInjectContext
   // D80 i18n: prefer translated copy via t() so a future locale add
   // (or copy edit) lifts off the same dict the rest of Step 4 uses.
+  //
+  // D80 follow-up (i18n #3): use the bare "Advanced" label on the left
+  // side of the toggle so the format matches Step 1's "group-label +
+  // numeric-count" shape. The numeric count renders on the right via
+  // the `advancedCount` prop so it's not duplicated. Before this fix,
+  // the toggle rendered "Advanced (3 actions)" on the left AND "3" on
+  // the right, which read noisier than the Step 1 parity baseline
+  // ("Permissions" + "3") it claims to mirror.
   const advancedHeaderLabel: string = t(
-    "newPolicy.wizard.step4.advancedHeader",
-    { count: advancedActions.length },
+    "newPolicy.wizard.step4.advancedSection",
   )
   const advancedExpandLabel: string = t("newPolicy.wizard.step4.expandAdvanced")
   const advancedCollapseLabel: string = t("newPolicy.wizard.step4.collapseAdvanced")
+  // D80 follow-up (#1 + #8): a single per-archetype renderer used by
+  // both the Common and Advanced maps so the disabled-card / Step 4b
+  // sub-form / matrix-gating logic lives in exactly one place.
+  //
+  // Before this refactor, both `commonActions.map` AND `advancedActions.map`
+  // carried the FULL per-archetype if-ladder (strip-disabled +
+  // inject_context disabled + inject_context active + input_rewrite +
+  // run_command + fallback RadioCard). Because COMMON_ACTION_TIER and
+  // ADVANCED_ACTION_TIER are disjoint, ~600 LOC of branches in each
+  // map were dead. `a === "inject_context"` could never fire inside
+  // commonActions.map, and `a === "strip"` could never fire inside
+  // advancedActions.map. A future operator who tweaked one copy but
+  // forgot the twin would silently diverge the matrix-gating contract.
+  //
+  // The renderer captures every Step 4 closure (defaultPick, labels,
+  // ko, state, lifecycle, errRingFor, errRingCls, schemeFrom*, scheme
+  // To*, inputCls, actionCardClasses, etc) so the call sites stay
+  // one-liners. JSX identity stays per-key via the surrounding
+  // `commonActions.map((a) => renderActionCard(a))` (each call
+  // produces a fresh element keyed by `a`).
+  function renderActionCard(a: Action): React.ReactNode {
+    const stripDisabled = a === "strip" && !STRIP_AVAILABLE
+    if (stripDisabled) {
+      return (
+        <label key={a} className="block cursor-not-allowed opacity-60">
+          <input type="radio" name="action" value={a} disabled className="peer sr-only" />
+          <span data-action-tone="strip" className="block rounded-xl border border-purple-300 bg-purple-50/40 p-4">
+            <span className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+              <Badge variant="info">coming soon</Badge>
+            </span>
+            <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+          </span>
+        </label>
+      )
+    }
+    // D59: four lifecycles map to hooks whose hookSpecificOutput shape
+    // is SPECIALIZED. additionalContext is silently ignored at
+    // runtime, so the wizard greys the card out and surfaces a per-
+    // event tooltip naming the actual channel that hook uses. The
+    // visible state is disabled-but-rendered (not hidden) so the
+    // operator understands WHY the archetype they were looking for is
+    // unavailable; EvidencePolicy (audit) is still legal on every one
+    // of these via the matrix, so the operator can pivot without
+    // losing wizard progress. Step 4b (template editor) sits inside
+    // the same <label> branch we're skipping. It's unreachable here
+    // because the radio input itself is `disabled`, the peer-checked
+    // sibling can never match.
+    if (a === "inject_context" && !lifecycleAllowsInjectContext(lifecycle)) {
+      // D59 follow-up (#14): `lifecycleAllowsInjectContext` returns
+      // false iff `lifecycle` is in the excluded set OR undefined;
+      // the helper below narrows to the typed union so the
+      // disabled-copy switch stays exhaustive.
+      const narrowedExcluded = asContextInjectionExcludedLifecycle(lifecycle)
+      if (narrowedExcluded !== null) {
+        const tip = injectContextDisabledCopy(narrowedExcluded, locale)
+        // D59 follow-up (#11 a11y): give the descriptive copy a
+        // stable id and wire it via `aria-describedby` on the
+        // disabled radio so screen readers announce the channel-
+        // mismatch reason at the same moment as the disabled state.
+        const tipId = `step4-inject-disabled-${narrowedExcluded}`
+        return (
+          <label
+            key={a}
+            className="block cursor-not-allowed opacity-60"
+            title={tip}
+            data-testid="step4-inject-context-disabled"
+            data-disabled-lifecycle={lifecycle}
+          >
+            <input
+              type="radio"
+              name="action"
+              value={a}
+              disabled
+              aria-disabled="true"
+              aria-describedby={tipId}
+              className="peer sr-only"
+            />
+            <span
+              data-action-tone="inject_context"
+              className={
+                "block rounded-xl border bg-white p-4 transition-colors " +
+                "border-black/[0.08]"
+              }
+            >
+              <span className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+                {/* D59 follow-up (#13 ux-consistency): use the
+                    neutral `muted` Badge variant so the operator
+                    can distinguish "this archetype is fundamentally
+                    unavailable on this hook" from the blue `info`
+                    "coming soon" badge above. */}
+                <Badge variant="muted">
+                  {ko ? "이 hook 에서는 비활성" : "not available"}
+                </Badge>
+              </span>
+              <span
+                id={tipId}
+                role="note"
+                className="block text-xs text-[var(--color-text-secondary)] leading-relaxed"
+              >
+                {tip}
+              </span>
+            </span>
+          </label>
+        )
+      }
+    }
+    if (a === "inject_context") {
+      return (
+        <label key={a} className="block cursor-pointer">
+          <input
+            type="radio"
+            name="action"
+            value={a}
+            defaultChecked={defaultPick === a}
+            required
+            className="peer sr-only"
+          />
+          <span
+            data-action-tone="inject_context"
+            className={
+              "block rounded-xl border bg-white p-4 transition-colors " +
+              actionCardClasses("inject_context")
+            }
+          >
+            <span className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+            </span>
+            <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+          </span>
+          {/* P1 follow-up (html-validation): the editor wraps
+              block-level descendants; using a <span> here triggers
+              validateDOMNesting warnings. The parent <label> legally
+              accepts flow content, so a <div> here is fine and the
+              `peer-checked ~` general-sibling selector still matches. */}
+          <div
+            data-testid="step4b-inject-editor"
+            className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+          >
+            {/* D68 follow-up (P1 ux-clarity): inject_context's error
+                copy renders in ONE place only, directly under the
+                empty textarea (co-located with the red ring). */}
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+              {ko
+                ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
+                : "When this hook fires, this text becomes part of the model's context. The model sees it as additional system input."}
+            </p>
+            <div>
+              <FieldLabel>
+                {ko ? "주입할 본문" : "Text to inject"}
+              </FieldLabel>
+              <textarea
+                name="injectTemplate"
+                // D68 hotfix: only require when inject_context is the
+                // chosen action. The peer-checked CSS hides the editor
+                // when another action card is selected, but the
+                // `required` attribute still gates form submit even
+                // for hidden inputs.
+                required={state.action === "inject_context"}
+                maxLength={16000}
+                rows={6}
+                defaultValue={state.injectTemplate ?? ""}
+                placeholder={ko
+                  ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
+                  : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
+                spellCheck={false}
+                className={inputCls() + " font-mono" + errRingFor("inject_context")}
+              />
+              {step4ErrAction === "inject_context" && step4ErrHelper && (
+                <p
+                  data-testid="step4-inject-template-helper"
+                  data-step4-err={wizardErr}
+                  role="alert"
+                  className="mt-1 text-xs text-red-700"
+                >
+                  {step4ErrHelper}
+                </p>
+              )}
+              <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                {ko
+                  ? "최대 16000자. 더 긴 본문은 저장 단계에서 거부됩니다."
+                  : "Max 16000 chars. Longer templates are refused at save."}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <FieldLabel>
+                  {ko ? "라벨 (한국어, 선택)" : "Label (Korean, optional)"}
+                </FieldLabel>
+                <input
+                  name="injectLabelKo"
+                  maxLength={128}
+                  defaultValue={state.injectLabelKo ?? ""}
+                  placeholder={ko ? "팀 코딩 표준 주입" : "팀 코딩 표준 주입"}
+                  className={inputCls()}
+                />
+              </div>
+              <div>
+                <FieldLabel>
+                  {ko ? "라벨 (영어, 선택)" : "Label (English, optional)"}
+                </FieldLabel>
+                <input
+                  name="injectLabelEn"
+                  maxLength={128}
+                  defaultValue={state.injectLabelEn ?? ""}
+                  placeholder="Inject team coding standards"
+                  className={inputCls()}
+                />
+              </div>
+            </div>
+          </div>
+        </label>
+      )
+    }
+    if (a === "input_rewrite") {
+      const kindPick = state.rewriterKind ?? "prefix_strip"
+      const matcherForHint = (state.toolScope ?? "").trim()
+      const fieldHintEn = matcherForHint === "WebFetch" ? "url"
+        : matcherForHint === "Read" || matcherForHint === "Write" || matcherForHint === "Edit"
+          ? "file_path"
+          : "command"
+      return (
+        <label key={a} className="block cursor-pointer">
+          <input
+            type="radio"
+            name="action"
+            value={a}
+            defaultChecked={defaultPick === a}
+            required
+            className="peer sr-only"
+          />
+          <span
+            data-action-tone="input_rewrite"
+            className={
+              "block rounded-xl border bg-white p-4 transition-colors " +
+              actionCardClasses("input_rewrite")
+            }
+          >
+            <span className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+            </span>
+            <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+          </span>
+          <div
+            data-testid="step4b-rewriter-editor"
+            className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+          >
+            {step4ErrAction === "input_rewrite" && step4ErrHelper && (
+              <div
+                data-testid="step4b-rewriter-err-banner"
+                data-step4-err={wizardErr}
+                role="alert"
+                className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+              >
+                {step4ErrHelper}
+              </div>
+            )}
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
+              {ko
+                ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
+                : "Right before the tool runs, mutate one field of its input. The tool still executes; no human in the loop."}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <FieldLabel>
+                  {ko ? "재작성 종류" : "Rewriter kind"}
+                </FieldLabel>
+                <select
+                  name="rewriterKind"
+                  defaultValue={kindPick}
+                  className={inputCls()}
+                >
+                  <option value="prefix_strip">
+                    {ko ? "접두사 제거 (prefix strip)" : "Strip a prefix"}
+                  </option>
+                  <option value="scheme_force">
+                    {ko ? "URL 스킴 강제 (force scheme)" : "Force URL scheme"}
+                  </option>
+                  <option value="regex_substitute">
+                    {ko ? "정규식 치환 (regex substitute)" : "Regex substitute"}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <FieldLabel>
+                  {ko ? "도구 입력 필드명" : "Tool input field name"}
+                </FieldLabel>
+                <input
+                  name="rewriterField"
+                  required
+                  maxLength={64}
+                  pattern="[A-Za-z_][A-Za-z0-9_]{0,63}"
+                  defaultValue={state.rewriterField ?? fieldHintEn}
+                  placeholder={fieldHintEn}
+                  spellCheck={false}
+                  className={inputCls() + " font-mono"}
+                />
+                <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
+                  {ko
+                    ? "예: Bash → command, WebFetch → url, Read/Write/Edit → file_path."
+                    : "Bash → command, WebFetch → url, Read/Write/Edit → file_path."}
+                </p>
+              </div>
+            </div>
+            <div className="space-y-3" data-rewriter-kind="prefix_strip">
+              <div>
+                <FieldLabel>
+                  {ko ? "제거할 접두사" : "Prefix to strip"}
+                </FieldLabel>
+                <input
+                  name="rewriterPrefix"
+                  maxLength={2000}
+                  defaultValue={state.rewriterPrefix ?? ""}
+                  placeholder={ko ? "예: sudo " : "e.g. sudo "}
+                  spellCheck={false}
+                  className={inputCls() + " font-mono" + errRingFor("input_rewrite", "prefix_strip")}
+                />
+                {step4ErrCode === "missing_rewriter_prefix" && step4ErrHelper && (
+                  <p
+                    data-testid="step4-rewriter-prefix-helper"
+                    className="mt-1 text-xs text-red-700"
+                  >
+                    {step4ErrHelper}
+                  </p>
+                )}
+              </div>
+              <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
+                <input
+                  type="checkbox"
+                  name="rewriterStripRepeat"
+                  value="true"
+                  defaultChecked={state.rewriterStripRepeat === "true"}
+                  className="mt-0.5"
+                />
+                <span>
+                  {ko
+                    ? "접두사가 연속해서 여러 번 붙어 있어도 모두 제거 (예: `sudo sudo ls` → `ls`)."
+                    : "Peel every consecutive occurrence (e.g. `sudo sudo ls` → `ls`)."}
+                </span>
+              </label>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-rewriter-kind="scheme_force">
+              <div>
+                <FieldLabel>
+                  {ko ? "기존 스킴" : "From scheme"}
+                </FieldLabel>
+                <input
+                  name="rewriterFrom"
+                  maxLength={2000}
+                  defaultValue={state.rewriterFrom ?? "http://"}
+                  placeholder="http://"
+                  spellCheck={false}
+                  className={inputCls() + " font-mono" + schemeFromRingCls}
+                />
+                {schemeFromEmpty && step4ErrHelper && (
+                  <p
+                    data-testid="step4-rewriter-scheme-from-helper"
+                    className="mt-1 text-xs text-red-700"
+                  >
+                    {step4ErrHelper}
+                  </p>
+                )}
+              </div>
+              <div>
+                <FieldLabel>
+                  {ko ? "강제 스킴" : "To scheme"}
+                </FieldLabel>
+                <input
+                  name="rewriterTo"
+                  maxLength={2000}
+                  defaultValue={state.rewriterTo ?? "https://"}
+                  placeholder="https://"
+                  spellCheck={false}
+                  className={inputCls() + " font-mono" + schemeToRingCls}
+                />
+                {schemeToEmpty && step4ErrHelper && (
+                  <p
+                    data-testid="step4-rewriter-scheme-helper"
+                    className="mt-1 text-xs text-red-700"
+                  >
+                    {step4ErrHelper}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-3" data-rewriter-kind="regex_substitute">
+              <div>
+                <FieldLabel>
+                  {ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}
+                </FieldLabel>
+                <input
+                  name="rewriterPattern"
+                  maxLength={2000}
+                  defaultValue={state.rewriterPattern ?? ""}
+                  placeholder="^\\s*sudo\\s+"
+                  spellCheck={false}
+                  className={inputCls() + " font-mono" + errRingFor("input_rewrite", "regex_substitute")}
+                />
+                {step4ErrCode === "missing_rewriter_pattern" && step4ErrHelper && (
+                  <p
+                    data-testid="step4-rewriter-pattern-helper"
+                    className="mt-1 text-xs text-red-700"
+                  >
+                    {step4ErrHelper}
+                  </p>
+                )}
+              </div>
+              <div>
+                <FieldLabel>
+                  {ko ? "치환 본문 (backref: \\1 / \\g<name>)" : "Replacement (backrefs: \\1 / \\g<name>)"}
+                </FieldLabel>
+                <input
+                  name="rewriterReplacement"
+                  maxLength={2000}
+                  defaultValue={state.rewriterReplacement ?? ""}
+                  placeholder=""
+                  spellCheck={false}
+                  className={inputCls() + " font-mono"}
+                />
+              </div>
+              <div>
+                <FieldLabel>
+                  {ko ? "최대 치환 횟수 (0 = 전부)" : "Max substitutions (0 = all)"}
+                </FieldLabel>
+                <input
+                  name="rewriterCount"
+                  type="number"
+                  min={0}
+                  max={1000}
+                  defaultValue={state.rewriterCount ?? "0"}
+                  className={inputCls() + " font-mono"}
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">
+              {ko
+                ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
+                : "The rewriter DSL is bounded. No code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
+            </p>
+          </div>
+        </label>
+      )
+    }
+    if (a === "run_command") {
+      return (
+        <label key={a} className="block cursor-pointer">
+          <input
+            type="radio"
+            name="action"
+            value={a}
+            defaultChecked={defaultPick === a}
+            required
+            className="peer sr-only"
+          />
+          <span
+            data-action-tone="run_command"
+            className={
+              "block rounded-xl border bg-white p-4 transition-colors " +
+              actionCardClasses("run_command")
+            }
+          >
+            <span className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
+            </span>
+            <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
+          </span>
+          {/*
+           * D63 review (P1): hand off run_command Step 4b rendering to
+           * a client island so:
+           *   - inline-vs-attach modes are mutually exclusive,
+           *   - the attach lane has a real file upload wired to
+           *     /api/scripts (no more hand-paste sha256),
+           *   - the inline lane shows a dedicated commandHint i18n
+           *     string,
+           *   - a "Browse uploaded scripts" link to /scripts surfaces
+           *     in the attach lane.
+           */}
+          <div
+            data-testid="step4b-run-command-editor"
+            className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
+          >
+            {step4ErrAction === "run_command" && step4ErrHelper && (
+              <div
+                data-testid="step4b-run-command-err-banner"
+                data-step4-err={wizardErr}
+                role="alert"
+                className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
+              >
+                <p
+                  data-testid="step4-run-command-helper"
+                  className="m-0"
+                >
+                  {step4ErrHelper}
+                </p>
+              </div>
+            )}
+            <Step4bRunCommandFields
+              locale={locale}
+              defaultMode={state.runCommandMode}
+              defaultRuntime={state.runCommandRuntime}
+              defaultBody={state.runCommandBody}
+              defaultScriptId={state.runCommandScriptId}
+              defaultScriptName={state.runCommandScriptName}
+              defaultArgs={state.runCommandArgs}
+              defaultTimeoutMs={
+                state.runCommandTimeoutMs
+                  ? Number.parseInt(state.runCommandTimeoutMs, 10) || 5000
+                  : 5000
+              }
+              defaultFailClosed={state.runCommandFailClosed === "true"}
+              inputClassName={inputCls()}
+              fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
+              hasError={step4ErrCode === "missing_command_or_script"}
+              errorRingClassName={errRingCls}
+            />
+          </div>
+        </label>
+      )
+    }
+    // Fallback for block / ask / audit (the simple RadioCard path).
+    return (
+      <RadioCard
+        key={a}
+        name="action"
+        value={a}
+        defaultChecked={defaultPick === a}
+        label={labels[a].label}
+        sub={labels[a].sub}
+        tone={a}
+        badge={a === "block" && lifecycle === "before_tool_use" && blockLegal ? { variant: "ok", text: ko ? "추천" : "recommended" } : undefined}
+      />
+    )
+  }
   return (
     <StepShell
       heading={t("newPolicy.wizard.step4.heading")}
@@ -5159,592 +5754,7 @@ function Step4Action({
             derivative archetypes (inject_context / input_rewrite /
             run_command) drop behind an Advanced expander further down
             with the same layered-disclosure pattern Step 1 uses. */}
-        {commonActions.map((a) => {
-          const stripDisabled = a === "strip" && !STRIP_AVAILABLE
-          if (stripDisabled) {
-            return (
-              <label key={a} className="block cursor-not-allowed opacity-60">
-                <input type="radio" name="action" value={a} disabled className="peer sr-only" />
-                <span data-action-tone="strip" className="block rounded-xl border border-purple-300 bg-purple-50/40 p-4">
-                  <span className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                    <Badge variant="info">coming soon</Badge>
-                  </span>
-                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                </span>
-              </label>
-            )
-          }
-          // D59: four lifecycles map to hooks whose hookSpecificOutput
-          // shape is SPECIALIZED — additionalContext is silently
-          // ignored at runtime, so the wizard greys the card out and
-          // surfaces a per-event tooltip naming the actual channel
-          // that hook uses. The visible state is disabled-but-rendered
-          // (not hidden) so the operator understands WHY the archetype
-          // they were looking for is unavailable; EvidencePolicy
-          // (audit) is still legal on every one of these via the
-          // matrix, so the operator can pivot without losing wizard
-          // progress. Step 4b (template editor) sits inside the same
-          // <label> branch we're skipping — it's unreachable here
-          // because the radio input itself is `disabled`, the peer-
-          // checked sibling can never match.
-          if (a === "inject_context"
-              && !lifecycleAllowsInjectContext(lifecycle)) {
-            // D59 follow-up (#14): `lifecycleAllowsInjectContext` returns
-            // false iff `lifecycle` is in the excluded set OR undefined;
-            // the helper below narrows to the typed union so the
-            // disabled-copy switch stays exhaustive. `null` here is the
-            // "undefined lifecycle" edge (should not happen on Step 4
-            // because Step 1 is required, but the guard keeps TS sound).
-            const narrowedExcluded =
-              asContextInjectionExcludedLifecycle(lifecycle)
-            if (narrowedExcluded !== null) {
-              const tip = injectContextDisabledCopy(narrowedExcluded, locale)
-              // D59 follow-up (#11 a11y): give the descriptive copy a
-              // stable id and wire it via `aria-describedby` on the
-              // disabled radio so screen readers announce the
-              // channel-mismatch reason at the same moment as the
-              // disabled state. The HTML `title` attribute has
-              // notoriously inconsistent SR support (NVDA/VoiceOver/
-              // JAWS each behave differently), so we keep it as a
-              // mouse-tooltip nicety but rely on aria-describedby for
-              // the SR path.
-              const tipId =
-                `step4-inject-disabled-${narrowedExcluded}`
-              return (
-                <label
-                  key={a}
-                  className="block cursor-not-allowed opacity-60"
-                  title={tip}
-                  data-testid="step4-inject-context-disabled"
-                  data-disabled-lifecycle={lifecycle}
-                >
-                  <input
-                    type="radio"
-                    name="action"
-                    value={a}
-                    disabled
-                    aria-disabled="true"
-                    aria-describedby={tipId}
-                    className="peer sr-only"
-                  />
-                  <span
-                    data-action-tone="inject_context"
-                    className={
-                      "block rounded-xl border bg-white p-4 transition-colors " +
-                      "border-black/[0.08]"
-                    }
-                  >
-                    <span className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                      {/* D59 follow-up (#13 ux-consistency): use the
-                          neutral `muted` Badge variant so the operator
-                          can distinguish "this archetype is
-                          fundamentally unavailable on this hook" from
-                          the blue `info` "coming soon" badge above
-                          (which signals "wait, it ships later"). The
-                          two disabled states are semantically different
-                          and benefit from distinct affordances. */}
-                      <Badge variant="muted">
-                        {ko ? "이 hook 에서는 비활성" : "not available"}
-                      </Badge>
-                    </span>
-                    <span
-                      id={tipId}
-                      role="note"
-                      className="block text-xs text-[var(--color-text-secondary)] leading-relaxed"
-                    >
-                      {tip}
-                    </span>
-                  </span>
-                </label>
-              )
-            }
-          }
-          // D57f-1: when a === "inject_context" the inline editor
-          // (Step 4b) renders below the card via the peer-checked
-          // CSS selector, mirroring how Step 3 surfaces inline
-          // specifics. CSS-only reveal — no JS island needed.
-          if (a === "inject_context") {
-            return (
-              <label key={a} className="block cursor-pointer">
-                <input
-                  type="radio"
-                  name="action"
-                  value={a}
-                  defaultChecked={defaultPick === a}
-                  required
-                  className="peer sr-only"
-                />
-                <span
-                  data-action-tone="inject_context"
-                  className={
-                    "block rounded-xl border bg-white p-4 transition-colors " +
-                    actionCardClasses("inject_context")
-                  }
-                >
-                  <span className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                  </span>
-                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                </span>
-                {/* P1 follow-up (html-validation): the editor wraps
-                    block-level descendants (<p>, <div>, <textarea>,
-                    grid wrappers). HTML5 forbids flow content inside
-                    phrasing content; using a <span> here triggers
-                    validateDOMNesting warnings and browsers may
-                    hoist the block descendants out of the span,
-                    breaking the peer-checked sibling reveal. The
-                    parent <label> legally accepts flow content, so
-                    a <div> here is fine and the `peer-checked ~`
-                    general-sibling selector still matches. */}
-                <div
-                  data-testid="step4b-inject-editor"
-                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                >
-                  {/* D68 follow-up (P1 ux-clarity): inject_context used
-                      to render the SAME localized error string twice
-                      (once as a banner at the top of the sub-form, once
-                      as a red-text helper beneath the textarea ~30px
-                      apart). That duplication created visual noise and
-                      ambiguity about which is the authoritative pointer.
-                      We now render the explanation in ONE place only,
-                      directly under the empty textarea (co-located with
-                      the red ring), and move role="alert" onto the
-                      surviving helper paragraph so screen readers still
-                      announce the error. Mirrors run_command's "banner
-                      alone" and input_rewrite's "ring + per-field
-                      helper" patterns: each archetype now has exactly
-                      one error surface. */}
-                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-                    {ko
-                      ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
-                      : "When this hook fires, this text becomes part of the model's context. The model sees it as additional system input."}
-                  </p>
-                  <div>
-                    <FieldLabel>
-                      {ko ? "주입할 본문" : "Text to inject"}
-                    </FieldLabel>
-                    <textarea
-                      name="injectTemplate"
-                      // D68 hotfix: only require when inject_context is the
-                      // chosen action. The peer-checked CSS hides the editor
-                      // when another action card is selected, but the
-                      // `required` attribute still gates form submit even
-                      // for hidden inputs and the browser then tries to
-                      // focus an invisible field, producing
-                      // "invalid form control with name='injectTemplate'
-                      // is not focusable" on Chrome and silently blocking
-                      // the Audit/Run-a-command paths. Make required
-                      // dynamic on the saved state.action.
-                      required={state.action === "inject_context"}
-                      maxLength={16000}
-                      rows={6}
-                      defaultValue={state.injectTemplate ?? ""}
-                      placeholder={ko
-                        ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
-                        : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
-                      spellCheck={false}
-                      className={inputCls() + " font-mono" + errRingFor("inject_context")}
-                    />
-                    {step4ErrAction === "inject_context" && step4ErrHelper && (
-                      <p
-                        data-testid="step4-inject-template-helper"
-                        data-step4-err={wizardErr}
-                        role="alert"
-                        className="mt-1 text-xs text-red-700"
-                      >
-                        {step4ErrHelper}
-                      </p>
-                    )}
-                    {/* P2 follow-up (wizard-flow oversized text): the
-                        textarea's maxLength only stops direct
-                        typing/IME — a >16000-char paste is silently
-                        truncated and a scripted POST bypasses the
-                        cap entirely. saveWizard mirrors the IR's
-                        16000 cap server-side; this counter surfaces
-                        the limit before the operator pastes so the
-                        truncation isn't a surprise. */}
-                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                      {ko
-                        ? "최대 16000자. 더 긴 본문은 저장 단계에서 거부됩니다."
-                        : "Max 16000 chars. Longer templates are refused at save."}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <FieldLabel>
-                        {ko ? "라벨 (한국어, 선택)" : "Label (Korean, optional)"}
-                      </FieldLabel>
-                      <input
-                        name="injectLabelKo"
-                        maxLength={128}
-                        defaultValue={state.injectLabelKo ?? ""}
-                        placeholder={ko ? "팀 코딩 표준 주입" : "팀 코딩 표준 주입"}
-                        className={inputCls()}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel>
-                        {ko ? "라벨 (영어, 선택)" : "Label (English, optional)"}
-                      </FieldLabel>
-                      <input
-                        name="injectLabelEn"
-                        maxLength={128}
-                        defaultValue={state.injectLabelEn ?? ""}
-                        placeholder="Inject team coding standards"
-                        className={inputCls()}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </label>
-            )
-          }
-          // D57f-2: input_rewrite renders an inline rewriter-kind picker
-          // + per-kind config form below the action card via the same
-          // peer-checked CSS reveal pattern inject_context uses. The
-          // wizard scopes the surface to before_tool_use with a non-
-          // wildcard matcher (matrix.LEGAL_COMBINATIONS) so the operator
-          // has already pinned the tool family on Step 2.
-          if (a === "input_rewrite") {
-            const kindPick = state.rewriterKind ?? "prefix_strip"
-            const matcherForHint = (state.toolScope ?? "").trim()
-            const fieldHintEn = matcherForHint === "WebFetch" ? "url"
-              : matcherForHint === "Read" || matcherForHint === "Write" || matcherForHint === "Edit"
-                ? "file_path"
-                : "command"
-            return (
-              <label key={a} className="block cursor-pointer">
-                <input
-                  type="radio"
-                  name="action"
-                  value={a}
-                  defaultChecked={defaultPick === a}
-                  required
-                  className="peer sr-only"
-                />
-                <span
-                  data-action-tone="input_rewrite"
-                  className={
-                    "block rounded-xl border bg-white p-4 transition-colors " +
-                    actionCardClasses("input_rewrite")
-                  }
-                >
-                  <span className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                  </span>
-                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                </span>
-                <div
-                  data-testid="step4b-rewriter-editor"
-                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                >
-                  {step4ErrAction === "input_rewrite" && step4ErrHelper && (
-                    <div
-                      data-testid="step4b-rewriter-err-banner"
-                      data-step4-err={wizardErr}
-                      role="alert"
-                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
-                    >
-                      {step4ErrHelper}
-                    </div>
-                  )}
-                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-                    {ko
-                      ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
-                      : "Right before the tool runs, mutate one field of its input. The tool still executes; no human in the loop."}
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <FieldLabel>
-                        {ko ? "재작성 종류" : "Rewriter kind"}
-                      </FieldLabel>
-                      <select
-                        name="rewriterKind"
-                        defaultValue={kindPick}
-                        className={inputCls()}
-                      >
-                        <option value="prefix_strip">
-                          {ko ? "접두사 제거 (prefix strip)" : "Strip a prefix"}
-                        </option>
-                        <option value="scheme_force">
-                          {ko ? "URL 스킴 강제 (force scheme)" : "Force URL scheme"}
-                        </option>
-                        <option value="regex_substitute">
-                          {ko ? "정규식 치환 (regex substitute)" : "Regex substitute"}
-                        </option>
-                      </select>
-                    </div>
-                    <div>
-                      <FieldLabel>
-                        {ko ? "도구 입력 필드명" : "Tool input field name"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterField"
-                        required
-                        maxLength={64}
-                        pattern="[A-Za-z_][A-Za-z0-9_]{0,63}"
-                        defaultValue={state.rewriterField ?? fieldHintEn}
-                        placeholder={fieldHintEn}
-                        spellCheck={false}
-                        className={inputCls() + " font-mono"}
-                      />
-                      <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                        {ko
-                          ? "예: Bash → command, WebFetch → url, Read/Write/Edit → file_path."
-                          : "Bash → command, WebFetch → url, Read/Write/Edit → file_path."}
-                      </p>
-                    </div>
-                  </div>
-                  {/* prefix_strip config */}
-                  <div className="space-y-3" data-rewriter-kind="prefix_strip">
-                    <div>
-                      <FieldLabel>
-                        {ko ? "제거할 접두사" : "Prefix to strip"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterPrefix"
-                        maxLength={2000}
-                        defaultValue={state.rewriterPrefix ?? ""}
-                        placeholder={ko ? "예: sudo " : "e.g. sudo "}
-                        spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite", "prefix_strip")}
-                      />
-                      {/* D68 follow-up (P1 ux-clarity): scope the helper
-                          to the matching rewriter kind so a regex_substitute
-                          error doesn't render a helper under the prefix
-                          input as well. */}
-                      {step4ErrCode === "missing_rewriter_prefix" && step4ErrHelper && (
-                        <p
-                          data-testid="step4-rewriter-prefix-helper"
-                          className="mt-1 text-xs text-red-700"
-                        >
-                          {step4ErrHelper}
-                        </p>
-                      )}
-                    </div>
-                    <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
-                      <input
-                        type="checkbox"
-                        name="rewriterStripRepeat"
-                        value="true"
-                        defaultChecked={state.rewriterStripRepeat === "true"}
-                        className="mt-0.5"
-                      />
-                      <span>
-                        {ko
-                          ? "접두사가 연속해서 여러 번 붙어 있어도 모두 제거 (예: `sudo sudo ls` → `ls`)."
-                          : "Peel every consecutive occurrence (e.g. `sudo sudo ls` → `ls`)."}
-                      </span>
-                    </label>
-                  </div>
-                  {/* scheme_force config */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-rewriter-kind="scheme_force">
-                    <div>
-                      <FieldLabel>
-                        {ko ? "기존 스킴" : "From scheme"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterFrom"
-                        maxLength={2000}
-                        defaultValue={state.rewriterFrom ?? "http://"}
-                        placeholder="http://"
-                        spellCheck={false}
-                        className={inputCls() + " font-mono" + schemeFromRingCls}
-                      />
-                      {/* D68 follow-up (P1 ux-clarity): scheme_force has
-                          TWO inputs. Render a per-field helper under the
-                          empty one(s) so the explanation co-locates with
-                          the highlight. */}
-                      {schemeFromEmpty && step4ErrHelper && (
-                        <p
-                          data-testid="step4-rewriter-scheme-from-helper"
-                          className="mt-1 text-xs text-red-700"
-                        >
-                          {step4ErrHelper}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <FieldLabel>
-                        {ko ? "강제 스킴" : "To scheme"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterTo"
-                        maxLength={2000}
-                        defaultValue={state.rewriterTo ?? "https://"}
-                        placeholder="https://"
-                        spellCheck={false}
-                        className={inputCls() + " font-mono" + schemeToRingCls}
-                      />
-                      {schemeToEmpty && step4ErrHelper && (
-                        <p
-                          data-testid="step4-rewriter-scheme-helper"
-                          className="mt-1 text-xs text-red-700"
-                        >
-                          {step4ErrHelper}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  {/* regex_substitute config */}
-                  <div className="space-y-3" data-rewriter-kind="regex_substitute">
-                    <div>
-                      <FieldLabel>
-                        {ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterPattern"
-                        maxLength={2000}
-                        defaultValue={state.rewriterPattern ?? ""}
-                        placeholder="^\\s*sudo\\s+"
-                        spellCheck={false}
-                        className={inputCls() + " font-mono" + errRingFor("input_rewrite", "regex_substitute")}
-                      />
-                      {step4ErrCode === "missing_rewriter_pattern" && step4ErrHelper && (
-                        <p
-                          data-testid="step4-rewriter-pattern-helper"
-                          className="mt-1 text-xs text-red-700"
-                        >
-                          {step4ErrHelper}
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <FieldLabel>
-                        {ko ? "치환 본문 (backref: \\1 / \\g<name>)" : "Replacement (backrefs: \\1 / \\g<name>)"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterReplacement"
-                        maxLength={2000}
-                        defaultValue={state.rewriterReplacement ?? ""}
-                        placeholder=""
-                        spellCheck={false}
-                        className={inputCls() + " font-mono"}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel>
-                        {ko ? "최대 치환 횟수 (0 = 전부)" : "Max substitutions (0 = all)"}
-                      </FieldLabel>
-                      <input
-                        name="rewriterCount"
-                        type="number"
-                        min={0}
-                        max={1000}
-                        defaultValue={state.rewriterCount ?? "0"}
-                        className={inputCls() + " font-mono"}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">
-                    {ko
-                      ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
-                      : "The rewriter DSL is bounded — no code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
-                  </p>
-                </div>
-              </label>
-            )
-          }
-          if (a === "run_command") {
-            return (
-              <label key={a} className="block cursor-pointer">
-                <input
-                  type="radio"
-                  name="action"
-                  value={a}
-                  defaultChecked={defaultPick === a}
-                  required
-                  className="peer sr-only"
-                />
-                <span
-                  data-action-tone="run_command"
-                  className={
-                    "block rounded-xl border bg-white p-4 transition-colors " +
-                    actionCardClasses("run_command")
-                  }
-                >
-                  <span className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                  </span>
-                  <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                </span>
-                {/*
-                 * D63 review (P1): hand off run_command Step 4b
-                 * rendering to a client island so:
-                 *   - inline-vs-attach modes are mutually exclusive
-                 *     (unused field never lands in FormData),
-                 *   - the attach lane has a real file upload wired
-                 *     to /api/scripts (no more hand-paste sha256),
-                 *   - the inline lane shows a dedicated commandHint
-                 *     i18n string (the old code reused attachHint
-                 *     which talked about 64KB uploads),
-                 *   - a "Browse uploaded scripts" link to /scripts
-                 *     surfaces in the attach lane.
-                 * Field names stay byte-stable so saveWizard's
-                 * server-action branch keeps reading the same keys.
-                 */}
-                <div
-                  data-testid="step4b-run-command-editor"
-                  className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                >
-                  {step4ErrAction === "run_command" && step4ErrHelper && (
-                    <div
-                      data-testid="step4b-run-command-err-banner"
-                      data-step4-err={wizardErr}
-                      role="alert"
-                      className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
-                    >
-                      <p
-                        data-testid="step4-run-command-helper"
-                        className="m-0"
-                      >
-                        {step4ErrHelper}
-                      </p>
-                    </div>
-                  )}
-                  <Step4bRunCommandFields
-                    locale={locale}
-                    defaultMode={state.runCommandMode}
-                    defaultRuntime={state.runCommandRuntime}
-                    defaultBody={state.runCommandBody}
-                    defaultScriptId={state.runCommandScriptId}
-                    defaultScriptName={state.runCommandScriptName}
-                    defaultArgs={state.runCommandArgs}
-                    defaultTimeoutMs={
-                      state.runCommandTimeoutMs
-                        ? Number.parseInt(state.runCommandTimeoutMs, 10) || 5000
-                        : 5000
-                    }
-                    defaultFailClosed={state.runCommandFailClosed === "true"}
-                    inputClassName={inputCls()}
-                    fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
-                    /* D68 follow-up (P2 ux-clarity): forward the
-                       missing_command_or_script err state so the
-                       island can light the red ring on the empty
-                       command-body / script-id input (matching the
-                       inject_context / input_rewrite affordance). */
-                    hasError={step4ErrCode === "missing_command_or_script"}
-                    errorRingClassName={errRingCls}
-                  />
-                </div>
-              </label>
-            )
-          }
-          return (
-            <RadioCard
-              key={a}
-              name="action"
-              value={a}
-              defaultChecked={defaultPick === a}
-              label={labels[a].label}
-              sub={labels[a].sub}
-              tone={a}
-              badge={a === "block" && lifecycle === "before_tool_use" && blockLegal ? { variant: "ok", text: ko ? "추천" : "recommended" } : undefined}
-            />
-          )
-        })}
+        {commonActions.map((a) => renderActionCard(a))}
         {/* D80: Advanced tier (inject_context / input_rewrite /
             run_command). Same layered-disclosure pattern Step 1 uses
             (D61): default-collapsed, per-user persisted via
@@ -5759,472 +5769,7 @@ function Step4Action({
             collapseLabel={advancedCollapseLabel}
             forceOpen={advancedForceOpen}
           >
-            {advancedActions.map((a) => {
-              const stripDisabled = a === "strip" && !STRIP_AVAILABLE
-              if (stripDisabled) {
-                return (
-                  <label key={a} className="block cursor-not-allowed opacity-60">
-                    <input type="radio" name="action" value={a} disabled className="peer sr-only" />
-                    <span data-action-tone="strip" className="block rounded-xl border border-purple-300 bg-purple-50/40 p-4">
-                      <span className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                        <Badge variant="info">coming soon</Badge>
-                      </span>
-                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                    </span>
-                  </label>
-                )
-              }
-              if (a === "inject_context"
-                  && !lifecycleAllowsInjectContext(lifecycle)) {
-                const narrowedExcluded =
-                  asContextInjectionExcludedLifecycle(lifecycle)
-                if (narrowedExcluded !== null) {
-                  const tip = injectContextDisabledCopy(narrowedExcluded, locale)
-                  const tipId =
-                    `step4-inject-disabled-${narrowedExcluded}`
-                  return (
-                    <label
-                      key={a}
-                      className="block cursor-not-allowed opacity-60"
-                      title={tip}
-                      data-testid="step4-inject-context-disabled"
-                      data-disabled-lifecycle={lifecycle}
-                    >
-                      <input
-                        type="radio"
-                        name="action"
-                        value={a}
-                        disabled
-                        aria-disabled="true"
-                        aria-describedby={tipId}
-                        className="peer sr-only"
-                      />
-                      <span
-                        data-action-tone="inject_context"
-                        className={
-                          "block rounded-xl border bg-white p-4 transition-colors " +
-                          "border-black/[0.08]"
-                        }
-                      >
-                        <span className="flex items-center justify-between gap-2 mb-1">
-                          <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                          <Badge variant="muted">
-                            {ko ? "이 hook 에서는 비활성" : "not available"}
-                          </Badge>
-                        </span>
-                        <span
-                          id={tipId}
-                          role="note"
-                          className="block text-xs text-[var(--color-text-secondary)] leading-relaxed"
-                        >
-                          {tip}
-                        </span>
-                      </span>
-                    </label>
-                  )
-                }
-              }
-              if (a === "inject_context") {
-                return (
-                  <label key={a} className="block cursor-pointer">
-                    <input
-                      type="radio"
-                      name="action"
-                      value={a}
-                      defaultChecked={defaultPick === a}
-                      required
-                      className="peer sr-only"
-                    />
-                    <span
-                      data-action-tone="inject_context"
-                      className={
-                        "block rounded-xl border bg-white p-4 transition-colors " +
-                        actionCardClasses("inject_context")
-                      }
-                    >
-                      <span className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                      </span>
-                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                    </span>
-                    <div
-                      data-testid="step4b-inject-editor"
-                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                    >
-                      <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-                        {ko
-                          ? "이 hook 이 발동하면 위 텍스트가 모델 컨텍스트에 추가 시스템 입력으로 들어갑니다."
-                          : "When this hook fires, this text becomes part of the model's context. The model sees it as additional system input."}
-                      </p>
-                      <div>
-                        <FieldLabel>
-                          {ko ? "주입할 본문" : "Text to inject"}
-                        </FieldLabel>
-                        <textarea
-                          name="injectTemplate"
-                          required={state.action === "inject_context"}
-                          maxLength={16000}
-                          rows={6}
-                          defaultValue={state.injectTemplate ?? ""}
-                          placeholder={ko
-                            ? "예: 이 프로젝트는 TDD 필수, any 타입 금지. 모든 commit 메시지는 영어로."
-                            : "e.g. This project enforces TDD and bans any types. All commit messages must be in English."}
-                          spellCheck={false}
-                          className={inputCls() + " font-mono" + errRingFor("inject_context")}
-                        />
-                        {step4ErrAction === "inject_context" && step4ErrHelper && (
-                          <p
-                            data-testid="step4-inject-template-helper"
-                            data-step4-err={wizardErr}
-                            role="alert"
-                            className="mt-1 text-xs text-red-700"
-                          >
-                            {step4ErrHelper}
-                          </p>
-                        )}
-                        <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                          {ko
-                            ? "최대 16000자. 더 긴 본문은 저장 단계에서 거부됩니다."
-                            : "Max 16000 chars. Longer templates are refused at save."}
-                        </p>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <FieldLabel>
-                            {ko ? "라벨 (한국어, 선택)" : "Label (Korean, optional)"}
-                          </FieldLabel>
-                          <input
-                            name="injectLabelKo"
-                            maxLength={128}
-                            defaultValue={state.injectLabelKo ?? ""}
-                            placeholder={ko ? "팀 코딩 표준 주입" : "팀 코딩 표준 주입"}
-                            className={inputCls()}
-                          />
-                        </div>
-                        <div>
-                          <FieldLabel>
-                            {ko ? "라벨 (영어, 선택)" : "Label (English, optional)"}
-                          </FieldLabel>
-                          <input
-                            name="injectLabelEn"
-                            maxLength={128}
-                            defaultValue={state.injectLabelEn ?? ""}
-                            placeholder="Inject team coding standards"
-                            className={inputCls()}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </label>
-                )
-              }
-              if (a === "input_rewrite") {
-                const kindPick = state.rewriterKind ?? "prefix_strip"
-                const matcherForHint = (state.toolScope ?? "").trim()
-                const fieldHintEn = matcherForHint === "WebFetch" ? "url"
-                  : matcherForHint === "Read" || matcherForHint === "Write" || matcherForHint === "Edit"
-                    ? "file_path"
-                    : "command"
-                return (
-                  <label key={a} className="block cursor-pointer">
-                    <input
-                      type="radio"
-                      name="action"
-                      value={a}
-                      defaultChecked={defaultPick === a}
-                      required
-                      className="peer sr-only"
-                    />
-                    <span
-                      data-action-tone="input_rewrite"
-                      className={
-                        "block rounded-xl border bg-white p-4 transition-colors " +
-                        actionCardClasses("input_rewrite")
-                      }
-                    >
-                      <span className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                      </span>
-                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                    </span>
-                    <div
-                      data-testid="step4b-rewriter-editor"
-                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                    >
-                      {step4ErrAction === "input_rewrite" && step4ErrHelper && (
-                        <div
-                          data-testid="step4b-rewriter-err-banner"
-                          data-step4-err={wizardErr}
-                          role="alert"
-                          className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
-                        >
-                          {step4ErrHelper}
-                        </div>
-                      )}
-                      <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed m-0">
-                        {ko
-                          ? "도구가 실행되기 직전, 입력의 한 필드를 안전하게 수정합니다. 도구 자체는 그대로 실행되며 사람 승인은 필요 없습니다."
-                          : "Right before the tool runs, mutate one field of its input. The tool still executes; no human in the loop."}
-                      </p>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <FieldLabel>
-                            {ko ? "재작성 종류" : "Rewriter kind"}
-                          </FieldLabel>
-                          <select
-                            name="rewriterKind"
-                            defaultValue={kindPick}
-                            className={inputCls()}
-                          >
-                            <option value="prefix_strip">
-                              {ko ? "접두사 제거 (prefix strip)" : "Strip a prefix"}
-                            </option>
-                            <option value="scheme_force">
-                              {ko ? "URL 스킴 강제 (force scheme)" : "Force URL scheme"}
-                            </option>
-                            <option value="regex_substitute">
-                              {ko ? "정규식 치환 (regex substitute)" : "Regex substitute"}
-                            </option>
-                          </select>
-                        </div>
-                        <div>
-                          <FieldLabel>
-                            {ko ? "도구 입력 필드명" : "Tool input field name"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterField"
-                            required
-                            maxLength={64}
-                            pattern="[A-Za-z_][A-Za-z0-9_]{0,63}"
-                            defaultValue={state.rewriterField ?? fieldHintEn}
-                            placeholder={fieldHintEn}
-                            spellCheck={false}
-                            className={inputCls() + " font-mono"}
-                          />
-                          <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)] m-0">
-                            {ko
-                              ? "예: Bash → command, WebFetch → url, Read/Write/Edit → file_path."
-                              : "Bash → command, WebFetch → url, Read/Write/Edit → file_path."}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="space-y-3" data-rewriter-kind="prefix_strip">
-                        <div>
-                          <FieldLabel>
-                            {ko ? "제거할 접두사" : "Prefix to strip"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterPrefix"
-                            maxLength={2000}
-                            defaultValue={state.rewriterPrefix ?? ""}
-                            placeholder={ko ? "예: sudo " : "e.g. sudo "}
-                            spellCheck={false}
-                            className={inputCls() + " font-mono" + errRingFor("input_rewrite", "prefix_strip")}
-                          />
-                          {step4ErrCode === "missing_rewriter_prefix" && step4ErrHelper && (
-                            <p
-                              data-testid="step4-rewriter-prefix-helper"
-                              className="mt-1 text-xs text-red-700"
-                            >
-                              {step4ErrHelper}
-                            </p>
-                          )}
-                        </div>
-                        <label className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
-                          <input
-                            type="checkbox"
-                            name="rewriterStripRepeat"
-                            value="true"
-                            defaultChecked={state.rewriterStripRepeat === "true"}
-                            className="mt-0.5"
-                          />
-                          <span>
-                            {ko
-                              ? "접두사가 연속해서 여러 번 붙어 있어도 모두 제거 (예: `sudo sudo ls` → `ls`)."
-                              : "Peel every consecutive occurrence (e.g. `sudo sudo ls` → `ls`)."}
-                          </span>
-                        </label>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-rewriter-kind="scheme_force">
-                        <div>
-                          <FieldLabel>
-                            {ko ? "기존 스킴" : "From scheme"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterFrom"
-                            maxLength={2000}
-                            defaultValue={state.rewriterFrom ?? "http://"}
-                            placeholder="http://"
-                            spellCheck={false}
-                            className={inputCls() + " font-mono" + schemeFromRingCls}
-                          />
-                          {schemeFromEmpty && step4ErrHelper && (
-                            <p
-                              data-testid="step4-rewriter-scheme-from-helper"
-                              className="mt-1 text-xs text-red-700"
-                            >
-                              {step4ErrHelper}
-                            </p>
-                          )}
-                        </div>
-                        <div>
-                          <FieldLabel>
-                            {ko ? "강제 스킴" : "To scheme"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterTo"
-                            maxLength={2000}
-                            defaultValue={state.rewriterTo ?? "https://"}
-                            placeholder="https://"
-                            spellCheck={false}
-                            className={inputCls() + " font-mono" + schemeToRingCls}
-                          />
-                          {schemeToEmpty && step4ErrHelper && (
-                            <p
-                              data-testid="step4-rewriter-scheme-helper"
-                              className="mt-1 text-xs text-red-700"
-                            >
-                              {step4ErrHelper}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="space-y-3" data-rewriter-kind="regex_substitute">
-                        <div>
-                          <FieldLabel>
-                            {ko ? "정규식 패턴 (Python re)" : "Regex pattern (Python re)"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterPattern"
-                            maxLength={2000}
-                            defaultValue={state.rewriterPattern ?? ""}
-                            placeholder="^\\s*sudo\\s+"
-                            spellCheck={false}
-                            className={inputCls() + " font-mono" + errRingFor("input_rewrite", "regex_substitute")}
-                          />
-                          {step4ErrCode === "missing_rewriter_pattern" && step4ErrHelper && (
-                            <p
-                              data-testid="step4-rewriter-pattern-helper"
-                              className="mt-1 text-xs text-red-700"
-                            >
-                              {step4ErrHelper}
-                            </p>
-                          )}
-                        </div>
-                        <div>
-                          <FieldLabel>
-                            {ko ? "치환 본문 (backref: \\1 / \\g<name>)" : "Replacement (backrefs: \\1 / \\g<name>)"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterReplacement"
-                            maxLength={2000}
-                            defaultValue={state.rewriterReplacement ?? ""}
-                            placeholder=""
-                            spellCheck={false}
-                            className={inputCls() + " font-mono"}
-                          />
-                        </div>
-                        <div>
-                          <FieldLabel>
-                            {ko ? "최대 치환 횟수 (0 = 전부)" : "Max substitutions (0 = all)"}
-                          </FieldLabel>
-                          <input
-                            name="rewriterCount"
-                            type="number"
-                            min={0}
-                            max={1000}
-                            defaultValue={state.rewriterCount ?? "0"}
-                            className={inputCls() + " font-mono"}
-                          />
-                        </div>
-                      </div>
-                      <p className="text-[11px] text-[var(--color-text-tertiary)] m-0">
-                        {ko
-                          ? "재작성기는 한정된 동작만 수행합니다 (코드/jinja 불가). 정책 파일이 유출되어도 임의 입력 조작은 불가능합니다."
-                          : "The rewriter DSL is bounded — no code-eval, no jinja templates. A leaked policy file cannot translate into arbitrary tool-input mutation."}
-                      </p>
-                    </div>
-                  </label>
-                )
-              }
-              if (a === "run_command") {
-                return (
-                  <label key={a} className="block cursor-pointer">
-                    <input
-                      type="radio"
-                      name="action"
-                      value={a}
-                      defaultChecked={defaultPick === a}
-                      required
-                      className="peer sr-only"
-                    />
-                    <span
-                      data-action-tone="run_command"
-                      className={
-                        "block rounded-xl border bg-white p-4 transition-colors " +
-                        actionCardClasses("run_command")
-                      }
-                    >
-                      <span className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{labels[a].label}</span>
-                      </span>
-                      <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">{labels[a].sub}</span>
-                    </span>
-                    <div
-                      data-testid="step4b-run-command-editor"
-                      className="hidden peer-checked:block mt-2 rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.03] p-4 space-y-3"
-                    >
-                      {step4ErrAction === "run_command" && step4ErrHelper && (
-                        <div
-                          data-testid="step4b-run-command-err-banner"
-                          data-step4-err={wizardErr}
-                          role="alert"
-                          className="rounded-xl border border-red-300 bg-red-50/60 px-3 py-2 text-xs text-red-900"
-                        >
-                          <p
-                            data-testid="step4-run-command-helper"
-                            className="m-0"
-                          >
-                            {step4ErrHelper}
-                          </p>
-                        </div>
-                      )}
-                      <Step4bRunCommandFields
-                        locale={locale}
-                        defaultMode={state.runCommandMode}
-                        defaultRuntime={state.runCommandRuntime}
-                        defaultBody={state.runCommandBody}
-                        defaultScriptId={state.runCommandScriptId}
-                        defaultScriptName={state.runCommandScriptName}
-                        defaultArgs={state.runCommandArgs}
-                        defaultTimeoutMs={
-                          state.runCommandTimeoutMs
-                            ? Number.parseInt(state.runCommandTimeoutMs, 10) || 5000
-                            : 5000
-                        }
-                        defaultFailClosed={state.runCommandFailClosed === "true"}
-                        inputClassName={inputCls()}
-                        fieldLabelClassName="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
-                        hasError={step4ErrCode === "missing_command_or_script"}
-                        errorRingClassName={errRingCls}
-                      />
-                    </div>
-                  </label>
-                )
-              }
-              return (
-                <RadioCard
-                  key={a}
-                  name="action"
-                  value={a}
-                  defaultChecked={defaultPick === a}
-                  label={labels[a].label}
-                  sub={labels[a].sub}
-                  tone={a}
-                />
-              )
-            })}
+            {advancedActions.map((a) => renderActionCard(a))}
           </Step4ActionAdvanced>
         )}
         <NextButton label={t("newPolicy.wizard.next")} />

@@ -76,9 +76,12 @@ function Caret({ open }: { open: boolean }) {
 }
 
 export interface Step4ActionAdvancedProps {
-  /** Localised header copy "Advanced ({count} actions)". */
+  /** Bare section label ("Advanced" / "고급"). Matches the Step 1
+   *  layered-disclosure shape: the left-side label is the group
+   *  name only, the right-side count carries the numeric. */
   headerLabel: string
-  /** Count of advanced actions surfaced inside (used for SR label). */
+  /** Count of advanced actions surfaced inside (used for SR label and
+   *  rendered on the right side of the toggle). */
   advancedCount: number
   /** SR label override for the toggle (collapse / expand verb). */
   expandLabel: string
@@ -98,9 +101,21 @@ export default function Step4ActionAdvanced({
   forceOpen,
   children,
 }: Step4ActionAdvancedProps) {
-  // SSR / first paint use the closed state so the server markup is
-  // byte-stable; localStorage hydrates on mount.
-  const [open, setOpen] = useState<boolean>(false)
+  // D80 follow-up (SSR-hydration #5): lazy initializer so the server-
+  // rendered first paint matches the post-hydration state when the
+  // operator's pick already lives in the Advanced tier. forceOpen is
+  // a server-rendered prop (computed from defaultPick + lifecycle in
+  // page.tsx), so its value is identical on server and client and
+  // does not produce a hydration mismatch. Before this change, the
+  // SSR markup hid the picked card (display:none on children) on
+  // every paint, then JS revealed it after hydration, producing a
+  // visible flash where the operator saw only block/ask/audit for a
+  // frame even when they had previously selected an advanced action.
+  //
+  // localStorage hydration still runs in the effect below for the
+  // persisted-open-without-forceOpen case (the operator manually
+  // expanded the section on a prior visit, no advanced action picked).
+  const [open, setOpen] = useState<boolean>(() => Boolean(forceOpen))
   useEffect(() => {
     const persisted = readPersistedOpen()
     setOpen(persisted || Boolean(forceOpen))
