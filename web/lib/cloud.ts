@@ -1107,6 +1107,67 @@ export const cloud = {
     _fetch<{ id: string }>(`/scripts/${encodeURIComponent(id)}`, {
       method: "DELETE", keyType: "admin",
     }),
+
+  /** D77: synthetic CC hook payload simulator for a single saved
+   * policy. The cloud runs the same evaluator the ledger replay uses
+   * (no subprocess, no LLM round-trip) and returns the verdict +
+   * action + hookSpecificOutput the runtime would emit. */
+  testPolicy: (
+    policyId: string,
+    payload: Record<string, unknown>,
+    event?: string,
+  ): Promise<PolicyTestResponse> =>
+    _fetch<PolicyTestResponse>(
+      `/policies/${_encId(policyId)}/test`,
+      {
+        method: "POST", keyType: "admin",
+        body: JSON.stringify({
+          payload,
+          ...(event ? { event } : {}),
+        }),
+      },
+    ),
+
+  /** D77: synthetic CC hook payload simulator for a pack. Runs each
+   * member through the same evaluator and returns per-member
+   * results. */
+  testPack: (
+    packId: string,
+    payload: Record<string, unknown>,
+    event?: string,
+  ): Promise<PolicyPackTestResponse> =>
+    _fetch<PolicyPackTestResponse>(
+      `/policy-packs/${_encId(packId)}/test`,
+      {
+        method: "POST", keyType: "admin",
+        body: JSON.stringify({
+          payload,
+          ...(event ? { event } : {}),
+        }),
+      },
+    ),
+}
+
+/** D77 — response envelope from POST /policies/{id}/test. */
+export type PolicyTestResponse = {
+  verdict: string
+  action: string
+  evidence_match_reasons: string[]
+  hook_specific_output: Record<string, unknown>
+  requires_results: Array<{ kind: string; status: string; reason: string }>
+  new_tool_input?: Record<string, unknown>
+  would_run?: Record<string, unknown>
+  inject_context?: string
+  skipped_reason?: string
+  policy_id?: string
+  policy_type?: string
+}
+
+/** D77 — response envelope from POST /policy-packs/{id}/test. */
+export type PolicyPackTestResponse = {
+  pack_id: string
+  member_count: number
+  members: PolicyTestResponse[]
 }
 
 /** D76: closed-set action vocabulary the /overview chart renders.

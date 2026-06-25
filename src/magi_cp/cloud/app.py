@@ -3858,6 +3858,134 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 return {"managed_settings": ms, "sha256": sha}
         raise HTTPException(404, f"policy {policy_id!r} not found")
 
+    # D77 — synthetic CC hook payload simulator. Given a saved policy
+    # and an operator-authored synthetic hook payload, predicts the
+    # verdict + action + hookSpecificOutput the runtime would emit
+    # WITHOUT running CC, spawning a subprocess, or mutating state.
+    #
+    # Reuses `policy.test_runner.test_policy` (the source of truth)
+    # so the answer is structurally identical to what the runtime gate
+    # would produce. The endpoint is admin-key gated (same surface as
+    # the dry-run / compile authoring endpoints) because it returns
+    # the literal command body for RunCommandPolicy and the template
+    # body for ContextInjectionPolicy — both sensitive enough to keep
+    # off the public tenant key.
+    @app.post("/policies/{policy_id:path}/test",
+              dependencies=[Depends(require_admin_key)])
+    async def test_one_policy(policy_id: str, body: dict = Body(...)) -> dict:
+        from ..policy.test_runner import result_to_dict, test_policy
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        payload = body.get("payload")
+        if not isinstance(payload, dict):
+            raise HTTPException(422, "payload must be a JSON object")
+        event = body.get("event")
+        if event is not None and not isinstance(event, str):
+            raise HTTPException(422, "event must be a string")
+        target: PolicyOverride | None = None
+        for ov in store.load():
+            if ov.policy.id == policy_id:
+                target = ov
+                break
+        if target is None:
+            raise HTTPException(404, f"policy {policy_id!r} not found")
+        try:
+            result = test_policy(
+                target.policy, payload, event=event or "",
+            )
+        except (ValueError, KeyError) as e:
+            raise HTTPException(422, str(e)) from e
+        envelope = result_to_dict(result)
+        envelope["policy_id"] = policy_id
+        envelope["policy_type"] = getattr(
+            target.policy, "type", "evidence",
+        )
+        return envelope
+
+    @app.post("/policy-packs/{pack_id:path}/test",
+              dependencies=[Depends(require_admin_key)])
+    async def test_one_pack(pack_id: str, body: dict = Body(...)) -> dict:
+        """D77 — multi-policy simulator. Runs the same synthetic
+        payload through every member of a pack and returns a per-member
+        result. Built-in + user packs are both supported via
+        `_resolve_pack_members` (defined alongside the pack routes
+        above so member resolution stays consistent).
+        """
+        from ..policy.test_runner import result_to_dict, test_policy
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        payload = body.get("payload")
+        if not isinstance(payload, dict):
+            raise HTTPException(422, "payload must be a JSON object")
+        event = body.get("event")
+        if event is not None and not isinstance(event, str):
+            raise HTTPException(422, "event must be a string")
+        member_ids = _resolve_pack_members(pack_id)
+        if member_ids is None:
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        existing_by_id = {ov.policy.id: ov for ov in store.load()}
+        # Pre-resolve inline pack-owned IRs (strict-block bundle) so
+        # un-materialized members still simulate. inline_policy_for
+        # returns None for members that are user-defined / prebuilt
+        # (those are looked up via existing_by_id).
+        from ..policy.pack import inline_policy_for
+        from ..policy.prebuilt import build_prebuilt_evidence_policy
+        members_out: list[dict] = []
+        for mid in member_ids:
+            ov = existing_by_id.get(mid)
+            policy_obj: AnyPolicy | None = ov.policy if ov is not None else None
+            if policy_obj is None:
+                inline = inline_policy_for(pack_id, mid)
+                if inline is not None:
+                    policy_obj = inline
+            if policy_obj is None and mid.startswith("prebuilt/"):
+                try:
+                    policy_obj = build_prebuilt_evidence_policy(mid)
+                except Exception:  # noqa: BLE001
+                    policy_obj = None
+            if policy_obj is None:
+                members_out.append({
+                    "policy_id": mid,
+                    "skipped_reason": "member-not-resolvable",
+                    "verdict": "skipped",
+                    "action": "skipped",
+                    "evidence_match_reasons": [
+                        f"pack member {mid!r} is not yet materialized "
+                        "in the policy store; enable the pack or the "
+                        "individual member to test it",
+                    ],
+                    "hook_specific_output": {},
+                    "requires_results": [],
+                })
+                continue
+            try:
+                result = test_policy(
+                    policy_obj, payload, event=event or "",
+                )
+            except (ValueError, KeyError) as e:
+                members_out.append({
+                    "policy_id": mid,
+                    "skipped_reason": "evaluation-error",
+                    "verdict": "skipped",
+                    "action": "skipped",
+                    "evidence_match_reasons": [str(e)],
+                    "hook_specific_output": {},
+                    "requires_results": [],
+                })
+                continue
+            envelope = result_to_dict(result)
+            envelope["policy_id"] = mid
+            envelope["policy_type"] = getattr(
+                policy_obj, "type", "evidence",
+            )
+            members_out.append(envelope)
+        return {
+            "pack_id": pack_id,
+            "members": members_out,
+            "member_count": len(member_ids),
+        }
+
+
     @app.get("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     def get_policy(policy_id: str) -> dict:
         for ov in store.load():

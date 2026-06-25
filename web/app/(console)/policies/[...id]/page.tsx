@@ -8,6 +8,7 @@ import {
   ErrorState, PageHeader,
 } from "@/components/ui"
 import { DryRunPanel } from "../_components/DryRunPanel"
+import { PolicyTestPanel } from "../_components/PolicyTestPanel"
 
 export const dynamic = "force-dynamic"
 
@@ -140,6 +141,13 @@ export default async function PolicyDetailPage({
           <CodeBlock maxHeight="60vh">{msJson}</CodeBlock>
         </section>
       </div>
+
+      {/* D77: synthetic payload simulator. Lets a first-time
+          operator confirm the policy fires on a representative
+          payload without waiting for real CC traffic to land in the
+          ledger. Backed by /api/policies/test → cloud
+          /policies/{id}/test (admin-key gated). */}
+      <PolicyTestPanel locale={locale} id={detail.id} kind="policy" />
 
       {/* D53b: Dry-run on last 24h. The stored IR has already been
           accepted by the cloud (PUT validation passed), so the

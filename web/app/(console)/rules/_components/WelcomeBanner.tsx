@@ -84,6 +84,11 @@ export function WelcomeBanner({ locale }: WelcomeBannerProps) {
         <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
           {t("rules.welcome.body")}
         </p>
+        {/* D77: hint pointing first-time visitors at the synthetic
+            payload simulator on each policy's detail page. */}
+        <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+          {t("rules.welcome.testHint")}
+        </p>
         <div className="mt-3">
           <Link
             href="/policies/new?mode=conversational"
