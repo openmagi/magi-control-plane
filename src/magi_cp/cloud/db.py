@@ -273,6 +273,35 @@ class SharedRunRepo:
             s.commit()
             return True
 
+    def list_by_tenant(self, tenant_id: str) -> list[SharedRun]:
+        """All share links a tenant created, newest first. For the manage UI.
+
+        The cleartext token is never returned (only its hash is stored), so the
+        UI shows metadata + revoke, not the link itself (the link is shown once
+        at creation time)."""
+        with Session(self.engine) as s:
+            rows = list(s.scalars(
+                select(SharedRun)
+                .where(SharedRun.tenant_id == tenant_id)
+                .order_by(SharedRun.created_at.desc())
+            ))
+            for r in rows:
+                s.expunge(r)
+            return rows
+
+    def revoke_by_hash(self, token_hash: str, tenant_id: str) -> bool:
+        """Tenant-scoped revoke by token hash (the handle the manage UI has).
+
+        Returns False if the row is missing, already revoked, or owned by a
+        different tenant (no cross-tenant revoke)."""
+        with Session(self.engine) as s:
+            row = s.get(SharedRun, token_hash)
+            if row is None or row.tenant_id != tenant_id or row.revoked_at is not None:
+                return False
+            row.revoked_at = int(time.time())
+            s.commit()
+            return True
+
 
 # ── engine ───────────────────────────────────────────────────────────
 def make_engine(dsn: str = "sqlite:///./magi-cp.sqlite") -> Engine:

@@ -135,3 +135,48 @@ def test_session_id_is_scrubbed(client):
 def test_non_json_body_is_400_not_500(client):
     r = client.post("/v1/runs/share", content=b"not json{", headers=HEADERS)
     assert r.status_code == 400
+
+
+# --- manage: list + tenant-scoped revoke ---
+def test_list_share_links_for_tenant(client):
+    client.post("/v1/runs/share", json={"view": _view(goal="g1")}, headers=HEADERS)
+    client.post("/v1/runs/share", json={"view": _view(goal="g2")}, headers=HEADERS)
+    r = client.get("/v1/runs/share", headers=HEADERS)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 2
+    # tokenHash present, raw token NOT leaked
+    assert all("tokenHash" in it and "token" not in it for it in items)
+    assert all(it["active"] for it in items)
+
+
+def test_list_requires_auth(client):
+    assert client.get("/v1/runs/share").status_code == 401
+
+
+def test_revoke_by_hash_then_link_404s(client):
+    token = client.post("/v1/runs/share", json={"view": _view()}, headers=HEADERS).json()["token"]
+    th = client.get("/v1/runs/share", headers=HEADERS).json()["items"][0]["tokenHash"]
+    rv = client.post(f"/v1/runs/share/{th}/revoke", headers=HEADERS)
+    assert rv.status_code == 200 and rv.json()["revoked"] is True
+    # public link now 404s
+    assert client.get(f"/share/run/{token}").status_code == 404
+    # second revoke -> 404 (already revoked)
+    assert client.post(f"/v1/runs/share/{th}/revoke", headers=HEADERS).status_code == 404
+
+
+def test_revoke_unknown_hash_404(client):
+    assert client.post("/v1/runs/share/deadbeef/revoke", headers=HEADERS).status_code == 404
+
+
+def test_revoke_is_tenant_scoped(client):
+    # A link cannot be revoked under a different tenant identity. Asserted at the
+    # repo layer (a second authed tenant on the shared in-memory DB is awkward
+    # to set up via TestClient).
+    from magi_cp.cloud.db import SharedRunRepo
+
+    client.post("/v1/runs/share", json={"view": _view()}, headers=HEADERS)
+    token_hash = client.get("/v1/runs/share", headers=HEADERS).json()["items"][0]["tokenHash"]
+    repo = SharedRunRepo(client.app.state.engine)
+    assert repo.revoke_by_hash(token_hash, "someone-else") is False
+    assert repo.revoke_by_hash(token_hash, "default") is True

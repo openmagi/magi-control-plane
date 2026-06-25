@@ -771,6 +771,40 @@ def create_app(
             raise HTTPException(404, "not found")
         return {"view": row.view, "createdAt": row.created_at}
 
+    @app.get("/v1/runs/share", dependencies=[Depends(require_tenant_auth)])
+    def runs_share_list(request: Request) -> dict:
+        """List the caller tenant's share links (manage UI). The cleartext token
+        is NOT returned (only its hash is stored); the UI shows metadata +
+        revoke, keyed by tokenHash."""
+        rows = share_repo.list_by_tenant(request.state.tenant_id)
+        now = int(time.time())
+        items = []
+        for r in rows:
+            summary = r.view.get("summary") if isinstance(r.view, dict) else None
+            summary = summary if isinstance(summary, dict) else {}
+            revoked = r.revoked_at is not None
+            expired = r.expires_at is not None and r.expires_at <= now
+            items.append({
+                "tokenHash": r.token_hash,
+                "title": summary.get("title") or summary.get("goal") or None,
+                "status": summary.get("status"),
+                "createdAt": r.created_at,
+                "expiresAt": r.expires_at,
+                "revokedAt": r.revoked_at,
+                "active": not revoked and not expired,
+            })
+        return {"items": items}
+
+    @app.post(
+        "/v1/runs/share/{token_hash}/revoke",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    def runs_share_revoke(token_hash: str, request: Request) -> dict:
+        ok = share_repo.revoke_by_hash(token_hash, request.state.tenant_id)
+        if not ok:
+            raise HTTPException(404, "not found or already revoked")
+        return {"revoked": True}
+
     @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
     async def policies_compile(req: "CompileReq") -> dict:
         """Authoring gate 1+2 — NL→IR compile + critic review.
