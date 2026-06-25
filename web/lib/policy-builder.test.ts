@@ -148,6 +148,62 @@ describe("isLegal. mirrors backend matrix", () => {
     expect(isLegal("PostToolBatch", "*", "block")).toBe(true)
   })
 
+  // D70+D82d lockstep — block + audit must move together on the
+  // per-tool matcher × tool-context event cross-product so a future
+  // widening of one action without the other fails CI. matrix.py
+  // registers audit on tool / mcp_tool / tool_alt / wildcard for
+  // PostToolUseFailure + PostToolBatch via `_AUDIT_TOOL_CONTEXT_EVENTS`
+  // and admits block on the per-tool subset for D82d; the TS mirror
+  // must match exactly.
+  describe("D70+D82d audit-block lockstep on PostToolUse* events", () => {
+    type PostToolEvent =
+      | "PostToolUse"
+      | "PostToolUseFailure"
+      | "PostToolBatch"
+
+    const cases: Array<[PostToolEvent, string]> = [
+      ["PostToolUse",        "Bash"],
+      ["PostToolUse",        "Edit"],
+      ["PostToolUse",        "Bash|Edit"],
+      ["PostToolUse",        "mcp__court__file"],
+      ["PostToolUseFailure", "Bash"],
+      ["PostToolUseFailure", "Edit"],
+      ["PostToolUseFailure", "mcp__court__file"],
+    ]
+    it.each(cases)("%s × %s accepts BOTH block AND audit", (ev, m) => {
+      expect(isLegal(ev, m, "audit")).toBe(true)
+      expect(isLegal(ev, m, "block")).toBe(true)
+    })
+
+    it("PostToolUseFailure × tool_alt accepts audit but NOT block", () => {
+      // tool_alt stays excluded on block (batched-tool retry belongs
+      // on PostToolBatch); audit is symmetric with the matrix.
+      expect(isLegal("PostToolUseFailure", "Bash|Edit", "audit")).toBe(true)
+      expect(isLegal("PostToolUseFailure", "Bash|Edit", "block")).toBe(false)
+    })
+
+    it("PostToolUse × wildcard accepts audit (matrix.py:397)", () => {
+      expect(isLegal("PostToolUse", "*", "audit")).toBe(true)
+      // wildcard + block stays illegal — "block every PostToolUse"
+      // is rarely the operator's intent.
+      expect(isLegal("PostToolUse", "*", "block")).toBe(false)
+    })
+
+    it("PostToolUseFailure × wildcard accepts audit (matrix.py lockstep)", () => {
+      expect(isLegal("PostToolUseFailure", "*", "audit")).toBe(true)
+    })
+
+    it("PostToolBatch × per-tool accepts audit but NOT block", () => {
+      // matrix.py registers audit on tool / mcp_tool / tool_alt /
+      // wildcard for PostToolBatch; block stays wildcard-only because
+      // the batch event covers the whole turn's tool calls.
+      expect(isLegal("PostToolBatch", "Bash", "audit")).toBe(true)
+      expect(isLegal("PostToolBatch", "Bash|Edit", "audit")).toBe(true)
+      expect(isLegal("PostToolBatch", "mcp__a__b", "audit")).toBe(true)
+      expect(isLegal("PostToolBatch", "Bash", "block")).toBe(false)
+    })
+  })
+
   it("D58 no-tool-context events reject tool matchers", () => {
     for (const ev of [
       "PermissionRequest", "Elicitation", "UserPromptExpansion",

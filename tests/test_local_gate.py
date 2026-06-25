@@ -372,3 +372,109 @@ def test_legacy_window_malformed_env_is_off(
     out, code = _run_evaluate_capture(_payload("echo FILE_COURT_M1_D1 x"), capsys)
     assert code == 0
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ── D82d follow-up: per-event deny-shape dispatch ────────────────────
+#
+# CC's hook stdout JSON contract is split by event. PreToolUse +
+# PermissionRequest consume `hookSpecificOutput.permissionDecision`;
+# PostToolUse / PostToolUseFailure / PostToolBatch consume the
+# top-level `{"decision":"block","reason":"…"}` shape and surface the
+# reason to the model as retry-feedback. Hardcoding the PreToolUse
+# shape silently failed open on the three PostToolUse* events — the
+# D82d matrix admits the IR triple but the gate stdout was being
+# dropped by CC.
+#
+# These tests pin the byte shape per event so a future maintainer
+# cannot silently flip the gate emitter back to the PreToolUse-only
+# shape.
+
+
+def _post_payload(event_name: str, cmd: str) -> dict:
+    """Build a synthetic CC hook payload for a PostToolUse* event."""
+    return {
+        "hook_event_name": event_name,
+        "tool_input": {"command": cmd},
+    }
+
+
+@pytest.mark.parametrize("event_name", [
+    "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+])
+def test_d82d_deny_emits_top_level_decision_on_post_tool_events(
+        tmp_local, cached_pubkey, capsys, event_name):
+    """The retry-feedback channel is keyed off top-level decision +
+    reason. CC drops hookSpecificOutput.permissionDecision on these
+    three events; emitting it would be a silent fail-open."""
+    out, code = _run_evaluate_capture(
+        _post_payload(event_name, "echo FILE_COURT_M1_DOC1 x"), capsys)
+    assert code == 0
+    body = json.loads(out)
+    # The retry-feedback shape: top-level decision + reason. No
+    # hookSpecificOutput wrapper.
+    assert body.get("decision") == "block"
+    assert body.get("reason", "").startswith("MAGI:")
+    assert "hookSpecificOutput" not in body
+
+
+def test_d82d_deny_keeps_pretooluse_shape_on_pretooluse_event(
+        tmp_local, cached_pubkey, capsys):
+    """The historical PreToolUse permissionDecision shape must not
+    regress: PreToolUse consumes hookSpecificOutput.permissionDecision.
+    Pinning the byte shape here so a refactor of `_deny` cannot
+    silently swap PreToolUse into the retry-feedback lane."""
+    out, code = _run_evaluate_capture(
+        _payload("echo FILE_COURT_M1_DOC1 x"), capsys)
+    assert code == 0
+    body = json.loads(out)
+    assert body["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert body["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # No top-level decision leakage into the PreToolUse path.
+    assert "decision" not in body
+
+
+def test_d82d_emit_deny_payload_pure_helper_pretooluse():
+    """Unit-shape test for the pure helper — PreToolUse path."""
+    from magi_cp.local.gate import _emit_deny_payload
+    body = _emit_deny_payload("oops", hook_event_name="PreToolUse")
+    assert body == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "MAGI: oops",
+        }
+    }
+
+
+@pytest.mark.parametrize("event_name", [
+    "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+])
+def test_d82d_emit_deny_payload_pure_helper_post_tool_events(event_name):
+    """Unit-shape test for the pure helper — PostToolUse* path. The
+    payload must be the top-level retry-feedback shape with no
+    hookSpecificOutput leftovers from the PreToolUse path."""
+    from magi_cp.local.gate import _emit_deny_payload
+    body = _emit_deny_payload(
+        "verifier rejected output",
+        hook_event_name=event_name,
+    )
+    assert body == {
+        "decision": "block",
+        "reason": "MAGI: verifier rejected output",
+    }
+
+
+def test_d82d_deny_dict_in_process_helper_dispatches_per_event():
+    """`_deny_dict` is the in-process counterpart to `_deny` used by
+    run_command. It must use the same per-event dispatch so a hosted
+    run_command policy authored on PostToolUse + Bash + fail-closed
+    emits the retry-feedback shape, not the PreToolUse-only shape."""
+    from magi_cp.local.gate import _deny_dict
+    # Default keeps PreToolUse byte-identical (legacy run_command
+    # callers do not pass hook_event_name yet).
+    legacy = _deny_dict("legacy reason")
+    assert legacy["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert legacy["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # Explicit PostToolUse routing flips to the top-level decision shape.
+    post = _deny_dict("verdict", hook_event_name="PostToolUse")
+    assert post == {"decision": "block", "reason": "MAGI: verdict"}

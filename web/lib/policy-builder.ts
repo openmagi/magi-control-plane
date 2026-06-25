@@ -72,9 +72,18 @@ export function classifyMatcher(matcher: string): MatcherClass | "unknown" {
 // (tool-context / permissions / content-flow / subagent+stop /
 // lifecycle+observability). Adding a row there MUST add the mirror
 // triple here too.
+//
+// D82d follow-up: PostToolUseFailure / PostToolBatch are NO LONGER on
+// the audit-only-wildcard list — D70 widened audit to per-tool matchers
+// for those events (matrix.py::_AUDIT_TOOL_CONTEXT_EVENTS), but the
+// initial D82d cut left the TS mirror's audit-side narrow while
+// extending the block-side. That asymmetry made
+// `isLegal("PostToolUseFailure","Bash","block") === true` while
+// `isLegal("PostToolUseFailure","Bash","audit") === false`, which was
+// the exact sibling-action drift matrix.py's docstring warns about.
+// The cross-product helper below admits both block and audit on the
+// same matchers from a single source.
 const _AUDIT_ONLY_WILDCARD_EVENTS = [
-  // Tool-context observability variants
-  "PostToolUseFailure", "PostToolBatch",
   // Permission gate post-side
   "PermissionDenied",
   // Content-flow post-side
@@ -92,6 +101,23 @@ const _AUDIT_ONLY_WILDCARD_EVENTS = [
   "MessageDisplay",
 ] as const
 
+// Lockstep helper: register a PostToolUse* triple cross-product so the
+// audit + block sides never desync. Mirrors matrix.py::_build_legal's
+// PostToolUse* loop. Pass in the matcher classes that should accept
+// BOTH actions and the helper builds the per-action triples.
+function _addPostToolTriples(
+  out: Set<string>,
+  event: string,
+  matcherClasses: readonly MatcherClass[],
+  actions: readonly Action[],
+): void {
+  for (const klass of matcherClasses) {
+    for (const act of actions) {
+      out.add(`${event}|${klass}|${act}`)
+    }
+  }
+}
+
 const LEGAL = ((): Set<string> => {
   const out = new Set<string>()
   // PreToolUse: block / ask / audit on every concrete matcher;
@@ -102,22 +128,40 @@ const LEGAL = ((): Set<string> => {
     }
   }
   out.add("PreToolUse|wildcard|audit")
-  // PostToolUse: tool already ran. audit on every matcher class;
-  // D82d also admits block on per-tool matchers as the CC
-  // retry-feedback channel (stdout JSON `{"decision":"block",
-  // "reason":"…"}` surfaces the reason to the model as feedback).
-  // ask stays excluded — by the time the tool ran there is no
-  // interactive surface to interrupt to.
-  out.add("PostToolUse|tool|audit")
-  out.add("PostToolUse|mcp_tool|audit")
-  out.add("PostToolUse|tool|block")
-  out.add("PostToolUse|mcp_tool|block")
-  out.add("PostToolUse|tool_alt|block")
-  // D82d — PostToolUseFailure admits block on per-tool matchers
-  // (failure recovery is scoped to the specific tool that failed);
-  // PostToolBatch admits block on wildcard only (whole-batch retry).
-  out.add("PostToolUseFailure|tool|block")
-  out.add("PostToolUseFailure|mcp_tool|block")
+  // PostToolUse: tool already ran. audit is legal on every matcher
+  // class (mirrors matrix.py lines 394-397); D82d also admits block on
+  // every per-tool matcher class (tool / mcp_tool / tool_alt) as the
+  // CC retry-feedback channel. ask stays excluded — by the time the
+  // tool ran there is no interactive surface to interrupt to.
+  _addPostToolTriples(
+    out, "PostToolUse",
+    ["tool", "mcp_tool", "tool_alt"],
+    ["audit", "block"],
+  )
+  out.add("PostToolUse|wildcard|audit")
+  // D82d — PostToolUseFailure admits BOTH audit and block on per-tool
+  // matchers (matrix.py registers tool / mcp_tool / tool_alt / wildcard
+  // audit via `_AUDIT_TOOL_CONTEXT_EVENTS` and tool / mcp_tool block in
+  // the D82d cross-product). The audit-side wildcard mirrors the
+  // matrix; block stays per-tool because tool_alt is owned by the batch
+  // event (cross-tool batched retry → PostToolBatch).
+  _addPostToolTriples(
+    out, "PostToolUseFailure",
+    ["tool", "mcp_tool", "tool_alt", "wildcard"],
+    ["audit"],
+  )
+  _addPostToolTriples(
+    out, "PostToolUseFailure",
+    ["tool", "mcp_tool"],
+    ["block"],
+  )
+  // D82d — PostToolBatch: audit on every matcher class, block on
+  // wildcard only (whole-batch retry; no single named tool to scope).
+  _addPostToolTriples(
+    out, "PostToolBatch",
+    ["tool", "mcp_tool", "tool_alt", "wildcard"],
+    ["audit"],
+  )
   out.add("PostToolBatch|wildcard|block")
   // Pre-side gate hooks with full block/ask/audit.
   for (const ev of ["UserPromptSubmit", "PermissionRequest", "Elicitation"]) {

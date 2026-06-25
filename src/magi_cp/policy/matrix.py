@@ -256,8 +256,24 @@ def matcher_class_of(matcher: str) -> MatcherClass:
 #   model. This is a real action surface today's matrix narrowly
 #   refused; the prior "PostToolUse cannot block — the tool already
 #   ran" wording conflated "cannot retract the call" (true) with
-#   "cannot signal the model" (false). The matcher set follows the
-#   shape of each event's payload:
+#   "cannot signal the model" (false).
+#
+#   D82d follow-up (runtime contract): the IR triple is wired to the
+#   runtime emitter in `src/magi_cp/local/gate.py::_deny` /
+#   `_deny_dict`, which dispatches on `hook_event_name` to emit the
+#   CC-canonical retry-feedback shape on the three PostToolUse* events
+#   and the historical PreToolUse `hookSpecificOutput.permissionDecision`
+#   shape everywhere else. The list of events that get the top-level
+#   `decision`+`reason` shape lives at
+#   `gate._RETRY_FEEDBACK_EVENTS` so a future widening lands in one
+#   place. PostToolUseFailure / PostToolBatch are still listed in
+#   `_UNVERIFIED_EVENTS` below — no CC binary fixture has captured
+#   either event's stdout-channel contract end-to-end. The matrix
+#   admits the triples as the working hypothesis; flipping them to
+#   verified MUST follow the same fixture protocol the other
+#   `_UNVERIFIED_EVENTS` entries are blocked on.
+#
+#   The matcher set follows the shape of each event's payload:
 #     PostToolUse        → per-tool (tool / mcp_tool / tool_alt) — the
 #                          gate decision is scoped to one named tool.
 #     PostToolUseFailure → per-tool (tool / mcp_tool) — failure

@@ -821,11 +821,16 @@ const KO_RAW = {
 
   // D82d — block 액션 sub-copy는 lifecycle 에 따라 달라집니다.
   // PreToolUse 류는 호출 자체를 거부하는 의미; PostToolUse* 류는
-  // 도구 결과를 모델에게 "사용 불가" 로 알리고 사용자가 작성한
-  // reason 을 retry-feedback 메시지로 흘려보내는 의미입니다.
-  "newPolicy.action.block.subcopy.posttool": "도구 결과를 모델에게 \"사용 불가\" 라고 알리고, 입력하신 reason 을 retry-feedback 메시지로 모델에게 돌려보냅니다. 같은 도구가 재시도됩니다.",
-  "newPolicy.action.block.subcopy.posttoolfailure": "실패한 도구 호출을 모델에게 알리고, 입력하신 reason 으로 retry-feedback 을 보냅니다. 모델은 reason 을 보고 다른 입력으로 재시도할 수 있습니다.",
-  "newPolicy.action.block.subcopy.posttoolbatch": "이 턴의 모든 도구 호출 묶음을 모델에게 \"사용 불가\" 라고 알리고, 입력하신 reason 을 retry-feedback 으로 돌려보냅니다.",
+  // 도구 결과를 모델에게 "사용 불가" 로 알리고 검증 verdict 를
+  // retry-feedback 메시지로 흘려보내는 의미입니다.
+  //
+  // 사후 검토 (D82d follow-up): 위저드에는 별도의 reason 필드가 없습니다.
+  // 런타임 게이트는 발화된 verifier 의 verdict 텍스트를 그대로
+  // retry-feedback 으로 surface 합니다. 사용자가 임의 문자열을 작성하는
+  // 채널이 아니라는 점을 카피에서 정확하게 설명합니다.
+  "newPolicy.action.block.subcopy.posttool": "도구 결과를 모델에게 \"사용 불가\" 라고 알리고, verifier 의 verdict 를 retry-feedback 메시지로 모델에게 돌려보냅니다. 같은 도구가 재시도됩니다.",
+  "newPolicy.action.block.subcopy.posttoolfailure": "실패한 도구 호출을 모델에게 알리고, verifier 의 verdict 를 retry-feedback 으로 보냅니다. 모델은 verdict 를 보고 다른 입력으로 재시도할 수 있습니다.",
+  "newPolicy.action.block.subcopy.posttoolbatch": "이 턴의 모든 도구 호출 묶음을 모델에게 \"사용 불가\" 라고 알리고, verifier 의 verdict 를 retry-feedback 으로 돌려보냅니다.",
   "newPolicy.step4.runCommand.modeInline": "명령 직접 입력",
   "newPolicy.step4.runCommand.modeAttach": "스크립트 파일 첨부",
   "newPolicy.step4.runCommand.runtime": "런타임",
@@ -1724,11 +1729,17 @@ const EN: Record<keyof typeof KO_RAW, string> = {
 
   // D82d — block sub-copy is lifecycle-aware. PreToolUse refuses the
   // call outright; PostToolUse* signals the model that the tool result
-  // is unusable and surfaces the operator's reason as a retry-feedback
+  // is unusable and surfaces the verifier verdict as a retry-feedback
   // message via CC's stdout JSON `{"decision":"block","reason":"…"}`.
-  "newPolicy.action.block.subcopy.posttool": "Tell the model the tool result is unusable and let it retry with the reason you supply.",
-  "newPolicy.action.block.subcopy.posttoolfailure": "Surface the failure to the model with the reason you supply. The model retries with the reason as feedback, often choosing different arguments.",
-  "newPolicy.action.block.subcopy.posttoolbatch": "Tell the model the whole batch of tool calls in this turn is unusable and let it redo the batch with the reason you supply.",
+  //
+  // D82d follow-up: the wizard has no separate "reason" text field —
+  // the runtime gate forwards the firing verifier's verdict text into
+  // the retry-feedback channel. Copy describes what the runtime
+  // actually emits so operators do not look for an authoring slot
+  // that does not exist.
+  "newPolicy.action.block.subcopy.posttool": "Tell the model the tool result is unusable. The verifier's verdict is surfaced to the model as a retry-feedback message.",
+  "newPolicy.action.block.subcopy.posttoolfailure": "Surface the failure to the model with the verifier's verdict as retry-feedback. The model can then retry with different arguments.",
+  "newPolicy.action.block.subcopy.posttoolbatch": "Tell the model the whole batch of tool calls in this turn is unusable. The verifier's verdict is surfaced as retry-feedback so the model can redo the batch.",
   "newPolicy.step4.runCommand.modeInline": "Type a command",
   "newPolicy.step4.runCommand.modeAttach": "Attach a script file",
   "newPolicy.step4.runCommand.runtime": "Runtime",

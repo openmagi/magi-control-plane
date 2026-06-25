@@ -103,14 +103,69 @@ def _local_dir() -> str:
 SENTINEL_RE = re.compile(r"\bFILE_COURT_([A-Za-z0-9]+)_([A-Za-z0-9]+)(?!_)\b")
 
 
-def _deny(reason: str) -> None:
-    print(json.dumps({
+# D82d follow-up — CC's hook stdout JSON contract is split by event:
+#
+#   PreToolUse  / PermissionRequest  → `hookSpecificOutput` carries the
+#     refusal as `{"hookEventName":"…","permissionDecision":"deny",
+#     "permissionDecisionReason":"…"}`. CC's permission flow consumes
+#     that shape and refuses the call.
+#   PostToolUse / PostToolUseFailure / PostToolBatch → CC does NOT
+#     consume `hookSpecificOutput.permissionDecision` on these three
+#     events (the tool already ran; there is no permission lane to gate).
+#     Instead CC reads top-level `{"decision":"block","reason":"…"}` and
+#     surfaces the reason to the model as retry-feedback.
+#
+# Hardcoding `hookEventName="PreToolUse"` here was the silent-fail-open
+# the D82d matrix widening flagged: an operator authoring "block on
+# PostToolUse + Bash" would reach a legal triple end-to-end through the
+# wizard + IR loader + compiler, run the gate at runtime, see the gate
+# emit the PreToolUse-shaped JSON, and CC would silently drop the
+# stdout. The retry-feedback the wizard copy promised would never fire.
+#
+# Routing by `hook_event_name` from the inbound payload closes that
+# gap. The retry-feedback event set lives in `_RETRY_FEEDBACK_EVENTS`
+# below so a future widening (or narrowing) lands in one place.
+_RETRY_FEEDBACK_EVENTS: frozenset[str] = frozenset({
+    "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+})
+
+
+def _emit_deny_payload(reason: str, *, hook_event_name: str) -> dict:
+    """Pure helper — return the canonical deny JSON for a given event.
+
+    Split out from `_deny` so tests can pin the byte shape per event
+    without going through `SystemExit`.
+    """
+    if hook_event_name in _RETRY_FEEDBACK_EVENTS:
+        # CC's PostToolUse* channel reads top-level decision + reason
+        # and surfaces the reason to the model as retry-feedback.
+        return {
+            "decision": "block",
+            "reason": f"MAGI: {reason}",
+        }
+    # PreToolUse + the rest of the pre-side gate hooks consume
+    # hookSpecificOutput.permissionDecision. We default unknown event
+    # names to this shape because the historical default was PreToolUse;
+    # CC's authoring contract guards the unknown-name case server-side.
+    return {
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
+            "hookEventName": hook_event_name or "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": f"MAGI: {reason}",
         }
-    }, ensure_ascii=False))
+    }
+
+
+def _deny(reason: str, *, hook_event_name: str = "PreToolUse") -> None:
+    """Emit the canonical deny JSON for `hook_event_name` and exit 0.
+
+    `hook_event_name` defaults to "PreToolUse" so the legacy in-tree
+    callers (sentinel verifier path) stay byte-identical.
+    """
+    print(json.dumps(
+        _emit_deny_payload(reason, hook_event_name=hook_event_name),
+        ensure_ascii=False,
+    ))
     sys.exit(0)
 
 
@@ -302,21 +357,31 @@ def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *,
 
 
 def evaluate(payload: dict) -> None:
-    """Decide allow/deny from a PreToolUse hook payload.
+    """Decide allow/deny from a hook payload.
+
+    D82d follow-up: reads `hook_event_name` from the inbound payload so
+    `_deny` can emit the CC-canonical shape per event. PostToolUse /
+    PostToolUseFailure / PostToolBatch emit top-level `decision`+`reason`
+    (CC surfaces the reason to the model as retry-feedback); every
+    other event keeps the historical PreToolUse `hookSpecificOutput`
+    shape.
 
     Exits the process directly (CC reads stdout + exit code).
     """
+    hook_event_name = payload.get("hook_event_name") or "PreToolUse"
     cmd = payload.get("tool_input", {}).get("command", "")
     matches = list(SENTINEL_RE.finditer(cmd))
     if not matches:
         _allow()   # not a sentinel; CC continues
     cloud = _cloud_url()
     if not cloud.startswith(("http://", "https://")):
-        _deny("invalid MAGI_CP_CLOUD_URL scheme")
+        _deny("invalid MAGI_CP_CLOUD_URL scheme",
+              hook_event_name=hook_event_name)
     try:
         pub = _load_pubkey()
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
-        _deny(f"cloud unreachable ({type(e).__name__})")
+        _deny(f"cloud unreachable ({type(e).__name__})",
+              hook_event_name=hook_event_name)
 
     wal = Wal(path=os.path.join(_local_dir(), "wal.jsonl"))
     # Every sentinel must individually validate. Multi-statement commands like
@@ -334,7 +399,8 @@ def evaluate(payload: dict) -> None:
         if body is None:
             _deny(
                 f"no signed citation_verify=pass for subject={subject} "
-                f"payload_hash={payload_hash}"
+                f"payload_hash={payload_hash}",
+                hook_event_name=hook_event_name,
             )
     _allow()
 
@@ -1387,13 +1453,17 @@ def _allow_dict() -> dict:
     }
 
 
-def _deny_dict(reason: str) -> dict:
-    return {
-        "hookSpecificOutput": {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"MAGI: {reason}",
-        }
-    }
+def _deny_dict(reason: str, *, hook_event_name: str = "PreToolUse") -> dict:
+    """In-process counterpart to `_deny` — returns the deny dict instead
+    of printing + exiting. D82d-aware: PostToolUse / PostToolUseFailure /
+    PostToolBatch get the retry-feedback top-level `decision`+`reason`
+    shape, every other event keeps the historical PreToolUse
+    `hookSpecificOutput.permissionDecision` shape.
+
+    The default stays `PreToolUse` so legacy callers (run_command path
+    that pre-dates per-event dispatch) keep byte-identical output.
+    """
+    return _emit_deny_payload(reason, hook_event_name=hook_event_name)
 
 
 def run_command_cli() -> int:

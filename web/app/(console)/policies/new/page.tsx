@@ -639,8 +639,10 @@ const ACTIONS_BY_COMBINATION: Record<
   after_tool_use: {
     // D82d — block joins audit / inject_context / run_command on
     // per-tool matchers for PostToolUse. The wizard authors one tool
-    // per policy; the cloud matrix accepts alternation matchers as a
-    // fold of the single-tool row.
+    // per policy; the cloud matrix admits Bash|Edit-style alternation
+    // matchers as an independent triple (matrix.py:399-401) so an
+    // externally-authored raw IR can round-trip — the wizard never
+    // emits one, but the cloud accepts it.
     tool:     _filterByCombination("after_tool_use", ["block", "audit", "inject_context", "run_command"]),
     mcp_tool: _filterByCombination("after_tool_use", ["block", "audit", "inject_context", "run_command"]),
     wildcard: [],
@@ -1243,9 +1245,24 @@ function plainSummary(s: WizardState, locale: "ko" | "en"): string {
   const legacyAct: LegacyAct = (
     act === "block" || act === "ask" || act === "audit" || act === "strip"
   ) ? act : "audit"
+  // D82d follow-up: block summary copy was lifecycle-blind — "이 정책은
+  // 차단 합니다" / "this policy will block" reads as "refuse the call"
+  // even on the three PostToolUse* lifecycles where Step 4 already
+  // told the operator the channel is retry-feedback. Keep Step 4's
+  // disambiguation surface in lockstep with Step 6 so the review line
+  // does not contradict the action sub-copy.
+  const isPostToolBlock = legacyAct === "block" && (
+    s.lifecycle === "after_tool_use"
+      || s.lifecycle === "post_tool_use_failure"
+      || s.lifecycle === "post_tool_batch"
+  )
   const actLabel = ko
-    ? ({ block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[legacyAct])
-    : ({ block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[legacyAct])
+    ? (isPostToolBlock
+        ? "verifier verdict 를 retry-feedback 으로 모델에 돌려보내기"
+        : { block: "차단", ask: "사람 승인 요청", audit: "원장에만 기록", strip: "출력에서 제거" }[legacyAct])
+    : (isPostToolBlock
+        ? "surface the verifier verdict to the model as retry-feedback"
+        : { block: "block", ask: "ask a human", audit: "record to the ledger only", strip: "strip from the output" }[legacyAct])
   return ko
     ? `${lifeLabel}, ${header} 이 정책은 ${actLabel} 합니다.`
     : `${capitalize(lifeLabel)}: ${header} this policy will ${actLabel}.`
@@ -4856,9 +4873,27 @@ function Step4Action({
   // the action card render non-empty so the operator can still see
   // what's allowed if they navigate back here directly).
   const combinationAllowed = allowedActionsForCombination(lifecycle, state.toolScope)
+  // D82d follow-up: when the (lifecycle × toolScope) combination is
+  // empty (operator landed on Step 4 directly with no toolScope, or
+  // arrived via a stale URL), narrow the fallback to actions that are
+  // ALSO legal on the lifecycle's wildcard surface. ACTIONS_BY_LIFECYCLE
+  // alone can leak block onto (after_tool_use × wildcard), which the
+  // cloud matrix rejects explicitly (PostToolUse + * + block is not in
+  // LEGAL_COMBINATIONS). Intersecting with the wildcard combination
+  // entry keeps the per-lifecycle and per-combination tables from
+  // drifting in opposite directions.
+  const wildcardAllowed = new Set<Action>(
+    ACTIONS_BY_COMBINATION[lifecycle]?.wildcard ?? [],
+  )
+  const fallbackActions: readonly Action[] = wildcardAllowed.size > 0
+    ? ACTIONS_BY_LIFECYCLE[lifecycle].filter((a) => wildcardAllowed.has(a))
+    // No wildcard surface for this lifecycle either → keep the
+    // lifecycle's per-action card visible so the operator can see the
+    // shape and Step 2's tool-scope picker can re-narrow it.
+    : ACTIONS_BY_LIFECYCLE[lifecycle]
   const allowed = combinationAllowed.length > 0
     ? combinationAllowed
-    : ACTIONS_BY_LIFECYCLE[lifecycle]
+    : fallbackActions
   // D59: inject_context renders as a disabled radio when the chosen
   // lifecycle has a specialized hookSpecificOutput shape (see
   // `CONTEXT_INJECTION_EXCLUDED_LIFECYCLES`). It still appears in
