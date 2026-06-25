@@ -4,11 +4,11 @@ import path from "node:path"
 
 /**
  * Source-level invariants for Sidebar. guards the IA contract:
- * 4 groups, 7 leaf items (1+2+3+1). Authoring group has one leaf
+ * 5 groups, 10 leaf items (1+2+4+2+1). Authoring group has one leaf
  * ("Rules") since policy authoring is reachable from the page's CTA;
  * /rules/new is not surfaced in the sidebar. The audit group gained
- * /endpoints (P10) alongside /overview and /ledger. All keyed to
- * i18n + HITL badge plumbing.
+ * /endpoints (P10) alongside /overview and /ledger. The new "help"
+ * group (D78) surfaces /docs. All keyed to i18n + HITL badge plumbing.
  */
 describe("Sidebar IA invariants", () => {
   const src = readFileSync(
@@ -16,22 +16,29 @@ describe("Sidebar IA invariants", () => {
     "utf-8",
   )
 
-  it("renders all 4 domain groups in the expected order", () => {
+  it("renders all 5 domain groups in the expected order", () => {
     const groups = src.match(/nav\.group\.\w+/g) ?? []
     expect(groups).toEqual([
       "nav.group.authoring",
       "nav.group.runtime",
       "nav.group.audit",
       "nav.group.setup",
+      "nav.group.help",
     ])
   })
 
-  it("contains exactly 9 NavItem entries (1+2+4+2)", () => {
+  it("contains exactly 10 NavItem entries (1+2+4+2+1)", () => {
     // D63: setup group adds /scripts alongside /setup so run_command
     // policies have a management surface.
     // run-share: audit group adds /shared (manage + revoke share links).
+    // D78: help group adds /docs.
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(9)
+    expect(items).toHaveLength(10)
+  })
+
+  it("help group surfaces the D78 /docs entry", () => {
+    expect(src).toMatch(/href="\/docs"/)
+    expect(src).toMatch(/icon="docs"/)
   })
 
   it("audit group surfaces the P10 /endpoints attestation page", () => {
