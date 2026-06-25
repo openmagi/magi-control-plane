@@ -4934,7 +4934,17 @@ function Step4Action({
                     </FieldLabel>
                     <textarea
                       name="injectTemplate"
-                      required
+                      // D68 hotfix: only require when inject_context is the
+                      // chosen action. The peer-checked CSS hides the editor
+                      // when another action card is selected, but the
+                      // `required` attribute still gates form submit even
+                      // for hidden inputs and the browser then tries to
+                      // focus an invisible field, producing
+                      // "invalid form control with name='injectTemplate'
+                      // is not focusable" on Chrome and silently blocking
+                      // the Audit/Run-a-command paths. Make required
+                      // dynamic on the saved state.action.
+                      required={state.action === "inject_context"}
                       maxLength={16000}
                       rows={6}
                       defaultValue={state.injectTemplate ?? ""}
