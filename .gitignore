@@ -30,6 +30,12 @@ magi-cp.sqlite*
 .DS_Store
 Thumbs.db
 
+# D73 — Playwright E2E harness artifacts
+tests/e2e/.report/
+tests/e2e/node_modules/
+tests/e2e/playwright-report/
+tests/e2e/test-results/
+
 # Editor
 .vscode/
 .idea/

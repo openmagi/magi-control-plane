@@ -1,0 +1,20 @@
+{
+  "name": "magi-cp-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "description": "D73 — opt-in end-to-end harness for the magi-cp dashboard. Drives Playwright against a docker-compose stack and (optionally) spawns `claude -p` to fire real CC hooks for runtime-side assertions. NOT wired into npm test, npm run build, or CI; runs on demand via npm run e2e:* from a workflow final-smoke step.",
+  "scripts": {
+    "e2e:install": "playwright install --with-deps chromium",
+    "e2e:full": "playwright test",
+    "e2e:wizard": "playwright test scenarios/01-wizard-happy-path.spec.ts",
+    "e2e:prebuilt": "playwright test scenarios/02-prebuilt-toggle-roundtrip.spec.ts",
+    "e2e:scripts": "playwright test scenarios/03-scripts-upload-and-use.spec.ts",
+    "e2e:run-command": "playwright test scenarios/04-run-command-roundtrip.spec.ts",
+    "e2e:inject-context": "playwright test scenarios/05-inject-context-roundtrip.spec.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.46.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}
