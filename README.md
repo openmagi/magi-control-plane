@@ -143,6 +143,54 @@ Verdicts: `pass` → token issued; `deny` → no token (ledger records); `review
 - `magi-cp cloud` — run FastAPI cloud server (registry-wired)
 - `magi-cp mcp` — stdio MCP server (registry-wired)
 - `magi-cp keys rotate|list|revoke` — Ed25519 signing key lifecycle (W7b)
+- `magi-cp share <run>` — turn a Claude Code run into a public share link (see below)
+
+## Share a run
+
+Turn any Claude Code run into a shareable web link — the goal, the one-line
+result, the model, token usage, and the full tool trace, on a page anyone can
+open. Magi's governance verdicts overlay the trust section. (Like Vercel's
+preview URLs, but for what your agent actually did.)
+
+```bash
+magi-cp share <sessionId>             # the Claude Code session id (or a path to its .jsonl)
+magi-cp share <sessionId> --dry-run   # build + print the redacted view, do NOT upload
+```
+
+`share` reads the run's transcript from `~/.claude/projects/<cwd>/<sessionId>.jsonl`
+on **your machine**, builds a redacted `openmagi.runView.v1` view (secrets,
+tokens, private paths, and credentials are scrubbed allowlist-fail-closed), and
+uploads it to the cloud, which mints an opaque token and returns the URL. The
+public page never calls your agent or your machine — it serves the stored,
+redacted snapshot.
+
+> Redaction is best-effort. The CLI prints a "review before sharing publicly"
+> note; default is private (nothing is shared unless you run this command).
+
+**Where does the public URL come from?** `share` runs on your machine, but the
+link has to be served by something public. **The intended path is our hosted
+service** — point your CLI at it and you get a real public URL with zero infra:
+
+```bash
+export MAGI_CP_CLOUD_URL=https://api.openmagi.ai
+export MAGI_CP_API_KEY=<your key>            # from Magi Pro+ / alpha
+magi-cp share <sessionId>
+# -> https://cloud.openmagi.ai/r/<token>      (open it anywhere)
+```
+
+Your transcript is read locally and only the redacted view is uploaded; the
+hosted cloud stores it and `cloud.openmagi.ai` renders the page.
+
+Self-hosters can serve their own links instead: run `magi-cp cloud` + the `web/`
+dashboard, put the dashboard behind a public address (your domain, or a
+`cloudflared`/`ngrok`/Tailscale-funnel tunnel), and set
+`MAGI_CP_SHARE_BASE_URL=https://your-public-host`. (Pure `localhost` only makes
+links you alone can open — fine for testing with
+`MAGI_CP_SHARE_BASE_URL=http://127.0.0.1:8787`.)
+
+The cloud builds the URL from `MAGI_CP_SHARE_BASE_URL` (default
+`https://cloud.openmagi.ai`) and honors an optional `MAGI_CP_SHARE_TTL_SECONDS`
+link expiry (default: no expiry).
 
 ## Key rotation (W7b)
 KeyStore manages N keypairs under `MAGI_CP_KEY_DIR` (default
