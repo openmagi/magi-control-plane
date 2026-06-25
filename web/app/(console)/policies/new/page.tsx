@@ -573,8 +573,15 @@ function matcherClassForToolScope(scope: string | undefined): MatcherClassKey {
   // bodies). saveWizard's early multi-input guard catches that path
   // explicitly so we still classify on the first parsed entry as a
   // defensive default.
+  //
+  // D71: mcp__ prefix matched case-insensitively so the runtime
+  // classifier stays in sync with the ToolCombobox badge (which uses
+  // classifyCcToolName / cc-tools.ts — also case-insensitive). Without
+  // this, typing 'MCP__github__search' showed a 'MCP' badge while the
+  // matrix-gate classified it as 'tool', sending the policy through
+  // the wrong row.
   const first = parseCsv(raw)[0]?.trim() || raw
-  if (first.startsWith("mcp__")) return "mcp_tool"
+  if (first.toLowerCase().startsWith("mcp__")) return "mcp_tool"
   return "tool"
 }
 
@@ -3365,9 +3372,33 @@ function NextButton({ label }: { label: string }) {
   )
 }
 
-function FieldLabel({ children }: { children: React.ReactNode }) {
+function FieldLabel({
+  children,
+  htmlFor,
+  id,
+}: {
+  children: React.ReactNode
+  /** Bind the label to a specific input by id (recommended for a11y). */
+  htmlFor?: string
+  /** id on the label element so callers can wire aria-labelledby. */
+  id?: string
+}) {
+  // D71: emit a real <label> when bound to an input id so the
+  // combobox + other wizard fields gain an accessible name. When the
+  // caller doesn't pass htmlFor (legacy callsites in this file), we
+  // fall back to a non-interactive <span> to preserve the prior
+  // visual + layout behaviour byte-equivalently.
+  const cls =
+    "block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5"
+  if (htmlFor) {
+    return (
+      <label id={id} htmlFor={htmlFor} className={cls}>
+        {children}
+      </label>
+    )
+  }
   return (
-    <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+    <span id={id} className={cls}>
       {children}
     </span>
   )
@@ -3826,9 +3857,13 @@ function Step2ToolScope({
             * radio row is removed; advanceWizard tolerates a missing
             * chip value because its fallback chain was always
             * `scopeCustom || scopeChip`. */}
-          <span className="mt-3 hidden peer-checked:block space-y-3">
+          {/* D71: changed <span> -> <div> so the block-level
+            * combobox <div>/<ul> isn't nested inside an inline span
+            * (browsers break a span at a block child which can
+            * rearrange peer-checked reveal styles). */}
+          <div className="mt-3 hidden peer-checked:block space-y-3">
             <div>
-              <FieldLabel>
+              <FieldLabel htmlFor="step2-tool-combobox">
                 {t("newPolicy.wizard.step2.toolPicker.label")}
               </FieldLabel>
               <ToolCombobox
@@ -3847,7 +3882,7 @@ function Step2ToolScope({
                   : `Currently saved as ${helperTool}. Step 3 will suggest checks specific to this tool; pick a different one above and submit to refresh.`}
               </p>
             )}
-          </span>
+          </div>
         </label>
 
         <NextButton label={t("newPolicy.wizard.next")} />
