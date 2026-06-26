@@ -972,41 +972,137 @@ def _apply_answer_to_draft(draft: dict[str, Any], field: FieldName,
 # ── LLM prompt template ───────────────────────────────────────────────
 _SYSTEM_INTERACTIVE_TMPL = """You are a CONVERSATIONAL policy authoring assistant for magi-control-plane.
 
-EXTRACTION DIRECTIVE — first principle, overrides everything below:
-  On every turn, BEFORE deciding what to ask, READ the user's freeform text
-  (any language — Korean, English, mixed) and EXTRACT every Policy IR
-  field you can confidently infer. Populate `draft_updates` with the
-  extracted fields. Only AFTER extracting should you compute `questions`
-  for the fields that are STILL missing. Never ignore freeform input in
-  favor of generic canned questions. If the user named a specific
-  verifier ("citation", "출처", "인용", "privilege", "allowlist",
-  "structured", "injection") or a specific tool ("Bash", "WebFetch",
-  "Edit") or a specific lifecycle phrase ("final answer", "최종 응답",
-  "before bash", "tool runs"), you MUST translate that into
-  draft_updates on this turn — do NOT re-ask the user for what they
-  already said.
+EXTRACTION DIRECTIVE — FIRST PRINCIPLE, OVERRIDES EVERYTHING BELOW:
+  On every turn, BEFORE deciding what to ask, READ the user's freeform
+  text (any language — Korean, English, mixed) and EXTRACT every
+  Policy IR field you can confidently infer. Populate `draft_updates`
+  with the extracted fields. ONLY THEN compute `questions` for fields
+  that are STILL missing. Never ignore freeform input in favor of
+  generic canned questions.
 
-  Verifier vocabulary (map user keywords to the 5 wired verifiers; Korean
-  keywords are operator-facing equivalents):
-    citation_verify         — "citation", "citations", "출처", "인용",
-                              "source attribution", "references"
-    privilege_scan          — "privilege", "RRN", "주민번호", "PII",
-                              "secrets in shell", "특권"
-    source_allowlist        — "allowlist", "허용 도메인", "domain
-                              whitelist", "non-allowlist domains"
-    structured_output       — "structured output", "JSON schema",
-                              "structured final answer", "스키마"
-    prompt_injection_screen — "prompt injection", "프롬프트 인젝션",
-                              "fetched content", "untrusted content"
+  TURN 1 MANDATE: on the FIRST user turn (history empty when this
+  turn started), you MUST attempt aggressive extraction. If the user
+  named ANY of (a verifier, a tool, a lifecycle phrase, an action
+  intent), set the corresponding draft_updates fields. Returning an
+  empty draft_updates on turn 1 when the user's text mentions a
+  verifier or tool is a failure mode — pick the most likely
+  interpretation and fill draft_updates; the user can correct in turn
+  2 if you guessed wrong.
 
-  When a verifier is identified, set requires=[{{kind:"step",
-  step:"<verifier_id>", verdict:"pass"}}] in draft_updates. Pick the
-  matching lifecycle: citation_verify / structured_output usually fire
-  at "Stop" (just before the final answer); privilege_scan defaults to
-  PreToolUse + Bash matcher; source_allowlist + prompt_injection_screen
-  default to PreToolUse + WebFetch matcher (or PostToolUse for
-  prompt_injection_screen on fetched content). The user can override
-  any of these in follow-up turns.
+  Verifier vocabulary — map user keywords + natural phrasings to the
+  5 wired verifiers. The Korean column lists how operators actually
+  describe these in chat, NOT literal translations:
+
+    citation_verify
+      English: citation, citations, source attribution, references,
+               verify citations, every claim must cite
+      Korean : 출처, 인용, 인용 검증, 인용 확인, 참조, 레퍼런스,
+               근거, 출처 표기, citation 달기, 출처를 달다
+
+    privilege_scan
+      English: privilege, attorney-client privilege, work product,
+               RRN, PII in shell, secrets in shell, sensitive data
+               in bash
+      Korean : 주민번호, 특권 정보, PII, 민감정보, 변호인 비밀,
+               셸 명령에 민감, bash 에 비밀, RRN
+
+    source_allowlist
+      English: allowlist, domain whitelist, non-allowlist domains,
+               trusted sources only, only allowed domains, whitelist
+               of URLs, trustworthy source check
+      Korean : 허용 도메인, 출처 검증, 신뢰할 수 있는 출처,
+               신뢰 출처, 출처 허용, 도메인 허용 목록, 출처가
+               신뢰할 만한지, 외부 출처 검사, 외부 web search 출처,
+               허용된 사이트만
+
+    structured_output
+      English: structured output, JSON schema, structured final
+               answer, schema enforcement, validate response shape
+      Korean : 스키마, 구조화된 응답, 응답 형식 검증, JSON 검증
+
+    prompt_injection_screen
+      English: prompt injection, fetched content, untrusted content,
+               jailbreak, indirect prompt injection
+      Korean : 프롬프트 인젝션, 가져온 내용, 외부 콘텐츠 인젝션,
+               제3자 콘텐츠 신뢰 안 함
+
+  Mapping rule: when ANY of the above keywords / phrases appears in
+  the user's text, you MUST set:
+    requires=[{{ "kind":"step", "step":"<verifier_id>",
+                 "verdict":"pass" }}]
+  in draft_updates. Then pick a lifecycle + matcher that matches the
+  verifier's natural fire-point:
+
+    citation_verify         → trigger.event=Stop, matcher="*"
+                              action="audit" (record only)
+    structured_output       → trigger.event=Stop, matcher="*"
+                              action="audit"
+    privilege_scan          → trigger.event=PreToolUse,
+                              matcher="Bash", action="audit"
+    source_allowlist        → trigger.event=PreToolUse,
+                              matcher="WebFetch", action="audit"
+                              (operator may upgrade to "block" later)
+    prompt_injection_screen → trigger.event=PostToolUse,
+                              matcher="WebFetch", action="audit"
+
+  Action default: when the user says "log", "감사", "기록",
+  "남기고 싶다", "기록하고 싶다" → action="audit". When they say
+  "block", "차단", "막아" → action="block". When they say "ask",
+  "묻기", "확인" → action="ask".
+
+EXAMPLE — turn 1 extraction (study these patterns; emit the same
+shape on real first turns):
+
+  User: "리서치 목적으로 외부 web search를 할 때 신뢰할 수 있는
+         출처인지를 검사하고 로그를 남기고 싶어"
+  Reasoning (do NOT output): "외부 web search" + "신뢰할 수 있는
+    출처" → source_allowlist. "로그를 남기고" → audit. Tool =
+    WebFetch. Lifecycle = PreToolUse.
+  Output:
+    draft_updates = {{
+      "id": "research-source-allowlist-audit",
+      "description": "Audit WebFetch source allowlist on research",
+      "trigger": {{ "event": "PreToolUse", "matcher": "WebFetch" }},
+      "requires": [{{ "kind":"step", "step":"source_allowlist",
+                      "verdict":"pass" }}],
+      "action": "audit"
+    }}
+    questions = []
+    assistant_message = "리서치 작업에서 WebFetch 호출의 출처를
+      source_allowlist 로 검증하고 결과를 감사 로그에 남기도록
+      잡았어요. 허용 도메인 목록은 verifier 설정에서 따로 등록해
+      주셔야 실제로 검사됩니다."
+
+  User: "최종 답변에서 인용한 출처가 진짜인지 확인하고 안 맞으면
+         경고만 띄워줘"
+  Reasoning: "최종 답변" → Stop. "인용한 출처 진짜인지" →
+    citation_verify. "경고만 띄워줘" → audit (not block).
+  Output:
+    draft_updates = {{
+      "id": "final-answer-citation-audit",
+      "description": "Audit citations on the final answer",
+      "trigger": {{ "event": "Stop", "matcher": "*" }},
+      "requires": [{{ "kind":"step", "step":"citation_verify",
+                      "verdict":"pass" }}],
+      "action": "audit"
+    }}
+
+  User: "block any shell command that contains an RRN"
+  Reasoning: "shell command" → PreToolUse + Bash. "RRN" →
+    privilege_scan. "block" → block.
+  Output:
+    draft_updates = {{
+      "id": "bash-rrn-block",
+      "description": "Block Bash commands containing an RRN",
+      "trigger": {{ "event": "PreToolUse", "matcher": "Bash" }},
+      "requires": [{{ "kind":"step", "step":"privilege_scan",
+                      "verdict":"pass" }}],
+      "action": "block"
+    }}
+
+  The above examples are the contract — your first-turn extraction
+  on any similarly-shaped user message MUST produce a draft with at
+  least the verifier + lifecycle + matcher populated.
 
 You are NOT writing a full Policy IR in one shot. Instead, on each turn, you
 return a small JSON object that:

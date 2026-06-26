@@ -1553,3 +1553,71 @@ def test_q100_system_prompt_carries_extraction_directive():
     assert "source_allowlist" in tmpl
     assert "structured_output" in tmpl
     assert "prompt_injection_screen" in tmpl
+
+
+def test_q100_source_allowlist_korean_phrasing_extraction():
+    """Korean operators commonly say "신뢰할 수 있는 출처" or "외부 web
+    search 출처" rather than "allowlist". The Q100 follow-up directive
+    + few-shot example must extract source_allowlist from that natural
+    phrasing.
+    """
+    canned = _llm_response(
+        message="리서치 작업의 WebFetch 출처를 source_allowlist 로 잡았어요.",
+        updates={
+            "id": "research-source-allowlist-audit",
+            "description": "Audit WebFetch source allowlist on research",
+            "trigger": {"event": "PreToolUse", "matcher": "WebFetch"},
+            "requires": [{"kind": "step", "step": "source_allowlist",
+                          "verdict": "pass"}],
+            "action": "audit",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "리서치 목적으로 외부 web search를 할 때 "
+                           "신뢰할 수 있는 출처인지를 검사하고 "
+                           "로그를 남기고 싶어",
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft is not None, body
+    req = draft.get("requires")
+    assert isinstance(req, list) and len(req) == 1, req
+    assert req[0].get("step") == "source_allowlist"
+    assert draft["trigger"]["event"] == "PreToolUse"
+    assert draft["trigger"]["matcher"] == "WebFetch"
+    assert draft.get("action") == "audit"
+    assert body["ready_to_save"] is True
+    assert body["questions"] == []
+
+
+def test_q100_directive_carries_korean_natural_phrasings():
+    """Pin the natural Korean phrasings in the system prompt so a
+    future refactor that drops them (causing the Korean extraction
+    regression we just fixed) trips loudly.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _SYSTEM_INTERACTIVE_TMPL,
+    )
+    tmpl = _SYSTEM_INTERACTIVE_TMPL
+    # Natural Korean phrasings that the original directive missed.
+    assert "신뢰할 수 있는 출처" in tmpl
+    assert "외부 web search" in tmpl
+    assert "출처 검증" in tmpl
+    # Few-shot examples are the strongest LLM control. Pin two.
+    assert "EXAMPLE" in tmpl
+    assert "research-source-allowlist-audit" in tmpl
+    assert "final-answer-citation-audit" in tmpl
+    # Turn-1 mandate language pinned.
+    assert "TURN 1 MANDATE" in tmpl
