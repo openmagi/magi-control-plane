@@ -8,6 +8,15 @@
 #   MAGI_CP_ADMIN_HMAC_SECRET    random per-install (admin signatures)
 #   DASHBOARD_PORT               host port for the Next.js dashboard (default 3000)
 #   CLOUD_PORT                   host port for the FastAPI control plane (default 8787)
+#
+# Optional env (add these to .env to unlock features; survives installer
+# re-runs because compose reads .env via env_file below):
+#   ANTHROPIC_API_KEY    + OPENAI_API_KEY   conversational compile / dry-run
+#   MAGI_CP_LLM_COMPILER, MAGI_CP_LLM_REVIEWER (override the defaults below)
+#
+# Customization rule: edit .env to add any KEY=VALUE pair, it auto-flows
+# into both containers via env_file. The installer never overwrites .env,
+# and on re-run never overwrites this compose file once it exists.
 
 services:
   cloud:
@@ -23,12 +32,28 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
+    # env_file pulls EVERY KV in .env into the container, so users drop
+    # ANTHROPIC_API_KEY (or any future env) into .env without ever
+    # editing this compose file. The `environment:` block below sets
+    # defaults and pins the required ones with `:?` so missing values
+    # fail loud at compose-up time instead of silently at runtime.
+    env_file:
+      - .env
     environment:
       MAGI_CP_HITL_API_KEY: "${MAGI_CP_HITL_API_KEY:?HITL API key required}"
       MAGI_CP_API_KEY: "${MAGI_CP_API_KEY:?cloud API key required}"
       MAGI_CP_ADMIN_API_KEY: "${MAGI_CP_ADMIN_API_KEY:?admin API key required}"
       MAGI_CP_ADMIN_HMAC_SECRET: "${MAGI_CP_ADMIN_HMAC_SECRET:?HMAC shared secret required}"
       MAGI_CP_DSN: "${MAGI_CP_DSN:-sqlite:////data/magi-cp.sqlite}"
+      # LLM provider factory defaults. Only active once the corresponding
+      # API key is set in .env. /policies/compile returns 503 until both
+      # compiler + reviewer providers can construct, so dropping just
+      # ANTHROPIC_API_KEY into .env activates the anthropic compiler;
+      # add OPENAI_API_KEY to also activate the openai reviewer.
+      # Override these factory paths via .env if you want a different
+      # pair.
+      MAGI_CP_LLM_COMPILER: "${MAGI_CP_LLM_COMPILER:-magi_cp.llm.anthropic_provider:anthropic_default}"
+      MAGI_CP_LLM_REVIEWER: "${MAGI_CP_LLM_REVIEWER:-magi_cp.llm.openai_provider:openai_default}"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2).status==200 else 1)"]
       interval: 10s
@@ -44,6 +69,8 @@ services:
     depends_on:
       cloud:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
       MAGI_CP_CLOUD_URL: "http://cloud:8787"
       MAGI_CP_PUBLIC_CLOUD_URL: "http://localhost:${CLOUD_PORT:-8787}"
