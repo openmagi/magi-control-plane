@@ -492,6 +492,29 @@ class VerifyInlineReq(BaseModel):
             object.__setattr__(self, "payload_hash", phash)
 
 
+# ── Q97a: /admin/llm-keys body shapes (module-scope so FastAPI's
+# get_type_hints can resolve them on Python 3.14) ────────────────────
+class LlmKeysPutReq(BaseModel):
+    """PUT body for /admin/llm-keys.
+
+    Both fields optional. A missing field LEAVES the prior value
+    unchanged (NOT cleared). An empty string CLEARS that key. A
+    non-empty string overwrites. The store performs no validation
+    beyond a length cap; the LLM provider will raise on first call if
+    the value is malformed.
+    """
+    model_config = {"extra": "forbid"}
+    anthropic_api_key: str | None = Field(default=None, max_length=4096)
+    openai_api_key: str | None = Field(default=None, max_length=4096)
+
+
+class LlmKeysTestReq(BaseModel):
+    """POST body for /admin/llm-keys/test. Optional `provider` field
+    narrows the probe to anthropic or openai; absent / null runs both."""
+    model_config = {"extra": "forbid"}
+    provider: Literal["anthropic", "openai"] | None = None
+
+
 # ── middlewares ──────────────────────────────────────────────────────
 class MaxBodyMiddleware(BaseHTTPMiddleware):
     """413 on Content-Length OR by accumulating a streamed/chunked body."""
@@ -735,6 +758,20 @@ def create_app(
     # Pre-D63 callers (tests + legacy) read this off app.state too.
     app.state.policy_lock = policy_lock
     app.state.script_store_lock = script_store_lock
+    # Q97a: LLM provider singletons exposed via app.state so the admin
+    # /admin/llm-keys PUT route can rebuild them in-place after a key
+    # change, and the very next /policies/compile-interactive call picks
+    # up the new credentials WITHOUT a container restart. The closure
+    # vars `llm_compiler` / `llm_reviewer` remain the source-of-truth at
+    # construction time; routes prefer `app.state.llm_*` when populated
+    # so a runtime swap takes effect.
+    app.state.llm_compiler = llm_compiler
+    app.state.llm_reviewer = llm_reviewer
+    # Single read-modify-write lock around the LLM key store so two
+    # concurrent PUTs cannot interleave reads (lost-update parity with
+    # policy_lock / custom_verifier_lock).
+    llm_keys_lock = asyncio.Lock()
+    app.state.llm_keys_lock = llm_keys_lock
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -816,7 +853,7 @@ def create_app(
         return {"revoked": True}
 
     @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
-    async def policies_compile(req: "CompileReq") -> dict:
+    async def policies_compile(req: "CompileReq", request: Request) -> dict:
         """Authoring gate 1+2 — NL→IR compile + critic review.
 
         Returns {"ir": {...}, "review": {"ok": bool, "issues": [...]}}.
@@ -825,8 +862,14 @@ def create_app(
 
         v2.0-W5: runs via asyncio.to_thread so the sync httpx-based providers
         don't block the FastAPI event loop during the 5–60s LLM call.
+
+        Q97a: providers are resolved from `app.state` first so the
+        /admin/llm-keys PUT route's hot-reload takes effect on the very
+        next call; the closure vars stay as the construct-time default.
         """
-        if llm_compiler is None or llm_reviewer is None:
+        active_compiler = getattr(request.app.state, "llm_compiler", None) or llm_compiler
+        active_reviewer = getattr(request.app.state, "llm_reviewer", None) or llm_reviewer
+        if active_compiler is None or active_reviewer is None:
             raise HTTPException(
                 503, "LLM providers not configured on this deployment",
             )
@@ -834,8 +877,8 @@ def create_app(
         try:
             result = await asyncio.to_thread(
                 compile_with_review,
-                compiler=llm_compiler,
-                reviewer=llm_reviewer,
+                compiler=active_compiler,
+                reviewer=active_reviewer,
                 nl=req.nl,
                 prior_turns=[t.model_dump() for t in (req.prior_turns or [])],
                 verifier_registry=verifier_registry,
@@ -888,7 +931,7 @@ def create_app(
     @app.post("/policies/compile-interactive",
               dependencies=[Depends(require_admin_key)])
     async def policies_compile_interactive(
-        req: "InteractiveCompileReq",
+        req: "InteractiveCompileReq", request: Request,
     ) -> dict:
         """D55a — conversational policy compiler.
 
@@ -904,8 +947,12 @@ def create_app(
         Same 503-on-unconfigured-provider shape as /policies/compile so
         the dashboard's existing provider_unconfigured flash mapping
         lights up without a second code path.
+
+        Q97a: provider resolved from `app.state` first so a key change
+        via /admin/llm-keys PUT takes effect on the very next call.
         """
-        if llm_compiler is None:
+        active_compiler = getattr(request.app.state, "llm_compiler", None) or llm_compiler
+        if active_compiler is None:
             raise HTTPException(
                 503, "LLM providers not configured on this deployment",
             )
@@ -917,7 +964,7 @@ def create_app(
         try:
             return await asyncio.to_thread(
                 step_compile,
-                llm_compiler,
+                active_compiler,
                 history=history,
                 draft_so_far=req.draft_so_far,
                 answers=req.answers,
@@ -963,6 +1010,160 @@ def create_app(
             )
         except HandoffContextError as e:
             raise HTTPException(422, str(e)) from e
+
+    # ── Q97a: LLM API key dashboard surface ─────────────────────────
+    # Self-host operators paste keys into /settings instead of editing
+    # `~/.magi-cp/.env`. The PUT route hot-reloads the provider
+    # singletons in-place so the next /policies/compile-interactive
+    # picks them up WITHOUT a container restart.
+    #
+    # Body models live at module scope (LlmKeysPutReq / LlmKeysTestReq)
+    # because FastAPI's `get_type_hints` cannot resolve forward refs to
+    # classes defined inside the create_app closure on Python 3.14.
+
+    def _llm_status_payload() -> dict:
+        from .llm_key_store import status as _status
+        s = _status()
+        return {
+            "anthropic": {
+                "set": s["anthropic_set"],
+                "last4": s["anthropic_last4"],
+            },
+            "openai": {
+                "set": s["openai_set"],
+                "last4": s["openai_last4"],
+            },
+        }
+
+    def _rebuild_provider_singletons() -> None:
+        """Re-resolve `app.state.llm_compiler` / `app.state.llm_reviewer`
+        from the env-pointed factories. The factories now consult the
+        on-disk overlay first, so the very next /policies/compile call
+        uses the just-written keys.
+
+        Either env var being unset leaves the corresponding singleton at
+        None (matches the pre-Q97a 503-on-unconfigured behaviour); the
+        admin endpoint's response will reflect the same `set=False`
+        status the dashboard reads on GET.
+
+        Errors raised by the factory itself (e.g. the provider's
+        `__init__` rejecting a still-missing key) propagate up so the
+        PUT response surfaces "you set anthropic but the openai factory
+        is still missing its key" instead of silently rolling back.
+        """
+        try:
+            app.state.llm_compiler = _resolve_llm_provider_from_env(
+                "MAGI_CP_LLM_COMPILER",
+            )
+        except Exception:
+            # Don't take the app down — keep the existing singleton, but
+            # surface the failure as None so the dashboard can render
+            # an actionable "provider error" pill.
+            app.state.llm_compiler = None
+        try:
+            app.state.llm_reviewer = _resolve_llm_provider_from_env(
+                "MAGI_CP_LLM_REVIEWER",
+            )
+        except Exception:
+            app.state.llm_reviewer = None
+
+    @app.get("/admin/llm-keys", dependencies=[Depends(require_admin_key)])
+    def admin_llm_keys_get() -> dict:
+        """Dashboard reads which providers are configured + last4.
+        Never returns the raw key value — only `set: bool` and the last
+        4 characters for a "yes this is the key I just pasted" check."""
+        return _llm_status_payload()
+
+    @app.put("/admin/llm-keys", dependencies=[Depends(require_admin_key)])
+    async def admin_llm_keys_put(req: LlmKeysPutReq) -> dict:
+        """Dashboard writes new keys.
+
+        Both fields optional on the body. Missing field = preserve.
+        Empty string = clear. Non-empty = overwrite. Atomic write via
+        tempfile + rename; final file is 0600.
+
+        After persisting, the provider singletons on `app.state` are
+        rebuilt in-place so the very next /policies/compile call uses
+        the new credentials without a container restart.
+        """
+        from .llm_key_store import set as _store_set
+        async with llm_keys_lock:
+            await asyncio.to_thread(
+                _store_set, req.anthropic_api_key, req.openai_api_key,
+            )
+            _rebuild_provider_singletons()
+        return _llm_status_payload()
+
+    @app.post(
+        "/admin/llm-keys/test",
+        dependencies=[Depends(require_admin_key)],
+    )
+    async def admin_llm_keys_test(
+        request: Request,
+        req: LlmKeysTestReq = Body(default_factory=LlmKeysTestReq),
+    ) -> dict:
+        """One cheap "ping" completion per provider to verify the keys.
+
+        With `{"provider": "anthropic"|"openai"}` the route exercises
+        just that side. Without a body (or with `{"provider": null}`)
+        both are run and a per-provider result map is returned.
+
+        Each probe sends `[user: "ping"]` with a 4-token cap. On
+        success: `{"ok": true, "error": null, "provider_used": "..."}`.
+        On failure: `{"ok": false, "error": "<reason>", ...}`. A
+        provider that isn't configured at all reports `{"ok": false,
+        "error": "not configured", ...}` so the dashboard renders a
+        consistent state.
+
+        Runs in a thread so the live HTTP call doesn't block the loop.
+        """
+        which = req.provider if req else None
+
+        def _one(provider_name: str) -> dict:
+            singleton = (
+                getattr(app.state, "llm_compiler", None)
+                if provider_name == "anthropic"
+                else getattr(app.state, "llm_reviewer", None)
+            )
+            if singleton is None:
+                # Best-effort: try to construct a fresh provider directly
+                # so an operator who has set keys but hasn't restarted
+                # gets a real probe instead of a stale "not configured".
+                try:
+                    if provider_name == "anthropic":
+                        from ..llm.anthropic_provider import AnthropicProvider
+                        singleton = AnthropicProvider()
+                    else:
+                        from ..llm.openai_provider import OpenAIProvider
+                        singleton = OpenAIProvider()
+                except Exception as e:
+                    return {
+                        "ok": False,
+                        "error": f"not configured: {type(e).__name__}: {e}",
+                        "provider_used": provider_name,
+                    }
+            try:
+                singleton.complete([
+                    {"role": "user", "content": "ping"},
+                ])
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "error": f"{type(e).__name__}: {e}",
+                    "provider_used": provider_name,
+                }
+            return {
+                "ok": True,
+                "error": None,
+                "provider_used": provider_name,
+            }
+
+        if which in ("anthropic", "openai"):
+            return await asyncio.to_thread(_one, which)
+        # both
+        a = await asyncio.to_thread(_one, "anthropic")
+        o = await asyncio.to_thread(_one, "openai")
+        return {"anthropic": a, "openai": o}
 
     @app.post("/policies/dry-run", dependencies=[Depends(require_admin_key)])
     async def policies_dry_run(req: "DryRunReq", request: Request) -> dict:
@@ -1398,7 +1599,10 @@ def create_app(
         elif kind == "llm_critic":
             if not req.criterion:
                 raise HTTPException(422, "kind=llm_critic requires criterion")
-            if llm_compiler is None:
+            # Q97a: prefer the hot-reloadable singleton on app.state so a
+            # /admin/llm-keys PUT-triggered rebuild reaches this path too.
+            active_compiler = getattr(request.app.state, "llm_compiler", None) or llm_compiler
+            if active_compiler is None:
                 verdict_status = "review"
                 reasons = [
                     "llm_critic preview: MAGI_CP_LLM_COMPILER not configured — "
@@ -1427,7 +1631,7 @@ def create_app(
                 )
                 try:
                     raw = await asyncio.to_thread(
-                        llm_compiler.complete, prompt,
+                        active_compiler.complete, prompt,
                         max_output_tokens=200,
                     )
                 except Exception as e:

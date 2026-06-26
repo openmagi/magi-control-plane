@@ -46,7 +46,23 @@ class OpenAIProvider:
         http: object | None = None,
         timeout: float = 60.0,
     ) -> None:
-        key = api_key or os.environ.get("OPENAI_API_KEY")
+        # Resolution order (Q97a): explicit arg → on-disk overlay → env-var.
+        # The store lets self-host operators paste keys into the /settings
+        # page; when the store is empty, behaviour is byte-identical to the
+        # pre-Q97a env-var-only deployment.
+        key = api_key
+        if not key:
+            try:
+                from ..cloud.llm_key_store import get as _store_get
+                key = _store_get().get("openai") or None
+            except Exception:
+                # Store import / read failure must NOT mask the env-var
+                # fallback. Operators running without a writable key dir
+                # (e.g. unit tests in a read-only sandbox) still get the
+                # env-var path.
+                key = None
+        if not key:
+            key = os.environ.get("OPENAI_API_KEY")
         if not key:
             raise LlmProviderError("OPENAI_API_KEY is not set")
         self.api_key = key
