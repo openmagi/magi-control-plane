@@ -127,11 +127,27 @@ describe("policies/new wizard — P9 steering wiring", () => {
   })
 
   it("D53b: Raw/Advanced mode passes a dryRunSlot to PolicyBuilder", () => {
-    // The slot receives the current draft + `isValid` and renders
-    // the DryRunPanel; the parent disables the button when the
-    // PolicyBuilder reports validation errors.
-    expect(src).toContain("dryRunSlot={")
-    expect(src).toMatch(/DryRunPanel[\s\S]*?ir=\{isValid \?/)
+    // Q90 fix: the slot lives in AdvancedAuthoring (client) now so the
+    // render-prop function literal is created on the client. Building it
+    // inside page.tsx (server) crashed React 18 RSC at render with
+    // "Functions cannot be passed directly to Client Components..."
+    // (digest 1331850167). Pin both the new home of the slot AND the
+    // negative invariant that page.tsx no longer constructs a closure
+    // here so a refactor that re-introduces the bug is loud.
+    const advancedAuthoringSrc = readFileSync(
+      path.join(__dirname, "_components", "AdvancedAuthoring.tsx"),
+      "utf-8",
+    )
+    expect(advancedAuthoringSrc).toContain("dryRunSlot={dryRunSlot}")
+    expect(advancedAuthoringSrc).toMatch(/DryRunPanel[\s\S]*?ir=\{isValid \?/)
+    // Negative: page.tsx must not pass a function-valued dryRunSlot to
+    // AdvancedAuthoring (the server -> client function-prop pitfall).
+    // The lookahead matches an `<AdvancedAuthoring` opening up to its
+    // self-close `/>`; we then assert the substring `dryRunSlot=` is
+    // absent inside it.
+    const advMatch = src.match(/<AdvancedAuthoring[\s\S]*?\/>/)
+    expect(advMatch).not.toBeNull()
+    expect(advMatch![0]).not.toContain("dryRunSlot=")
   })
 
   // ── D56a ─────────────────────────────────────────────────────

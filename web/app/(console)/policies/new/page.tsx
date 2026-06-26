@@ -2646,6 +2646,13 @@ export default async function NewPolicyPage({
           }}
         >
           <Card>
+            {/* Q90 fix: the dry-run slot used to be a render-prop literal
+                built here in the server component, which crashed at render
+                with "Functions cannot be passed directly to Client
+                Components..." (digest 1331850167) because AdvancedAuthoring
+                is a client component. The slot is now defined inside
+                AdvancedAuthoring so the function literal lives on the
+                client side. */}
             <AdvancedAuthoring
               locale={locale === "ko" ? "ko" : "en"}
               saveAction={saveAdvanced}
@@ -2677,14 +2684,6 @@ export default async function NewPolicyPage({
                 placeholderId: "legal-filing/v1",
                 placeholderMatcher: "Bash | mcp__court__file",
               }}
-              dryRunSlot={({ draft, isValid }) => (
-                <DryRunPanel
-                  locale={locale}
-                  ir={isValid ? (draft as unknown as Record<string, unknown>) : null}
-                  disabled={!isValid}
-                  action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
-                />
-              )}
             />
           </Card>
         </AuthoringShell>

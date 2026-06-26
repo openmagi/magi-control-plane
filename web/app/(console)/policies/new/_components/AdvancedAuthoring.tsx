@@ -31,6 +31,7 @@ import { useCallback, useMemo, useRef } from "react"
 import type { PolicyDraft } from "@/lib/policy-builder"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import HandoffLink from "./HandoffLink"
+import { DryRunPanel } from "../../_components/DryRunPanel"
 
 export interface AdvancedAuthoringProps {
   locale: "ko" | "en"
@@ -45,8 +46,6 @@ export interface AdvancedAuthoringProps {
   vendorSteps: string[]
   /** Labels object the PolicyBuilder owns. We forward through. */
   labels: React.ComponentProps<typeof PolicyBuilder>["labels"]
-  /** DryRun slot, same shape PolicyBuilder forwards. */
-  dryRunSlot?: React.ComponentProps<typeof PolicyBuilder>["dryRunSlot"]
 }
 
 /** Coerce the typed PolicyDraft into the loose record shape the
@@ -73,7 +72,7 @@ function draftToSeedShape(d: PolicyDraft): Record<string, unknown> | null {
 }
 
 export default function AdvancedAuthoring({
-  locale, saveAction, initial, wiredSteps, vendorSteps, labels, dryRunSlot,
+  locale, saveAction, initial, wiredSteps, vendorSteps, labels,
 }: AdvancedAuthoringProps) {
   const draftRef = useRef<PolicyDraft | null>(initial ?? null)
 
@@ -102,6 +101,27 @@ export default function AdvancedAuthoring({
       />
     </div>
   ), [locale, getDraft])
+
+  // Q90: dryRunSlot lives HERE (client side), not on the page.tsx call
+  // site. The previous page.tsx call site passed an inline render-prop
+  // closure across the server -> client boundary, which React 18 RSC
+  // refuses ("Functions cannot be passed directly to Client Components
+  // unless you explicitly expose it by marking it with 'use server'"),
+  // crashing /policies/new?mode=advanced with the digest 1331850167
+  // 500. The closure is recreated on every render but `PolicyBuilder`
+  // only invokes it inside its own memoized render path, so the
+  // memo cost is unchanged.
+  const dryRunSlot = useCallback(({ draft, isValid }: {
+    draft: PolicyDraft
+    isValid: boolean
+  }) => (
+    <DryRunPanel
+      locale={locale}
+      ir={isValid ? (draft as unknown as Record<string, unknown>) : null}
+      disabled={!isValid}
+      action={(draft.action ?? "audit") as "block" | "ask" | "audit" | "strip"}
+    />
+  ), [locale])
 
   return (
     <div className="space-y-3" data-testid="advanced-authoring-shell">
