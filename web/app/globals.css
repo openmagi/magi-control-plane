@@ -258,3 +258,19 @@
 
   form.legacy-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 }
+
+/* Run-share (/r/[token]) result markdown, dark terminal theme. */
+.md { line-height: 1.55; }
+.md p { margin: 0 0 8px; }
+.md strong { color: #E6EDE6; font-weight: 600; }
+.md a { color: #7EE787; word-break: break-all; }
+.md code { background: #1E261C; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+.md pre { background: #11160F; border: 1px solid #1E261C; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 20px; }
+.md li { margin: 2px 0; }
+.md h1, .md h2, .md h3 { color: #E6EDE6; margin: 12px 0 6px; font-size: 1.05em; }
+.md table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.md th, .md td { border: 1px solid #1E261C; padding: 5px 10px; text-align: left; }
+.md th { color: #9FB39F; font-weight: 600; background: #11160F; }
+.md blockquote { border-left: 3px solid #1E261C; margin: 8px 0; padding-left: 12px; color: #9FB39F; }
