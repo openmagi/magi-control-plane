@@ -2,6 +2,8 @@ import type { CSSProperties } from "react"
 
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 import { cloud } from "@/lib/cloud"
 
@@ -39,6 +41,16 @@ function modelLabel(model: ModelField): string {
 function safeHref(url?: string): string | null {
   if (!url) return null
   return /^https?:\/\//i.test(url) ? url : null
+}
+
+/** A short, human-readable detail from a tool call's redacted argsSummary:
+ *  the URL fetched, the query searched, the command run, etc. */
+function traceDetail(args: unknown): string {
+  if (!args || typeof args !== "object") return ""
+  const a = args as Record<string, unknown>
+  const pick = a.url ?? a.query ?? a.command ?? a.path ?? a.file_path ?? a.pattern ?? a.prompt
+  if (typeof pick === "string") return pick
+  return ""
 }
 
 function statusColor(status?: string | null): string {
@@ -98,7 +110,12 @@ export default async function SharedRunPage({
           {s.result ? (
             <div style={{ marginBottom: 12 }}>
               <div style={label}>Result</div>
-              <div style={{ marginTop: 4 }}>{s.result}</div>
+              <div className="md" style={{ marginTop: 4 }}>
+                {/* drop images: no third-party fetch from a public page */}
+                <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>
+                  {s.result}
+                </Markdown>
+              </div>
             </div>
           ) : null}
           <div style={{ display: "flex", gap: 28, flexWrap: "wrap", color: C.muted, fontSize: 13 }}>
@@ -185,14 +202,21 @@ export default async function SharedRunPage({
           <section style={card}>
             <div style={label}>Trace ({trace.length})</div>
             <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", fontSize: 13 }}>
-              {trace.slice(0, 200).map((t, i) => (
-                <li key={i} style={{ display: "flex", gap: 10, padding: "2px 0", borderBottom: `1px solid ${C.border}` }}>
-                  <span style={{ color: statusColor(t.status), width: 8 }}>●</span>
-                  <span style={{ color: C.text, minWidth: 120 }}>{t.name}</span>
-                  <span style={{ color: C.muted }}>{t.activityType}</span>
-                  {t.durationMs ? <span style={{ color: C.muted, marginLeft: "auto" }}>{t.durationMs}ms</span> : null}
-                </li>
-              ))}
+              {trace.slice(0, 200).map((t, i) => {
+                const detail = traceDetail(t.argsSummary)
+                return (
+                  <li key={i} style={{ display: "flex", gap: 10, padding: "3px 0", borderBottom: `1px solid ${C.border}`, alignItems: "baseline" }}>
+                    <span style={{ color: statusColor(t.status), width: 8, flexShrink: 0 }}>●</span>
+                    <span style={{ color: C.text, minWidth: 96, flexShrink: 0 }}>{t.name}</span>
+                    {detail ? (
+                      <span style={{ color: C.muted, wordBreak: "break-all", flex: 1 }}>{detail}</span>
+                    ) : (
+                      <span style={{ color: C.muted, flex: 1 }}>{t.activityType}</span>
+                    )}
+                    {t.durationMs ? <span style={{ color: C.muted, flexShrink: 0 }}>{t.durationMs}ms</span> : null}
+                  </li>
+                )
+              })}
             </ul>
             {trace.length > 200 ? (
               <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>+{trace.length - 200} more steps</div>
