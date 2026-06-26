@@ -19,6 +19,7 @@ Pure and defensive: malformed events are skipped, never raised.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 __all__ = [
@@ -27,6 +28,20 @@ __all__ = [
 ]
 
 RUN_VIEW_SCHEMA_VERSION = "openmagi.runView.v1"
+
+# Claude Code records a policy/permission block as a tool_result with
+# ``is_error: true`` and this exact phrasing. Matching it lets us surface real
+# blocks (CC managed-settings deny rules, incl. magi-cp-compiled policies) as
+# governance, with no gate/hook changes.
+_PERM_DENY_RE = re.compile(
+    r"Permission to use (\S+) with command (.+?) has been denied", re.S
+)
+# CC appends an exit-code echo to the command it reports; strip it for the reason.
+_ECHO_TAIL_RE = re.compile(r"\s*;\s*echo\s+\"\[exit code:.*$", re.S)
+
+
+def _clean_command(cmd: str) -> str:
+    return _ECHO_TAIL_RE.sub("", cmd).strip()
 
 
 def _text_of(content: object) -> str:
@@ -91,6 +106,8 @@ def transcript_to_run_view(
     out_tokens = 0
     trace: list[dict] = []
     results: list[dict] = []
+    auto_gov: list[dict] = []
+    trace_by_id: dict[object, dict] = {}
     resolved_session = session_id
     saw_assistant = False
 
@@ -112,7 +129,27 @@ def transcript_to_run_view(
             if isinstance(url, str) and url:
                 results.append({"prNumber": event.get("prNumber"), "prUrl": url})
         elif etype == "user":
-            text = _text_of(_message(event).get("content"))
+            content = _message(event).get("content")
+            # A tool_result carrying a permission block -> a governance entry,
+            # and flip the matching trace step to "blocked".
+            if isinstance(content, (list, tuple)):
+                for blk in content:
+                    if not (isinstance(blk, Mapping) and blk.get("is_error")):
+                        continue
+                    m = _PERM_DENY_RE.search(str(blk.get("content", "")))
+                    if not m:
+                        continue
+                    tool, cmd = m.group(1), _clean_command(m.group(2))
+                    auto_gov.append({
+                        "name": tool,
+                        "status": "blocked",
+                        "reason": f"blocked by policy: {cmd}",
+                        "kind": "policy",
+                    })
+                    step = trace_by_id.get(blk.get("tool_use_id"))
+                    if step is not None:
+                        step["status"] = "blocked"
+            text = _text_of(content)
             if goal is None and _is_goal_text(event, text):
                 goal = text
         elif etype == "assistant":
@@ -132,15 +169,16 @@ def transcript_to_run_view(
                 result = text  # last assistant text wins
             for block in blocks:
                 if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                    trace.append(
-                        {
-                            "toolCallId": block.get("id"),
-                            "activityType": "ToolCall",
-                            "name": block.get("name"),
-                            "status": "ok",
-                            "argsSummary": block.get("input"),
-                        }
-                    )
+                    step = {
+                        "toolCallId": block.get("id"),
+                        "activityType": "ToolCall",
+                        "name": block.get("name"),
+                        "status": "ok",
+                        "argsSummary": block.get("input"),
+                    }
+                    trace.append(step)
+                    if block.get("id") is not None:
+                        trace_by_id[block.get("id")] = step
 
     summary: dict | None = None
     if goal is not None or saw_assistant:
@@ -154,16 +192,21 @@ def transcript_to_run_view(
         if title is not None:
             summary["title"] = title
 
+    # Auto-derived blocks (from the transcript) first, then any explicit overlay.
+    all_gov = auto_gov + [
+        dict(g) for g in (governance or []) if isinstance(g, Mapping)
+    ]
+
     return {
         "schemaVersion": RUN_VIEW_SCHEMA_VERSION,
         "sessionId": resolved_session,
         "summary": summary,
         "results": results,
         "trace": trace,
-        "governance": [dict(g) for g in (governance or []) if isinstance(g, Mapping)],
+        "governance": all_gov,
         "counts": {
             "stepCount": len(trace),
             "resultCount": len(results),
-            "governanceCount": len(governance or []),
+            "governanceCount": len(all_gov),
         },
     }
