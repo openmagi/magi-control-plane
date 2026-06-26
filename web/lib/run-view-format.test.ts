@@ -43,9 +43,21 @@ describe("stripFootnoteTail", () => {
     const md = "Body text\n\nSources:\n[1] https://a.test\n[2] https://b.test"
     expect(stripFootnoteTail(md)).toBe("Body text")
   })
-  it("removes a bare-url bullet list tail", () => {
-    const md = "Done.\n- https://a.test\n- https://b.test"
+  it("removes a bare-url bullet list under a Sources header", () => {
+    const md = "Done.\n\nSources:\n- https://a.test\n- https://b.test"
     expect(stripFootnoteTail(md)).toBe("Done.")
+  })
+  it("does NOT strip a bare-url bullet list with no header or anchor", () => {
+    const md = "Top results:\n- https://a.test\n- https://b.test"
+    expect(stripFootnoteTail(md)).toBe(md)
+  })
+  it("does NOT strip an answer that is only a link", () => {
+    const md = "https://example.com/result"
+    expect(stripFootnoteTail(md)).toBe(md)
+  })
+  it("does NOT strip a final bare-url paragraph after prose", () => {
+    const md = "Here is the deploy.\n\nhttps://example.com/deploy"
+    expect(stripFootnoteTail(md)).toBe(md)
   })
   it("does not strip a sentence that merely ends in a url", () => {
     const md = "See the filing at https://sec.gov/x for details."

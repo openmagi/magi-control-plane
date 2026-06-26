@@ -33,23 +33,36 @@ export function shortUrl(url: string, max = 46): string {
 
 /** Drop a trailing footnote/reference list from the answer (e.g. `[1] http://…`
  *  or a `Sources:` block). The numbered Sources panel is the canonical list, so
- *  keeping the agent's own tail would duplicate it. Only strips from the end. */
+ *  keeping the agent's own tail would duplicate it. Only strips from the end.
+ *
+ *  Conservative: bare or numbered URL lines are stripped ONLY when the trailing
+ *  block is clearly a reference list, signalled by an anchored `[n]`/superscript
+ *  footnote or a `Sources:`/`References:` header. A final answer that simply IS
+ *  a link (or a list of result links) is left untouched. */
 export function stripFootnoteTail(md: string): string {
   const lines = md.replace(/\s+$/, "").split("\n")
-  const isDef = (l: string) =>
-    /^\s*(\[\d{1,3}\]:?|\d{1,3}\.|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s+https?:\/\/\S+\s*$/.test(l) ||
-    /^\s*[-*]?\s*https?:\/\/\S+\s*$/.test(l)
+  // An anchored footnote definition: `[1] url`, `[1]: url`, or `¹ url`.
+  const anchored = (l: string) =>
+    /^\s*(\[\d{1,3}\]:?|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s+https?:\/\/\S+\s*$/.test(l)
+  // A loose reference line: a bare/bulleted/numbered URL (only strippable when
+  // the block also carries an anchor or a header).
+  const looseRef = (l: string) =>
+    /^\s*([-*]\s+|\d{1,3}\.\s+)?https?:\/\/\S+\s*$/.test(l)
   const isHeader = (l: string) =>
     /^\s*#{0,4}\s*(sources?|references?|citations?)\s*:?\s*$/i.test(l) ||
     /^\s*\*\*(sources?|references?|citations?)\*\*\s*:?\s*$/i.test(l)
+
   let end = lines.length
-  let sawDef = false
+  let sawAnchor = false
+  let sawHeader = false
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]
     if (l.trim() === "") { end = i; continue }
-    if (isDef(l)) { sawDef = true; end = i; continue }
-    if (sawDef && isHeader(l)) { end = i; continue }
+    if (anchored(l)) { sawAnchor = true; end = i; continue }
+    if (looseRef(l)) { end = i; continue }
+    if (isHeader(l)) { sawHeader = true; end = i; break }
     break
   }
-  return sawDef ? lines.slice(0, end).join("\n").replace(/\s+$/, "") : md
+  // Strip only when the trailing block is unambiguously a reference list.
+  return sawAnchor || sawHeader ? lines.slice(0, end).join("\n").replace(/\s+$/, "") : md
 }
