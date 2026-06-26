@@ -41,6 +41,60 @@ export default async function InstallPage({
           </div>
         </div>
       )}
+      {/* Docker prerequisite callout */}
+      <section className="border-b border-[var(--color-border-subtle)] bg-[var(--brand-tint)]/40">
+        <div
+          className="mx-auto px-5 md:px-8 py-5 md:py-6"
+          style={{ maxWidth: "var(--content-max)" }}
+        >
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:gap-4">
+            <span
+              aria-hidden="true"
+              className="inline-flex shrink-0 items-center justify-center rounded-md bg-[var(--brand-tint)] border border-[var(--brand)]/25 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.18em] text-[var(--brand-strong)]"
+            >
+              {C.dockerPrereq.eyebrow}
+            </span>
+            <div className="min-w-0 text-sm text-[var(--ink)] leading-7">
+              <p className="m-0 font-semibold text-[var(--ink)]">{C.dockerPrereq.title}</p>
+              <p className="mt-1 text-[var(--body)]">{C.dockerPrereq.body}</p>
+              <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 list-none p-0 m-0 text-[var(--body)]">
+                <li>
+                  <a
+                    href="https://www.docker.com/products/docker-desktop/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--brand)] hover:text-[var(--brand-strong)] hover:underline"
+                  >
+                    {C.dockerPrereq.macLabel} →
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://www.docker.com/products/docker-desktop/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--brand)] hover:text-[var(--brand-strong)] hover:underline"
+                  >
+                    {C.dockerPrereq.winLabel} →
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="https://docs.docker.com/engine/install/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--brand)] hover:text-[var(--brand-strong)] hover:underline"
+                  >
+                    {C.dockerPrereq.linuxLabel} →
+                  </a>
+                </li>
+              </ul>
+              <p className="mt-2 text-[var(--body)]">{C.dockerPrereq.after}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Hero band */}
       <section className="border-b border-[var(--color-border-subtle)] bg-[var(--canvas)]">
         <div
@@ -114,6 +168,13 @@ export default async function InstallPage({
               {C.transcript.caption}
             </figcaption>
           </figure>
+
+          <aside
+            role="note"
+            className="mt-6 mx-auto max-w-3xl rounded-xl border border-[var(--brand)]/20 bg-[var(--brand-tint)] px-5 py-4 text-sm text-[var(--ink)] leading-7"
+          >
+            {C.transcriptExplainer}
+          </aside>
 
           {/* 3-column "what it handles" */}
           <div className="mt-14 grid gap-5 md:grid-cols-3 max-w-5xl mx-auto">
@@ -251,6 +312,15 @@ const KO_INSTALL = {
   title: "한 줄로 self-host 띄우기",
   subtitle: "Docker만 있으면 됩니다. 인스톨러가 compose.yml 다운로드, .env 자동 생성, 이미지 pull, Claude Code 배선까지 한 흐름으로 처리합니다.",
   commandHint: "본인 머신에서 docker compose로 돕니다. 외부 호스팅 의존 없음. 포트 3000/8787이 사용 중이면 자동으로 인접 빈 포트를 잡습니다.",
+  dockerPrereq: {
+    eyebrow: "PREREQUISITE",
+    title: "사전 준비: Docker가 실행 중이어야 합니다",
+    body: "인스톨러는 docker compose로 컨트롤 플레인 + 대시보드 컨테이너를 띄웁니다. 시작 전에 Docker가 설치되어 실행 중인지 확인하세요.",
+    macLabel: "Docker Desktop 설치 (Mac)",
+    winLabel: "Docker Desktop 설치 (Windows)",
+    linuxLabel: "Docker Engine 설치 (Linux)",
+    after: "Docker가 실행되면 이 페이지로 돌아와 아래 한 줄 인스톨러를 실행하세요.",
+  },
   walkthroughEyebrow: "WHAT HAPPENS",
   walkthroughHeading: "인스톨러가 자동으로 도는 흐름",
   walkthroughBody: "복사해야 할 키도, 띄워야 할 컨테이너도 없습니다. 인스톨러가 GHCR에서 공식 이미지 두 개(컨트롤 플레인 + 대시보드)를 pull하고, .env에 랜덤 키를 만들고, docker compose로 띄운 뒤 Claude Code에 바로 배선합니다.",
@@ -296,6 +366,7 @@ const KO_INSTALL = {
     ] as TranscriptLine[],
     caption: "실제 인스톨러 실행 화면 (정상 경로). 포트가 사용 중이면 자동으로 인접 빈 포트를 잡습니다.",
   },
+  transcriptExplainer: "위에 보이는 대시보드 URL (http://localhost:3000) 이 브라우저에서 magi-control-plane UI 가 뜨는 주소입니다. 열어서 정책 작성, HITL 큐 모니터링, 감사 ledger 확인을 시작하세요.",
   whatTitle: "스크립트가 정확히 뭘 하나요?",
   whatItems: [
     "Docker + Docker Compose v2 설치 확인 (없으면 install 가이드 출력 후 종료)",
@@ -316,6 +387,15 @@ const EN_INSTALL = {
   title: "Self-host in one line",
   subtitle: "Docker is the only prerequisite. The installer downloads compose.yml, generates a .env, pulls official images, and wires Claude Code in one flow.",
   commandHint: "Runs entirely on your machine via docker compose. No external hosting dependency. If 3000 / 8787 are in use the installer auto-bumps to a free adjacent port.",
+  dockerPrereq: {
+    eyebrow: "PREREQUISITE",
+    title: "Prerequisite: Docker must be running",
+    body: "The installer uses docker compose to bring up the control plane + dashboard containers. Make sure Docker is installed and running before you start.",
+    macLabel: "Install Docker Desktop (Mac)",
+    winLabel: "Install Docker Desktop (Windows)",
+    linuxLabel: "Install Docker Engine (Linux)",
+    after: "After Docker is running, return here and run the one-line installer below.",
+  },
   walkthroughEyebrow: "WHAT HAPPENS",
   walkthroughHeading: "What the installer runs for you",
   walkthroughBody: "No key to copy from a portal first, no container to boot by hand. The installer pulls two official images from GHCR (control plane + dashboard), generates a .env with random keys, brings them up with docker compose, and wires it into Claude Code.",
@@ -361,6 +441,7 @@ const EN_INSTALL = {
     ] as TranscriptLine[],
     caption: "Actual installer transcript on the happy path. The installer auto-bumps to a free adjacent port if 3000/8787 are in use.",
   },
+  transcriptExplainer: "The dashboard URL above (http://localhost:3000) is where the magi-control-plane UI runs in your browser. Open it to author policies, watch the HITL queue, and inspect the audit ledger.",
   whatTitle: "What exactly does the script do?",
   whatItems: [
     "Verifies Docker + Docker Compose v2 are installed (prints install hint and exits otherwise)",
