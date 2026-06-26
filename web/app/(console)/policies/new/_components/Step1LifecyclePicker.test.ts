@@ -329,31 +329,29 @@ describe("Step1LifecyclePicker | source invariants", () => {
     expect(src).toContain("newPolicy.wizard.step1.advancedSection")
   })
 
-  it("D80: every group grid uses auto-rows-fr + items-stretch for equal-height rows", () => {
-    // Card descriptions vary in length (Stop is multi-paragraph long,
-    // others are short). Without auto-rows-fr the row stretches only
-    // for the tall card and the visual baseline staggers across rows
-    // inside the group. Pin the class fragment so a future refactor
-    // that drops `auto-rows-fr` regresses the alignment loudly.
-    const gridFragmentRx = /grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch/g
-    const matches = src.match(gridFragmentRx) ?? []
-    // Common group + Advanced groups all share the same fragment;
-    // count both occurrences (at least 2).
-    expect(matches.length).toBeGreaterThanOrEqual(2)
+  it("D80 follow-up: group grids do NOT use auto-rows-fr / items-stretch", () => {
+    // The original D80 layout forced auto-rows-fr + items-stretch so a
+    // tall outlier (e.g. Stop's multi-paragraph caveat) dragged every
+    // sibling card in the row up to its height, leaving short cards
+    // with a huge empty middle (visual regression caught in screenshot
+    // review). Cards now size to content; pin the absence so a future
+    // refactor that re-introduces equal-height rows trips loudly.
+    expect(src).not.toMatch(/auto-rows-fr/)
+    expect(src).not.toMatch(/items-stretch/)
   })
 
-  it("D80: LifecycleRow card has a min-height floor so a tall outlier does not cascade", () => {
-    // Alternative anchor to `auto-rows-fr`: a per-card min-height keeps
-    // a tall description (Stop) from collapsing siblings to nothing
-    // when the operator's viewport reflows below the sm breakpoint.
-    expect(src).toMatch(/min-h-\[11rem\]/)
+  it("D80 follow-up: LifecycleRow has no min-height soft-floor", () => {
+    // Same reason as auto-rows-fr — the soft floor was the secondary
+    // mechanism inflating short cards. Removed; pin the absence.
+    expect(src).not.toMatch(/min-h-\[11rem\]/)
   })
 
-  it("D80: LifecycleRow description block uses mt-auto so card bottoms align", () => {
-    // Without `mt-auto` on the trailing description, the title block
-    // pins top but the description floats up and the bottoms of two
-    // cards in the same row don't line up.
-    expect(src).toMatch(/mt-auto block text-xs/)
+  it("D80 follow-up: LifecycleRow description does NOT use mt-auto", () => {
+    // The `mt-auto` on the description was what shoved a short sub
+    // copy to the bottom of an auto-stretched cell, leaving the empty
+    // middle the operator complained about. The description now hugs
+    // the title naturally.
+    expect(src).not.toMatch(/mt-auto block text-xs/)
   })
 })
 

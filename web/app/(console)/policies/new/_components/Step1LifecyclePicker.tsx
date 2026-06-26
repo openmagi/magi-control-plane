@@ -249,12 +249,8 @@ function LifecycleRow({
       data-lifecycle={slug}
       data-hidden={hidden ? "true" : "false"}
       data-unverified={unverified ? "true" : "false"}
-      // D80: `h-full` so the label fills its grid cell (combined with
-      // `grid-auto-rows: 1fr` on the parent grid). Without this the
-      // card collapses to content height even when the row is
-      // stretched, defeating the equal-height alignment.
       className={
-        "block cursor-pointer h-full " + (hidden ? "hidden" : "")
+        "block cursor-pointer " + (hidden ? "hidden" : "")
       }
     >
       <input
@@ -266,21 +262,20 @@ function LifecycleRow({
         className="peer sr-only"
         required
       />
+      {/* D80 follow-up: the prior D80 layout forced equal-height rows
+       *  and a per-card height floor, pushing the description to the
+       *  cell bottom. A long-sub outlier (e.g. Stop's multi-paragraph
+       *  caveat) stretched the whole row and left every shorter card
+       *  with a huge empty middle. Now cards size to content and the
+       *  description hugs the title. */}
       <span
-        // D80: `flex flex-col h-full` + `min-h-[11rem]` so every card
-        // in the grid shares a soft floor and a tall outlier
-        // description (e.g. Stop's multi-paragraph sub copy) does not
-        // stagger row heights against its sibling. The title block
-        // pins top; the description block uses `mt-auto` so the
-        // bottoms of every card line up at the cell bottom inside the
-        // same row.
         className={
-          "flex flex-col h-full min-h-[11rem] rounded-xl border bg-white p-4 transition-colors " +
+          "flex flex-col rounded-xl border bg-white p-4 transition-colors " +
           "border-black/[0.08] " + HOVER_BORDER_CLASS + " " +
           SELECTED_BORDER_CLASS + " " + SELECTED_BG_CLASS
         }
       >
-        <span className="flex items-center justify-between gap-2 mb-1">
+        <span className="flex items-center justify-between gap-2 mb-1.5">
           <span className="text-sm font-semibold text-[var(--color-text-primary)]">
             {label}
           </span>
@@ -289,7 +284,7 @@ function LifecycleRow({
             {unverified && <UnverifiedBadge locale={locale} />}
           </span>
         </span>
-        <span className="mt-auto block text-xs text-[var(--color-text-secondary)] leading-relaxed">
+        <span className="block text-xs text-[var(--color-text-secondary)] leading-relaxed">
           {sub}
         </span>
       </span>
@@ -427,14 +422,12 @@ export default function Step1LifecyclePicker({
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)] m-0">
               {t(COMMON_GROUP.key as TKey)}
             </p>
-            {/* D80: `auto-rows-fr` + `items-stretch` so every card in
-                the same logical row shares a height. Without this, a
-                tall card (e.g. Stop's multi-paragraph sub copy) drags
-                only its own row, staggering visual alignment between
-                rows. Cards inside also carry `min-h-[11rem]` as a
-                soft floor so the equal-height row never collapses
-                below an operator-comfortable baseline. */}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch">
+            {/* D80 follow-up: equal-height grid removed. Was
+             *  inflating shorter cards to the tallest sub-copy
+             *  outlier and producing empty middles. Cards now size to
+             *  content; alignment of card BOTTOMS gives up a little
+             *  in exchange for no wasted vertical space. */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {COMMON_GROUP.members.map((slug) => {
                 const meta = labels[slug]
                 const hidden = queryActive && !groupVis.visibleRows.has(slug)
@@ -541,14 +534,10 @@ export default function Step1LifecyclePicker({
             </button>
             <div
               id={`step1-group-rows-${group.key}`}
-              // D80: same auto-rows-fr + items-stretch applied to
-              // every advanced group so card heights inside a group
-              // share a row. The mix of multi-line and one-line
-              // descriptions in Content flow / Permission decisions /
-              // Subagents / Workspace events / Lifecycle boundaries
-              // would otherwise stagger the rows.
+              // D80 follow-up: same as Common — equal-height grid
+              // removed so cards size to content.
               className={
-                "grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch " +
+                "grid grid-cols-1 gap-2 sm:grid-cols-2 " +
                 (effectivelyOpen ? "" : "hidden")
               }
             >

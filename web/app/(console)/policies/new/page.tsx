@@ -2900,6 +2900,7 @@ function PickerLanding({
             label={t("newPolicy.picker.guided.label")}
             description={t("newPolicy.picker.guided.description")}
             backing={t("newPolicy.picker.guided.backing")}
+            testId="picker-card-guided"
           />
           <ChoiceCard
             href="/policies/new?mode=advanced"
@@ -3610,10 +3611,11 @@ function CheckboxCard({
   )
 }
 
-function NextButton({ label }: { label: string }) {
+function NextButton({ label, testId }: { label: string; testId?: string }) {
   return (
     <button
       type="submit"
+      data-testid={testId}
       className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-accent)] px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer transition-colors"
     >
       {label}
@@ -3685,11 +3687,11 @@ function lifecycleCardCopy(
     },
     pre_final: {
       label: "에이전트 턴 종료 (Stop)",
-      sub: "메인 에이전트 턴 종료 시점. 감사용으로만 사용합니다 (런타임은 차단 불가). 실행 종료 시점이라 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다.",
+      sub: "메인 에이전트 턴이 끝났을 때. 감사 전용 — “추가 정보 주입” 액션은 지원되지 않습니다.",
     },
     subagent_stop: {
       label: "서브에이전트 종료 (SubagentStop)",
-      sub: "서브에이전트(Task) 호출이 응답을 마쳤을 때 발동. 결과 트랜스크립트 감사 용도. child 가 이미 반환됐기 때문에 같은 세션의 다음 모델 턴이 없으므로 “추가 정보 주입” 액션은 지원되지 않습니다 (부모 측 주입은 SubagentStart 에서).",
+      sub: "서브에이전트(Task) 호출이 끝났을 때. 결과 트랜스크립트 감사 용도. “추가 정보 주입” 은 SubagentStart 에서 하세요.",
     },
     session_start: {
       label: "세션 시작 (SessionStart)",
@@ -3808,11 +3810,11 @@ function lifecycleCardCopy(
     },
     pre_final: {
       label: "When the agent stops (Stop)",
-      sub: "Main agent turn ends. Audit-only (the runtime cannot rewind the answer). End-of-execution timing means there is no downstream same-session model turn, so “Inject extra context” is not available here.",
+      sub: "Main agent turn ends. Audit-only — Inject extra context is not available here.",
     },
     subagent_stop: {
       label: "When a subagent stops (SubagentStop)",
-      sub: "Fires when a subagent task ends. Use it to audit child transcripts. The child has already returned, so there is no downstream same-session model turn for additionalContext; “Inject extra context” is not available here (use SubagentStart for parent-side carry-over).",
+      sub: "Fires when a subagent task ends. Audit child transcripts. Inject extra context is not available here (use SubagentStart instead).",
     },
     session_start: {
       label: "When the session opens (SessionStart)",
@@ -6265,9 +6267,15 @@ function Step6Review({
           </li>
         </ul>
       </Card>
-      <form action={action}>
+      <form action={action} data-testid="wizard-save-form">
         <HiddenState state={state} />
-        <NextButton label={t("newPolicy.wizard.savePolicy")} />
+        {/* D74a follow-up: stable testid on the Step 6 save button so
+            the e2e harness can target the real save form instead of
+            silently picking the InlineSubConfigPanel's inline-edit
+            submit (which lives inside the same <main>, fires the
+            advance action, and would loop the operator back to Step
+            5/6 on regex / llm_critic / shacl archetypes). */}
+        <NextButton label={t("newPolicy.wizard.savePolicy")} testId="wizard-save" />
       </form>
 
       {/* D53b: Dry-run replay against the last 24h of ledger rows.

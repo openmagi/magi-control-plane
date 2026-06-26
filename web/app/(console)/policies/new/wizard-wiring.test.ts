@@ -2781,22 +2781,17 @@ describe("policies/new wizard — D80 polish (Step 3 picker + Step 4 layered + S
     expect(chipSrc).toMatch(/document\.dispatchEvent/)
   })
 
-  it("D80: Step 1 grid containers add auto-rows-fr + items-stretch for equal-height rows", () => {
-    // Source-grep the picker file (not the page.tsx wrapper) since
-    // the grids live there. A 1-line description card next to a
-    // 4-line Stop card used to stagger; the fix anchors the row
-    // height inside each group.
+  it("D80 follow-up: Step 1 grids do NOT force equal-height rows", () => {
+    // The original D80 layout forced every row to the height of its
+    // tallest sub-copy outlier (Stop's multi-paragraph caveat), which
+    // left shorter cards with a huge empty middle — visual regression
+    // caught in screenshot review. Cards now size to content; pin the
+    // absence so a future refactor doesn't re-introduce the bug.
     const pickerSrc = readFileSync(
       path.join(__dirname, "_components", "Step1LifecyclePicker.tsx"),
       "utf-8",
     )
-    // Matches the Common group grid + every Advanced group grid.
-    const matches = pickerSrc.match(
-      /grid grid-cols-1 gap-2 sm:grid-cols-2 auto-rows-fr items-stretch/g,
-    ) ?? []
-    expect(matches.length).toBeGreaterThanOrEqual(2)
-    // Soft min-height floor on each card so a tall outlier description
-    // does not cascade extreme heights when only one row exists.
-    expect(pickerSrc).toMatch(/min-h-\[11rem\]/)
+    expect(pickerSrc).not.toMatch(/auto-rows-fr/)
+    expect(pickerSrc).not.toMatch(/min-h-\[11rem\]/)
   })
 })
