@@ -117,7 +117,8 @@ export default async function SharedRunPage({
   // / hold reason inline (the gate block, the differentiator vs a chat log).
   const govByName = new Map<string, { name?: string; status?: string; reason?: string; kind?: string }>()
   for (const g of governance) {
-    if (g.name && !govByName.has(g.name)) govByName.set(g.name, g)
+    const key = g.name ? shortTool(g.name) : ""
+    if (key && !govByName.has(key)) govByName.set(key, g)
   }
 
   const answer = s.result ? stripFootnoteTail(s.result) : ""
