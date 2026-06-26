@@ -239,7 +239,6 @@ export default async function SharedRunPage({
                 const g = govByName.get(name)
                 const detail = traceDetail(it.argsSummary)
                 const held1 = it.status === "needs_approval"
-                const rejected1 = it.status === "rejected"
                 const blocked1 = it.status === "blocked"
                 const stopped = isStopped(it.status)
                 return (
@@ -277,10 +276,11 @@ export default async function SharedRunPage({
                         {(g.reason ?? "").replace(/^blocked by policy:\s*/i, "blocked: ")}
                       </div>
                     ) : null}
-                    {/* held / rejected -> the real Claude Code approval prompt */}
-                    {held1 || rejected1 ? (
-                      <div style={{ marginTop: 10, borderTop: `1px solid ${rejected1 ? C.red : C.blue}`, paddingTop: 12 }}>
-                        <div style={{ color: rejected1 ? C.red : C.blue, fontWeight: 700, marginBottom: 8 }}>Tool use</div>
+                    {/* held (pending) -> the real Claude Code approval prompt.
+                        A rejected step shows only its one-line REJECTED label above. */}
+                    {held1 ? (
+                      <div style={{ marginTop: 10, borderTop: `1px solid ${C.blue}`, paddingTop: 12 }}>
+                        <div style={{ color: C.blue, fontWeight: 700, marginBottom: 8 }}>Tool use</div>
                         <div style={{ paddingLeft: 12, marginBottom: 10 }}>
                           <div style={{ color: C.text }}>
                             {name}(<span style={{ color: C.muted }}>{argString(it.argsSummary)}</span>)
@@ -288,7 +288,7 @@ export default async function SharedRunPage({
                           </div>
                           {g?.reason ? (
                             <div style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>
-                              {rejected1 ? "magi policy · " : "held by magi policy · "}{(g.reason ?? "").replace(/^held:\s*/i, "")}
+                              held by magi policy · {(g.reason ?? "").replace(/^held:\s*/i, "")}
                             </div>
                           ) : null}
                         </div>
@@ -297,14 +297,10 @@ export default async function SharedRunPage({
                         </div>
                         <div style={{ color: C.muted, fontSize: 13, marginBottom: 10 }}>/permissions to update rules</div>
                         <div style={{ color: C.text, marginBottom: 4 }}>Do you want to proceed?</div>
-                        <div style={{ color: rejected1 ? C.muted : C.prompt }}>{rejected1 ? "  1. Yes" : "❯ 1. Yes"}</div>
-                        <div style={{ color: C.muted }}>{"  "}2. Yes, and don&apos;t ask again for {name}</div>
-                        <div style={{ color: rejected1 ? C.red : C.muted, fontWeight: rejected1 ? 700 : 400 }}>{rejected1 ? "❯ 3. No" : "  3. No"}</div>
-                        {rejected1 ? (
-                          <div style={{ color: C.red, fontSize: 12.5, marginTop: 8 }}>✗ Reviewer declined — the order was not placed.</div>
-                        ) : (
+                        <div style={{ color: C.prompt }}>❯ 1. Yes</div>
+                        <div style={{ color: C.muted }}>{"  "}2. Yes, and don&apos;t ask again for {name}</div>
+                        <div style={{ color: C.muted }}>{"  "}3. No</div>
                         <div style={{ color: C.muted, fontSize: 12.5, marginTop: 8 }}>Esc to cancel · Tab to amend</div>
-                        )}
                       </div>
                     ) : null}
                   </div>
