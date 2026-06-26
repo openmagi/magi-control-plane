@@ -12,6 +12,7 @@ export default async function NavBarShell() {
   const items: NavItem[] = [
     { href: "/welcome#how", label: isKo ? "동작 방식" : "How it works" },
     { href: "/install",     label: isKo ? "설치"       : "Install" },
+    { href: "/docs",        label: isKo ? "문서"       : "Docs" },
     { href: "https://github.com/openmagi", label: "GitHub" },
   ]
   return (

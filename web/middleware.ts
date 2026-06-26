@@ -23,6 +23,7 @@ const MARKETING_ONLY = process.env.MAGI_CP_MARKETING_ONLY === "1"
 const MARKETING_PUBLIC: readonly string[] = [
   "/welcome",
   "/install",          // /install + /install.sh
+  "/docs",             // /docs + /docs/<slug>
   "/r",                // /r/<token> public run-share links
   "/legal",
   "/self-host",        // /self-host/docker-compose.yml

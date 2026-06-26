@@ -177,13 +177,13 @@ export function PrebuiltRow({
   )
 }
 
-/** D82d: per-prebuilt docs anchor for the Setup button. The docs site
- *  (D78) hosts a "prebuilt setup" landing page with sections keyed by
- *  prebuilt id. Linking by anchor means a future docs page can add a
- *  new section without code changes here. */
+/** D82d: per-prebuilt docs anchor for the Setup button. Q96 moved the
+ *  docs to markdown under `<repo>/docs/*.md`. The setup hint links to
+ *  the operator runbook by default; per-prebuilt landings can be added
+ *  later as individual markdown files without code changes here. */
 function setupDocsHref(prebuiltId: string): string {
   const slug = prebuiltId.replace(/^prebuilt\//, "")
-  return `/docs/prebuilts-setup#${slug}`
+  return `/docs/operator#${slug}`
 }
 
 function PrebuiltStatusPill({

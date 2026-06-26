@@ -66,11 +66,16 @@ gate mid-session; license expiry is fail-closed by design.
 Developer docs live under [`docs/`](docs/). The same content renders on
 `cp.openmagi.ai/docs`.
 
-- Install + first policy
-- Operator guide (deploy, rotate keys, observability)
-- Architecture reference (policy IR, verifier registry, evidence ledger)
-- API reference
-- Troubleshooting
+- [Getting started](docs/getting-started.md)
+- [Install](docs/install.md)
+- [Architecture](docs/architecture.md)
+- [Policy IR](docs/policy-ir.md)
+- [Verifiers](docs/verifiers.md)
+- [Operator](docs/operator.md) (deploy, rotate keys, observability)
+- [API](docs/api.md)
+- [CLI](docs/cli.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Share runs](docs/share-runs.md)
 
 ## License
 
