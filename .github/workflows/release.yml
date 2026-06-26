@@ -76,6 +76,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=cloud
           cache-to:   type=gha,scope=cloud,mode=max
+          # build-push-action@v5 adds OCI provenance + SBOM attestations
+          # to every push. Those attestation manifests are signed
+          # through a GitHub App backend on the org which trips
+          # "denied: permission_denied: The requested installation does
+          # not exist" against this org's container packages, breaking
+          # every release run since the installer fix. The image
+          # manifest itself pushes fine (verified via local
+          # docker push from the same PAT). Disabling provenance + sbom
+          # skips the attestation manifest push and keeps the
+          # image-manifest push intact.
+          provenance: false
+          sbom: false
 
   build-dashboard:
     name: build + push magi-cp-dashboard (Next.js)
@@ -127,3 +139,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=dashboard
           cache-to:   type=gha,scope=dashboard,mode=max
+          # See cloud job: provenance + sbom attestation push is what
+          # trips "installation does not exist" against this org. Skip
+          # the attestation manifest; the image manifest pushes fine.
+          provenance: false
+          sbom: false
