@@ -249,3 +249,25 @@ def test_no_sources_when_no_web_tools() -> None:
         {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}},
     ]
     assert transcript_to_run_view(events)["sources"] == []
+
+
+def test_ask_style_permission_held_for_approval() -> None:
+    # An MCP tool gated by an `ask` rule blocks pending human approval.
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "buy if profitable"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "t1", "name": "mcp__trading__execute_trade",
+                         "input": {"symbol": "TSLA", "side": "buy", "quantity": 10}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": "Claude requested permissions to use mcp__trading__execute_trade, but you haven't granted it yet."}]}},
+    ]
+    v = transcript_to_run_view(events)
+    g = v["governance"]
+    assert len(g) == 1
+    assert g[0]["name"] == "execute_trade"          # mcp__server__ prefix stripped
+    assert g[0]["status"] == "needs_approval"
+    assert "approval" in g[0]["reason"]
+    step = next(s for s in v["trace"] if s["toolCallId"] == "t1")
+    assert step["status"] == "needs_approval"

@@ -23,6 +23,8 @@ const C = {
   prompt: "#7EE787",
   text: "#C9D1C9",
   muted: "#7A857A",
+  red: "#EF4444",
+  amber: "#F59E0B",
 }
 
 type ModelField = string | { label?: string | null; provider?: string | null } | null | undefined
@@ -35,29 +37,46 @@ function modelLabel(model: ModelField): string {
   return "—"
 }
 
-/** Only http(s) hrefs reach the DOM. prUrl is model-influenceable; a
- *  `javascript:`/`data:` scheme would be an XSS vector on this public page
- *  (React does not sanitize href schemes). */
+/** Only http(s) hrefs reach the DOM (model-influenced refs; block javascript:). */
 function safeHref(url?: string): string | null {
   if (!url) return null
   return /^https?:\/\//i.test(url) ? url : null
 }
 
-/** A short, human-readable detail from a tool call's redacted argsSummary:
- *  the URL fetched, the query searched, the command run, etc. */
+/** Short detail from a tool call's redacted argsSummary (URL / query / command). */
 function traceDetail(args: unknown): string {
   if (!args || typeof args !== "object") return ""
   const a = args as Record<string, unknown>
   const pick = a.url ?? a.query ?? a.command ?? a.path ?? a.file_path ?? a.pattern ?? a.prompt
-  if (typeof pick === "string") return pick
-  return ""
+  return typeof pick === "string" ? pick : ""
+}
+
+const SUP: Record<string, string> = {
+  "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+  "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+}
+/** Turn bracketed footnotes `[1]` into superscript `¹` (citation style), without
+ *  touching markdown links `[1](url)`. Pure text transform, XSS-safe. */
+function citeify(md: string): string {
+  return md.replace(/\[(\d{1,3})\](?!\()/g, (_, n: string) =>
+    [...n].map((d) => SUP[d] ?? d).join(""),
+  )
 }
 
 function statusColor(status?: string | null): string {
   if (status === "ok" || status === "completed") return C.green
-  if (status === "blocked" || status === "needs_approval") return "#F59E0B"
-  if (status === "error" || status === "aborted") return "#EF4444"
+  if (status === "blocked") return C.red
+  if (status === "needs_approval") return C.amber
+  if (status === "error" || status === "aborted") return C.red
   return C.muted
+}
+
+function govVerb(status?: string | null): string {
+  if (status === "blocked") return "BLOCKED"
+  if (status === "needs_approval") return "HELD FOR APPROVAL"
+  if (status === "ok" || status === "verified" || status === "passed") return "VERIFIED"
+  if (status === "error") return "ERROR"
+  return status ?? ""
 }
 
 export default async function SharedRunPage({
@@ -69,19 +88,17 @@ export default async function SharedRunPage({
   const v = shared.view
   const s = v.summary ?? {}
   const usage = s.usage ?? {}
-  // Coerce to arrays: a malformed/model-influenced view must render partial,
-  // not throw and 500 this public page.
   const trace = Array.isArray(v.trace) ? v.trace : []
   const governance = Array.isArray(v.governance) ? v.governance : []
   const results = Array.isArray(v.results) ? v.results : []
   const sources = Array.isArray(v.sources) ? v.sources : []
 
+  const blocked = governance.filter((g) => g.status === "blocked").length
+  const held = governance.filter((g) => g.status === "needs_approval").length
+
   const card: CSSProperties = {
-    background: C.panel,
-    border: `1px solid ${C.border}`,
-    borderRadius: 10,
-    padding: "16px 18px",
-    marginBottom: 14,
+    background: C.panel, border: `1px solid ${C.border}`,
+    borderRadius: 10, padding: "16px 18px", marginBottom: 14,
   }
   const label: CSSProperties = { color: C.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 }
   const mono = "ui-monospace, SFMono-Regular, Menlo, monospace"
@@ -90,30 +107,39 @@ export default async function SharedRunPage({
     <main style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: mono }}>
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 20px 64px" }}>
         <div style={{ color: C.prompt, fontSize: 13, marginBottom: 6 }}>
-          <span style={{ color: C.muted }}>magi ·</span> shared agent run
+          <span style={{ color: C.muted }}>magi ·</span> governed agent run
         </div>
-        <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>
-          {s.title || "Agent run"}
-        </h1>
-        <div style={{ color: statusColor(s.status), fontSize: 13, marginBottom: 22 }}>
-          ● {s.status ?? "unknown"}
+        <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 8px" }}>{s.title || "Agent run"}</h1>
+
+        {/* Governance headline: the differentiator. What magi enforced. */}
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", marginBottom: 22, fontSize: 13 }}>
+          <span style={{ color: statusColor(s.status) }}>● {s.status ?? "unknown"}</span>
+          {blocked > 0 ? (
+            <span style={{ color: C.red, border: `1px solid ${C.red}`, borderRadius: 6, padding: "2px 8px" }}>
+              🛡 {blocked} blocked
+            </span>
+          ) : null}
+          {held > 0 ? (
+            <span style={{ color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 6, padding: "2px 8px" }}>
+              ⏸ {held} held for approval
+            </span>
+          ) : null}
         </div>
 
-        {/* Summary */}
+        {/* Goal + Answer (with inline citations) */}
         <section style={card}>
           {s.goal ? (
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 14 }}>
               <div style={label}>Goal</div>
               <div style={{ marginTop: 4 }}>{s.goal}</div>
             </div>
           ) : null}
           {s.result ? (
             <div style={{ marginBottom: 12 }}>
-              <div style={label}>Result</div>
+              <div style={label}>Answer</div>
               <div className="md" style={{ marginTop: 4 }}>
-                {/* drop images: no third-party fetch from a public page */}
                 <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>
-                  {s.result}
+                  {citeify(s.result)}
                 </Markdown>
               </div>
             </div>
@@ -127,16 +153,42 @@ export default async function SharedRunPage({
           </div>
         </section>
 
-        {/* Sources (research evidence: where the agent looked) */}
+        {/* Governance: what magi blocked / held. The thing ChatGPT logs do not have. */}
+        {governance.length > 0 ? (
+          <section style={card}>
+            <div style={label}>Policy enforcement ({governance.length})</div>
+            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
+              {governance.map((g, i) => {
+                const c = statusColor(g.status)
+                return (
+                  <li key={i} style={{ borderLeft: `2px solid ${c}`, padding: "4px 0 4px 12px", marginBottom: 10 }}>
+                    <div style={{ fontSize: 12 }}>
+                      <span style={{ color: c, fontWeight: 600 }}>{govVerb(g.status)}</span>
+                      <span style={{ color: C.muted }}> · {g.name}</span>
+                    </div>
+                    {g.reason ? <div style={{ color: C.text, fontSize: 13, marginTop: 2 }}>{g.reason}</div> : null}
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+        ) : null}
+
+        {/* Sources: numbered to match the inline ¹²³ footnotes above */}
         {sources.length > 0 ? (
           <section style={card}>
             <div style={label}>Sources ({sources.length})</div>
-            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", fontSize: 13 }}>
+            <ol style={{ margin: "8px 0 0", paddingLeft: 22, fontSize: 13 }}>
               {sources.slice(0, 50).map((src, i) => {
                 const href = src.isUrl ? safeHref(src.ref) : null
+                const cred = (src.credibility ?? "").toUpperCase()
+                // Lenient: any "credible"/"verified"/"trusted" verdict is green;
+                // an explicit not/uncertain is amber; empty -> no badge.
+                const credOk = /\b(CREDIBLE|VERIFIED|TRUSTED|RELIABLE|OFFICIAL)\b/.test(cred) && !/NOT_?CREDIBLE|NOT CREDIBLE/.test(cred)
+                const credColor = !cred ? C.muted : credOk ? C.green : C.amber
                 return (
-                  <li key={i} style={{ display: "flex", gap: 10, padding: "3px 0", borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ color: C.muted, minWidth: 78 }}>{src.tool}</span>
+                  <li id={`src-${i + 1}`} key={i} style={{ padding: "3px 0" }}>
+                    <span style={{ color: C.muted, marginRight: 8 }}>{src.tool}</span>
                     {href ? (
                       <a href={href} style={{ color: C.prompt, wordBreak: "break-all" }} rel="noopener noreferrer nofollow" target="_blank">
                         {src.ref}
@@ -144,17 +196,22 @@ export default async function SharedRunPage({
                     ) : (
                       <span style={{ color: C.text, wordBreak: "break-all" }}>{src.ref}</span>
                     )}
+                    {cred ? (
+                      <span style={{ color: credColor, marginLeft: 8 }}>
+                        {credOk ? "✓ verified credible" : "⚠ " + cred.toLowerCase()}
+                      </span>
+                    ) : null}
                   </li>
                 )
               })}
-            </ul>
+            </ol>
             {sources.length > 50 ? (
               <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>+{sources.length - 50} more</div>
             ) : null}
           </section>
         ) : null}
 
-        {/* Results (PR links) */}
+        {/* Deliverables (PR links) */}
         {results.length > 0 ? (
           <section style={card}>
             <div style={label}>Deliverables ({results.length})</div>
@@ -165,9 +222,7 @@ export default async function SharedRunPage({
                 return (
                   <li key={i} style={{ marginBottom: 4 }}>
                     {href ? (
-                      <a href={href} style={{ color: C.prompt }} rel="noopener noreferrer nofollow" target="_blank">
-                        {text}
-                      </a>
+                      <a href={href} style={{ color: C.prompt }} rel="noopener noreferrer nofollow" target="_blank">{text}</a>
                     ) : (
                       <span>{text}</span>
                     )}
@@ -181,38 +236,21 @@ export default async function SharedRunPage({
           </section>
         ) : null}
 
-        {/* Governance */}
-        {governance.length > 0 ? (
-          <section style={card}>
-            <div style={label}>Governance ({governance.length})</div>
-            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", fontSize: 13 }}>
-              {governance.map((g, i) => (
-                <li key={i} style={{ marginBottom: 4 }}>
-                  <span style={{ color: statusColor(g.status) }}>{g.status}</span>{" "}
-                  <span style={{ color: C.text }}>{g.name}</span>
-                  {g.reason ? <span style={{ color: C.muted }}> — {g.reason}</span> : null}
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        {/* Trace */}
+        {/* Trace (full step list, secondary) */}
         {trace.length > 0 ? (
-          <section style={card}>
-            <div style={label}>Trace ({trace.length})</div>
-            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", fontSize: 13 }}>
+          <details style={card}>
+            <summary style={{ ...label, cursor: "pointer", listStyle: "revert" }}>Trace ({trace.length})</summary>
+            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", fontSize: 13 }}>
               {trace.slice(0, 200).map((t, i) => {
                 const detail = traceDetail(t.argsSummary)
+                const isBlocked = t.status === "blocked" || t.status === "needs_approval"
                 return (
                   <li key={i} style={{ display: "flex", gap: 10, padding: "3px 0", borderBottom: `1px solid ${C.border}`, alignItems: "baseline" }}>
-                    <span style={{ color: statusColor(t.status), width: 8, flexShrink: 0 }}>●</span>
-                    <span style={{ color: C.text, minWidth: 96, flexShrink: 0 }}>{t.name}</span>
-                    {detail ? (
-                      <span style={{ color: C.muted, wordBreak: "break-all", flex: 1 }}>{detail}</span>
-                    ) : (
-                      <span style={{ color: C.muted, flex: 1 }}>{t.activityType}</span>
-                    )}
+                    <span style={{ color: statusColor(t.status), flexShrink: 0 }}>{isBlocked ? "⛔" : "●"}</span>
+                    <span style={{ color: C.text, minWidth: 90, flexShrink: 0 }}>{t.name}</span>
+                    <span style={{ color: isBlocked ? statusColor(t.status) : C.muted, wordBreak: "break-all", flex: 1 }}>
+                      {detail || t.activityType}
+                    </span>
                     {t.durationMs ? <span style={{ color: C.muted, flexShrink: 0 }}>{t.durationMs}ms</span> : null}
                   </li>
                 )
@@ -221,7 +259,7 @@ export default async function SharedRunPage({
             {trace.length > 200 ? (
               <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>+{trace.length - 200} more steps</div>
             ) : null}
-          </section>
+          </details>
         ) : null}
 
         <footer style={{ color: C.muted, fontSize: 12, marginTop: 28, textAlign: "center" }}>
