@@ -3,14 +3,13 @@
 # Run:   docker run --rm -p 3000:3000 -e MAGI_CP_CLOUD_URL=http://host.docker.internal:8787 ghcr.io/openmagi/magi-cp-dashboard:latest
 
 # ── deps ──────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
-RUN apk add --no-cache libc6-compat
+FROM node:20-bookworm-slim AS deps
 WORKDIR /app
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci --legacy-peer-deps
 
 # ── builder ───────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
@@ -24,14 +23,19 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ── runner ────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+# wget for the healthcheck below (curl would also do, but wget is one
+# binary lighter and matches the prior alpine recipe).
+RUN apt-get update && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1001 nodejs \
+    && useradd -u 1001 -g nodejs -m -s /usr/sbin/nologin nextjs
 USER nextjs
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
