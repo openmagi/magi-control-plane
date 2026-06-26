@@ -224,6 +224,9 @@ class SharedRun(Base):
     created_at: Mapped[int] = mapped_column(BigInt, nullable=False)
     expires_at: Mapped[int | None] = mapped_column(BigInt, nullable=True)
     revoked_at: Mapped[int | None] = mapped_column(BigInt, nullable=True)
+    # Owner edits (range / hidden / redactions) applied over `view` at read time.
+    # Non-destructive: `view` stays the full export; null = no edits.
+    edits: Mapped[dict | None] = mapped_column(JsonCol, nullable=True)
 
 
 class SharedRunRepo:
@@ -288,6 +291,26 @@ class SharedRunRepo:
             for r in rows:
                 s.expunge(r)
             return rows
+
+    def get_by_hash(self, token_hash: str, tenant_id: str) -> SharedRun | None:
+        """Tenant-scoped fetch by hash for the owner's editor (returns the FULL
+        un-edited view + current edits). None if missing or cross-tenant."""
+        with Session(self.engine) as s:
+            row = s.get(SharedRun, token_hash)
+            if row is None or row.tenant_id != tenant_id:
+                return None
+            s.expunge(row)
+            return row
+
+    def set_edits(self, token_hash: str, tenant_id: str, edits: dict | None) -> bool:
+        """Store the owner's edits overlay. False if missing/cross-tenant/revoked."""
+        with Session(self.engine) as s:
+            row = s.get(SharedRun, token_hash)
+            if row is None or row.tenant_id != tenant_id or row.revoked_at is not None:
+                return False
+            row.edits = edits
+            s.commit()
+            return True
 
     def revoke_by_hash(self, token_hash: str, tenant_id: str) -> bool:
         """Tenant-scoped revoke by token hash (the handle the manage UI has).
@@ -371,6 +394,14 @@ def _apply_migrations(engine: Engine) -> None:
     """
     from sqlalchemy import inspect as _inspect
     insp = _inspect(engine)
+    # shared_run.edits: additive, nullable. A pre-edits deployment pulling this
+    # code keeps the table from create_all (no new column) and the first edit
+    # write would fail with `no such column: edits` without this.
+    if "shared_run" in insp.get_table_names():
+        if "edits" not in {c["name"] for c in insp.get_columns("shared_run")}:
+            col_type = "JSONB" if engine.dialect.name == "postgresql" else "TEXT"
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE shared_run ADD COLUMN edits {col_type}"))
     if "hitl_item" not in insp.get_table_names():
         # Fresh DB — create_all just built the table from the PR4-shape
         # ORM declaration, nothing to migrate.

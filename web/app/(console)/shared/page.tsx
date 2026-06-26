@@ -75,12 +75,17 @@ export default async function SharedRunsPage() {
                     <td className="p-3">{stateBadge(item)}</td>
                     <td className="p-3 text-right">
                       {item.active ? (
-                        <form action={revoke}>
-                          <input type="hidden" name="tokenHash" value={item.tokenHash} />
-                          <Button type="submit" variant="ghost" size="sm">
-                            {t("shared.revoke")}
-                          </Button>
-                        </form>
+                        <div className="flex items-center justify-end gap-1">
+                          <a href={`/shared/${item.tokenHash}/edit`}>
+                            <Button type="button" variant="ghost" size="sm">{t("shared.edit")}</Button>
+                          </a>
+                          <form action={revoke}>
+                            <input type="hidden" name="tokenHash" value={item.tokenHash} />
+                            <Button type="submit" variant="ghost" size="sm">
+                              {t("shared.revoke")}
+                            </Button>
+                          </form>
+                        </div>
                       ) : null}
                     </td>
                   </tr>

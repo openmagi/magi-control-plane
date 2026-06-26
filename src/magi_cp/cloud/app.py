@@ -813,10 +813,40 @@ def create_app(
 
     @app.get("/share/run/{token}")
     def share_run_get(token: str) -> dict:
+        from ..share.edits import apply_share_edits
+
         row = share_repo.get_active(token)
         if row is None:
             raise HTTPException(404, "not found")
-        return {"view": row.view, "createdAt": row.created_at}
+        # Apply the owner's non-destructive edits (range / hide / redact) over
+        # the stored full export before serving the public page.
+        view = apply_share_edits(row.view, row.edits) if row.edits else row.view
+        return {"view": view, "createdAt": row.created_at}
+
+    @app.get("/v1/runs/share/{token_hash}", dependencies=[Depends(require_tenant_auth)])
+    def runs_share_get_for_edit(token_hash: str, request: Request) -> dict:
+        """Owner-only: the FULL un-edited view + current edits, for the editor."""
+        row = share_repo.get_by_hash(token_hash, request.state.tenant_id)
+        if row is None:
+            raise HTTPException(404, "not found")
+        return {"view": row.view, "edits": row.edits or {}, "createdAt": row.created_at}
+
+    @app.patch("/v1/runs/share/{token_hash}/edits", dependencies=[Depends(require_tenant_auth)])
+    async def runs_share_set_edits(token_hash: str, request: Request) -> dict:
+        """Owner-only: store a normalized edits overlay (range / hidden / redactions)."""
+        from ..share.edits import normalize_edits
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(400, "body must be valid JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be an object")
+        edits = normalize_edits(body.get("edits"))
+        ok = share_repo.set_edits(token_hash, request.state.tenant_id, edits or None)
+        if not ok:
+            raise HTTPException(404, "not found or revoked")
+        return {"edits": edits}
 
     @app.get("/v1/runs/share", dependencies=[Depends(require_tenant_auth)])
     def runs_share_list(request: Request) -> dict:
