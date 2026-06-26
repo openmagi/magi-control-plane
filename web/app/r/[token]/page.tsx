@@ -79,7 +79,9 @@ function traceDetail(args: unknown): string {
   const a = args as Record<string, unknown>
   const pick = a.url ?? a.query ?? a.command ?? a.path ?? a.file_path ?? a.pattern ?? a.prompt
   if (typeof pick !== "string") return ""
-  return /^https?:\/\//i.test(pick) ? shortUrl(pick) : pick
+  if (/^https?:\/\//i.test(pick)) return shortUrl(pick)
+  const oneLine = pick.replace(/\s+/g, " ").trim()
+  return oneLine.length > 160 ? `${oneLine.slice(0, 159)}…` : oneLine
 }
 
 /** Format a tool call's args as `key: value, …` for the approval prompt. */
@@ -239,14 +241,32 @@ export default async function SharedRunPage({
                 const stopped = isStopped(it.status)
                 return (
                   <div key={i} style={{ paddingLeft: 16, marginTop: 4 }}>
-                    {/* muted tool action line, like CC's "Read 1 file" subline */}
-                    <div style={{ color: stopped ? markColor(it.status) : C.muted, fontSize: 13 }}>
+                    {/* muted tool action line. Routine (non-policy) calls are
+                        clamped to one line; a held/blocked step keeps its label. */}
+                    <div
+                      style={{
+                        color: stopped ? markColor(it.status) : C.muted,
+                        fontSize: 13,
+                        ...(stopped ? {} : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }),
+                      }}
+                      title={detail || undefined}
+                    >
                       {stopped ? `✗ ${name}` : `↳ ${name}`}{detail ? <span style={{ color: C.muted }}>({detail})</span> : null}
                       {stopped ? <span style={{ marginLeft: 8 }}>· {govVerb(it.status)}</span> : null}
                     </div>
-                    {/* verification verdict (passed step) */}
+                    {/* verification verdict (passed step) — detail collapsed */}
                     {g && !stopped && g.kind === "verification" && g.reason ? (
-                      <div style={{ color: C.green, fontSize: 13, paddingLeft: 16, marginTop: 2 }}>✓ {g.reason}</div>
+                      (() => {
+                        const ok = g.status === "ok" || g.status === "verified" || g.status === "passed"
+                        return (
+                          <details style={{ paddingLeft: 16, marginTop: 2 }}>
+                            <summary style={{ color: ok ? C.green : C.amber, fontSize: 13, cursor: "pointer", listStyle: "revert" }}>
+                              {ok ? "✓ source verified credible" : "⚠ source not credible"}
+                            </summary>
+                            <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>{g.reason}</div>
+                          </details>
+                        )
+                      })()
                     ) : null}
                     {/* blocked (deny) gate note */}
                     {blocked1 && g ? (
@@ -314,7 +334,12 @@ export default async function SharedRunPage({
                             <span style={{ color: c, fontWeight: 700 }}>{govIcon(g.status)} {govVerb(g.status)}</span>
                             <span style={{ color: C.muted }}> · {g.name}</span>
                           </div>
-                          {g.reason ? <div style={{ color: C.text, fontSize: 13, marginTop: 3 }}>{g.reason}</div> : null}
+                          {g.reason ? (
+                            <details style={{ marginTop: 3 }}>
+                              <summary style={{ color: C.muted, fontSize: 12, cursor: "pointer" }}>details</summary>
+                              <div style={{ color: C.text, fontSize: 13, marginTop: 3 }}>{g.reason}</div>
+                            </details>
+                          ) : null}
                         </li>
                       )
                     })}
