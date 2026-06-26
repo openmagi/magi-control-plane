@@ -24,6 +24,7 @@ __all__ = ["normalize_edits", "apply_share_edits", "REDACTION_PLACEHOLDER"]
 REDACTION_PLACEHOLDER = "[redacted]"
 _MAX_REDACTIONS = 50
 _MAX_REDACTION_LEN = 200
+_MAX_HIDDEN = 5000
 
 
 def _short_tool(name: object) -> str:
@@ -54,7 +55,7 @@ def normalize_edits(raw: object) -> dict:
     if isinstance(hidden, Sequence) and not isinstance(hidden, str):
         ints = sorted({h for h in hidden if isinstance(h, int) and not isinstance(h, bool) and h >= 0})
         if ints:
-            out["hidden"] = ints
+            out["hidden"] = ints[:_MAX_HIDDEN]
 
     reds = raw.get("redactions")
     if isinstance(reds, Sequence) and not isinstance(reds, str):
