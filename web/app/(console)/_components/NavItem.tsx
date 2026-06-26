@@ -8,6 +8,7 @@ import {
   Squares2X2Icon, DocumentTextIcon,
   ArrowDownTrayIcon, RectangleStackIcon,
   ServerIcon, QuestionMarkCircleIcon,
+  Cog6ToothIcon,
 } from "@heroicons/react/24/outline"
 import { cn } from "@/lib/cn"
 import { longestActiveHref, useNavHrefs } from "./NavItemContext"
@@ -24,6 +25,7 @@ const ICONS = {
   setup:     ArrowDownTrayIcon,
   endpoints: ServerIcon,
   docs:      QuestionMarkCircleIcon,
+  settings:  Cog6ToothIcon,
 } as const
 
 export type NavIconName = keyof typeof ICONS

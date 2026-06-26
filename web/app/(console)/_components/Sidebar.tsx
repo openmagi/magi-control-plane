@@ -16,6 +16,7 @@ const NAV_HREFS = [
   "/policies/new",
   "/presets",
   "/scripts",
+  "/settings",
   "/verify",
   "/hitl",
   "/overview",
@@ -84,6 +85,7 @@ export async function Sidebar() {
           <NavGroup label={t("nav.group.setup")}>
             <NavItem href="/setup" label={t("setup.title")} icon="setup" />
             <NavItem href="/scripts" label={t("nav.scripts")} icon="setup" />
+            <NavItem href="/settings" label={t("nav.settings")} icon="settings" />
           </NavGroup>
 
           <NavGroup label={t("nav.group.help")}>

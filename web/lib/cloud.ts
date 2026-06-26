@@ -1153,7 +1153,64 @@ export const cloud = {
         }),
       },
     ),
+
+  /** Q97 — read which LLM provider keys are configured. The cloud
+   *  surface NEVER returns the raw key, only `{set, last4}`. Used by
+   *  the dashboard /settings page to render status pills. */
+  getLlmKeys: (): Promise<LlmKeysStatus> =>
+    _fetch<LlmKeysStatus>("/admin/llm-keys", {
+      method: "GET", keyType: "admin",
+    }),
+
+  /** Q97 — write provider keys. Missing field preserves prior value,
+   *  empty string clears, non-empty overwrites. After persistence the
+   *  cloud rebuilds its provider singletons in-place so the next
+   *  /policies/compile-interactive call uses the new credentials WITHOUT
+   *  a container restart. */
+  putLlmKeys: (req: {
+    anthropic_api_key?: string | null
+    openai_api_key?: string | null
+  }): Promise<LlmKeysStatus> =>
+    _fetch<LlmKeysStatus>("/admin/llm-keys", {
+      method: "PUT", keyType: "admin",
+      body: JSON.stringify(req),
+    }),
+
+  /** Q97 — cheap "ping" completion per provider to verify a key
+   *  actually authenticates. Pass `{provider}` to narrow to one side;
+   *  omit to probe both. */
+  testLlmKeys: (
+    provider?: "anthropic" | "openai",
+  ): Promise<LlmKeysTestResponse> =>
+    _fetch<LlmKeysTestResponse>("/admin/llm-keys/test", {
+      method: "POST", keyType: "admin",
+      body: JSON.stringify(provider ? { provider } : {}),
+      timeoutMs: 30_000,
+    }),
 }
+
+/** Q97 — response shape from GET/PUT /admin/llm-keys. Each provider
+ *  reports whether a key is set (env or overlay) and the last 4 chars
+ *  of that key (empty when unset). The raw key is never returned. */
+export type LlmKeysStatus = {
+  anthropic: { set: boolean; last4: string }
+  openai:    { set: boolean; last4: string }
+}
+
+/** Q97 — response from POST /admin/llm-keys/test. Without a `provider`
+ *  field the cloud probes both sides and returns the merged map; with
+ *  a `provider` field only that side runs and the cloud returns the
+ *  single result object directly. The dashboard normalizes to the map
+ *  shape before rendering. */
+export type LlmKeysTestSingle = {
+  ok: boolean
+  error: string | null
+  provider_used: string
+}
+
+export type LlmKeysTestResponse =
+  | { anthropic: LlmKeysTestSingle; openai: LlmKeysTestSingle }
+  | LlmKeysTestSingle
 
 /** D77 — response envelope from POST /policies/{id}/test. */
 export type PolicyTestResponse = {

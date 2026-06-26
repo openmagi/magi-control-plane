@@ -1003,6 +1003,31 @@ const KO_RAW = {
   "packs.test.perMember": "멤버별 결과",
   "packs.test.memberCount": "총 멤버 {n}개",
   "rules.welcome.testHint": "정책을 켰으면 'Test this policy' 버튼으로 가상 payload를 던져 잘 작동하는지 확인하세요.",
+
+  /* ── settings (Q97b) ─────────────────────────────────────────── */
+  "nav.settings": "설정",
+  "settings.title": "설정",
+  "settings.subtitle": "이 인스턴스의 외부 의존성을 설정합니다. 값은 ${MAGI_CP_KEY_DIR}/llm-keys.json 에 0600 권한으로 저장되며, 저장 즉시 다음 대화형 컴파일 호출부터 적용됩니다 (컨테이너 재시작 불필요).",
+  "settings.llm.section.title": "LLM 제공자",
+  "settings.llm.section.hint": "Anthropic / OpenAI 키를 입력하면 대화형 정책 컴파일러와 리뷰어가 활성화됩니다. 비워서 저장하면 해당 키가 삭제되고 환경 변수 (ANTHROPIC_API_KEY / OPENAI_API_KEY) 로 폴백합니다.",
+  "settings.llm.row.anthropic": "Anthropic API Key",
+  "settings.llm.row.openai": "OpenAI API Key",
+  "settings.llm.placeholderUnset": "sk-... 형태로 붙여 넣으세요",
+  "settings.llm.placeholderSet": "**** {last4} (설정됨)",
+  "settings.llm.save": "저장",
+  "settings.llm.save.pending": "저장 중",
+  "settings.llm.test": "연결 테스트",
+  "settings.llm.test.pending": "테스트 중",
+  "settings.llm.status.active": "정상",
+  "settings.llm.status.configured": "설정됨 (미테스트)",
+  "settings.llm.status.notConfigured": "미설정",
+  "settings.llm.status.failed": "마지막 테스트 실패",
+  "settings.llm.toast.saved": "저장되었습니다.",
+  "settings.llm.toast.cleared": "키가 삭제되었습니다.",
+  "settings.llm.toast.error": "저장 실패: {detail}",
+  "settings.llm.testResult.ok": "정상: {provider}",
+  "settings.llm.testResult.fail": "실패: {provider}: {detail}",
+  "settings.llm.clearLabel": "비우고 저장 (키 삭제)",
 } as const
 
 const KO: Record<keyof typeof KO_RAW, string> = KO_RAW
@@ -1967,6 +1992,31 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "packs.test.perMember": "Per-member results",
   "packs.test.memberCount": "{n} members total",
   "rules.welcome.testHint": "After enabling a policy, use the 'Test this policy' button on its detail page to confirm it fires on the payload you care about.",
+
+  /* ── settings (Q97b) ─────────────────────────────────────────── */
+  "nav.settings": "Settings",
+  "settings.title": "Settings",
+  "settings.subtitle": "Configure this instance's external dependencies. Values persist to ${MAGI_CP_KEY_DIR}/llm-keys.json with 0600 permissions and take effect on the next conversational compile call (no container restart needed).",
+  "settings.llm.section.title": "LLM providers",
+  "settings.llm.section.hint": "Setting Anthropic / OpenAI keys enables the conversational policy compiler and reviewer. Save an empty value to clear that side and fall back to the env-vars (ANTHROPIC_API_KEY / OPENAI_API_KEY).",
+  "settings.llm.row.anthropic": "Anthropic API Key",
+  "settings.llm.row.openai": "OpenAI API Key",
+  "settings.llm.placeholderUnset": "Paste sk-...",
+  "settings.llm.placeholderSet": "**** {last4} (set)",
+  "settings.llm.save": "Save",
+  "settings.llm.save.pending": "Saving",
+  "settings.llm.test": "Test connection",
+  "settings.llm.test.pending": "Testing",
+  "settings.llm.status.active": "Active",
+  "settings.llm.status.configured": "Configured (untested)",
+  "settings.llm.status.notConfigured": "Not configured",
+  "settings.llm.status.failed": "Last test failed",
+  "settings.llm.toast.saved": "Saved.",
+  "settings.llm.toast.cleared": "Key cleared.",
+  "settings.llm.toast.error": "Save failed: {detail}",
+  "settings.llm.testResult.ok": "OK: {provider}",
+  "settings.llm.testResult.fail": "FAIL: {provider}: {detail}",
+  "settings.llm.clearLabel": "Save empty (clears the key)",
 }
 
 const DICT: Record<Locale, Record<keyof typeof KO_RAW, string>> = { ko: KO, en: EN }

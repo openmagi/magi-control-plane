@@ -4,11 +4,13 @@ import path from "node:path"
 
 /**
  * Source-level invariants for Sidebar. guards the IA contract:
- * 5 groups, 10 leaf items (1+2+4+2+1). Authoring group has one leaf
+ * 5 groups, 11 leaf items (1+2+4+3+1). Authoring group has one leaf
  * ("Rules") since policy authoring is reachable from the page's CTA;
  * /rules/new is not surfaced in the sidebar. The audit group gained
  * /endpoints (P10) alongside /overview and /ledger. The new "help"
- * group (D78) surfaces /docs. All keyed to i18n + HITL badge plumbing.
+ * group (D78) surfaces /docs. The setup group gained /settings
+ * (Q97b) alongside /setup and /scripts. All keyed to i18n + HITL
+ * badge plumbing.
  */
 describe("Sidebar IA invariants", () => {
   const src = readFileSync(
@@ -27,13 +29,19 @@ describe("Sidebar IA invariants", () => {
     ])
   })
 
-  it("contains exactly 10 NavItem entries (1+2+4+2+1)", () => {
+  it("contains exactly 11 NavItem entries (1+2+4+3+1)", () => {
     // D63: setup group adds /scripts alongside /setup so run_command
     // policies have a management surface.
     // run-share: audit group adds /shared (manage + revoke share links).
     // D78: help group adds /docs.
+    // Q97b: setup group adds /settings for self-host LLM-key management.
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(10)
+    expect(items).toHaveLength(11)
+  })
+
+  it("setup group surfaces the Q97b /settings entry", () => {
+    expect(src).toMatch(/href="\/settings"/)
+    expect(src).toMatch(/icon="settings"/)
   })
 
   it("help group surfaces the D78 /docs entry", () => {
