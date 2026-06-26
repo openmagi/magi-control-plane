@@ -1,16 +1,30 @@
 import { describe, it, expect } from "vitest"
 
-import { citeify, shortUrl, stripFootnoteTail } from "./run-view-format"
+import { citeify, shortTool, shortUrl, stripFootnoteTail } from "./run-view-format"
+
+describe("shortTool", () => {
+  it("strips an mcp__server__ prefix", () => {
+    expect(shortTool("mcp__trading__verify_source")).toBe("verify_source")
+  })
+  it("leaves a plain tool name unchanged", () => {
+    expect(shortTool("Read")).toBe("Read")
+  })
+})
 
 describe("citeify", () => {
-  it("turns [1] into superscript", () => {
-    expect(citeify("positive [1] yes")).toBe("positive ¹ yes")
+  it("turns [1] into an in-page source link", () => {
+    expect(citeify("positive [1] yes")).toBe("positive [1](#src-1) yes")
   })
   it("handles multi-digit", () => {
-    expect(citeify("see [12]")).toBe("see ¹²")
+    expect(citeify("see [12]")).toBe("see [12](#src-12)")
   })
-  it("leaves markdown links intact", () => {
+  it("leaves existing markdown links intact", () => {
     expect(citeify("[1](http://x)")).toBe("[1](http://x)")
+  })
+  it("only ever produces internal #src anchors", () => {
+    const out = citeify("a [1] b [2] c")
+    expect(out).toBe("a [1](#src-1) b [2](#src-2) c")
+    expect(out).not.toMatch(/\]\((?!#src-)/)
   })
   it("no brackets -> unchanged", () => {
     expect(citeify("plain text")).toBe("plain text")

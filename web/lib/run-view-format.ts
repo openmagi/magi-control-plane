@@ -1,17 +1,17 @@
 /** Pure formatting helpers for the public shared-run page (`app/r/[token]`).
  *  Kept here (not in the server component) so they are unit-testable. */
 
-const SUP: Record<string, string> = {
-  "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
-  "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+/** `mcp__server__tool` -> `tool` for a readable transcript label. */
+export function shortTool(name: string): string {
+  return name.includes("__") ? name.split("__").pop() || name : name
 }
 
-/** Turn bracketed footnotes `[1]` into superscript `¹` (citation style), without
- *  touching markdown links `[1](url)`. Pure text transform, XSS-safe. */
+/** Turn bracketed footnotes `[1]` into an in-page citation link `[1](#src-1)`,
+ *  without touching existing markdown links `[1](url)`. The renderer styles
+ *  `#src-N` anchors as a raised green chip that jumps to the matching source.
+ *  XSS-safe: the only href produced is an internal `#src-N` fragment. */
 export function citeify(md: string): string {
-  return md.replace(/\[(\d{1,3})\](?!\()/g, (_, n: string) =>
-    [...n].map((d) => SUP[d] ?? d).join(""),
-  )
+  return md.replace(/\[(\d{1,3})\](?!\()/g, (_, n: string) => `[${n}](#src-${n})`)
 }
 
 /** Compact display form for a long URL: `host/…/last-segment`, ellipsized.
