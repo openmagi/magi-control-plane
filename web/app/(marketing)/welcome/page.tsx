@@ -60,7 +60,6 @@ type HeroCopy = {
   title: string
   subtitle: string
   cta: string
-  ctaSecondary: string
   bullets: string[]
   toolsLabel: string
   tools: string[]
@@ -268,7 +267,6 @@ function Hero({ c, isKo }: { c: HeroCopy; isKo: boolean }) {
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <PrimaryCTA size="lg" href="/install">{c.cta}</PrimaryCTA>
-              <GhostCTA size="lg" href="/install">{c.ctaSecondary}</GhostCTA>
             </div>
             <ul className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-[var(--ink)]">
               {c.bullets.map((b) => (
@@ -512,8 +510,7 @@ const KO = {
     title: "Claude Code에 가드레일을",
     subtitle:
       "에이전트의 도구 호출과 프롬프트 전송, 세션 경계까지 매 시점 본인 룰로 검사합니다. 위험한 호출은 차단, 사람 승인이 필요한 건 리뷰 큐로, 나머지는 위·변조 불가능한 원장에 봉인.",
-    cta: "5분 안에 시작",
-    ctaSecondary: "설치 가이드 보기",
+    cta: "30초 안에 시작",
     bullets: ["에이전트 코드 변경 0", "한 줄 설치", "감사 원장 내장"],
     toolsLabel: "동작 대상",
     tools: ["Claude Code", "PreToolUse hook", "Bash · Edit · Write"],
@@ -645,8 +642,7 @@ const EN = {
     title: "Guardrails for Claude Code",
     subtitle:
       "Every tool call, prompt, and session boundary is checked against your rules at runtime. Block what is risky, queue what needs a human, and seal the rest into a tamper-evident ledger.",
-    cta: "Get started in 5 min",
-    ctaSecondary: "See install guide",
+    cta: "Get started in 30 seconds",
     bullets: ["No agent code change", "One-line install", "Audit ledger built-in"],
     toolsLabel: "Works with",
     tools: ["Claude Code", "PreToolUse hook", "Bash · Edit · Write"],
