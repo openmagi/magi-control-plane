@@ -106,6 +106,7 @@ def transcript_to_run_view(
     out_tokens = 0
     trace: list[dict] = []
     results: list[dict] = []
+    seen_pr_urls: set[str] = set()
     auto_gov: list[dict] = []
     trace_by_id: dict[object, dict] = {}
     resolved_session = session_id
@@ -126,7 +127,10 @@ def transcript_to_run_view(
                 title = t
         elif etype == "pr-link":
             url = event.get("prUrl")
-            if isinstance(url, str) and url:
+            # CC emits a pr-link event per status update, so the same PR recurs
+            # many times. Dedup by URL, keeping first-seen order.
+            if isinstance(url, str) and url and url not in seen_pr_urls:
+                seen_pr_urls.add(url)
                 results.append({"prNumber": event.get("prNumber"), "prUrl": url})
         elif etype == "user":
             content = _message(event).get("content")
