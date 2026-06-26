@@ -196,3 +196,18 @@ def test_no_denial_no_auto_governance() -> None:
         {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}},
     ]
     assert transcript_to_run_view(events)["governance"] == []
+
+
+# --- results dedup: the same PR is emitted as many pr-link events ---
+def test_results_deduped_by_pr_url() -> None:
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "g"}},
+        {"type": "pr-link", "sessionId": "s", "prNumber": 785, "prUrl": "https://x/y/pull/785"},
+        {"type": "pr-link", "sessionId": "s", "prNumber": 785, "prUrl": "https://x/y/pull/785"},  # dup
+        {"type": "pr-link", "sessionId": "s", "prNumber": 612, "prUrl": "https://x/y/pull/612"},
+        {"type": "pr-link", "sessionId": "s", "prNumber": 785, "prUrl": "https://x/y/pull/785"},  # dup
+    ]
+    v = transcript_to_run_view(events)
+    assert len(v["results"]) == 2                       # deduped
+    assert [r["prNumber"] for r in v["results"]] == [785, 612]  # first-seen order
+    assert v["counts"]["resultCount"] == 2

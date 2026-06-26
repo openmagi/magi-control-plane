@@ -112,9 +112,9 @@ export default async function SharedRunPage({
         {/* Results (PR links) */}
         {results.length > 0 ? (
           <section style={card}>
-            <div style={label}>Deliverables</div>
+            <div style={label}>Deliverables ({results.length})</div>
             <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0" }}>
-              {results.map((r, i) => {
+              {results.slice(0, 50).map((r, i) => {
                 const href = safeHref(r.prUrl)
                 const text = r.prNumber ? `PR #${r.prNumber}` : (r.prUrl ?? "—")
                 return (
@@ -130,6 +130,9 @@ export default async function SharedRunPage({
                 )
               })}
             </ul>
+            {results.length > 50 ? (
+              <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>+{results.length - 50} more</div>
+            ) : null}
           </section>
         ) : null}
 
