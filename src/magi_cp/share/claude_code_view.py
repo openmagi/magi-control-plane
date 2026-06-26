@@ -36,12 +36,23 @@ RUN_VIEW_SCHEMA_VERSION = "openmagi.runView.v1"
 _PERM_DENY_RE = re.compile(
     r"Permission to use (\S+) with command (.+?) has been denied", re.S
 )
+# An `ask` rule (human-in-the-loop) blocks the call pending approval; CC phrases
+# it differently. A high-risk tool (e.g. an MCP `execute_trade`) gated this way
+# surfaces as "held for approval" governance.
+_PERM_ASK_RE = re.compile(
+    r"requested permissions? to use ([^\s,]+)", re.I
+)
 # CC appends an exit-code echo to the command it reports; strip it for the reason.
 _ECHO_TAIL_RE = re.compile(r"\s*;\s*echo\s+\"\[exit code:.*$", re.S)
 
 
 def _clean_command(cmd: str) -> str:
     return _ECHO_TAIL_RE.sub("", cmd).strip()
+
+
+def _short_tool(name: str) -> str:
+    """`mcp__server__tool` -> `tool` for a readable governance label."""
+    return name.rsplit("__", 1)[-1] if "__" in name else name
 
 
 def _source_of(name: object, inp: object) -> dict | None:
@@ -160,19 +171,32 @@ def transcript_to_run_view(
                 for blk in content:
                     if not (isinstance(blk, Mapping) and blk.get("is_error")):
                         continue
-                    m = _PERM_DENY_RE.search(str(blk.get("content", "")))
-                    if not m:
+                    text_c = str(blk.get("content", ""))
+                    m = _PERM_DENY_RE.search(text_c)
+                    if m:
+                        tool, cmd = m.group(1), _clean_command(m.group(2))
+                        auto_gov.append({
+                            "name": _short_tool(tool),
+                            "status": "blocked",
+                            "reason": f"blocked by policy: {cmd}",
+                            "kind": "policy",
+                        })
+                        step = trace_by_id.get(blk.get("tool_use_id"))
+                        if step is not None:
+                            step["status"] = "blocked"
                         continue
-                    tool, cmd = m.group(1), _clean_command(m.group(2))
-                    auto_gov.append({
-                        "name": tool,
-                        "status": "blocked",
-                        "reason": f"blocked by policy: {cmd}",
-                        "kind": "policy",
-                    })
-                    step = trace_by_id.get(blk.get("tool_use_id"))
-                    if step is not None:
-                        step["status"] = "blocked"
+                    a = _PERM_ASK_RE.search(text_c)
+                    if a:
+                        tool = a.group(1)
+                        auto_gov.append({
+                            "name": _short_tool(tool),
+                            "status": "needs_approval",
+                            "reason": "held: requires human approval before running",
+                            "kind": "policy",
+                        })
+                        step = trace_by_id.get(blk.get("tool_use_id"))
+                        if step is not None:
+                            step["status"] = "needs_approval"
             text = _text_of(content)
             if goal is None and _is_goal_text(event, text):
                 goal = text

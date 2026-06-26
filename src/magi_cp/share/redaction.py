@@ -210,9 +210,10 @@ _COUNT_KEYS = (
 # Local addition: top-level ``results`` (PR links) -> allowlist {prNumber, prUrl}.
 _RESULT_KEYS = ("prNumber", "prUrl")
 _RESULT_FREE_TEXT = frozenset({"prUrl"})
-# Local addition: top-level ``sources`` (research evidence) -> {tool, ref, isUrl}.
-_SOURCE_KEYS = ("tool", "ref", "isUrl")
-_SOURCE_FREE_TEXT = frozenset({"ref"})
+# Local addition: top-level ``sources`` (research evidence) -> {tool, ref, isUrl,
+# credibility (an LLM-judge verdict on the source)}.
+_SOURCE_KEYS = ("tool", "ref", "isUrl", "credibility")
+_SOURCE_FREE_TEXT = frozenset({"ref", "credibility"})
 
 
 def _scrub_opt(value: object) -> object:

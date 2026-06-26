@@ -447,7 +447,7 @@ export type SharedRunView = {
     title?: string
   } | null
   results?: { prNumber?: number | null; prUrl?: string }[]
-  sources?: { tool?: string; ref?: string; isUrl?: boolean }[]
+  sources?: { tool?: string; ref?: string; isUrl?: boolean; credibility?: string }[]
   trace?: {
     name?: string | null
     status?: string | null
