@@ -143,3 +143,56 @@ def test_assistant_tool_only_turn_keeps_prior_result() -> None:
     ]
     # The last assistant turn is tool-only (no text); result stays from the prior turn.
     assert transcript_to_run_view(events)["summary"]["result"] == "partial answer"
+
+
+# --- governance auto-derived from CC permission denials (real block evidence) ---
+def _deny_events(cmd="curl -s https://x.test", tool="Bash", tid="t1"):
+    return [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "check the host"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "claude-opus-4-8",
+            "content": [{"type": "tool_use", "id": tid, "name": tool, "input": {"command": cmd}}],
+            "usage": {"input_tokens": 5, "output_tokens": 2}}},
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tid, "is_error": True,
+             "content": f'Permission to use {tool} with command {cmd}; echo "[exit code: $?]" has been denied.'}]}},
+    ]
+
+
+def test_permission_denial_becomes_governance() -> None:
+    v = transcript_to_run_view(_deny_events())
+    gov = v["governance"]
+    assert len(gov) == 1
+    assert gov[0]["name"] == "Bash"
+    assert gov[0]["status"] == "blocked"
+    assert gov[0]["kind"] == "policy"
+    # command surfaced in reason, CC's appended echo stripped
+    assert "curl -s https://x.test" in gov[0]["reason"]
+    assert "exit code" not in gov[0]["reason"]
+    assert v["counts"]["governanceCount"] == 1
+
+
+def test_denied_tool_step_status_flipped_to_blocked() -> None:
+    v = transcript_to_run_view(_deny_events())
+    step = next(s for s in v["trace"] if s["toolCallId"] == "t1")
+    assert step["status"] == "blocked"
+
+
+def test_multiple_denials() -> None:
+    ev = _deny_events("curl a", tid="t1") + _deny_events("wget b", tid="t2")[1:]
+    v = transcript_to_run_view(ev)
+    assert v["counts"]["governanceCount"] == 2
+
+
+def test_explicit_governance_merges_with_auto() -> None:
+    extra = [{"name": "FileWrite", "status": "needs_approval", "reason": "x", "kind": "policy"}]
+    v = transcript_to_run_view(_deny_events(), governance=extra)
+    names = {g["name"] for g in v["governance"]}
+    assert names == {"Bash", "FileWrite"}
+
+
+def test_no_denial_no_auto_governance() -> None:
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "hi"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}},
+    ]
+    assert transcript_to_run_view(events)["governance"] == []
