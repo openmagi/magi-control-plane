@@ -8,6 +8,8 @@ Governance is overlaid from magi-cp's own verifier verdicts.
 """
 from __future__ import annotations
 
+import json
+
 from magi_cp.share.claude_code_view import (
     RUN_VIEW_SCHEMA_VERSION,
     transcript_to_run_view,
@@ -271,3 +273,80 @@ def test_ask_style_permission_held_for_approval() -> None:
     assert "approval" in g[0]["reason"]
     step = next(s for s in v["trace"] if s["toolCallId"] == "t1")
     assert step["status"] == "needs_approval"
+
+
+def test_verifier_verdict_becomes_graded_source_and_governance() -> None:
+    # A tool given a `url` that returns a `verdict` -> a credibility-graded
+    # source (for the inline citation) AND a verification governance entry.
+    url = "https://www.sec.gov/Archives/edgar/data/1318605/tsla-10q.htm"
+    verdict = "CREDIBLE - official SEC EDGAR filing under Tesla's CIK"
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "verify the source"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "v1", "name": "mcp__trading__verify_source",
+                         "input": {"url": url, "claim": "operating income positive"}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        # CC wraps the MCP result body as a text block holding JSON.
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "v1",
+             "content": [{"type": "text", "text": json.dumps({"verdict": verdict})}]}]}},
+    ]
+    v = transcript_to_run_view(events)
+    src = v["sources"]
+    assert len(src) == 1
+    assert src[0] == {"tool": "verify_source", "ref": url, "isUrl": True, "credibility": verdict}
+    g = next(x for x in v["governance"] if x["kind"] == "verification")
+    assert g["name"] == "verify_source"
+    assert g["status"] == "ok"          # CREDIBLE -> verified
+    assert verdict in g["reason"]
+
+
+def test_verifier_uncredible_verdict_is_error_governance() -> None:
+    url = "https://random-blog.example/post"
+    events = [
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "v2", "name": "mcp__trading__verify_source",
+                         "input": {"url": url, "claim": "x"}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "v2",
+             "content": [{"type": "text", "text": json.dumps({"verdict": "UNVERIFIED - not a primary source"})}]}]}},
+    ]
+    v = transcript_to_run_view(events)
+    g = next(x for x in v["governance"] if x["kind"] == "verification")
+    assert g["status"] == "error"
+    assert v["sources"][0]["credibility"].startswith("UNVERIFIED")
+
+
+def test_verifier_same_url_twice_deduped() -> None:
+    # Re-verifying the same url yields one source and one governance row.
+    url = "https://www.sec.gov/x"
+    def call(tid):
+        return [
+            {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+                "content": [{"type": "tool_use", "id": tid, "name": "mcp__t__verify_source",
+                             "input": {"url": url, "claim": "c"}}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}}},
+            {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tid,
+                 "content": [{"type": "text", "text": json.dumps({"verdict": "CREDIBLE - ok"})}]}]}},
+        ]
+    v = transcript_to_run_view([*call("a1"), *call("a2")])
+    assert len(v["sources"]) == 1
+    assert len([g for g in v["governance"] if g["kind"] == "verification"]) == 1
+
+
+def test_verifier_credible_phrasing_is_lenient() -> None:
+    # "Highly credible" / "Source is VERIFIED" grade green, not red.
+    for phrasing in ("Highly credible primary source", "Source is VERIFIED on edgar"):
+        events = [
+            {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+                "content": [{"type": "tool_use", "id": "v", "name": "mcp__t__verify_source",
+                             "input": {"url": "https://sec.gov/a", "claim": "c"}}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}}},
+            {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "v",
+                 "content": [{"type": "text", "text": json.dumps({"verdict": phrasing})}]}]}},
+        ]
+        g = next(x for x in transcript_to_run_view(events)["governance"] if x["kind"] == "verification")
+        assert g["status"] == "ok", phrasing

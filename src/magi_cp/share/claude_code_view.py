@@ -19,6 +19,7 @@ Pure and defensive: malformed events are skipped, never raised.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 
@@ -71,6 +72,52 @@ def _source_of(name: object, inp: object) -> dict | None:
         if isinstance(q, str) and q:
             return {"tool": "WebSearch", "ref": q, "isUrl": False}
     return None
+
+
+def _url_input(inp: object) -> str | None:
+    """The ``url`` a tool was asked to assess, if any (string, non-empty)."""
+    if isinstance(inp, Mapping):
+        u = inp.get("url")
+        if isinstance(u, str) and u:
+            return u
+    return None
+
+
+def _verdict_of(content: object) -> str | None:
+    """Pull a credibility verdict out of a successful tool_result.
+
+    Convention (not a tool name): a verification tool returns a JSON body with a
+    ``verdict`` or ``credibility`` field (CC wraps it as ``[{type:text, text}]``).
+    Such a result, paired with the call's ``url`` input, becomes a graded source.
+    """
+    text = content if isinstance(content, str) else _text_of(content)
+    if not text:
+        return None
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, Mapping):
+        return None
+    for key in ("verdict", "credibility"):
+        v = body.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+_CREDIBLE_RE = re.compile(r"\b(CREDIBLE|VERIFIED|TRUSTED|RELIABLE|OFFICIAL)\b")
+_NOT_CREDIBLE_RE = re.compile(r"\b(NOT[ _]CREDIBLE|UNVERIFIED|UNTRUSTED|UNRELIABLE)\b")
+
+
+def _is_credible(verdict: str) -> bool:
+    """A verdict is credible when it names a credible signal and no negation.
+
+    Keyword-based (not prefix-only) so phrasings like "Highly credible" or
+    "Source is VERIFIED" grade green, while "UNVERIFIED"/"NOT CREDIBLE" grade red.
+    """
+    up = verdict.upper()
+    return bool(_CREDIBLE_RE.search(up)) and not _NOT_CREDIBLE_RE.search(up)
 
 
 def _text_of(content: object) -> str:
@@ -140,6 +187,8 @@ def transcript_to_run_view(
     seen_pr_urls: set[str] = set()
     auto_gov: list[dict] = []
     trace_by_id: dict[object, dict] = {}
+    # tool_use_id -> {tool, ref} for a url-bearing call awaiting its verdict.
+    pending_src: dict[object, dict] = {}
     resolved_session = session_id
     saw_assistant = False
 
@@ -169,7 +218,31 @@ def transcript_to_run_view(
             # and flip the matching trace step to "blocked".
             if isinstance(content, (list, tuple)):
                 for blk in content:
-                    if not (isinstance(blk, Mapping) and blk.get("is_error")):
+                    if not isinstance(blk, Mapping):
+                        continue
+                    # A successful verifier result over a pending url -> promote
+                    # that url to a source graded by the verifier's verdict.
+                    pend = pending_src.pop(blk.get("tool_use_id"), None)
+                    if pend is not None and not blk.get("is_error"):
+                        verdict = _verdict_of(blk.get("content"))
+                        key = (pend["tool"], pend["ref"])
+                        if verdict and key not in seen_sources:
+                            seen_sources.add(key)
+                            sources.append({
+                                "tool": pend["tool"],
+                                "ref": pend["ref"],
+                                "isUrl": True,
+                                "credibility": verdict,
+                            })
+                            # Mirror the judge into governance (verification lane)
+                            # so the verdict shows alongside policy enforcement.
+                            auto_gov.append({
+                                "name": pend["tool"],
+                                "status": "ok" if _is_credible(verdict) else "error",
+                                "reason": f"Source credibility (LLM judge): {verdict}",
+                                "kind": "verification",
+                            })
+                    if not blk.get("is_error"):
                         continue
                     text_c = str(blk.get("content", ""))
                     m = _PERM_DENY_RE.search(text_c)
@@ -235,6 +308,16 @@ def transcript_to_run_view(
                         if src["ref"] and key not in seen_sources:
                             seen_sources.add(key)
                             sources.append(src)
+                    else:
+                        # A non-web tool given a `url` (e.g. an MCP source-
+                        # verifier) -> hold it until its verdict arrives, then
+                        # promote to a graded source.
+                        url = _url_input(block.get("input"))
+                        if url and block.get("id") is not None:
+                            pending_src[block.get("id")] = {
+                                "tool": _short_tool(str(block.get("name") or "")),
+                                "ref": url,
+                            }
 
     summary: dict | None = None
     if goal is not None or saw_assistant:
