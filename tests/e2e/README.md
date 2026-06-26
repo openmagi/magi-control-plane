@@ -190,3 +190,23 @@ fix-pass agent can cross-reference the run.
 `.github/workflows/ci.yml` does NOT call `npm run e2e:*`. Workflow
 agents that want a smoke phase to invoke the harness should do so
 explicitly. D74 is reserved for that wiring.
+
+## D74b: wiring this into a workflow's final-smoke phase
+
+When a workflow script wants to add Playwright e2e to its final-smoke
+phase, the path of least resistance is:
+
+```bash
+bash scripts/run-e2e-from-workflow.sh
+```
+
+That wrapper brings the cloud + dashboard up (or skips bring-up via
+`MAGI_CP_E2E_SKIP_DOCKER=1`), runs the harness, tears the stack down,
+and exits with a structured code:
+
+- `0`  all scenarios passed (or honestly SKIPPED, claude missing etc.)
+- `1`  at least one scenario FAILED
+- `2`  harness infra failure (docker missing, ports busy, build broke)
+
+See [`docs/workflows/final-smoke-template.md`](../../docs/workflows/final-smoke-template.md)
+for the canonical seven-step recipe a new workflow should follow.
