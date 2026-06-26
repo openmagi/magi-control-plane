@@ -275,6 +275,26 @@ def test_ask_style_permission_held_for_approval() -> None:
     assert step["status"] == "needs_approval"
 
 
+def test_interactive_rejection_becomes_rejected_governance() -> None:
+    # A reviewer who declines a held tool: CC writes a rejection message with NO
+    # tool name; the producer recovers it from the matching trace step.
+    events = [
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "t1", "name": "mcp__trading__execute_trade",
+                         "input": {"symbol": "TSLA", "quantity": 10}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": "The user doesn't want to proceed with this tool use. The tool use was rejected."}]}},
+    ]
+    v = transcript_to_run_view(events)
+    g = next(x for x in v["governance"] if x["status"] == "rejected")
+    assert g["name"] == "execute_trade"          # recovered from the trace step
+    assert "rejected" in g["reason"].lower()
+    step = next(s for s in v["trace"] if s["toolCallId"] == "t1")
+    assert step["status"] == "rejected"
+
+
 def test_verifier_verdict_becomes_graded_source_and_governance() -> None:
     # A tool given a `url` that returns a `verdict` -> a credibility-graded
     # source (for the inline citation) AND a verification governance entry.
