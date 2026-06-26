@@ -203,6 +203,10 @@ _STEP_KEYS = (
 _STEP_FREE_TEXT = frozenset({"argsSummary", "resultSummary", "name", "reason"})
 _GOV_KEYS = ("turnId", "name", "status", "reason", "kind")
 _GOV_FREE_TEXT = frozenset({"name", "reason"})
+# Ordered transcript: each item is either prose (`text`) or a tool call (reusing
+# the step shape). Free-text fields are scrubbed; `kind`/`status`/ids pass.
+_TRANSCRIPT_TOOL_KEYS = ("kind", "toolCallId", "activityType", "name", "status", "argsSummary")
+_TRANSCRIPT_TOOL_FREE_TEXT = frozenset({"name", "argsSummary"})
 # Local addition: ``resultCount`` (Claude-Code producer counts).
 _COUNT_KEYS = (
     "stepCount", "turnCount", "receiptCount", "governanceCount", "resultCount", "sourceCount",
@@ -258,6 +262,25 @@ def _public_step(step: Mapping[str, object]) -> dict:
     return out
 
 
+def _public_transcript_item(item: Mapping[str, object]) -> dict | None:
+    """Project one ordered-transcript item (prose or tool call), fail-closed.
+
+    A `text` item keeps only its scrubbed prose; a `tool` item keeps the
+    allowlisted step fields (name / argsSummary scrubbed). Unknown kinds drop.
+    """
+    kind = item.get("kind")
+    if kind == "text":
+        return {"kind": "text", "text": redact_public_text(str(item.get("text", "")), max_chars=None)}
+    if kind == "tool":
+        out: dict[str, object] = {}
+        for key in _TRANSCRIPT_TOOL_KEYS:
+            if key not in item:
+                continue
+            out[key] = _redact_nested(item[key]) if key in _TRANSCRIPT_TOOL_FREE_TEXT else item[key]
+        return out
+    return None
+
+
 def _public_gov(entry: Mapping[str, object]) -> dict:
     out: dict[str, object] = {}
     for key in _GOV_KEYS:
@@ -309,6 +332,7 @@ def build_public_run_view(view: Mapping[str, object]) -> dict:
     """
     summary = view.get("summary")
     trace = view.get("trace")
+    transcript = view.get("transcript")
     governance = view.get("governance")
     results = view.get("results")
     sources = view.get("sources")
@@ -337,6 +361,13 @@ def build_public_run_view(view: Mapping[str, object]) -> dict:
             _public_step(s)
             for s in (trace if isinstance(trace, Sequence) and not isinstance(trace, str) else [])
             if isinstance(s, Mapping)
+        ],
+        "transcript": [
+            ti
+            for item in (transcript if isinstance(transcript, Sequence) and not isinstance(transcript, str) else [])
+            if isinstance(item, Mapping)
+            for ti in (_public_transcript_item(item),)
+            if ti is not None
         ],
         "governance": [
             _public_gov(g)

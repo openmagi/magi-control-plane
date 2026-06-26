@@ -79,6 +79,20 @@ function traceDetail(args: unknown): string {
   return /^https?:\/\//i.test(pick) ? shortUrl(pick) : pick
 }
 
+/** Format a tool call's args as `key: value, …` for the approval prompt. */
+function argString(args: unknown, max = 120): string {
+  if (!args || typeof args !== "object") return ""
+  const parts: string[] = []
+  for (const [k, val] of Object.entries(args as Record<string, unknown>)) {
+    let rendered: string
+    if (typeof val === "string") rendered = /^https?:\/\//i.test(val) ? shortUrl(val, 40) : `"${val}"`
+    else rendered = JSON.stringify(val)
+    parts.push(`${k}: ${rendered}`)
+  }
+  const joined = parts.join(", ")
+  return joined.length > max ? `${joined.slice(0, max - 1)}…` : joined
+}
+
 function isStopped(status?: string | null): boolean {
   return status === "blocked" || status === "needs_approval"
 }
@@ -121,7 +135,17 @@ export default async function SharedRunPage({
     if (key && !govByName.has(key)) govByName.set(key, g)
   }
 
-  const answer = s.result ? stripFootnoteTail(s.result) : ""
+  // Replay the run in order. Prefer the producer's interleaved transcript;
+  // fall back to (tool steps -> final answer) for older stored views.
+  type TItem = { kind: string; text?: string | null; name?: string | null; status?: string | null; argsSummary?: unknown }
+  const rawTranscript = Array.isArray(v.transcript) ? v.transcript : []
+  const items: TItem[] =
+    rawTranscript.length > 0
+      ? rawTranscript.map((t) => ({ kind: t.kind ?? "tool", text: t.text, name: t.name, status: t.status, argsSummary: t.argsSummary }))
+      : [
+          ...trace.map((t) => ({ kind: "tool", name: t.name, status: t.status, argsSummary: t.argsSummary })),
+          ...(s.result ? [{ kind: "text", text: s.result }] : []),
+        ]
   const mono = "ui-monospace, SFMono-Regular, Menlo, monospace"
 
   const lbl: CSSProperties = { color: C.muted, display: "inline-block", minWidth: 78 }
@@ -167,50 +191,70 @@ export default async function SharedRunPage({
               </div>
             ) : null}
 
-            {/* tool steps with inline gate / verdict blocks */}
-            {trace.slice(0, 200).map((t, i) => {
-              const name = shortTool(t.name ?? "")
+            {/* the run, replayed in order: prose and tool calls interleaved */}
+            {items.slice(0, 240).map((it, i) => {
+              if (it.kind === "text") {
+                const body = stripFootnoteTail(typeof it.text === "string" ? it.text : "")
+                if (!body.trim()) return null
+                return (
+                  <div key={i} className="md" style={{ color: C.text, margin: "14px 0" }}>
+                    <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null, a: MdAnchor }}>
+                      {citeify(body)}
+                    </Markdown>
+                  </div>
+                )
+              }
+              const name = shortTool(it.name ?? "")
               const g = govByName.get(name)
-              const detail = traceDetail(t.argsSummary)
-              const stopped = isStopped(t.status)
-              const mc = markColor(t.status)
+              const detail = traceDetail(it.argsSummary)
+              const stopped = isStopped(it.status)
+              const held = it.status === "needs_approval"
+              const mc = markColor(it.status)
               return (
                 <div key={i} style={{ marginBottom: 12 }}>
                   <div>
                     <span style={{ color: mc, fontWeight: 700 }}>{stopped ? "✗" : "●"} </span>
                     <span style={{ color: C.text }}>{name}</span>
                     {detail ? <span style={{ color: C.muted }}>({detail})</span> : null}
-                    {stopped ? <span style={{ color: mc, marginLeft: 8 }}>· {govVerb(t.status)}</span> : null}
+                    {stopped ? <span style={{ color: mc, marginLeft: 8 }}>· {govVerb(it.status)}</span> : null}
                   </div>
                   {/* verification verdict (passed step) */}
                   {g && !stopped && g.kind === "verification" && g.reason ? (
-                    <div style={subRow}>
-                      <span style={{ color: C.green }}>✓ </span>
-                      <span>{g.reason}</span>
-                    </div>
+                    <div style={subRow}><span style={{ color: C.green }}>✓ </span><span>{g.reason}</span></div>
                   ) : null}
-                  {/* held / blocked gate block */}
-                  {g && stopped ? (
+                  {/* blocked (deny) gate block */}
+                  {g && stopped && !held ? (
                     <>
-                      <div style={subRow}><span style={lbl}>rule</span><span style={{ color: C.text }}>{(g.reason ?? "").replace(/^held:\s*/i, "") || "governed by policy"}</span></div>
-                      {g.kind ? <div style={subRow}><span style={lbl}>kind</span><span style={{ color: C.muted }}>{g.kind}</span></div> : null}
-                      <div style={{ ...subRow, color: C.muted, marginTop: 5 }}>↳ approve at the gate to let it run</div>
+                      <div style={subRow}><span style={lbl}>rule</span><span style={{ color: C.text }}>{(g.reason ?? "").replace(/^blocked by policy:\s*/i, "") || "governed by policy"}</span></div>
+                      <div style={{ ...subRow, color: C.muted, marginTop: 5 }}>↳ revise and retry, or route to a human</div>
                     </>
+                  ) : null}
+                  {/* held -> the actual Claude Code approval prompt */}
+                  {held ? (
+                    <div style={{ marginTop: 8, marginLeft: 22, border: `1px solid ${C.amber}`, borderRadius: 8, overflow: "hidden", maxWidth: 560 }}>
+                      <div style={{ background: "rgba(245,158,11,0.10)", padding: "8px 12px", borderBottom: `1px solid ${C.amber}`, color: C.amber, fontSize: 12.5, fontWeight: 700 }}>
+                        Tool use · approval required
+                      </div>
+                      <div style={{ padding: "10px 12px", fontSize: 13.5 }}>
+                        <div style={{ color: C.text, marginBottom: 8 }}>
+                          <span style={{ color: C.prompt }}>{name}</span>
+                          <span style={{ color: C.muted }}>({argString(it.argsSummary)})</span>
+                        </div>
+                        <div style={{ color: C.text, marginBottom: 6 }}>Do you want to proceed?</div>
+                        <div style={{ color: C.green }}>❯ 1. Yes</div>
+                        <div style={{ color: C.muted }}>{"  "}2. Yes, and don&apos;t ask again for {name}</div>
+                        <div style={{ color: C.muted }}>{"  "}3. No, and tell Claude what to do differently <span style={{ opacity: 0.7 }}>(esc)</span></div>
+                        {g?.reason ? (
+                          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}`, color: C.muted, fontSize: 12.5 }}>
+                            held by magi policy · {(g.reason ?? "").replace(/^held:\s*/i, "")}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               )
             })}
-
-            {/* assistant output */}
-            {answer ? (
-              <div style={{ marginTop: 18, marginBottom: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-                <div className="md" style={{ color: C.text }}>
-                  <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null, a: MdAnchor }}>
-                    {citeify(answer)}
-                  </Markdown>
-                </div>
-              </div>
-            ) : null}
 
             {/* deliverables */}
             {results.length > 0 ? (

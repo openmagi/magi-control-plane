@@ -187,6 +187,11 @@ def transcript_to_run_view(
     seen_pr_urls: set[str] = set()
     auto_gov: list[dict] = []
     trace_by_id: dict[object, dict] = {}
+    # Ordered, interleaved assistant prose + tool calls, as they streamed (so the
+    # public page can replay the run like the Claude Code TUI). Tool items share
+    # the same dict object as the matching trace step, so a later status flip
+    # (blocked / needs_approval) propagates to both.
+    transcript: list[dict] = []
     # tool_use_id -> {tool, ref} for a url-bearing call awaiting its verdict.
     pending_src: dict[object, dict] = {}
     resolved_session = session_id
@@ -289,8 +294,16 @@ def transcript_to_run_view(
             if text:
                 result = text  # last assistant text wins
             for block in blocks:
-                if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                if not isinstance(block, Mapping):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    seg = block.get("text")
+                    if isinstance(seg, str) and seg.strip():
+                        transcript.append({"kind": "text", "text": seg})
+                elif btype == "tool_use":
                     step = {
+                        "kind": "tool",
                         "toolCallId": block.get("id"),
                         "activityType": "ToolCall",
                         "name": block.get("name"),
@@ -298,6 +311,7 @@ def transcript_to_run_view(
                         "argsSummary": block.get("input"),
                     }
                     trace.append(step)
+                    transcript.append(step)
                     if block.get("id") is not None:
                         trace_by_id[block.get("id")] = step
                     # Research evidence: where the agent looked. A WebFetch is a
@@ -343,6 +357,7 @@ def transcript_to_run_view(
         "results": results,
         "sources": sources,
         "trace": trace,
+        "transcript": transcript,
         "governance": all_gov,
         "counts": {
             "stepCount": len(trace),

@@ -336,6 +336,46 @@ def test_verifier_same_url_twice_deduped() -> None:
     assert len([g for g in v["governance"] if g["kind"] == "verification"]) == 1
 
 
+def test_transcript_interleaves_text_and_tools_in_order() -> None:
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "do it"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [
+                {"type": "text", "text": "Let me check the file."},
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/x"}},
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [
+                {"type": "text", "text": "Found it. Done."},
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ]
+    tr = transcript_to_run_view(events)["transcript"]
+    assert [(i["kind"], i.get("text") or i.get("name")) for i in tr] == [
+        ("text", "Let me check the file."),
+        ("tool", "Read"),
+        ("text", "Found it. Done."),
+    ]
+
+
+def test_transcript_tool_status_flip_propagates() -> None:
+    # The transcript tool item shares the trace step object, so a held flip shows.
+    events = [
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "t1", "name": "mcp__t__execute_trade",
+                         "input": {"symbol": "TSLA"}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": "Claude requested permissions to use mcp__t__execute_trade, but you haven't granted it yet."}]}},
+    ]
+    tr = transcript_to_run_view(events)["transcript"]
+    tool = next(i for i in tr if i["kind"] == "tool")
+    assert tool["status"] == "needs_approval"
+    assert tool["argsSummary"] == {"symbol": "TSLA"}
+
+
 def test_verifier_credible_phrasing_is_lenient() -> None:
     # "Highly credible" / "Source is VERIFIED" grade green, not red.
     for phrasing in ("Highly credible primary source", "Source is VERIFIED on edgar"):
