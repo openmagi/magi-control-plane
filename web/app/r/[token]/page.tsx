@@ -62,6 +62,7 @@ export default async function SharedRunPage({
   const trace = Array.isArray(v.trace) ? v.trace : []
   const governance = Array.isArray(v.governance) ? v.governance : []
   const results = Array.isArray(v.results) ? v.results : []
+  const sources = Array.isArray(v.sources) ? v.sources : []
 
   const card: CSSProperties = {
     background: C.panel,
@@ -108,6 +109,33 @@ export default async function SharedRunPage({
             <span>steps <span style={{ color: C.text }}>{v.counts?.stepCount ?? trace.length}</span></span>
           </div>
         </section>
+
+        {/* Sources (research evidence: where the agent looked) */}
+        {sources.length > 0 ? (
+          <section style={card}>
+            <div style={label}>Sources ({sources.length})</div>
+            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", fontSize: 13 }}>
+              {sources.slice(0, 50).map((src, i) => {
+                const href = src.isUrl ? safeHref(src.ref) : null
+                return (
+                  <li key={i} style={{ display: "flex", gap: 10, padding: "3px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ color: C.muted, minWidth: 78 }}>{src.tool}</span>
+                    {href ? (
+                      <a href={href} style={{ color: C.prompt, wordBreak: "break-all" }} rel="noopener noreferrer nofollow" target="_blank">
+                        {src.ref}
+                      </a>
+                    ) : (
+                      <span style={{ color: C.text, wordBreak: "break-all" }}>{src.ref}</span>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+            {sources.length > 50 ? (
+              <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>+{sources.length - 50} more</div>
+            ) : null}
+          </section>
+        ) : null}
 
         {/* Results (PR links) */}
         {results.length > 0 ? (

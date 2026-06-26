@@ -204,10 +204,15 @@ _STEP_FREE_TEXT = frozenset({"argsSummary", "resultSummary", "name", "reason"})
 _GOV_KEYS = ("turnId", "name", "status", "reason", "kind")
 _GOV_FREE_TEXT = frozenset({"name", "reason"})
 # Local addition: ``resultCount`` (Claude-Code producer counts).
-_COUNT_KEYS = ("stepCount", "turnCount", "receiptCount", "governanceCount", "resultCount")
+_COUNT_KEYS = (
+    "stepCount", "turnCount", "receiptCount", "governanceCount", "resultCount", "sourceCount",
+)
 # Local addition: top-level ``results`` (PR links) -> allowlist {prNumber, prUrl}.
 _RESULT_KEYS = ("prNumber", "prUrl")
 _RESULT_FREE_TEXT = frozenset({"prUrl"})
+# Local addition: top-level ``sources`` (research evidence) -> {tool, ref, isUrl}.
+_SOURCE_KEYS = ("tool", "ref", "isUrl")
+_SOURCE_FREE_TEXT = frozenset({"ref"})
 
 
 def _scrub_opt(value: object) -> object:
@@ -280,6 +285,20 @@ def _public_result(entry: Mapping[str, object]) -> dict:
     return out
 
 
+def _public_source(entry: Mapping[str, object]) -> dict:
+    out: dict[str, object] = {}
+    for key in _SOURCE_KEYS:
+        if key not in entry:
+            continue
+        value = entry[key]
+        out[key] = (
+            redact_public_text(str(value), max_chars=None)
+            if key in _SOURCE_FREE_TEXT
+            else value
+        )
+    return out
+
+
 def build_public_run_view(view: Mapping[str, object]) -> dict:
     """Allowlist fail-closed projection of a run view for a PUBLIC link.
 
@@ -291,6 +310,7 @@ def build_public_run_view(view: Mapping[str, object]) -> dict:
     trace = view.get("trace")
     governance = view.get("governance")
     results = view.get("results")
+    sources = view.get("sources")
     counts = view.get("counts")
 
     out_counts: dict[str, object] = {}
@@ -306,6 +326,11 @@ def build_public_run_view(view: Mapping[str, object]) -> dict:
             _public_result(r)
             for r in (results if isinstance(results, Sequence) and not isinstance(results, str) else [])
             if isinstance(r, Mapping)
+        ],
+        "sources": [
+            _public_source(s)
+            for s in (sources if isinstance(sources, Sequence) and not isinstance(sources, str) else [])
+            if isinstance(s, Mapping)
         ],
         "trace": [
             _public_step(s)

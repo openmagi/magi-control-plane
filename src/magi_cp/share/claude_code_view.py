@@ -44,6 +44,24 @@ def _clean_command(cmd: str) -> str:
     return _ECHO_TAIL_RE.sub("", cmd).strip()
 
 
+def _source_of(name: object, inp: object) -> dict | None:
+    """A research source from a web tool_use: WebFetch -> url, WebSearch -> query.
+
+    ``isUrl`` lets the renderer link a fetched URL vs show a search query.
+    """
+    if not isinstance(inp, Mapping):
+        return None
+    if name == "WebFetch":
+        url = inp.get("url")
+        if isinstance(url, str) and url:
+            return {"tool": "WebFetch", "ref": url, "isUrl": True}
+    elif name == "WebSearch":
+        q = inp.get("query")
+        if isinstance(q, str) and q:
+            return {"tool": "WebSearch", "ref": q, "isUrl": False}
+    return None
+
+
 def _text_of(content: object) -> str:
     """Join the text of a message ``content`` (str or block list); '' otherwise."""
     if isinstance(content, str):
@@ -106,6 +124,8 @@ def transcript_to_run_view(
     out_tokens = 0
     trace: list[dict] = []
     results: list[dict] = []
+    sources: list[dict] = []
+    seen_sources: set[tuple] = set()
     seen_pr_urls: set[str] = set()
     auto_gov: list[dict] = []
     trace_by_id: dict[object, dict] = {}
@@ -183,6 +203,14 @@ def transcript_to_run_view(
                     trace.append(step)
                     if block.get("id") is not None:
                         trace_by_id[block.get("id")] = step
+                    # Research evidence: where the agent looked. A WebFetch is a
+                    # source URL; a WebSearch is a query. Deduped.
+                    src = _source_of(block.get("name"), block.get("input"))
+                    if src is not None:
+                        key = (src["tool"], src["ref"])
+                        if src["ref"] and key not in seen_sources:
+                            seen_sources.add(key)
+                            sources.append(src)
 
     summary: dict | None = None
     if goal is not None or saw_assistant:
@@ -206,11 +234,13 @@ def transcript_to_run_view(
         "sessionId": resolved_session,
         "summary": summary,
         "results": results,
+        "sources": sources,
         "trace": trace,
         "governance": all_gov,
         "counts": {
             "stepCount": len(trace),
             "resultCount": len(results),
+            "sourceCount": len(sources),
             "governanceCount": len(all_gov),
         },
     }
