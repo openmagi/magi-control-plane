@@ -43,6 +43,12 @@ _PERM_DENY_RE = re.compile(
 _PERM_ASK_RE = re.compile(
     r"requested permissions? to use ([^\s,]+)", re.I
 )
+# An interactive reviewer who DECLINES a held tool at the approval prompt: CC
+# writes this (note: it carries no tool name, so we recover it from the matching
+# trace step). Surfaces as a "rejected" governance entry.
+_PERM_REJECT_RE = re.compile(
+    r"user (?:doesn'?t want to proceed|rejected)|tool use was rejected", re.I
+)
 # CC appends an exit-code echo to the command it reports; strip it for the reason.
 _ECHO_TAIL_RE = re.compile(r"\s*;\s*echo\s+\"\[exit code:.*$", re.S)
 
@@ -275,6 +281,20 @@ def transcript_to_run_view(
                         step = trace_by_id.get(blk.get("tool_use_id"))
                         if step is not None:
                             step["status"] = "needs_approval"
+                        continue
+                    if _PERM_REJECT_RE.search(text_c):
+                        # The reviewer declined a held tool. The message carries
+                        # no tool name; recover it from the matching trace step.
+                        step = trace_by_id.get(blk.get("tool_use_id"))
+                        name = _short_tool(str(step.get("name"))) if step else "tool"
+                        auto_gov.append({
+                            "name": name,
+                            "status": "rejected",
+                            "reason": "rejected by the reviewer at the approval gate",
+                            "kind": "policy",
+                        })
+                        if step is not None:
+                            step["status"] = "rejected"
             text = _text_of(content)
             if goal is None and _is_goal_text(event, text):
                 goal = text
