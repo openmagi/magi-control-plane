@@ -211,3 +211,41 @@ def test_results_deduped_by_pr_url() -> None:
     assert len(v["results"]) == 2                       # deduped
     assert [r["prNumber"] for r in v["results"]] == [785, 612]  # first-seen order
     assert v["counts"]["resultCount"] == 2
+
+
+# --- sources: research evidence (WebFetch urls / WebSearch queries) ---
+def _research_events():
+    def asst(blocks):
+        return {"type": "assistant", "sessionId": "s",
+                "message": {"role": "assistant", "model": "claude-opus-4-8",
+                            "content": blocks, "usage": {"input_tokens": 1, "output_tokens": 1}}}
+    return [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "tesla financials, official sources"}},
+        asst([{"type": "tool_use", "id": "s1", "name": "WebSearch", "input": {"query": "Tesla 10-Q sec.gov"}}]),
+        asst([{"type": "tool_use", "id": "f1", "name": "WebFetch", "input": {"url": "https://www.sec.gov/Archives/edgar/data/tsla-20260331.htm"}}]),
+        asst([{"type": "tool_use", "id": "f2", "name": "WebFetch", "input": {"url": "https://www.sec.gov/Archives/edgar/data/tsla-20260331.htm"}}]),  # dup
+        asst([{"type": "text", "text": "Q1 2026 revenue $22,387M"}]),
+    ]
+
+
+def test_sources_extracted_from_web_tools() -> None:
+    v = transcript_to_run_view(_research_events())
+    src = v["sources"]
+    assert len(src) == 2  # one search + one fetch (fetch dup removed)
+    tools = [s["tool"] for s in src]
+    assert tools == ["WebSearch", "WebFetch"]
+    fetch = next(s for s in src if s["tool"] == "WebFetch")
+    assert fetch["ref"] == "https://www.sec.gov/Archives/edgar/data/tsla-20260331.htm"
+    assert fetch["isUrl"] is True
+    search = next(s for s in src if s["tool"] == "WebSearch")
+    assert search["ref"] == "Tesla 10-Q sec.gov"
+    assert search["isUrl"] is False
+    assert v["counts"]["sourceCount"] == 2
+
+
+def test_no_sources_when_no_web_tools() -> None:
+    events = [
+        {"type": "user", "sessionId": "s", "message": {"role": "user", "content": "hi"}},
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}},
+    ]
+    assert transcript_to_run_view(events)["sources"] == []
