@@ -1,10 +1,11 @@
 "use client"
 
-import { useCallback } from "react"
+import { useCallback, useRef, useState } from "react"
 import Link from "next/link"
 import type { PrebuiltPolicyEntry } from "@/lib/cloud"
 import { Code } from "@/components/ui/Code"
 import { PrebuiltToggle } from "./PrebuiltToggle"
+import { PrebuiltSourceDialog } from "./PrebuiltSourceDialog"
 import { togglePrebuiltAction } from "../actions"
 import { translate, type Locale, type TKey } from "@/lib/i18n/dict"
 
@@ -47,6 +48,12 @@ export function PrebuiltRow({
     (key, vars) => translate(locale, key, vars),
     [locale],
   )
+
+  // Q94: per-row view-source dialog state. Each row owns its own
+  // dialog instance keyed by the trigger ref so focus restoration on
+  // close lands back on the exact button the operator clicked.
+  const viewSourceTriggerRef = useRef<HTMLButtonElement>(null)
+  const [sourceOpen, setSourceOpen] = useState(false)
 
   return (
     <div className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02]">
@@ -95,6 +102,19 @@ export function PrebuiltRow({
               transportError: t("rules.prebuilt.transportError"),
             }}
           />
+          {/* Q94: View source sits next to Setup / Edit. Opens a
+              modal with the prebuilt's underlying Policy IR JSON so
+              operators can inspect what the prebuilt actually does
+              before flipping the toggle. */}
+          <button
+            ref={viewSourceTriggerRef}
+            type="button"
+            onClick={() => setSourceOpen(true)}
+            aria-label={t("rules.prebuilt.viewSourceAria", { title: entry.title })}
+            className="text-[11px] font-medium text-[var(--color-text-secondary)] hover:underline whitespace-nowrap"
+          >
+            {t("rules.prebuilt.viewSource")}
+          </button>
           {entry.setup_required ? (
             <Link
               href={setupDocsHref(entry.id)}
@@ -116,6 +136,14 @@ export function PrebuiltRow({
           )}
         </div>
       </div>
+
+      <PrebuiltSourceDialog
+        entry={entry}
+        open={sourceOpen}
+        onClose={() => setSourceOpen(false)}
+        locale={locale}
+        triggerRef={viewSourceTriggerRef}
+      />
 
       {/* Meta meta (narrow widths) — verifier/trigger/action wraps below
           the row controls on mobile. */}

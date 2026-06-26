@@ -1541,6 +1541,14 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.row.statusActive": "Active",
   "rules.prebuilt.row.statusNeedsSetup": "Needs setup",
   "rules.prebuilt.row.statusOff": "Off",
+  /* Q94: "View source" opens a modal showing the prebuilt's IR JSON
+   * so operators can inspect what the prebuilt actually does before
+   * enabling it. */
+  "rules.prebuilt.viewSource": "View source",
+  "rules.prebuilt.viewSourceAria": "View IR source for the {title} prebuilt",
+  "rules.prebuilt.viewSourceTitle": "{title}: IR source",
+  "rules.prebuilt.viewSourceClose": "Close",
+  "rules.prebuilt.viewSourceCloseAria": "Close IR source for {title}",
   /* D75: policy packs — single toggle that cascades to every member. */
   "rules.pack.section.title": "Policy packs",
   /* D75 follow-up: the rendered control on each card is labelled
