@@ -182,7 +182,10 @@ export default async function SharedRunPage({
               {sources.slice(0, 50).map((src, i) => {
                 const href = src.isUrl ? safeHref(src.ref) : null
                 const cred = (src.credibility ?? "").toUpperCase()
-                const credColor = cred.startsWith("CREDIBLE") ? C.green : cred ? C.amber : C.muted
+                // Lenient: any "credible"/"verified"/"trusted" verdict is green;
+                // an explicit not/uncertain is amber; empty -> no badge.
+                const credOk = /\b(CREDIBLE|VERIFIED|TRUSTED|RELIABLE|OFFICIAL)\b/.test(cred) && !/NOT_?CREDIBLE|NOT CREDIBLE/.test(cred)
+                const credColor = !cred ? C.muted : credOk ? C.green : C.amber
                 return (
                   <li id={`src-${i + 1}`} key={i} style={{ padding: "3px 0" }}>
                     <span style={{ color: C.muted, marginRight: 8 }}>{src.tool}</span>
@@ -195,7 +198,7 @@ export default async function SharedRunPage({
                     )}
                     {cred ? (
                       <span style={{ color: credColor, marginLeft: 8 }}>
-                        {cred.startsWith("CREDIBLE") ? "✓ verified credible" : "⚠ " + cred.toLowerCase()}
+                        {credOk ? "✓ verified credible" : "⚠ " + cred.toLowerCase()}
                       </span>
                     ) : null}
                   </li>
