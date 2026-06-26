@@ -180,7 +180,29 @@ def test_projection_handles_none_summary_and_missing_lists() -> None:
     assert pub["summary"] is None
     assert pub["results"] == []
     assert pub["trace"] == []
+    assert pub["transcript"] == []
     assert pub["governance"] == []
+
+
+def test_projection_transcript_scrubs_and_drops_unknown_kind() -> None:
+    token = "ghp_" + "T" * 36
+    view = {
+        "schemaVersion": "openmagi.runView.v1",
+        "transcript": [
+            {"kind": "text", "text": f"secret {token} here", "EVIL": "drop"},
+            {"kind": "tool", "name": "Bash", "status": "needs_approval",
+             "argsSummary": {"command": "curl https://u:p@host/x"}, "SECRET": "drop"},
+            {"kind": "mystery", "text": "should vanish"},
+        ],
+    }
+    pub = build_public_run_view(view)
+    t = pub["transcript"]
+    assert len(t) == 2  # unknown kind dropped
+    assert token not in t[0]["text"]
+    assert "EVIL" not in t[0]
+    assert t[1]["status"] == "needs_approval"
+    assert "u:p@host" not in str(t[1]["argsSummary"])
+    assert "SECRET" not in t[1]
 
 
 def test_producer_to_redaction_pipeline_scrubs_secret_in_goal() -> None:

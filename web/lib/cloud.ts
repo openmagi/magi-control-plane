@@ -456,6 +456,15 @@ export type SharedRunView = {
     durationMs?: number | null
     argsSummary?: unknown
   }[]
+  transcript?: {
+    kind?: "text" | "tool" | string
+    text?: string | null
+    toolCallId?: string | null
+    name?: string | null
+    status?: string | null
+    activityType?: string | null
+    argsSummary?: unknown
+  }[]
   governance?: { name?: string; status?: string; reason?: string; kind?: string }[]
   counts?: Record<string, number>
 }
