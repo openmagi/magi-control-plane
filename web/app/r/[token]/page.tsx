@@ -28,6 +28,7 @@ const C = {
   red: "#EF4444",
   amber: "#F59E0B",
   coral: "#F97A5A",
+  blue: "#5B9BFF",
 }
 const DOTS = ["#FF5F56", "#FFBD2E", "#27C93F"]
 
@@ -70,6 +71,8 @@ function MdAnchor({ href, children }: MdAnchorProps) {
   )
 }
 
+const MD_COMPONENTS = { img: () => null, a: MdAnchor }
+
 /** Short detail from a tool call's redacted argsSummary (URL / query / command). */
 function traceDetail(args: unknown): string {
   if (!args || typeof args !== "object") return ""
@@ -109,6 +112,12 @@ function govVerb(status?: string | null): string {
   if (status === "error") return "ERROR"
   return (status ?? "").toUpperCase()
 }
+function govIcon(status?: string | null): string {
+  if (status === "blocked") return "⛔"
+  if (status === "needs_approval") return "⏸"
+  if (status === "error") return "✕"
+  return "✓"
+}
 
 export default async function SharedRunPage({
   params,
@@ -121,7 +130,6 @@ export default async function SharedRunPage({
   const usage = s.usage ?? {}
   const trace = Array.isArray(v.trace) ? v.trace : []
   const governance = Array.isArray(v.governance) ? v.governance : []
-  const results = Array.isArray(v.results) ? v.results : []
   const sources = Array.isArray(v.sources) ? v.sources : []
 
   const blocked = governance.filter((g) => g.status === "blocked").length
@@ -146,15 +154,32 @@ export default async function SharedRunPage({
           ...trace.map((t) => ({ kind: "tool", name: t.name, status: t.status, argsSummary: t.argsSummary })),
           ...(s.result ? [{ kind: "text", text: s.result }] : []),
         ]
-  const mono = "ui-monospace, SFMono-Regular, Menlo, monospace"
+  // The final assistant wrap-up (prose after the last tool) is "what happened";
+  // it moves to the right panel, derived from policy, not shown inline.
+  let lastToolIdx = -1
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].kind === "tool") { lastToolIdx = i; break }
+  }
+  const wrapup = items
+    .filter((it, i) => it.kind === "text" && i > lastToolIdx && typeof it.text === "string" && it.text.trim())
+    .map((it) => stripFootnoteTail(it.text as string))
+    .join("\n\n")
 
-  const lbl: CSSProperties = { color: C.muted, display: "inline-block", minWidth: 78 }
-  const subRow: CSSProperties = { marginTop: 3, paddingLeft: 22, color: C.text, fontSize: 13.5 }
+  const mono = "ui-monospace, SFMono-Regular, Menlo, monospace"
+  const card: CSSProperties = { background: C.bar, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px", marginBottom: 14 }
+  const label: CSSProperties = { color: C.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 }
 
   return (
     <main style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: mono }}>
-      <style>{`.md p { margin: 6px 0; } .md strong { color: #E6F0E6; }`}</style>
-      <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 20px 56px" }}>
+      <style>{`
+        .md p { margin: 4px 0; } .md strong { color: #E6F0E6; }
+        .md.inline p { display: inline; margin: 0; }
+        .run-grid { display: grid; grid-template-columns: 1fr; gap: 0 20px; align-items: start; }
+        @media (min-width: 900px) { .run-grid { grid-template-columns: minmax(0,1.55fr) minmax(0,1fr); } }
+        .run-aside { position: sticky; top: 16px; }
+        @media (max-width: 899px) { .run-aside { position: static; } }
+      `}</style>
+      <div style={{ maxWidth: 1140, margin: "0 auto", padding: "40px 20px 56px" }}>
         <div style={{ color: C.prompt, fontSize: 13, marginBottom: 6 }}>
           <span style={{ color: C.muted }}>magi ·</span> governed agent run
         </div>
@@ -169,114 +194,146 @@ export default async function SharedRunPage({
           ) : null}
         </div>
 
-        {/* Terminal window: the run, styled as the Claude Code TUI */}
-        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", background: C.termBg, boxShadow: "0 8px 40px rgba(0,0,0,0.4)" }}>
-          {/* title bar */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", background: C.bar, borderBottom: `1px solid ${C.border}` }}>
-            {DOTS.map((d) => (
-              <span key={d} style={{ width: 11, height: 11, borderRadius: "50%", background: d, display: "inline-block" }} />
-            ))}
-            <span style={{ color: C.muted, fontSize: 12.5, marginLeft: 8 }}>
-              claude-code <span style={{ opacity: 0.6 }}>· governed by magi</span>
-            </span>
-          </div>
+        <div className="run-grid">
+          {/* LEFT: the run, replayed as the Claude Code TUI */}
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", background: C.termBg, boxShadow: "0 8px 40px rgba(0,0,0,0.4)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", background: C.bar, borderBottom: `1px solid ${C.border}` }}>
+              {DOTS.map((d) => (
+                <span key={d} style={{ width: 11, height: 11, borderRadius: "50%", background: d, display: "inline-block" }} />
+              ))}
+              <span style={{ color: C.muted, fontSize: 12.5, marginLeft: 8 }}>
+                claude-code <span style={{ opacity: 0.6 }}>· governed by magi</span>
+              </span>
+            </div>
 
-          {/* transcript body */}
-          <div style={{ padding: "18px 18px 6px", fontSize: 14, lineHeight: 1.55 }}>
-            {/* user prompt */}
-            {s.goal ? (
-              <div style={{ marginBottom: 16 }}>
-                <span style={{ color: C.green, fontWeight: 700 }}>{"> "}</span>
-                <span style={{ color: "#E6F0E6" }}>{s.goal}</span>
-              </div>
-            ) : null}
+            <div style={{ padding: "16px 18px 6px", fontSize: 14, lineHeight: 1.55 }}>
+              {/* user prompt */}
+              {s.goal ? (
+                <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 6, padding: "8px 10px", marginBottom: 16 }}>
+                  <span style={{ color: C.muted, fontWeight: 700 }}>❯ </span>
+                  <span style={{ color: "#E6F0E6" }}>{s.goal}</span>
+                </div>
+              ) : null}
 
-            {/* the run, replayed in order: prose and tool calls interleaved */}
-            {items.slice(0, 240).map((it, i) => {
-              if (it.kind === "text") {
-                const body = stripFootnoteTail(typeof it.text === "string" ? it.text : "")
-                if (!body.trim()) return null
-                return (
-                  <div key={i} className="md" style={{ color: C.text, margin: "14px 0" }}>
-                    <Markdown remarkPlugins={[remarkGfm]} components={{ img: () => null, a: MdAnchor }}>
-                      {citeify(body)}
-                    </Markdown>
-                  </div>
-                )
-              }
-              const name = shortTool(it.name ?? "")
-              const g = govByName.get(name)
-              const detail = traceDetail(it.argsSummary)
-              const stopped = isStopped(it.status)
-              const held = it.status === "needs_approval"
-              const mc = markColor(it.status)
-              return (
-                <div key={i} style={{ marginBottom: 12 }}>
-                  <div>
-                    <span style={{ color: mc, fontWeight: 700 }}>{stopped ? "✗" : "●"} </span>
-                    <span style={{ color: C.text }}>{name}</span>
-                    {detail ? <span style={{ color: C.muted }}>({detail})</span> : null}
-                    {stopped ? <span style={{ color: mc, marginLeft: 8 }}>· {govVerb(it.status)}</span> : null}
-                  </div>
-                  {/* verification verdict (passed step) */}
-                  {g && !stopped && g.kind === "verification" && g.reason ? (
-                    <div style={subRow}><span style={{ color: C.green }}>✓ </span><span>{g.reason}</span></div>
-                  ) : null}
-                  {/* blocked (deny) gate block */}
-                  {g && stopped && !held ? (
-                    <>
-                      <div style={subRow}><span style={lbl}>rule</span><span style={{ color: C.text }}>{(g.reason ?? "").replace(/^blocked by policy:\s*/i, "") || "governed by policy"}</span></div>
-                      <div style={{ ...subRow, color: C.muted, marginTop: 5 }}>↳ revise and retry, or route to a human</div>
-                    </>
-                  ) : null}
-                  {/* held -> the actual Claude Code approval prompt */}
-                  {held ? (
-                    <div style={{ marginTop: 8, marginLeft: 22, border: `1px solid ${C.amber}`, borderRadius: 8, overflow: "hidden", maxWidth: 560 }}>
-                      <div style={{ background: "rgba(245,158,11,0.10)", padding: "8px 12px", borderBottom: `1px solid ${C.amber}`, color: C.amber, fontSize: 12.5, fontWeight: 700 }}>
-                        Tool use · approval required
-                      </div>
-                      <div style={{ padding: "10px 12px", fontSize: 13.5 }}>
-                        <div style={{ color: C.text, marginBottom: 8 }}>
-                          <span style={{ color: C.prompt }}>{name}</span>
-                          <span style={{ color: C.muted }}>({argString(it.argsSummary)})</span>
-                        </div>
-                        <div style={{ color: C.text, marginBottom: 6 }}>Do you want to proceed?</div>
-                        <div style={{ color: C.green }}>❯ 1. Yes</div>
-                        <div style={{ color: C.muted }}>{"  "}2. Yes, and don&apos;t ask again for {name}</div>
-                        <div style={{ color: C.muted }}>{"  "}3. No, and tell Claude what to do differently <span style={{ opacity: 0.7 }}>(esc)</span></div>
-                        {g?.reason ? (
-                          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}`, color: C.muted, fontSize: 12.5 }}>
-                            held by magi policy · {(g.reason ?? "").replace(/^held:\s*/i, "")}
-                          </div>
-                        ) : null}
+              {/* paired narration (● bullet) + tool action subline */}
+              {items.map((it, i) => {
+                if (it.kind === "text") {
+                  if (i > lastToolIdx) return null // wrap-up -> right panel
+                  const body = typeof it.text === "string" ? it.text : ""
+                  if (!body.trim()) return null
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                      <span style={{ color: C.green, fontWeight: 700, flexShrink: 0 }}>●</span>
+                      <div className="md inline" style={{ color: C.text }}>
+                        <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{citeify(body)}</Markdown>
                       </div>
                     </div>
-                  ) : null}
-                </div>
-              )
-            })}
-
-            {/* deliverables */}
-            {results.length > 0 ? (
-              <div style={{ marginTop: 8, marginBottom: 12 }}>
-                <span style={{ color: C.muted }}>deliverables  </span>
-                {results.slice(0, 50).map((r, i) => {
-                  const href = safeHref(r.prUrl)
-                  const text = r.prNumber ? `PR #${r.prNumber}` : (r.prUrl ?? "—")
-                  return (
-                    <span key={i} style={{ marginRight: 12 }}>
-                      {href ? <a href={href} style={{ color: C.prompt }} rel="noopener noreferrer nofollow" target="_blank">{text}</a> : <span>{text}</span>}
-                    </span>
                   )
-                })}
-              </div>
-            ) : null}
+                }
+                const name = shortTool(it.name ?? "")
+                const fullName = it.name ?? name
+                const g = govByName.get(name)
+                const detail = traceDetail(it.argsSummary)
+                const held1 = it.status === "needs_approval"
+                const blocked1 = it.status === "blocked"
+                const stopped = isStopped(it.status)
+                return (
+                  <div key={i} style={{ paddingLeft: 16, marginTop: 4 }}>
+                    {/* muted tool action line, like CC's "Read 1 file" subline */}
+                    <div style={{ color: stopped ? markColor(it.status) : C.muted, fontSize: 13 }}>
+                      {stopped ? `✗ ${name}` : `↳ ${name}`}{detail ? <span style={{ color: C.muted }}>({detail})</span> : null}
+                      {stopped ? <span style={{ marginLeft: 8 }}>· {govVerb(it.status)}</span> : null}
+                    </div>
+                    {/* verification verdict (passed step) */}
+                    {g && !stopped && g.kind === "verification" && g.reason ? (
+                      <div style={{ color: C.green, fontSize: 13, paddingLeft: 16, marginTop: 2 }}>✓ {g.reason}</div>
+                    ) : null}
+                    {/* blocked (deny) gate note */}
+                    {blocked1 && g ? (
+                      <div style={{ color: C.muted, fontSize: 13, paddingLeft: 16, marginTop: 2 }}>
+                        {(g.reason ?? "").replace(/^blocked by policy:\s*/i, "blocked: ")}
+                      </div>
+                    ) : null}
+                    {/* held -> the real Claude Code approval prompt */}
+                    {held1 ? (
+                      <div style={{ marginTop: 10, borderTop: `1px solid ${C.blue}`, paddingTop: 12 }}>
+                        <div style={{ color: C.blue, fontWeight: 700, marginBottom: 8 }}>Tool use</div>
+                        <div style={{ paddingLeft: 12, marginBottom: 10 }}>
+                          <div style={{ color: C.text }}>
+                            {name}(<span style={{ color: C.muted }}>{argString(it.argsSummary)}</span>)
+                            {fullName.startsWith("mcp__") ? <span style={{ color: C.muted }}> (MCP)</span> : null}
+                          </div>
+                          {g?.reason ? (
+                            <div style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>
+                              held by magi policy · {(g.reason ?? "").replace(/^held:\s*/i, "")}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div style={{ color: C.muted, fontSize: 13 }}>
+                          Permission rule <span style={{ color: C.text, fontWeight: 700 }}>{fullName}</span> requires confirmation for this tool.
+                        </div>
+                        <div style={{ color: C.muted, fontSize: 13, marginBottom: 10 }}>/permissions to update rules</div>
+                        <div style={{ color: C.text, marginBottom: 4 }}>Do you want to proceed?</div>
+                        <div style={{ color: C.prompt }}>❯ 1. Yes</div>
+                        <div style={{ color: C.muted }}>{"  "}2. Yes, and don&apos;t ask again for {name}</div>
+                        <div style={{ color: C.muted }}>{"  "}3. No</div>
+                        <div style={{ color: C.muted, fontSize: 12.5, marginTop: 8 }}>Esc to cancel · Tab to amend</div>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
 
-            {/* sources footer (numbered to match the inline ¹ chips) */}
+            {/* status bar */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", padding: "9px 16px", background: C.bar, borderTop: `1px solid ${C.border}`, color: C.muted, fontSize: 12.5, marginTop: 14 }}>
+              <span style={{ color: C.coral, fontWeight: 700 }}>▶▶ governed by magi</span>
+              <span>· {v.counts?.stepCount ?? trace.length} steps</span>
+              {held > 0 ? <span style={{ color: C.amber }}>· {held} held</span> : null}
+              {blocked > 0 ? <span style={{ color: C.red }}>· {blocked} blocked</span> : null}
+              <span style={{ marginLeft: "auto" }}>{modelLabel(s.model)} · {(usage.inputTokens ?? 0).toLocaleString()} in / {(usage.outputTokens ?? 0).toLocaleString()} out</span>
+            </div>
+          </div>
+
+          {/* RIGHT: what happened, in terms of the policy that was applied */}
+          <aside className="run-aside">
+            <section style={card}>
+              <div style={label}>What happened</div>
+              {governance.length > 0 ? (
+                <>
+                  <div style={{ color: C.text, fontSize: 13.5, margin: "8px 0 12px" }}>
+                    Magi applied {governance.length} {governance.length === 1 ? "policy" : "policies"} to this run
+                    {held > 0 || blocked > 0 ? <> — {[held ? `${held} held` : null, blocked ? `${blocked} blocked` : null].filter(Boolean).join(", ")} before running.</> : "."}
+                  </div>
+                  <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                    {governance.map((g, i) => {
+                      const c = markColor(g.status)
+                      return (
+                        <li key={i} style={{ borderLeft: `2px solid ${c}`, padding: "2px 0 2px 12px", marginBottom: 12 }}>
+                          <div style={{ fontSize: 12.5 }}>
+                            <span style={{ color: c, fontWeight: 700 }}>{govIcon(g.status)} {govVerb(g.status)}</span>
+                            <span style={{ color: C.muted }}> · {g.name}</span>
+                          </div>
+                          {g.reason ? <div style={{ color: C.text, fontSize: 13, marginTop: 3 }}>{g.reason}</div> : null}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              ) : wrapup ? (
+                <div className="md" style={{ color: C.text, fontSize: 13.5, marginTop: 8 }}>
+                  <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{citeify(wrapup)}</Markdown>
+                </div>
+              ) : (
+                <div style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>No policy actions were triggered on this run.</div>
+              )}
+            </section>
+
+            {/* sources / evidence */}
             {sources.length > 0 ? (
-              <div style={{ marginTop: 10, marginBottom: 6, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-                <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>sources</div>
-                <ol style={{ margin: 0, paddingLeft: 22, fontSize: 13.5 }}>
+              <section style={card}>
+                <div style={label}>Sources ({sources.length})</div>
+                <ol style={{ margin: "8px 0 0", paddingLeft: 22, fontSize: 13 }}>
                   {sources.slice(0, 50).map((src, i) => {
                     const href = src.isUrl ? safeHref(src.ref) : null
                     const cred = (src.credibility ?? "").toUpperCase()
@@ -289,23 +346,14 @@ export default async function SharedRunPage({
                         ) : (
                           <span style={{ color: C.text, wordBreak: "break-word" }}>{src.ref}</span>
                         )}
-                        {cred ? <span style={{ color: credColor, marginLeft: 8 }}>{credOk ? "✓ verified credible" : `⚠ ${cred.toLowerCase()}`}</span> : null}
+                        {cred ? <div style={{ color: credColor, marginTop: 2, fontSize: 12 }}>{credOk ? "✓ verified credible" : `⚠ ${cred.toLowerCase()}`}</div> : null}
                       </li>
                     )
                   })}
                 </ol>
-              </div>
+              </section>
             ) : null}
-          </div>
-
-          {/* status bar */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", padding: "9px 16px", background: C.bar, borderTop: `1px solid ${C.border}`, color: C.muted, fontSize: 12.5 }}>
-            <span style={{ color: C.coral, fontWeight: 700 }}>▶▶ governed by magi</span>
-            <span>· {v.counts?.stepCount ?? trace.length} steps</span>
-            {held > 0 ? <span style={{ color: C.amber }}>· {held} held</span> : null}
-            {blocked > 0 ? <span style={{ color: C.red }}>· {blocked} blocked</span> : null}
-            <span style={{ marginLeft: "auto" }}>{modelLabel(s.model)} · {(usage.inputTokens ?? 0).toLocaleString()} in / {(usage.outputTokens ?? 0).toLocaleString()} out</span>
-          </div>
+          </aside>
         </div>
 
         <footer style={{ color: C.muted, fontSize: 12, marginTop: 22, textAlign: "center" }}>
