@@ -144,7 +144,16 @@ export function PoliciesTab({
                   </div>
                 </div>
                 <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
-                  <span>{t("policies.trigger")}: <Code>{item.trigger.event}</Code> · <Code>{item.trigger.matcher}</Code></span>
+                  {/* D74a: cloud /policies omits `trigger` from
+                      ContextInjectionPolicy + RunCommandPolicy listings
+                      (they encode the hook surface in archetype-specific
+                      fields, not the EvidencePolicy trigger triple).
+                      Read defensively so the page does not crash with
+                      "Cannot read properties of undefined (reading
+                      'event')" when those archetypes are present. */}
+                  {item.trigger ? (
+                    <span>{t("policies.trigger")}: <Code>{item.trigger.event}</Code> · <Code>{item.trigger.matcher}</Code></span>
+                  ) : null}
                   <span>{t("policies.source")}: <Code>{item.source}</Code></span>
                 </div>
               </Card>

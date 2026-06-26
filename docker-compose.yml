@@ -18,6 +18,10 @@ services:
       # v2.0-W8a: switch to Postgres in multi-node deploys. Default SQLite keeps
       # single-node deploys working; the `postgres` service below is optional.
       MAGI_CP_DSN: "${MAGI_CP_DSN:-sqlite:////data/magi-cp.sqlite}"
+      # D74a: ScriptStore needs a writable directory. Container HOME is
+      # /home/magi which sits on the read-only rootfs. Pin onto the
+      # /data volume so D63 POST /scripts can persist bodies + index.
+      MAGI_CP_SCRIPT_STORE_DIR: "${MAGI_CP_SCRIPT_STORE_DIR:-/data}"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2).status==200 else 1)"]
       interval: 10s

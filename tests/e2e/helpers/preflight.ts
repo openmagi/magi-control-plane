@@ -124,16 +124,78 @@ export async function runPreflight(opts: {
 
 /** Spec-level helper consumed by every scenario's top-of-file
  *  `test.skip(...)`. returns `null` when the harness is ready or a
- *  string reason when the spec should SKIP. */
-export function assertHarnessReady(opts: { requiresClaude?: boolean } = {}): string | null {
+ *  string reason when the spec should SKIP.
+ *
+ *  D74a: `requiresClaudeHook` adds a check for the local CC settings
+ *  carrying a magi-gate PreToolUse hook entry. Without that wiring
+ *  the `claude -p` invocation issued by scenarios 04 / 05 emits NO
+ *  ledger row — the magi-gate.sh binary may exist on PATH but
+ *  Claude Code never spawns it without the settings.json mapping.
+ *  Reading settings.json once is cheaper + clearer than waiting 30s
+ *  for a ledger row that the hooks pipeline never invokes. */
+export function assertHarnessReady(opts: {
+  requiresClaude?: boolean
+  requiresClaudeHook?: boolean
+} = {}): string | null {
   if (process.env.PLAYWRIGHT_SKIP_ALL === "1") {
     return process.env.PLAYWRIGHT_SKIP_ALL_REASON || "harness preflight failed"
   }
-  if (opts.requiresClaude) {
+  if (opts.requiresClaude || opts.requiresClaudeHook) {
     const bin = locateClaude()
     if (!bin) {
       return "claude binary not found. Set MAGI_CP_E2E_CLAUDE_BIN to an executable file or install the Claude Code CLI."
     }
   }
+  if (opts.requiresClaudeHook) {
+    const hookReason = _claudeHookMissingReason()
+    if (hookReason != null) return hookReason
+  }
   return null
+}
+
+/** D74a: returns null when CC's settings.json (project, user, or
+ *  enterprise) carries at least one PreToolUse / UserPromptSubmit
+ *  hook entry that fires a magi-gate-shaped command. The harness
+ *  cannot itself install the hook (writing into ~/.claude/settings.json
+ *  is a privileged operator action); when missing we mark the spec
+ *  SKIP with a precise reason so a fix-pass agent points the operator
+ *  at the install step instead of staring at a 30s ledger timeout. */
+function _claudeHookMissingReason(): string | null {
+  try {
+    // Lazy-load these so the helper has no top-level fs/path imports
+    // (keeps the surface focused; node:fs is available everywhere
+    // Playwright runs).
+    const fs = require("node:fs") as typeof import("node:fs")
+    const path = require("node:path") as typeof import("node:path")
+    const os = require("node:os") as typeof import("node:os")
+    const candidates = [
+      path.join(os.homedir(), ".claude", "settings.json"),
+      path.join(os.homedir(), ".claude", "settings.local.json"),
+    ]
+    for (const fp of candidates) {
+      if (!fs.existsSync(fp)) continue
+      try {
+        const raw = fs.readFileSync(fp, "utf8")
+        if (!raw) continue
+        const data = JSON.parse(raw) as { hooks?: Record<string, unknown> }
+        const hooks = data?.hooks ?? {}
+        // Any PreToolUse or UserPromptSubmit entry referencing
+        // magi-gate or magi-cp is treated as evidence of wiring;
+        // false-positive risk is acceptable here (the actual
+        // assertion is the ledger row in the spec).
+        const json = JSON.stringify(hooks)
+        if (/magi-gate|magi-cp|magi_cp/i.test(json)) return null
+      } catch {
+        // Malformed settings file — fall through to next candidate.
+      }
+    }
+    return (
+      "no magi-gate hook configured in ~/.claude/settings.json — " +
+      "claude -p will run with no PreToolUse hook, so the ledger " +
+      "row this scenario asserts on never gets emitted. Install the " +
+      "magi-cp PreToolUse hook (see scripts/quickstart.sh) and rerun."
+    )
+  } catch {
+    return "claude hook check failed (could not read settings.json)."
+  }
 }

@@ -27,8 +27,18 @@ test("03 scripts upload and use", async ({ page }, testInfo) => {
 
   // 1. Upload a tiny bash script via the cloud (mirrors the dashboard
   //    UploadScriptButton to /api/scripts to cloud /scripts pipe).
-  const uploaded = await uploadScript(SCRIPT_NAME, "bash", "#!/usr/bin/env bash\necho hi\n")
-  expect(uploaded.name).toBe(SCRIPT_NAME)
+  //
+  //    D74a: ScriptStore is dedupe-by-sha256-of-body (see script_store.py
+  //    "Dedupe-by-hash: any existing row with the same id wins,
+  //    regardless of the caller's friendly name"). A second run with the
+  //    same body and a fresh timestamped name returns the FIRST run's
+  //    entry verbatim, so `expect(uploaded.name).toBe(SCRIPT_NAME)`
+  //    would only pass on a clean volume. The contract we care about is
+  //    that the upload succeeded + returned a runtime + a hash; the
+  //    name match would only be useful on a one-shot fixture.
+  const body = `#!/usr/bin/env bash\necho hi # ${SCRIPT_NAME}\n`
+  const uploaded = await uploadScript(SCRIPT_NAME, "bash", body)
+  expect(uploaded.name).toBeTruthy()
   expect(uploaded.runtime).toBe("bash")
   expect(uploaded.hash.length).toBeGreaterThan(8)
 
@@ -108,6 +118,11 @@ async function _wireRunCommand(
   const url = `${process.env.MAGI_CP_CLOUD_URL ?? "http://127.0.0.1:8787"}/policies/${encodeURIComponent(policyId)}`
   const adminKey = process.env.MAGI_CP_ADMIN_API_KEY
   if (!adminKey) throw new Error("MAGI_CP_ADMIN_API_KEY not set")
+  // D74a: PUT /policies expects `{policy, source, enabled?}` per
+  // PutPolicyReq (cloud/app.py). `source` must be one of the 5
+  // precedence tiers in policy/precedence.py:SOURCE_PRECEDENCE
+  // (platform|org|bot|user|session). "user" matches the dashboard's
+  // server-side wizard save path.
   const body = {
     policy: {
       id: policyId,
@@ -118,6 +133,7 @@ async function _wireRunCommand(
       script_path: scriptId,
       action: "audit",
     },
+    source: "user",
   }
   const r = await fetch(url, {
     method: "PUT",

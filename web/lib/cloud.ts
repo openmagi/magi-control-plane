@@ -292,7 +292,14 @@ export type PolicyListItem = {
   description: string
   source: string
   enabled: boolean
-  trigger: { event: string; matcher: string }
+  /** D74a: optional — cloud /policies serialiser omits the trigger
+   *  triple for ContextInjectionPolicy + RunCommandPolicy listings.
+   *  Those archetypes encode the hook surface in archetype-specific
+   *  fields (event/matcher inline, host bound by validator). Reading
+   *  this as required surfaced as "Cannot read properties of
+   *  undefined (reading 'event')" the moment any non-EvidencePolicy
+   *  landed in the saved policies. */
+  trigger?: { event: string; matcher: string }
   enforcement: EnforcementLabel
 }
 

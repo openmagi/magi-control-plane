@@ -30,7 +30,13 @@ import { join } from "node:path"
 test.describe.configure({ mode: "serial" })
 
 test("04 run_command roundtrip", async ({}, testInfo) => {
-  const skipReason = assertHarnessReady({ requiresClaude: true })
+  // D74a: also require the CC magi-gate hook to be wired in
+  // ~/.claude/settings.json — without it `claude -p` runs with no
+  // PreToolUse hook, the policy never fires, and the ledger row this
+  // scenario asserts on never appears. The previous version waited
+  // 30s for that row before timing out; the explicit preflight
+  // surfaces the install gap as a clear SKIP reason.
+  const skipReason = assertHarnessReady({ requiresClaudeHook: true })
   test.skip(skipReason != null, skipReason ?? "")
 
   // 1. Wire the policy (PreToolUse + Bash + audit + script that
@@ -104,6 +110,8 @@ async function _wirePolicy(policyId: string): Promise<void> {
   const url = `${process.env.MAGI_CP_CLOUD_URL ?? "http://127.0.0.1:8787"}/policies/${encodeURIComponent(policyId)}`
   const adminKey = process.env.MAGI_CP_ADMIN_API_KEY
   if (!adminKey) throw new Error("MAGI_CP_ADMIN_API_KEY not set")
+  // D74a: PUT /policies expects `{policy, source, enabled?}`. `source`
+  // must be one of the 5 precedence tiers (platform|org|bot|user|session).
   const body = {
     policy: {
       id: policyId,
@@ -115,6 +123,7 @@ async function _wirePolicy(policyId: string): Promise<void> {
       timeout_s: 5,
       action: "audit",
     },
+    source: "user",
   }
   const r = await fetch(url, {
     method: "PUT",
