@@ -104,7 +104,13 @@ if [ ! -d "${PW_CACHE_DIR}" ] || ! ls "${PW_CACHE_DIR}" 2>/dev/null | grep -q '^
 fi
 
 # ---- helpers ---------------------------------------------------------
-# Returns 0 once URL responds 200 within deadline.
+# Returns 0 once URL responds 2xx/3xx within deadline.
+# Treating 3xx as healthy is intentional: the dashboard's root path
+# (`/`) redirects 307 to `/rules` once the user has any rules saved (see
+# web/app/page.tsx). A previous revision insisted on a literal 200 and
+# the wrapper exited 2 (INFRA failure) on every healthy installation.
+# Following redirects via -L would also work but doubles the request
+# count per poll; accepting 3xx is cheaper.
 wait_for_url() {
   local url="$1"
   local timeout_s="${2:-60}"
@@ -112,9 +118,9 @@ wait_for_url() {
   while [ "$(date +%s)" -lt "${deadline}" ]; do
     local code
     code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 4 "${url}" 2>/dev/null || echo "000")"
-    if [ "${code}" = "200" ]; then
-      return 0
-    fi
+    case "${code}" in
+      2??|3??) return 0 ;;
+    esac
     sleep 1
   done
   return 1
@@ -123,7 +129,10 @@ wait_for_url() {
 probe_dashboard_already_up() {
   local code
   code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 2 "${DASH_URL}/" 2>/dev/null || echo "000")"
-  [ "${code}" = "200" ]
+  case "${code}" in
+    2??|3??) return 0 ;;
+  esac
+  return 1
 }
 
 probe_cloud_already_up() {
