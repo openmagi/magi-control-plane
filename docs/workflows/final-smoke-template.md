@@ -108,7 +108,11 @@ final-review pass.
 A workflow agent should prefer the convenience wrapper at
 [`scripts/run-e2e-from-workflow.sh`](../../scripts/run-e2e-from-workflow.sh)
 which packages the bring-up + harness + teardown dance behind a
-single command with a structured exit code.
+single command with a structured exit code. The wrapper is
+non-destructive: it only tears down what it brought up (probes
+`cloud` and dashboard before starting; uses `docker compose stop cloud`
+rather than `docker compose down` on cleanup; never touches other
+compose services).
 
 ### 7. (optional) `docker compose down`
 
@@ -125,9 +129,23 @@ exit codes so a workflow agent can branch on them:
 | ---- | ------- |
 | 0    | All scenarios passed (or honestly SKIPPED). Phase is GREEN. |
 | 1    | At least one scenario FAILED. Phase is RED. Fix and re-run. |
-| 2    | Harness infra failure (docker missing, playwright install blocked, ports busy). NOT a code regression. Phase is INFRA-SKIP. |
+| 2    | Harness infra failure (docker missing, playwright install blocked, browser binary missing, ports busy, preflight tripped). NOT a code regression. Phase is INFRA-SKIP. |
+| 3    | Interrupted (SIGINT / SIGTERM). NOT green and NOT red. Treat as "unknown, do not advertise as a smoke result." |
 
-Any other non-zero code from `playwright test` is propagated as-is.
+The wrapper does NOT propagate `playwright test`'s native exit code as-is.
+Codes are normalized into the four-bucket contract above:
+
+- `playwright test` exit 0 maps to wrapper exit 0.
+- `playwright test` exit 1 is disambiguated by reading
+  `tests/e2e/.report/preflight.json` and `tests/e2e/.report/report.json`.
+  A graceful preflight skip OR a curated report with zero FAIL rows
+  re-routes to exit 2 (INFRA-SKIP). Only when at least one scenario
+  carries a FAILED status does the wrapper emit exit 1.
+- Any other `playwright test` non-zero code is treated as exit 2
+  (INFRA-SKIP), matching the README's "graceful skip" contract.
+- SIGINT / SIGTERM during the run sets the wrapper's exit to 3 even
+  when the last completed command exited 0. The old single-trap
+  pattern would have falsely reported GREEN here.
 
 ## What this template is NOT
 
@@ -144,10 +162,9 @@ Any other non-zero code from `playwright test` is propagated as-is.
 
 ## Pointer for workflow authors
 
-When you write a new workflow that touches the dashboard, the
-wizard, the wizard's IR, the cloud HTTP surface, or the policy
-authoring flow, your final-smoke phase SHOULD include this template's
-seven steps. The path-of-least-resistance is:
+EVERY workflow's final-smoke phase SHOULD include this template's
+seven steps unless the change is provably docs-only. The
+path-of-least-resistance is:
 
 ```bash
 # inside your workflow's final-smoke phase
@@ -157,3 +174,12 @@ bash scripts/run-e2e-from-workflow.sh
 which runs steps 5, 6, and 7 with sensible defaults. Steps 1-4 are
 already part of every workflow's pre-commit gates today, so adding
 the wrapper invocation is the one-line activation.
+
+**Opt-out marker.** A workflow whose diff is genuinely docs-only (no
+files under `web/`, `src/`, `tests/`, `scripts/`, `plugin/`, or
+`docker-compose*.yml`) may add the marker `# smoke: docs-only` to its
+workflow header (or commit message) and skip the wrapper. Anything
+that touches code, infra, or test fixtures requires the wrapper.
+
+This removes the "judgment call" that the old soft phrasing left to
+each workflow author.

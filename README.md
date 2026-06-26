@@ -27,10 +27,25 @@ make install          # editable install + dev deps
 make test             # pytest (325 Python tests)
 make cloud-dev        # start cloud API on :8787  (factory → registry-wired + builtins)
 make build-plugin     # compile policies/*.json → plugin/managed-settings.json
+bash scripts/run-e2e-from-workflow.sh   # final-smoke: docker + Playwright (opt-in)
 ```
 
 The cloud is reachable at `http://127.0.0.1:8787`. `GET /healthz` is public; everything else
 needs a key (see § Environment variables).
+
+### Workflow final-smoke
+
+Every workflow's final-smoke phase wires up
+[`scripts/run-e2e-from-workflow.sh`](scripts/run-e2e-from-workflow.sh),
+which packages docker bring-up + the D73 Playwright harness +
+teardown into one command and emits a structured exit code
+(`0` GREEN, `1` RED, `2` INFRA-SKIP, `3` INTERRUPTED).
+
+- Canonical seven-step recipe + skip rules:
+  [`docs/workflows/final-smoke-template.md`](docs/workflows/final-smoke-template.md).
+- Harness internals (scenarios, env knobs, claude-binary handling):
+  [`tests/e2e/README.md`](tests/e2e/README.md).
+- Agent-side rules: [`AGENTS.md`](AGENTS.md).
 
 ## v1.1 highlights
 - **Verifier registry + 5 wired verifiers** — `citation_verify`, `privilege_scan`,
