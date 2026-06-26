@@ -20,27 +20,42 @@ export async function gotoRulesPolicies(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/rules/)
 }
 
-/** D74a: The wizard's "다음" / "Next" / "정책 저장" submit button is
- *  NOT the first `button[type="submit"]` on the page — the sidebar's
- *  language switcher uses type="submit" too and renders before the
- *  wizard. Scope by finding any form anchored to the wizard's URL
- *  shape (it carries either a hidden `_step` input on steps 1-5 or a
- *  hidden `id` input + `_compiled_sha256` on step 6's save form).
- *  Falls back to "any submit inside a <main>" so a future step-shape
- *  change does not silently match the language switcher again. */
-function wizardSubmit(page: Page) {
-  // Try the steps 1-5 advance form first (hidden _step input).
-  const advance = page.locator(
+/** D74a: The wizard's "다음" / "Next" advance button is NOT the first
+ *  `button[type="submit"]` on the page — the sidebar's language
+ *  switcher uses type="submit" too and renders before the wizard. Scope
+ *  by finding any form anchored to the wizard's URL shape: steps 1-5
+ *  carry a hidden `_step` input, so we target the submit inside that
+ *  form. (Step 6's save form has NO `_step` input — see
+ *  `wizardSavePolicy` below.)
+ *
+ *  D74a follow-up: the previous helper resolved to `advance.or(save).first()`
+ *  with `save = main button[type="submit"]`. On Step 6 with any
+ *  non-trivial conditionKind (regex / llm_critic / shacl / fetchDomain /
+ *  domain_allowlist), `InlineSubConfigPanel` renders BEFORE the real
+ *  save form and contains its own `<form action={advanceAction}>` with
+ *  `<input type="hidden" name="_step" value="5" />` plus a submit
+ *  button. That hidden `_step` satisfied the advance selector AND lived
+ *  inside `<main>`, AND appeared before the real save form in DOM
+ *  order, so `.or().first()` clicked the inline sub-config save
+ *  (looping the operator back to Step 5/6 with the inline edit posted)
+ *  instead of the final save. The 01/02/06 scenarios masked the bug
+ *  because they use Stop + default verifier (conditionKind == 'none',
+ *  InlineSubConfigPanel returns null). Splitting the helper here keeps
+ *  steps 1-5 on the `_step` form path and pins step 6 to the explicit
+ *  `data-testid="wizard-save"` on the save NextButton. */
+function wizardAdvance(page: Page) {
+  return page.locator(
     'form:has(input[name="_step"]) button[type="submit"]',
-  )
-  // Step 6 save form has no _step but lives inside <main>; the
-  // language switcher lives in <complementary> (sidebar). Scope to
-  // <main> so the save submit wins.
-  const save = page.locator(
-    'main button[type="submit"]',
-  )
-  // Playwright `or()` picks whichever resolves first.
-  return advance.or(save).first()
+  ).first()
+}
+
+/** D74a follow-up: Step 6 save button is pinned to the
+ *  `data-testid="wizard-save"` testid on the real save form's
+ *  NextButton. The InlineSubConfigPanel inline-edit forms render
+ *  earlier in DOM and live inside `<main>` too, but they carry the
+ *  inline-edit submit's own styling and no testid. */
+function wizardSavePolicy(page: Page) {
+  return page.locator('[data-testid="wizard-save"]').first()
 }
 
 export async function gotoNewPolicy(page: Page): Promise<void> {
@@ -57,17 +72,28 @@ export async function gotoNewPolicy(page: Page): Promise<void> {
  *
  *  D74a drift: D75+ added prebuilt "seed" links that also match
  *  href*="mode=guided" (they jump to step=5 with pre-filled state),
- *  which made the .first() match deliver a prebuilt seed instead of
- *  the blank wizard. Pin to the canonical blank-wizard href
- *  (`step=1` with no other params) so the scenario always lands on
- *  step 1 with an empty state. */
+ *  which made the previous `.first()` match deliver a prebuilt seed
+ *  instead of the blank wizard.
+ *
+ *  D74a follow-up: the previous full-string-equality selector
+ *  (`a[href="/policies/new?mode=guided&step=1"]`) was strictly correct
+ *  but brittle — any future innocent extra query param on the picker
+ *  landing's blank-wizard link (locale=ko, source=picker, intent=blank)
+ *  would silently fail with a flat 10s timeout even though the picker
+ *  was healthy. Prefer the stable `data-testid="picker-card-guided"`
+ *  on the canonical ChoiceCard; fall through to a structural
+ *  href-shape matcher (mode=guided + step=1, no &draft= or &step=5
+ *  seed segments) so this still works on older dashboard builds where
+ *  the testid is not yet present. */
 export async function pickGuided(page: Page): Promise<void> {
-  // Match the canonical blank-wizard link. Encoded `&` from the
-  // server-rendered HTML decodes back to `&` at the DOM attribute
-  // level, so the literal href is `/policies/new?mode=guided&step=1`.
-  const link = page.locator(
-    'a[href="/policies/new?mode=guided&step=1"]',
+  const byTestId = page.locator('[data-testid="picker-card-guided"]').first()
+  // Structural matcher: any `/policies/new` link in `mode=guided` +
+  // `step=1` that is NOT a prebuilt seed (`&draft=` or `&step=5`).
+  const byShape = page.locator(
+    'a[href*="/policies/new"][href*="mode=guided"][href*="step=1"]'
+    + ':not([href*="draft="]):not([href*="step=5"])',
   ).first()
+  const link = byTestId.or(byShape).first()
   await expect(link).toBeVisible({ timeout: 10_000 })
   await link.click()
   await expect(page).toHaveURL(/mode=guided.*step=1|step=1.*mode=guided/)
@@ -86,7 +112,7 @@ export async function step1PickStop(page: Page): Promise<void> {
   // (text varies by locale, match by type=submit + visible).
   await Promise.all([
     page.waitForURL(/step=[2-6]/, { timeout: 10_000 }),
-    wizardSubmit(page).click(),
+    wizardAdvance(page).click(),
   ])
 }
 
@@ -113,7 +139,7 @@ export async function step3PickDefaultAndAdvance(page: Page): Promise<void> {
   // surfaces the case via an explicit miss.
   await Promise.all([
     page.waitForURL(/step=[4-6]|err=/, { timeout: 10_000 }),
-    wizardSubmit(page).click(),
+    wizardAdvance(page).click(),
   ])
   // Catch the silent regression class: a submit that lands back on
   // step=3 with an err= param is a regression, not a pass.
@@ -129,7 +155,7 @@ export async function step4PickAuditAndAdvance(page: Page): Promise<void> {
   await auditRadio.check({ force: true })
   await Promise.all([
     page.waitForURL(/step=[5-6]|err=/, { timeout: 10_000 }),
-    wizardSubmit(page).click(),
+    wizardAdvance(page).click(),
   ])
   await expect(page).not.toHaveURL(/step=4.*err=/, { timeout: 5_000 })
 }
@@ -146,7 +172,7 @@ export async function step5SetIdAndAdvance(
   await idInput.fill(id)
   await Promise.all([
     page.waitForURL(/step=6|err=/, { timeout: 10_000 }),
-    wizardSubmit(page).click(),
+    wizardAdvance(page).click(),
   ])
   await expect(page).not.toHaveURL(/step=5.*err=/, { timeout: 5_000 })
 }
@@ -155,7 +181,7 @@ export async function step5SetIdAndAdvance(
  *  that POSTs to /policies and redirects to /rules (or /policies/<id>). */
 export async function step6Save(page: Page): Promise<Response | null> {
   await page.waitForURL(/step=6/, { timeout: 10_000 })
-  const submit = wizardSubmit(page)
+  const submit = wizardSavePolicy(page)
   const [response] = await Promise.all([
     page.waitForResponse(
       (r) => r.request().method() === "POST" && /\/policies/.test(r.url()),

@@ -2663,6 +2663,20 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
             if trig is not None:
                 entry["trigger"] = {"event": trig.event,
                                      "matcher": trig.matcher}
+            elif isinstance(ov.policy, ContextInjectionPolicy):
+                # D74a follow-up: ContextInjectionPolicy carries the
+                # hook surface in `event` + `matcher` directly (no
+                # `trigger` triple). Synthesize a uniform `{event,
+                # matcher}` shape so the dashboard list renders a
+                # surface for context_injection rows (the previous
+                # code suppressed the trigger span entirely, hiding
+                # the only operator-visible cue of what fires the
+                # rule). SubagentPolicy + McpGatingPolicy stay
+                # without `trigger` — they truly have no event scope.
+                entry["trigger"] = {
+                    "event": ov.policy.event,
+                    "matcher": ov.policy.matcher,
+                }
             items.append(entry)
         return {"items": items}
 

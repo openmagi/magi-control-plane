@@ -11,6 +11,7 @@
  * `/scripts` page is re-rendered for the visual assertion).
  */
 import { test, expect } from "@playwright/test"
+import { createHash } from "node:crypto"
 import { gotoScripts } from "../helpers/dashboard"
 import {
   uploadScript, deleteScript, listScripts, listPolicies,
@@ -30,17 +31,26 @@ test("03 scripts upload and use", async ({ page }, testInfo) => {
   //
   //    D74a: ScriptStore is dedupe-by-sha256-of-body (see script_store.py
   //    "Dedupe-by-hash: any existing row with the same id wins,
-  //    regardless of the caller's friendly name"). A second run with the
-  //    same body and a fresh timestamped name returns the FIRST run's
-  //    entry verbatim, so `expect(uploaded.name).toBe(SCRIPT_NAME)`
-  //    would only pass on a clean volume. The contract we care about is
-  //    that the upload succeeded + returned a runtime + a hash; the
-  //    name match would only be useful on a one-shot fixture.
+  //    regardless of the caller's friendly name"). A naive run with a
+  //    constant body would return the FIRST run's entry verbatim on a
+  //    re-used volume. We embed `# ${SCRIPT_NAME}` (which carries
+  //    Date.now()) so each invocation hashes uniquely and the row's
+  //    `name` IS the SCRIPT_NAME the test passed in.
+  //
+  //    D74a follow-up: with the body-comment uniqueness guarantee
+  //    above, the strict `expect(uploaded.name).toBe(SCRIPT_NAME)`
+  //    holds. A name-normalization regression (lower-cased, prefixed,
+  //    stale hash collision returning a prior name) is exactly the
+  //    silent drift this assertion should catch, so the previous
+  //    relaxation to `.toBeTruthy()` is reverted. The explicit sha256
+  //    pin is belt-and-suspenders against a future dedupe knob that
+  //    re-introduces name normalization without our noticing.
   const body = `#!/usr/bin/env bash\necho hi # ${SCRIPT_NAME}\n`
+  const expectedHash = createHash("sha256").update(body).digest("hex")
   const uploaded = await uploadScript(SCRIPT_NAME, "bash", body)
-  expect(uploaded.name).toBeTruthy()
+  expect(uploaded.name).toBe(SCRIPT_NAME)
   expect(uploaded.runtime).toBe("bash")
-  expect(uploaded.hash.length).toBeGreaterThan(8)
+  expect(uploaded.hash).toBe(expectedHash)
 
   // 2. The script appears in GET /scripts.
   const scripts = await listScripts()

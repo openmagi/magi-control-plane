@@ -1017,6 +1017,38 @@ def test_list_policies_handles_mixed_archetypes(client_with_registry):
     assert "trigger" not in sub
 
 
+def test_list_policies_synthesizes_trigger_for_context_injection(
+    client_with_registry,
+):
+    """D74a follow-up: ContextInjectionPolicy carries the hook surface
+    in `event` + `matcher` (no `trigger` triple). The list endpoint
+    must synthesize a `{event, matcher}` shape so the dashboard
+    listing has a surface column for context_injection rows instead
+    of silently suppressing the only operator-visible cue of what
+    fires the rule.
+
+    Sibling: PoliciesTab.test.ts pins the client-side render contract."""
+    pid = "team-context/v1"
+    body = {
+        "type": "context_injection",
+        "id": pid,
+        "description": "team standards",
+        "event": "UserPromptSubmit",
+        "matcher": "*",
+        "template": "Follow team standards: TDD.",
+    }
+    r = _put(client_with_registry, pid, body)
+    assert r.status_code == 200, r.text
+
+    items = client_with_registry.get("/policies", headers=ADMIN).json()["items"]
+    row = next(i for i in items if i["id"] == pid)
+    assert row["type"] == "context_injection"
+    assert row.get("trigger") == {
+        "event": "UserPromptSubmit",
+        "matcher": "*",
+    }
+
+
 def test_put_permission_policy_rejects_malformed_pattern(client_with_registry):
     """Issue #1 P1 (#7): the cloud rejects a pattern that doesn't match
     the CC permission grammar — catches authoring mistakes at PUT

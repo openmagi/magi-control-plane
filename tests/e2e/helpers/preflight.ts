@@ -127,15 +127,24 @@ export async function runPreflight(opts: {
  *  string reason when the spec should SKIP.
  *
  *  D74a: `requiresClaudeHook` adds a check for the local CC settings
- *  carrying a magi-gate PreToolUse hook entry. Without that wiring
- *  the `claude -p` invocation issued by scenarios 04 / 05 emits NO
- *  ledger row — the magi-gate.sh binary may exist on PATH but
- *  Claude Code never spawns it without the settings.json mapping.
- *  Reading settings.json once is cheaper + clearer than waiting 30s
- *  for a ledger row that the hooks pipeline never invokes. */
+ *  carrying a magi-gate hook entry on the channel the scenario needs.
+ *  Without that wiring the `claude -p` invocation issued by scenarios
+ *  04 / 05 emits NO ledger row — the magi-gate.sh binary may exist on
+ *  PATH but Claude Code never spawns it without the settings.json
+ *  mapping. Reading settings.json once is cheaper + clearer than
+ *  waiting 30s for a ledger row that the hooks pipeline never invokes.
+ *
+ *  D74a follow-up: scope the check to the specific channel each
+ *  scenario binds to (`PreToolUse` for scenario 04 run_command vs
+ *  `UserPromptSubmit` for scenario 05 inject_context). The previous
+ *  JSON-stringify + magi-gate|magi-cp regex matched ANY mention of
+ *  the substring anywhere in the hooks tree (e.g. an unrelated
+ *  PostToolUse logger piping into `magi-cp log`, or a stale
+ *  filesystem path), false-positively flipping the SKIP back to a
+ *  30s hang on a CI box that does not have the right channel wired. */
 export function assertHarnessReady(opts: {
   requiresClaude?: boolean
-  requiresClaudeHook?: boolean
+  requiresClaudeHook?: boolean | "PreToolUse" | "UserPromptSubmit"
 } = {}): string | null {
   if (process.env.PLAYWRIGHT_SKIP_ALL === "1") {
     return process.env.PLAYWRIGHT_SKIP_ALL_REASON || "harness preflight failed"
@@ -147,53 +156,96 @@ export function assertHarnessReady(opts: {
     }
   }
   if (opts.requiresClaudeHook) {
-    const hookReason = _claudeHookMissingReason()
+    const channel =
+      typeof opts.requiresClaudeHook === "string"
+        ? opts.requiresClaudeHook
+        : "PreToolUse"
+    const hookReason = _claudeHookMissingReason(channel)
     if (hookReason != null) return hookReason
   }
   return null
 }
 
+type ClaudeHookEntry = { type?: string; command?: string }
+type ClaudeHookBlock = { matcher?: string; hooks?: ClaudeHookEntry[] }
+type ClaudeSettings = {
+  hooks?: Partial<Record<string, ClaudeHookBlock[]>>
+}
+
 /** D74a: returns null when CC's settings.json (project, user, or
- *  enterprise) carries at least one PreToolUse / UserPromptSubmit
- *  hook entry that fires a magi-gate-shaped command. The harness
- *  cannot itself install the hook (writing into ~/.claude/settings.json
- *  is a privileged operator action); when missing we mark the spec
- *  SKIP with a precise reason so a fix-pass agent points the operator
- *  at the install step instead of staring at a 30s ledger timeout. */
-function _claudeHookMissingReason(): string | null {
+ *  enterprise) carries at least one hook entry on the requested
+ *  channel that fires a magi-gate-shaped command. The harness cannot
+ *  itself install the hook (writing into ~/.claude/settings.json is a
+ *  privileged operator action); when missing we mark the spec SKIP
+ *  with a precise reason so a fix-pass agent points the operator at
+ *  the install step instead of staring at a 30s ledger timeout.
+ *
+ *  D74a follow-up:
+ *    1. Only inspect the requested channel (`PreToolUse` or
+ *       `UserPromptSubmit`) — NOT JSON.stringify(hooks). The previous
+ *       implementation false-positived on any `magi-cp` mention in
+ *       Stop / PostToolUse / SubagentStop and on stale magi-cp
+ *       filesystem paths, defeating the SKIP-vs-30s-hang guarantee.
+ *    2. Match the magi-gate / magi-cp token in the individual hook
+ *       entry's `command` string (the channel CC actually spawns) —
+ *       not in serialized container metadata.
+ *    3. Honor Claude Code's documented precedence chain: project-level
+ *       `<cwd>/.claude/settings.json` first (a common dev setup),
+ *       then `<cwd>/.claude/settings.local.json`, then the user-level
+ *       `~/.claude/settings*.json`, then a `CLAUDE_PROJECT_DIR`
+ *       override. The harness's own short-circuit
+ *       (`MAGI_CP_E2E_CLAUDE_SETTINGS=<path>`) overrides the discovery
+ *       chain so scenarios 04/05 can install a hermetic settings file
+ *       in a beforeAll and point this helper at it without touching
+ *       the operator's real `~/.claude/settings.json`. */
+function _claudeHookMissingReason(
+  channel: "PreToolUse" | "UserPromptSubmit",
+): string | null {
   try {
-    // Lazy-load these so the helper has no top-level fs/path imports
-    // (keeps the surface focused; node:fs is available everywhere
-    // Playwright runs).
     const fs = require("node:fs") as typeof import("node:fs")
     const path = require("node:path") as typeof import("node:path")
     const os = require("node:os") as typeof import("node:os")
-    const candidates = [
+    const candidates: string[] = []
+    const override = process.env.MAGI_CP_E2E_CLAUDE_SETTINGS
+    if (override) candidates.push(override)
+    const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd()
+    candidates.push(
+      path.join(projectDir, ".claude", "settings.json"),
+      path.join(projectDir, ".claude", "settings.local.json"),
       path.join(os.homedir(), ".claude", "settings.json"),
       path.join(os.homedir(), ".claude", "settings.local.json"),
-    ]
+    )
     for (const fp of candidates) {
       if (!fs.existsSync(fp)) continue
       try {
         const raw = fs.readFileSync(fp, "utf8")
         if (!raw) continue
-        const data = JSON.parse(raw) as { hooks?: Record<string, unknown> }
-        const hooks = data?.hooks ?? {}
-        // Any PreToolUse or UserPromptSubmit entry referencing
-        // magi-gate or magi-cp is treated as evidence of wiring;
-        // false-positive risk is acceptable here (the actual
-        // assertion is the ledger row in the spec).
-        const json = JSON.stringify(hooks)
-        if (/magi-gate|magi-cp|magi_cp/i.test(json)) return null
+        const data = JSON.parse(raw) as ClaudeSettings
+        const blocks = data?.hooks?.[channel] ?? []
+        for (const block of blocks) {
+          for (const entry of block?.hooks ?? []) {
+            const cmd = entry?.command
+            if (typeof cmd !== "string") continue
+            // The canonical installer drops magi-gate.sh; the alpha
+            // installer path used `magi-cp-gate`. Match either token
+            // INSIDE the hook entry's command string only.
+            if (/magi-gate(\.sh)?\b|\bmagi-cp-gate\b/.test(cmd)) {
+              return null
+            }
+          }
+        }
       } catch {
         // Malformed settings file — fall through to next candidate.
       }
     }
     return (
-      "no magi-gate hook configured in ~/.claude/settings.json — " +
-      "claude -p will run with no PreToolUse hook, so the ledger " +
-      "row this scenario asserts on never gets emitted. Install the " +
-      "magi-cp PreToolUse hook (see scripts/quickstart.sh) and rerun."
+      `no magi-gate ${channel} hook configured in any CC settings.json ` +
+      `(checked MAGI_CP_E2E_CLAUDE_SETTINGS, <cwd>/.claude/settings*.json, ` +
+      `~/.claude/settings*.json). claude -p will run with no ${channel} ` +
+      `hook, so the ledger row this scenario asserts on never gets ` +
+      `emitted. Install the magi-cp ${channel} hook (see ` +
+      `scripts/quickstart.sh) or set MAGI_CP_E2E_CLAUDE_SETTINGS to a ` +
+      `hermetic settings file and rerun.`
     )
   } catch {
     return "claude hook check failed (could not read settings.json)."

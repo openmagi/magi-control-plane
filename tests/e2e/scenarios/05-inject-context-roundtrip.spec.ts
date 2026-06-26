@@ -17,22 +17,32 @@
  *      the contract we check.
  */
 import { test, expect } from "@playwright/test"
-import { runClaudePrompt } from "../helpers/claude"
+import { runClaudePrompt, locateClaude } from "../helpers/claude"
 import { currentLedgerCursor, waitForLedgerRow } from "../helpers/ledger"
 import { assertHarnessReady } from "../helpers/preflight"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 test.describe.configure({ mode: "serial" })
 
 test("05 inject_context roundtrip", async ({}, testInfo) => {
+  // D74a follow-up: install a hermetic CC settings file with a single
+  // UserPromptSubmit hook entry so the inject_context policy actually
+  // fires on dev/CI boxes without a pre-wired `~/.claude/settings.json`.
+  // See the sibling note in 04-run-command-roundtrip.spec.ts.
+  const settingsPath = _ensureHermeticHook("UserPromptSubmit")
+  if (settingsPath) {
+    process.env.MAGI_CP_E2E_CLAUDE_SETTINGS = settingsPath
+  }
   // D74a: also require the CC magi-gate hook to be wired (see the
   // sibling note in 04-run-command-roundtrip.spec.ts). Without it
   // the inject_context policy never fires, no ledger row is written,
   // and this scenario waits 30s before timing out instead of
   // surfacing the install gap as a clear SKIP reason.
-  const skipReason = assertHarnessReady({ requiresClaudeHook: true })
+  const skipReason = assertHarnessReady({
+    requiresClaudeHook: "UserPromptSubmit",
+  })
   test.skip(skipReason != null, skipReason ?? "")
 
   const policyId = `e2e/inject-${Date.now()}`
@@ -41,9 +51,18 @@ test("05 inject_context roundtrip", async ({}, testInfo) => {
   const cursor = await currentLedgerCursor()
 
   const cwd = mkdtempSync(join(tmpdir(), "magi-cp-e2e-inject-"))
+  const claudeConfigDir = process.env.MAGI_CP_E2E_CLAUDE_SETTINGS
+    ? join(process.env.MAGI_CP_E2E_CLAUDE_SETTINGS, "..")
+    : undefined
   const result = await runClaudePrompt(
     "Reply with a one-word answer to this question: hello?",
-    { cwd, timeoutMs: 60_000 },
+    {
+      cwd,
+      timeoutMs: 60_000,
+      extraEnv: claudeConfigDir
+        ? { CLAUDE_CONFIG_DIR: claudeConfigDir }
+        : undefined,
+    },
   )
 
   if (result.available) {
@@ -114,4 +133,44 @@ async function _disable(policyId: string): Promise<void> {
     body: JSON.stringify({ enabled: false }),
     signal: AbortSignal.timeout(8000),
   }).catch(() => {})
+}
+
+/** D74a follow-up: mirror of scenario 04's hermetic settings installer
+ *  for the UserPromptSubmit channel. See the doc-comment on
+ *  `_ensureHermeticHook` in 04-run-command-roundtrip.spec.ts. */
+function _ensureHermeticHook(
+  channel: "PreToolUse" | "UserPromptSubmit",
+): string | null {
+  if (process.env.MAGI_CP_E2E_CLAUDE_SETTINGS) return null
+  if (locateClaude() == null) return null
+
+  const here = resolve(__dirname)
+  const gatePath = resolve(here, "..", "..", "..", "scripts", "magi-gate.sh")
+  if (!existsSync(gatePath)) return null
+
+  const tmpDir = mkdtempSync(join(tmpdir(), "magi-cp-e2e-claude-cfg-"))
+  const settingsPath = join(tmpDir, "settings.json")
+  const matcher = channel === "PreToolUse" ? "Bash" : "*"
+  const settings = {
+    hooks: {
+      [channel]: [
+        {
+          matcher,
+          hooks: [
+            {
+              type: "command",
+              command: gatePath,
+              env: {
+                MAGI_CP_CLOUD_URL:
+                  process.env.MAGI_CP_CLOUD_URL ?? "http://127.0.0.1:8787",
+                MAGI_CP_API_KEY: process.env.MAGI_CP_API_KEY ?? "",
+              },
+            },
+          ],
+        },
+      ],
+    },
+  }
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return settingsPath
 }

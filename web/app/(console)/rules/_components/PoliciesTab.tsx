@@ -144,13 +144,15 @@ export function PoliciesTab({
                   </div>
                 </div>
                 <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
-                  {/* D74a: cloud /policies omits `trigger` from
-                      ContextInjectionPolicy + RunCommandPolicy listings
-                      (they encode the hook surface in archetype-specific
-                      fields, not the EvidencePolicy trigger triple).
-                      Read defensively so the page does not crash with
-                      "Cannot read properties of undefined (reading
-                      'event')" when those archetypes are present. */}
+                  {/* D74a: cloud /policies serializer synthesizes a
+                      `{event, matcher}` shape for ContextInjectionPolicy
+                      from its archetype-specific fields; RunCommandPolicy
+                      already carries a real `trigger` triple; SubagentPolicy
+                      + McpGatingPolicy have no event scope and stay
+                      without `trigger`. Read defensively so the page does
+                      not crash with "Cannot read properties of undefined
+                      (reading 'event')" when those scopeless archetypes
+                      (or legacy unstamped rows) are present. */}
                   {item.trigger ? (
                     <span>{t("policies.trigger")}: <Code>{item.trigger.event}</Code> · <Code>{item.trigger.matcher}</Code></span>
                   ) : null}
