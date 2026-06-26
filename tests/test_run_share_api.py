@@ -169,6 +169,70 @@ def test_revoke_unknown_hash_404(client):
     assert client.post("/v1/runs/share/deadbeef/revoke", headers=HEADERS).status_code == 404
 
 
+# --- edits: range / hidden / redaction overlay ---
+def _view_with_transcript():
+    return {
+        "schemaVersion": "openmagi.runView.v1",
+        "summary": {"goal": "buy TSLA", "result": "held"},
+        "transcript": [
+            {"kind": "text", "text": "reading"},
+            {"kind": "tool", "name": "Read", "status": "ok"},
+            {"kind": "tool", "name": "mcp__t__execute_trade", "status": "needs_approval", "argsSummary": {"symbol": "TSLA"}},
+            {"kind": "text", "text": "done"},
+        ],
+        "governance": [{"name": "execute_trade", "status": "needs_approval", "kind": "policy", "reason": "held"}],
+        "counts": {"stepCount": 2},
+    }
+
+
+def _hash_of(client):
+    return client.get("/v1/runs/share", headers=HEADERS).json()["items"][0]["tokenHash"]
+
+
+def test_get_for_edit_returns_full_view_and_empty_edits(client):
+    client.post("/v1/runs/share", json={"view": _view_with_transcript()}, headers=HEADERS)
+    th = _hash_of(client)
+    r = client.get(f"/v1/runs/share/{th}", headers=HEADERS)
+    assert r.status_code == 200
+    assert len(r.json()["view"]["transcript"]) == 4
+    assert r.json()["edits"] == {}
+
+
+def test_get_for_edit_requires_auth(client):
+    client.post("/v1/runs/share", json={"view": _view_with_transcript()}, headers=HEADERS)
+    th = _hash_of(client)
+    assert client.get(f"/v1/runs/share/{th}").status_code == 401
+
+
+def test_patch_edits_then_public_get_is_trimmed(client):
+    token = client.post("/v1/runs/share", json={"view": _view_with_transcript()}, headers=HEADERS).json()["token"]
+    th = _hash_of(client)
+    # keep indices 0..1 -> drops execute_trade tool + its governance
+    pr = client.patch(f"/v1/runs/share/{th}/edits", json={"edits": {"range": [0, 1]}}, headers=HEADERS)
+    assert pr.status_code == 200 and pr.json()["edits"] == {"range": [0, 1]}
+    view = client.get(f"/share/run/{token}").json()["view"]
+    assert len(view["transcript"]) == 2
+    assert view["governance"] == []  # the held trade was trimmed out
+    # owner editor still sees the FULL original
+    full = client.get(f"/v1/runs/share/{th}", headers=HEADERS).json()
+    assert len(full["view"]["transcript"]) == 4
+
+
+def test_patch_edits_redaction_applies_publicly(client):
+    v = _view_with_transcript()
+    v["transcript"][3]["text"] = "done with KEEPSECRET inside"
+    token = client.post("/v1/runs/share", json={"view": v}, headers=HEADERS).json()["token"]
+    th = _hash_of(client)
+    client.patch(f"/v1/runs/share/{th}/edits", json={"edits": {"redactions": ["KEEPSECRET"]}}, headers=HEADERS)
+    view = client.get(f"/share/run/{token}").json()["view"]
+    assert "KEEPSECRET" not in str(view["transcript"])
+
+
+def test_patch_edits_requires_auth_and_unknown_404(client):
+    assert client.patch("/v1/runs/share/abc/edits", json={"edits": {}}).status_code == 401
+    assert client.patch("/v1/runs/share/deadbeef/edits", json={"edits": {}}, headers=HEADERS).status_code == 404
+
+
 def test_revoke_is_tenant_scoped(client):
     # A link cannot be revoked under a different tenant identity. Asserted at the
     # repo layer (a second authed tenant on the shared in-memory DB is awkward

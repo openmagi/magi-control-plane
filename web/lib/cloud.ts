@@ -471,6 +471,13 @@ export type SharedRunView = {
 
 export type SharedRun = { view: SharedRunView; createdAt: number }
 
+/** Owner edits overlaid on a shared run (range trim / hide steps / redact). */
+export type ShareEdits = {
+  range?: [number, number]
+  hidden?: number[]
+  redactions?: string[]
+}
+
 export type SharedRunItem = {
   tokenHash: string
   title?: string | null
@@ -508,6 +515,20 @@ export const cloud = {
     _fetch<unknown>(
       `/v1/runs/share/${encodeURIComponent(tokenHash)}/revoke`,
       { method: "POST", keyType: "api" },
+    ).then(() => undefined),
+
+  /** Owner-only: load the FULL (un-edited) view + current edits, for the editor. */
+  getSharedRunForEdit: (tokenHash: string): Promise<{ view: SharedRunView; edits: ShareEdits; createdAt: number }> =>
+    _fetch<{ view: SharedRunView; edits: ShareEdits; createdAt: number }>(
+      `/v1/runs/share/${encodeURIComponent(tokenHash)}`,
+      { method: "GET", keyType: "api" },
+    ),
+
+  /** Owner-only: store the edits overlay (range / hidden / redactions). */
+  setSharedRunEdits: (tokenHash: string, edits: ShareEdits): Promise<void> =>
+    _fetch<unknown>(
+      `/v1/runs/share/${encodeURIComponent(tokenHash)}/edits`,
+      { method: "PATCH", keyType: "api", body: JSON.stringify({ edits }) },
     ).then(() => undefined),
 
   listHitl: (): Promise<HitlItem[]> =>
