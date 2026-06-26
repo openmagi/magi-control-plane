@@ -14,6 +14,12 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
+# Q96 docs renderer reads markdown via path.resolve(process.cwd(), "..",
+# "docs"), which inside this builder resolves to /docs. Stage the repo's
+# docs/ tree at that absolute path so static prerender of /docs/[slug]
+# finds the files. The page is `force-static`, so the runner stage does
+# not need the markdown at runtime.
+COPY docs/ /docs
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
