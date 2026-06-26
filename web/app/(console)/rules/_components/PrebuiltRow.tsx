@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback } from "react"
 import Link from "next/link"
 import type { PrebuiltPolicyEntry } from "@/lib/cloud"
 import { Code } from "@/components/ui/Code"
@@ -14,80 +14,46 @@ type TFunc = (
 ) => string
 
 /**
- * D82a: prebuilt entry rendered as a single ROW (not a card).
+ * D82d: flattened prebuilt row.
  *
- * Pre-D82a operators saw a grid of cards that took up vertical space
- * out of proportion to the information density (one verifier + one
- * trigger + one action per row). The card body description (a one-
- * sentence summary) was the largest visual block but the operator
- * scanning the page rarely needed to read it for every row.
+ * Earlier revisions wrapped the row in an outer chevron-expander button
+ * with a collapsible summary block, and showed a yellow "Verifier-side
+ * setup required" callout when toggling a setup_required prebuilt. Both
+ * showed up in screenshot review as confusing UI ("the empty button on
+ * the far right", "the UI is weird"). The row now:
  *
- * The new row layout is:
+ *   - badge + title + status pill (NOT a toggle target — caret expander
+ *     gone, the summary is rendered inline as quieter tertiary copy)
+ *   - meta (verifier · trigger · action)
+ *   - toggle (plain on/off, no setup-required popover)
+ *   - secondary action: either "Setup →" (setup_required) → docs page
+ *     that explains how to configure the verifier knob, or
+ *     "Edit before enabling →" → wizard step 6 prefilled with the IR
  *
- *   [BUILT-IN] [Name + status pill]  verifier · trigger  Action  [toggle]  [Edit before enabling >]  [caret]
- *
- * The summary hides behind a real <button> chevron expander on the
- * right of the row. The outer row is a plain <div> (NOT role=button) —
- * WAI-ARIA disallows interactive descendants (PrebuiltToggle's switch,
- * the Edit link) inside role=button, and the original outer-role-button
- * form announced as one giant button to AT and broke focus order.
- *
- * D82a follow-up: the row also no longer uses an instant DOM swap for
- * the summary; the summary is rendered unconditionally inside a
- * grid-template-rows transition wrapper so the row height eases from
- * 0fr <-> 1fr over 150ms (matching the caret rotation). In the row-
- * density scenario (5+ rows in the first viewport) clicking a row no
- * longer abruptly pushes the rows below off-screen.
- *
- * Status pill mapping (right after the name):
- *   enabled + setup_required        -> "Needs setup" amber
- *   enabled + !setup_required       -> "Active"      emerald
- *   !enabled + setup_required       -> "Needs setup" amber (same chip,
- *                                                          off-state
- *                                                          renders
- *                                                          identical
- *                                                          framing)
- *   !enabled + !setup_required      -> "Off"         neutral
+ * Setup-required prebuilts surface their config requirement via a
+ * dedicated button on the row, not via a popover sprung from the
+ * toggle. Operators who genuinely need to configure first take the
+ * Setup → docs path; operators who already configured (CLI override)
+ * toggle directly without an interstitial gate.
  */
 export function PrebuiltRow({
   entry, draftHref, locale,
 }: {
   entry: PrebuiltPolicyEntry
   draftHref: string
-  /** D82a hotfix: take locale instead of t closure so this client
-   * component does not violate the RSC boundary. Rebuild t locally
-   * via the pure translate() from dict.ts. */
   locale: Locale
 }) {
   const t: TFunc = useCallback(
     (key, vars) => translate(locale, key, vars),
     [locale],
   )
-  const [expanded, setExpanded] = useState(false)
-  const expandLabelKey = expanded
-    ? "rules.prebuilt.row.collapseAria"
-    : "rules.prebuilt.row.expandAria"
-  const expandLabel = t(expandLabelKey, { title: entry.title })
-  // D82a follow-up: aria-controls target id for the summary region so
-  // AT users hear WHAT is being expanded, not just that "expanded" is
-  // true on an unrelated element.
-  const summaryId = `prebuilt-row-${entry.id}-summary`
 
   return (
-    <div className="group flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02]">
+    <div className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02]">
       <div className="flex flex-wrap items-center gap-3">
-        {/* Identity block: badge + name + status pill. Mouse users can
-            still click anywhere in this block to toggle expansion; the
-            click target is a real <button> wrapping the identity row so
-            AT users see one interactive control with a clear label. */}
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={summaryId}
-          aria-label={expandLabel}
-          onClick={() => setExpanded((v) => !v)}
-          className="flex flex-wrap items-center gap-2 min-w-0 flex-1 cursor-pointer text-left bg-transparent border-0 p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40 rounded-md"
-        >
+        {/* Identity block: badge + name + status pill. Plain inline
+            row, no outer interactive wrapper. */}
+        <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
           <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
             {t("rules.prebuilt.badge")}
           </span>
@@ -95,11 +61,10 @@ export function PrebuiltRow({
             {entry.title}
           </span>
           <PrebuiltStatusPill entry={entry} t={t} />
-        </button>
+        </div>
 
-        {/* Meta block: verifier · trigger · action. Single-line, hides
-            on narrow widths to give name + toggle room (wrap on tiny
-            widths). */}
+        {/* Meta block: verifier · trigger · action. Hides on narrow
+            widths; reappears under the row on mobile. */}
         <div className="hidden md:flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
           <span>
             {t("rules.prebuilt.verifier")}: <Code>{entry.verifier_step}</Code>
@@ -118,66 +83,42 @@ export function PrebuiltRow({
           ) : null}
         </div>
 
-        {/* Control block: toggle + edit link + caret. The toggle and
-            link are siblings (not descendants of an outer role=button)
-            so WAI-ARIA's "no interactive descendants inside button"
-            rule is satisfied. No click-bubble guards are needed because
-            no parent listens for the click. */}
-        <div className="flex items-center gap-2">
+        {/* Control block: toggle + secondary action link. */}
+        <div className="flex items-center gap-3">
           <PrebuiltToggle
             prebuiltId={entry.id}
             enabled={entry.enabled}
-            setupRequired={entry.setup_required}
-            setupHint={entry.setup_hint}
             action={togglePrebuiltAction}
             labelOn={t("rules.prebuilt.disable", { title: entry.title })}
             labelOff={t("rules.prebuilt.enable", { title: entry.title })}
             copy={{
-              setupRequired: t("rules.prebuilt.setupRequired"),
-              setupUnconfigurableHere: t(
-                "rules.prebuilt.setupHint.unconfigurableHere",
-              ),
-              enableAnyway: t("rules.prebuilt.enableAnyway"),
-              cancel: t("rules.prebuilt.cancel"),
               transportError: t("rules.prebuilt.transportError"),
             }}
           />
-          <Link
-            href={draftHref}
-            aria-label={t("rules.prebuilt.editBeforeAria", { title: entry.title })}
-            className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline whitespace-nowrap"
-          >
-            {t("rules.prebuilt.editBefore")}
-          </Link>
-          {/* Caret as a sibling <button> — keeps a discoverable click
-              target on the right of the row even when the identity
-              block is hard to read (no focus target overlap with the
-              identity button because both buttons toggle the same
-              state; only one of them needs focus at a time). */}
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={summaryId}
-            aria-label={expandLabel}
-            onClick={() => setExpanded((v) => !v)}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-black/[0.04] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
-          >
-            <svg
-              viewBox="0 0 12 12"
-              className={`h-3 w-3 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              aria-hidden="true"
+          {entry.setup_required ? (
+            <Link
+              href={setupDocsHref(entry.id)}
+              aria-label={t("rules.prebuilt.setupAria", { title: entry.title })}
+              className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 whitespace-nowrap"
+              title={entry.setup_hint || undefined}
             >
-              <path d="M4 2 L8 6 L4 10" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
+              {t("rules.prebuilt.setup")}
+              <span aria-hidden>→</span>
+            </Link>
+          ) : (
+            <Link
+              href={draftHref}
+              aria-label={t("rules.prebuilt.editBeforeAria", { title: entry.title })}
+              className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline whitespace-nowrap"
+            >
+              {t("rules.prebuilt.editBefore")}
+            </Link>
+          )}
         </div>
       </div>
 
       {/* Meta meta (narrow widths) — verifier/trigger/action wraps below
-          the row controls on mobile so the row body never overflows. */}
+          the row controls on mobile. */}
       <div className="md:hidden flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
         <span>
           {t("rules.prebuilt.verifier")}: <Code>{entry.verifier_step}</Code>
@@ -196,26 +137,25 @@ export function PrebuiltRow({
         ) : null}
       </div>
 
-      {/* D82a follow-up: animated expander. Render the summary
-          unconditionally inside a grid-template-rows transition so the
-          height eases from 0fr <-> 1fr over 150ms (matching the caret
-          rotation). The inner <div overflow-hidden> hides the text
-          while the wrapper is collapsed; aria-hidden when collapsed so
-          AT doesn't read invisible content. */}
-      <div
-        id={summaryId}
-        className="grid transition-[grid-template-rows] duration-150 ease-out"
-        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
-        aria-hidden={!expanded}
-      >
-        <div className="overflow-hidden">
-          <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
-            {entry.summary}
-          </p>
-        </div>
-      </div>
+      {/* Inline summary as quieter tertiary copy, always visible. The
+          earlier collapsible expander caused more confusion than it
+          saved vertical space. */}
+      {entry.summary ? (
+        <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+          {entry.summary}
+        </p>
+      ) : null}
     </div>
   )
+}
+
+/** D82d: per-prebuilt docs anchor for the Setup button. The docs site
+ *  (D78) hosts a "prebuilt setup" landing page with sections keyed by
+ *  prebuilt id. Linking by anchor means a future docs page can add a
+ *  new section without code changes here. */
+function setupDocsHref(prebuiltId: string): string {
+  const slug = prebuiltId.replace(/^prebuilt\//, "")
+  return `/docs/prebuilts-setup#${slug}`
 }
 
 function PrebuiltStatusPill({
@@ -224,10 +164,6 @@ function PrebuiltStatusPill({
   entry: PrebuiltPolicyEntry
   t: TFunc
 }) {
-  // D60 — leaves the active emerald pill when on; "needs setup" amber
-  // surfaces whenever the setup_required bit is set (regardless of
-  // enabled state) because operator may have used Enable Anyway and
-  // the policy is still inert.
   if (entry.setup_required) {
     return (
       <span
@@ -251,4 +187,3 @@ function PrebuiltStatusPill({
     </span>
   )
 }
-

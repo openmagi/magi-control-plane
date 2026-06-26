@@ -538,7 +538,7 @@ const KO_RAW = {
   "rules.prebuilt.title": "프리빌트 정책",
   /* D60 follow-up: 토글이 1차 동선이므로 \"raw 에디터로 열림\" 카피는 잘못된 기대를 심어준다.
      실제 모델(토글로 즉시 활성/비활성, 일부는 사전 설정 필요)에 맞춰 다시 작성. */
-  "rules.prebuilt.hint": "토글로 바로 활성/비활성. citation, allowlist 같은 사전 설정형은 활성화 전에 설정 확인을 요구합니다. IR 을 먼저 다듬고 싶으면 카드의 \"수정 후 활성화\" 링크를 사용하세요.",
+  "rules.prebuilt.hint": "토글로 바로 활성/비활성. 사전 설정이 필요한 항목은 우측 \"셋업\" 버튼이 설정 페이지로 안내합니다.",
   "rules.prebuilt.badge": "프리빌트",
   "rules.prebuilt.verifier": "Verifier",
   "rules.prebuilt.action": "Action",
@@ -550,14 +550,14 @@ const KO_RAW = {
   "rules.prebuilt.disable": "{title} 비활성화",
   "rules.prebuilt.editBefore": "수정 후 활성화 →",
   "rules.prebuilt.active": "활성",
-  /* D60 follow-up: \"설정 열기\" 버튼은 위저드 6단계로 가지만 verifier 사이드 노브
-     (allowlist, corpus override) 는 현재 어디에서도 편집할 수 없음. 잘못된 약속 대신
-     카피를 정직하게 바꿈 (verifier 설정에서 직접 손봐야 한다는 사실 전달). */
-  "rules.prebuilt.setupRequired": "활성화 전에 verifier 설정이 필요합니다",
-  "rules.prebuilt.setupHint.unconfigurableHere": "이 노브는 현재 verifier 설정 파일에서만 손볼 수 있습니다, 대시보드 UI 미지원.",
+  /* D82d: setup-required popover removed. Setup-required prebuilts now
+     show a dedicated "Setup →" button that links to the docs anchor
+     for configuring the verifier knob. Operators who already
+     configured (CLI override) toggle directly without an
+     interstitial gate. */
+  "rules.prebuilt.setup": "셋업",
+  "rules.prebuilt.setupAria": "{title} 셋업 가이드 열기",
   "rules.prebuilt.needsSetup": "사전 설정 필요",
-  "rules.prebuilt.enableAnyway": "그래도 활성화",
-  "rules.prebuilt.cancel": "취소",
   "rules.prebuilt.transportError": "변경 실패. 네트워크 또는 클라우드 오류. 다시 시도해 주세요.",
   /* D82a: prebuilt = row (cards collapsed to single-line rows). */
   "rules.prebuilt.row.trigger": "Trigger",
@@ -1504,7 +1504,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
    * "raw editor" framing is wrong. Describe the actual model:
    * toggle to enable, setup-required ones ask for config first, the
    * Edit shortcut stays available for IR tweaks. */
-  "rules.prebuilt.hint": "Toggle to enable. Setup-required prebuilts (citation, allowlist) ask for verifier configuration before enabling has any effect. Use Edit before enabling on the card if you want to tweak the IR first.",
+  "rules.prebuilt.hint": "Toggle to enable. Setup-required prebuilts show a \"Setup →\" button that opens the docs page for configuring the verifier knob.",
   "rules.prebuilt.badge": "Prebuilt",
   "rules.prebuilt.verifier": "Verifier",
   "rules.prebuilt.action": "Action",
@@ -1518,16 +1518,12 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.disable": "Disable {title}",
   "rules.prebuilt.editBefore": "Edit before enabling →",
   "rules.prebuilt.active": "Active",
-  /* D60 follow-up: the "Configure" button used to route to wizard
-   * step 6, but the wizard cannot edit verifier-side knobs
-   * (allowlist payload, corpus override). Drop the false promise
-   * and tell the operator the truth: the configuration lives in
-   * the verifier-side config, not in this UI. */
-  "rules.prebuilt.setupRequired": "Verifier-side setup required before enabling",
-  "rules.prebuilt.setupHint.unconfigurableHere": "This knob currently lives in the verifier configuration files only; the dashboard has no editor for it yet.",
+  /* D82d: setup-required popover removed. Setup-required prebuilts now
+   * show a dedicated Setup button that links to the docs anchor for
+   * configuring the verifier knob. */
+  "rules.prebuilt.setup": "Setup",
+  "rules.prebuilt.setupAria": "Open setup guide for {title}",
   "rules.prebuilt.needsSetup": "Needs setup",
-  "rules.prebuilt.enableAnyway": "Enable anyway",
-  "rules.prebuilt.cancel": "Cancel",
   "rules.prebuilt.transportError": "Toggle failed. Network or cloud error. Please retry.",
   "rules.prebuilt.row.trigger": "Trigger",
   "rules.prebuilt.row.expand": "Show description",

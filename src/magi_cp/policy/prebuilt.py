@@ -141,13 +141,6 @@ _PREBUILT_SPECS: tuple[_PrebuiltSpec, ...] = (
         matcher="*",
         action="audit",
         verifier_step="citation_verify",
-        setup_required=True,
-        setup_hint=(
-            "Provide a corpus override (the citation corpus this "
-            "tenant should check against). Without it the verifier "
-            "falls back to the empty default and every citation looks "
-            "unknown."
-        ),
     ),
     _PrebuiltSpec(
         id="prebuilt/privilege-scan-bash",

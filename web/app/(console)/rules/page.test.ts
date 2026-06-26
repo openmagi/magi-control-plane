@@ -168,26 +168,19 @@ describe("rules page source invariants (D82a)", () => {
 
   it("PrebuiltRow is a client component with an expander", () => {
     expect(prebuiltRowSrc.startsWith('"use client"')).toBe(true)
-    expect(prebuiltRowSrc).toContain("aria-expanded")
-    expect(prebuiltRowSrc).toContain("setExpanded")
   })
 
-  it("PrebuiltRow expander uses dedicated <button> elements (no role=button on outer div)", () => {
-    // D82a follow-up: the prior revision wrapped the outer <div> with
-    // role="button" + tabIndex={0} + onKeyDown, which violates WAI-ARIA
-    // (interactive descendants — PrebuiltToggle's switch, the Edit
-    // link — are not allowed inside role=button). The new layout makes
-    // the identity block AND the caret real <button> elements; the
-    // outer <div> has no role. AT announces two interactive controls
-    // with clear labels instead of one giant overloaded button.
+  it("D82d: outer row has no role=button, no aria-expanded, no expander buttons", () => {
+    // D82a wrapped the row in chevron-expander buttons (identity +
+    // caret) that opened a collapsible description. Screenshot review
+    // flagged the caret as "an empty button on the right". D82d drops
+    // the expander; the description renders inline as quieter
+    // tertiary copy. Pin the absence of every prior expander hook so
+    // a refactor that re-introduces them trips loudly.
     expect(prebuiltRowSrc).not.toMatch(/role="button"/)
-    expect(prebuiltRowSrc).not.toContain("tabIndex={0}")
-    expect(prebuiltRowSrc).toMatch(/aria-expanded=\{expanded\}/)
-    // aria-controls must point at the summary region so AT users hear
-    // WHAT is being expanded.
-    expect(prebuiltRowSrc).toContain("aria-controls={summaryId}")
-    // The identity block and the caret are <button type="button">.
-    expect(prebuiltRowSrc).toMatch(/<button[\s\S]{0,400}aria-expanded=\{expanded\}/)
+    expect(prebuiltRowSrc).not.toContain("aria-expanded")
+    expect(prebuiltRowSrc).not.toContain("aria-controls")
+    expect(prebuiltRowSrc).not.toContain("setExpanded")
   })
 
   it("PrebuiltRow no longer needs stopPropagation (toggle/link are siblings, not descendants)", () => {
@@ -199,20 +192,16 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc).not.toContain("stopPropagation")
   })
 
-  it("PrebuiltRow animates the summary expander (no instant DOM swap)", () => {
-    // D82a follow-up: the prior revision conditionally rendered the
-    // summary block via `{expanded && (<p>...</p>)}`, which added
-    // ~24-44px of vertical height in a single frame on click. In the
-    // row-density scenario (5+ rows in the first viewport) the abrupt
-    // layout shift could push rows below off-screen. The new wrapper
-    // renders the summary unconditionally and eases the height via a
-    // `grid-template-rows` 0fr <-> 1fr transition matching the
-    // caret's `transition-transform duration-150`.
-    expect(prebuiltRowSrc).toContain("transition-[grid-template-rows]")
-    expect(prebuiltRowSrc).toMatch(/gridTemplateRows:\s*expanded\s*\?\s*"1fr"\s*:\s*"0fr"/)
-    // The summary <p> must be rendered unconditionally inside the
-    // animation wrapper — the old `{expanded && (<p ...>` form is gone.
-    expect(prebuiltRowSrc).not.toMatch(/\{expanded && \(\s*<p/)
+  it("D82d: PrebuiltRow renders the summary inline, not behind an expander", () => {
+    // D82a animated the description behind a caret expander. D82d
+    // dropped the expander entirely (the caret button looked like an
+    // empty box on the right of every row, screenshot review). The
+    // summary now renders inline as quieter tertiary copy, always
+    // visible. Pin the absence of the old animation wrapper so a
+    // future refactor that re-introduces it trips loudly.
+    expect(prebuiltRowSrc).not.toMatch(/transition-\[grid-template-rows\]/)
+    expect(prebuiltRowSrc).not.toMatch(/gridTemplateRows/)
+    expect(prebuiltRowSrc).not.toMatch(/\{expanded\s*\?/)
   })
 
   it("PrebuiltRow renders a status pill right after the name", () => {
@@ -232,8 +221,21 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc).toContain("PrebuiltToggle")
     expect(prebuiltRowSrc).toContain("togglePrebuiltAction")
     expect(prebuiltRowSrc).toContain("enabled={entry.enabled}")
-    expect(prebuiltRowSrc).toContain("setupRequired={entry.setup_required}")
-    expect(prebuiltRowSrc).toContain("setupHint={entry.setup_hint}")
+  })
+
+  // ── D82d invariants ──
+  it("D82d: PrebuiltRow has no caret expander / collapsible summary wrapper", () => {
+    // The empty-button caret + collapsible grid was the "what is the
+    // empty button on the right" UX complaint. Pin its absence.
+    expect(prebuiltRowSrc).not.toContain("aria-expanded")
+    expect(prebuiltRowSrc).not.toContain("collapseAria")
+    expect(prebuiltRowSrc).not.toContain("grid-template-rows")
+  })
+
+  it("D82d: PrebuiltRow renders a Setup button only when entry.setup_required", () => {
+    expect(prebuiltRowSrc).toMatch(/entry\.setup_required\s*\?/)
+    expect(prebuiltRowSrc).toContain("rules.prebuilt.setup")
+    expect(prebuiltRowSrc).toContain("setupDocsHref")
   })
 
   it("D67: user-policies grid filters prebuilt rows before mapping", () => {
