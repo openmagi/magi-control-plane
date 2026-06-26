@@ -1464,3 +1464,92 @@ def test_scripts_substring_in_source_path_still_synthesizes_fallback():
     # Korean equivalent.
     assert ("/scripts and come back" in msg
             or "/scripts에 업로드한 뒤" in msg), msg
+
+
+# ── #100 — LLM intent extraction must survive (no canned override) ────
+
+
+def test_q100_llm_extracted_citation_intent_survives_to_draft():
+    """When the user types a Korean freeform request that names a
+    verifier (citation_verify) and a lifecycle hint ("final answer"),
+    and the LLM dutifully proposes a draft_updates payload that maps
+    that intent to {trigger.event=Stop, requires=[step:citation_verify]},
+    the server MUST merge it onto the draft. A previous revision
+    silently dropped the LLM's draft_updates whenever the proposed
+    question set fell outside the canonical slice; this test pins
+    that draft_updates lives on its own merge path and is not
+    contingent on the question logic.
+    """
+    canned = _llm_response(
+        message="리서치 작업에서 citation_verify 를 최종 답변 직전에 돌리도록 잡았어요.",
+        updates={
+            "id": "research-citations",
+            "description": "research citation verify",
+            "trigger": {"event": "Stop", "matcher": "*"},
+            "requires": [{"kind": "step", "step": "citation_verify",
+                          "verdict": "pass"}],
+            "action": "audit",
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content":
+                     "리서치 작업시 외부 출처를 활용한 주장에는 "
+                     "반드시 citation을 달게 해줘"},
+            ],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft is not None, body
+    # Verifier extracted onto requires[]. Server normalises
+    # `{kind:"step", step, verdict}` down to the legacy `{step, verdict}`
+    # row shape for the EvidencePolicy validator; either shape proves
+    # the extraction made it onto requires[].
+    req = draft.get("requires")
+    assert isinstance(req, list) and len(req) == 1, req
+    assert req[0].get("step") == "citation_verify"
+    assert req[0].get("verdict") == "pass"
+    # Lifecycle extracted onto trigger.event.
+    assert draft["trigger"]["event"] == "Stop", draft
+    # Action populated.
+    assert draft.get("action") == "audit", draft
+    # All four required fields populated → ready_to_save true, no more
+    # questions.
+    assert body["ready_to_save"] is True, body
+    assert body["questions"] == [], body
+
+
+def test_q100_system_prompt_carries_extraction_directive():
+    """Pin the EXTRACTION DIRECTIVE in the system prompt so a future
+    refactor that strips it (returning to canned-first behaviour)
+    trips this test. The directive is what tells the LLM to read the
+    freeform user text and emit draft_updates BEFORE thinking about
+    questions; removing it is the root cause of the "conversational
+    mode is identical to guided" UX bug screenshotted in #100.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _SYSTEM_INTERACTIVE_TMPL,
+    )
+    tmpl = _SYSTEM_INTERACTIVE_TMPL
+    assert "EXTRACTION DIRECTIVE" in tmpl, tmpl[:200]
+    # The Korean and English verifier vocabulary must both appear so
+    # an operator typing Korean ("출처", "인용") gets the same
+    # extraction quality as one typing English.
+    assert "citation_verify" in tmpl
+    assert "출처" in tmpl
+    assert "인용" in tmpl
+    assert "privilege_scan" in tmpl
+    assert "source_allowlist" in tmpl
+    assert "structured_output" in tmpl
+    assert "prompt_injection_screen" in tmpl
