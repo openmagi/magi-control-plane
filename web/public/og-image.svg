@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0b14"/>
+      <stop offset="100%" stop-color="#14161e"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#A78BFA"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1d1f2a" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <ellipse cx="600" cy="320" rx="380" ry="220" fill="url(#glow)"/>
+
+  <!-- Top brand row -->
+  <g transform="translate(60, 56)">
+    <g transform="translate(0, 0)">
+      <path d="M 22 0 L 28 16 L 44 22 L 28 28 L 22 44 L 16 28 L 0 22 L 16 16 Z" fill="url(#brand)"/>
+    </g>
+    <text x="62" y="32" font-family="Inter, system-ui, sans-serif" font-size="24" font-weight="600" fill="#F8FAFC" letter-spacing="-0.01em">Open Magi</text>
+    <text x="62" y="56" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#94A3B8" letter-spacing="0.04em">CONTROL PLANE</text>
+  </g>
+
+  <!-- Top right tag -->
+  <g transform="translate(1140, 70)">
+    <rect x="-150" y="-22" width="150" height="36" rx="18" fill="#7C3AED" fill-opacity="0.12" stroke="#7C3AED" stroke-opacity="0.5" stroke-width="1"/>
+    <text x="-75" y="2" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#A78BFA" letter-spacing="0.04em">SELF-HOST · APACHE 2.0</text>
+  </g>
+
+  <!-- Title -->
+  <g transform="translate(60, 200)">
+    <text x="0" y="0" font-family="Inter, system-ui, sans-serif" font-size="72" font-weight="700" fill="#F8FAFC" letter-spacing="-0.025em">Guardrails for</text>
+    <text x="0" y="84" font-family="Inter, system-ui, sans-serif" font-size="72" font-weight="700" fill="url(#brand)" letter-spacing="-0.025em">Claude Code.</text>
+    <text x="0" y="148" font-family="Inter, system-ui, sans-serif" font-size="26" font-weight="400" fill="#94A3B8" letter-spacing="-0.005em">Every tool call, prompt, and session boundary checked at runtime,</text>
+    <text x="0" y="184" font-family="Inter, system-ui, sans-serif" font-size="26" font-weight="400" fill="#94A3B8" letter-spacing="-0.005em">sealed into a tamper-evident ledger.</text>
+  </g>
+
+  <!-- Flow diagram -->
+  <g transform="translate(60, 460)">
+
+    <!-- Box 1: Claude Code -->
+    <g transform="translate(0, 0)">
+      <rect x="0" y="0" width="240" height="100" rx="14" fill="#1a1d28" stroke="#2d3142" stroke-width="1.5"/>
+      <g transform="translate(20, 28)">
+        <rect x="0" y="0" width="44" height="44" rx="10" fill="#C15F3C"/>
+        <text x="22" y="29" font-family="ui-monospace, Menlo, monospace" font-size="20" font-weight="700" text-anchor="middle" fill="#FFFFFF">&gt;_</text>
+      </g>
+      <text x="80" y="46" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#F8FAFC">Claude Code</text>
+      <text x="80" y="66" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">PreToolUse · Stop · ...</text>
+    </g>
+
+    <!-- Arrow 1 -->
+    <g transform="translate(252, 50)">
+      <line x1="0" y1="0" x2="40" y2="0" stroke="#475569" stroke-width="2"/>
+      <polygon points="40,-5 50,0 40,5" fill="#475569"/>
+    </g>
+
+    <!-- Box 2: Magi gate -->
+    <g transform="translate(312, 0)">
+      <rect x="0" y="0" width="240" height="100" rx="14" fill="#1a1228" stroke="#7C3AED" stroke-width="1.8"/>
+      <g transform="translate(20, 28)">
+        <path d="M 22 4 L 40 12 L 40 28 C 40 36 32 42 22 44 C 12 42 4 36 4 28 L 4 12 Z" fill="#7C3AED" fill-opacity="0.25" stroke="#A78BFA" stroke-width="1.8"/>
+        <path d="M 14 24 L 20 30 L 30 18" fill="none" stroke="#A78BFA" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="80" y="46" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#F8FAFC">Magi gate</text>
+      <text x="80" y="66" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">Policy evaluation</text>
+    </g>
+
+    <!-- Arrow 2 -->
+    <g transform="translate(564, 50)">
+      <line x1="0" y1="0" x2="40" y2="0" stroke="#475569" stroke-width="2"/>
+      <polygon points="40,-5 50,0 40,5" fill="#475569"/>
+    </g>
+
+    <!-- Box 3: Ledger -->
+    <g transform="translate(624, 0)">
+      <rect x="0" y="0" width="240" height="100" rx="14" fill="#1a1d28" stroke="#2d3142" stroke-width="1.5"/>
+      <g transform="translate(20, 28)">
+        <rect x="2" y="6" width="40" height="32" rx="4" fill="#22C55E" fill-opacity="0.15" stroke="#22C55E" stroke-width="1.5"/>
+        <line x1="8" y1="14" x2="36" y2="14" stroke="#22C55E" stroke-width="1.5"/>
+        <line x1="8" y1="20" x2="32" y2="20" stroke="#22C55E" stroke-width="1.5"/>
+        <line x1="8" y1="26" x2="36" y2="26" stroke="#22C55E" stroke-width="1.5"/>
+        <line x1="8" y1="32" x2="28" y2="32" stroke="#22C55E" stroke-width="1.5"/>
+      </g>
+      <text x="80" y="46" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#F8FAFC">Sealed ledger</text>
+      <text x="80" y="66" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="400" fill="#94A3B8">Ed25519 + hash chain</text>
+    </g>
+
+  </g>
+
+  <!-- URL -->
+  <text x="1140" y="586" font-family="ui-monospace, Menlo, monospace" font-size="16" font-weight="500" text-anchor="end" fill="#64748B">cp.openmagi.ai</text>
+</svg>
