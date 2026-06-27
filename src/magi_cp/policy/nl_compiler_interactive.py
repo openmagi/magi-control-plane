@@ -227,6 +227,206 @@ def _looks_like_verifier_intent(user_text: str) -> bool:
     return has_verifier_verb and not has_runnable_verb
 
 
+# ── #100 follow-up: deterministic intent extractor ────────────────────
+# Prompt-only LLM control was unreliable across three iterations: the
+# model kept defaulting to "polite generic intro + canonical
+# clarifying questions" even when freeform text clearly named a
+# verifier. The fix is to NOT depend on the LLM for extraction:
+# run a deterministic Python pass over the latest user turn before
+# the LLM is called, populate draft_updates with whatever we can
+# infer, then let the LLM run its conversational turn over the
+# already-populated draft. The LLM's job becomes confirming + asking
+# follow-ups, not extracting.
+#
+# Recall is biased high (false positives are cheaper than empty
+# drafts — operators can edit). Precision comes from anchoring on
+# distinctive Korean / English keywords that uniquely identify a
+# verifier.
+
+# Verifier keyword vocab. Tuples are checked in order; first match
+# wins per verifier. The patterns are case-insensitive substring
+# matches (NOT word-boundary) so Korean particles attached to the
+# keyword (e.g. "출처를", "출처가") still match.
+_VERIFIER_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("source_allowlist", (
+        "신뢰할 수 있는 출처", "신뢰 출처", "출처 검증", "출처 검사",
+        "출처가 신뢰", "출처를 신뢰", "출처의 신뢰도", "소스의 신뢰",
+        "허용 도메인", "허용된 사이트", "도메인 허용",
+        "trustworthy source", "trusted source", "trusted sources",
+        "domain whitelist", "allowlist", "allow-list",
+        "non-allowlist", "approved domain",
+    )),
+    ("prompt_injection_screen", (
+        "프롬프트 인젝션", "prompt injection", "indirect prompt injection",
+        "jailbreak", "가져온 내용 신뢰", "외부 콘텐츠 인젝션",
+        "fetched content", "untrusted content",
+    )),
+    ("citation_verify", (
+        "citation", "citations", "출처 표기", "인용 검증", "인용 확인",
+        "인용한 출처", "근거 표기", "verify citation", "verify citations",
+        "every claim must cite",
+    )),
+    ("privilege_scan", (
+        "주민번호", "RRN", "PII", "특권 정보", "민감 정보",
+        "셸 명령에 민감", "변호인 비밀", "work product",
+        "attorney-client privilege", "secrets in shell",
+        "privilege scan",
+    )),
+    ("structured_output", (
+        "JSON schema", "structured output", "응답 형식 검증",
+        "스키마", "schema enforcement", "validate response shape",
+    )),
+)
+
+# Tool / matcher keywords. Multi-word phrases checked first so
+# "web search" wins over a bare "web".
+_MATCHER_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("WebFetch", (
+        "web search", "외부 web search", "외부 검색", "외부 자료",
+        "외부 출처", "외부 소스", "web fetch", "webfetch", "fetch",
+        "url 가져오", "외부 사이트",
+    )),
+    ("Bash", (
+        "shell command", "bash command", "셸 명령", "쉘 명령",
+        "bash", "터미널 명령",
+    )),
+    ("Edit", (
+        "file edit", "파일 수정", "파일 편집",
+    )),
+)
+
+# Lifecycle / event keywords.
+_LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Stop", (
+        "최종 응답", "최종 답변", "최종 답", "final answer",
+        "before final answer", "agent finish",
+    )),
+    ("PostToolUse", (
+        "도구 실행 후", "도구 결과", "after a tool runs",
+        "after tool", "tool output",
+    )),
+    ("PreToolUse", (
+        "도구 실행 전", "before a tool runs", "before tool",
+        "before bash", "도구가 실행되기 전",
+    )),
+)
+
+# Action keywords.
+_ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("block", (
+        "차단", "막아", "block", "deny", "거부",
+    )),
+    ("ask", (
+        "묻기", "확인", "ask", "human", "사람에게",
+    )),
+    ("audit", (
+        "기록", "감사", "남기고", "log", "record", "audit",
+    )),
+)
+
+# Per-verifier default lifecycle + matcher tuples. Used when the user
+# names a verifier but does NOT name a lifecycle / matcher explicitly.
+_VERIFIER_DEFAULTS: dict[str, tuple[str, str]] = {
+    "citation_verify":         ("Stop",        "*"),
+    "structured_output":       ("Stop",        "*"),
+    "privilege_scan":          ("PreToolUse",  "Bash"),
+    "source_allowlist":        ("PreToolUse",  "WebFetch"),
+    "prompt_injection_screen": ("PostToolUse", "WebFetch"),
+}
+
+
+def _scan_first(text: str, vocab: tuple[tuple[str, tuple[str, ...]], ...],
+                ) -> str | None:
+    """Lowercased substring scan over a vocab table. Returns the first
+    key whose any phrase matches, or None. Korean phrases stay
+    case-insensitive via str.lower() (Korean has no case but the
+    English entries in the vocab need normalisation)."""
+    if not text:
+        return None
+    needle = text.lower()
+    for key, phrases in vocab:
+        for ph in phrases:
+            if ph.lower() in needle:
+                return key
+    return None
+
+
+def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
+    """Deterministic intent extractor. Reads the user's freeform text
+    and returns a partial draft_updates dict with whatever can be
+    inferred. The output is a strict subset of the IR fields that
+    `_apply_answer_to_draft` accepts (verifier id under a `requires`
+    row, plus `trigger.event` / `trigger.matcher` / `action`).
+
+    Returns an empty dict when nothing extractable surfaced; the
+    LLM then falls back to its conversational role with no draft
+    seed.
+    """
+    out: dict[str, Any] = {}
+    if not user_text or not user_text.strip():
+        return out
+
+    verifier = _scan_first(user_text, _VERIFIER_KEYWORDS)
+    if verifier is not None:
+        out["requires"] = [{"kind": "step", "step": verifier,
+                            "verdict": "pass"}]
+        # Pre-fill the lifecycle + matcher defaults for this verifier.
+        # An explicit user keyword later in the same text overrides
+        # these defaults.
+        default_event, default_matcher = _VERIFIER_DEFAULTS[verifier]
+        out["trigger"] = {"event": default_event,
+                          "matcher": default_matcher}
+
+    explicit_event = _scan_first(user_text, _LIFECYCLE_KEYWORDS)
+    if explicit_event is not None:
+        # Explicit lifecycle in the text wins over the verifier
+        # default.
+        out.setdefault("trigger", {})["event"] = explicit_event
+
+    explicit_matcher = _scan_first(user_text, _MATCHER_KEYWORDS)
+    if explicit_matcher is not None:
+        out.setdefault("trigger", {})["matcher"] = explicit_matcher
+
+    explicit_action = _scan_first(user_text, _ACTION_KEYWORDS)
+    if explicit_action is not None:
+        out["action"] = explicit_action
+
+    return out
+
+
+def _merge_extracted_into_draft(draft: dict[str, Any],
+                                extracted: dict[str, Any]) -> None:
+    """Merge an extractor output into the running draft IN PLACE.
+    Existing draft fields take precedence (the user may have answered
+    a prior turn's question, or a prior LLM turn may have already
+    written the field — never overwrite with an inferred guess).
+    """
+    if not extracted:
+        return
+
+    # requires: only set if draft has no requires row yet.
+    if "requires" in extracted and not draft.get("requires"):
+        draft["requires"] = extracted["requires"]
+
+    # trigger event + matcher: set per-field when missing.
+    if "trigger" in extracted:
+        ext_trigger = extracted["trigger"]
+        cur_trigger = draft.setdefault("trigger", {})
+        cur_trigger.setdefault("host", "claude-code")
+        if ext_trigger.get("event") and not cur_trigger.get("event"):
+            cur_trigger["event"] = ext_trigger["event"]
+        if ext_trigger.get("matcher") and not cur_trigger.get("matcher"):
+            cur_trigger["matcher"] = ext_trigger["matcher"]
+        if not cur_trigger.get("event") and not cur_trigger.get("matcher"):
+            # Avoid leaving an empty trigger dict — the IR validator
+            # treats `{host: "claude-code"}` alone as still-missing.
+            pass
+
+    # action: set when missing.
+    if "action" in extracted and not draft.get("action"):
+        draft["action"] = extracted["action"]
+
+
 # Map the wizard's three lifecycle labels (see web/app/(console)/policies/
 # new/page.tsx) onto the CC hook event the runtime actually fires.
 # Conversational compile keeps the same three high-level buckets so the
@@ -1716,6 +1916,20 @@ def step_compile(
             field_name = qid[2:]
             if field_name in _ANSWERABLE_FIELDS:
                 _apply_answer_to_draft(draft, field_name, value)  # type: ignore[arg-type]
+
+    # Step 2b — #100: deterministic intent extraction from the latest
+    # user freeform turn. Three iterations of prompt-only LLM control
+    # failed to produce reliable extraction across Korean phrasings;
+    # the model kept defaulting to canned-question mode. The fix is to
+    # NOT depend on the LLM for extraction at all. A pure-Python scan
+    # over the user's text fills the draft with verifier / lifecycle /
+    # matcher / action it can identify. The LLM still runs (Step 4+)
+    # but its job becomes "confirm + ask follow-ups", not "extract".
+    # The merge is non-destructive: existing fields the user / prior
+    # turn populated take precedence over the inferred guess.
+    latest_user_text = _latest_user_turn(history)
+    extracted = _extract_intent_from_text(latest_user_text)
+    _merge_extracted_into_draft(draft, extracted)
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
     # answers / merging produced something larger than the input).

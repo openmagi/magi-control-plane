@@ -1621,3 +1621,102 @@ def test_q100_directive_carries_korean_natural_phrasings():
     assert "final-answer-citation-audit" in tmpl
     # Turn-1 mandate language pinned.
     assert "TURN 1 MANDATE" in tmpl
+
+
+# ── #100 final: deterministic extraction (no LLM dependency) ──────────
+
+
+def test_q100_deterministic_extraction_korean_source_allowlist():
+    """The exact freeform Kevin typed in the screenshot. Server MUST
+    populate source_allowlist + WebFetch + PreToolUse + audit BEFORE
+    the LLM is called, so the LLM behavior is irrelevant for the
+    happy-path extraction.
+    """
+    # LLM returns empty draft_updates — proving the extraction came
+    # from the deterministic path, not the LLM.
+    canned = _llm_response(message="확인했어요.", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "리서치 업무에서 외부 자료를 참조할 때 "
+                           "소스의 신뢰도를 검사해서 기록을 남기면 좋겠어.",
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    assert draft is not None, body
+    req = draft.get("requires")
+    assert isinstance(req, list) and len(req) == 1, req
+    assert req[0].get("step") == "source_allowlist"
+    assert draft["trigger"]["event"] == "PreToolUse"
+    assert draft["trigger"]["matcher"] == "WebFetch"
+    assert draft.get("action") == "audit"
+
+
+def test_q100_deterministic_extraction_citation_korean():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "최종 답변에서 인용한 출처가 진짜인지 확인하고 "
+                           "안 맞으면 경고만 띄워줘",
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    body = r.json()
+    draft = body["draft"]
+    assert draft is not None, body
+    req = draft.get("requires")
+    assert req[0].get("step") == "citation_verify"
+    assert draft["trigger"]["event"] == "Stop"
+
+
+def test_q100_deterministic_extraction_does_not_overwrite_existing_draft():
+    """When draft_so_far already has fields, extraction must NOT
+    overwrite them. The user's prior answers / LLM-set fields win.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior_draft = {
+        "trigger": {
+            "host": "claude-code",
+            "event": "Stop",
+            "matcher": "*",
+        },
+        "requires": [{"kind": "step", "step": "citation_verify",
+                      "verdict": "pass"}],
+        "action": "block",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            # The freeform text names source_allowlist, but the prior
+            # draft already commits to citation_verify + block. The
+            # extractor's source_allowlist guess must lose.
+            "history": [{
+                "role": "user",
+                "content": "신뢰할 수 있는 출처만 허용하고 싶어 audit",
+            }],
+            "draft_so_far": prior_draft,
+            "answers": None,
+        },
+    )
+    body = r.json()
+    draft = body["draft"]
+    assert draft["requires"][0]["step"] == "citation_verify"
+    assert draft["action"] == "block"
