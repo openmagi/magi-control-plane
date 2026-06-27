@@ -515,6 +515,16 @@ class LlmKeysTestReq(BaseModel):
     provider: Literal["anthropic", "openai"] | None = None
 
 
+class ComposioMasterKeyPutReq(BaseModel):
+    """PUT body for /admin/composio-key (the platform-broker master key).
+
+    A missing/None `api_key` LEAVES the prior value unchanged; an empty string
+    CLEARS the stored key (env fallback then wins); a non-empty string
+    overwrites. Length-capped only; Composio validates on first call."""
+    model_config = {"extra": "forbid"}
+    api_key: str | None = Field(default=None, max_length=4096)
+
+
 # ── middlewares ──────────────────────────────────────────────────────
 class MaxBodyMiddleware(BaseHTTPMiddleware):
     """413 on Content-Length OR by accumulating a streamed/chunked body."""
@@ -772,6 +782,8 @@ def create_app(
     # policy_lock / custom_verifier_lock).
     llm_keys_lock = asyncio.Lock()
     app.state.llm_keys_lock = llm_keys_lock
+    composio_key_lock = asyncio.Lock()
+    app.state.composio_key_lock = composio_key_lock
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -1123,6 +1135,26 @@ def create_app(
             )
             _rebuild_provider_singletons()
         return _llm_status_payload()
+
+    @app.get("/admin/composio-key", dependencies=[Depends(require_admin_key)])
+    def admin_composio_key_get() -> dict:
+        """Dashboard reads whether the platform-broker master Composio key is
+        configured + its last4 + source (file vs env). Never the raw key."""
+        from .composio_key_store import status as _composio_status
+        return _composio_status()
+
+    @app.put("/admin/composio-key", dependencies=[Depends(require_admin_key)])
+    async def admin_composio_key_put(req: ComposioMasterKeyPutReq) -> dict:
+        """Dashboard writes the master Composio key (0600 atomic write).
+
+        Missing/None preserves, empty string clears, non-empty overwrites.
+        The broker reads `composio_key_store.resolve_master_key()` on each
+        call, so a new key takes effect without a container restart."""
+        from .composio_key_store import set as _composio_set
+        from .composio_key_store import status as _composio_status
+        async with composio_key_lock:
+            await asyncio.to_thread(_composio_set, req.api_key)
+        return _composio_status()
 
     @app.post(
         "/admin/llm-keys/test",
