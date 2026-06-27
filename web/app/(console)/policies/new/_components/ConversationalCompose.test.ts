@@ -141,24 +141,37 @@ describe("ConversationalCompose source invariants", () => {
     expect(src).toMatch(/abortRef\.current\.abort\(\)/)
   })
 
-  it("uses functional setHistory updaters everywhere (no closure snapshot writes)", () => {
-    // D55b code review P1: every history write must be functional so
-    // interleaved updates cannot clobber each other.
-    const stripped = src
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^\s*\/\/.*$/gm, "")
-    // Find every setHistory call by its head only; assert each is
-    // followed by a functional arrow (`(prev) =>` or `prev =>`),
-    // never by a direct array / object literal.
-    const heads = [...stripped.matchAll(/setHistory\(/g)]
-    expect(heads.length, "no setHistory calls found").toBeGreaterThan(0)
-    for (const h of heads) {
-      const tail = stripped.slice(h.index!, h.index! + 80)
-      expect(
-        /setHistory\(\s*(?:\(\s*\w+\s*\)|\w+)\s*=>/.test(tail),
-        `setHistory call is not functional: ${tail.split("\n")[0]}`,
-      ).toBe(true)
-    }
+  it("send path builds nextHistory synchronously over current closure history (no two-setState race)", () => {
+    // D55b code review P1 originally required EVERY setHistory call
+    // to be a functional updater. That invariant turned into a
+    // production race: the send path called setHistory twice in a
+    // row — first to append the user bubble, then a second
+    // functional updater whose `prev` was meant to capture the
+    // post-append snapshot for the wire body. React 18 batches
+    // functional updaters and runs them deferred, so the second
+    // updater's `prev` arrived BEFORE the first updater's bubble
+    // landed, and the wire `history` was empty. The server's
+    // `_latest_user_turn(history)` returned "" and the #100
+    // deterministic intent extractor had nothing to scan.
+    //
+    // Fix: build `nextHistory` synchronously over the current
+    // closure-captured `history`, push the SAME array into both
+    // setHistory(nextHistory) and the wire body. No race because
+    // there is only one setState call on the send path and the
+    // wire body is derived from the synchronous in-scope value.
+    expect(src).toMatch(/const\s+nextHistory\s*:/)
+    expect(src).toMatch(/setHistory\(nextHistory\)/)
+    expect(src).toMatch(/wireHistory[^=]*=\s*nextHistory\.map/)
+    // The DEFENSIVE pattern (functional updaters) still applies to
+    // OTHER setHistory calls outside the send path — the response /
+    // error / pill-replace / question-pill paths must remain
+    // functional so interleaved writes do not clobber each other.
+    // Pin a representative count: there must still be at least 3
+    // `setHistory((prev) =>` callsites (response merge, error
+    // bubble append, pill replace).
+    const functionalCount =
+      (src.match(/setHistory\(\s*\(\s*prev\s*\)\s*=>/g) || []).length
+    expect(functionalCount).toBeGreaterThanOrEqual(3)
   })
 
   it("pill picks push an optimistic user bubble using the human label", () => {

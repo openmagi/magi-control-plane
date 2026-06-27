@@ -357,26 +357,28 @@ export function ConversationalCompose({
 
     setPending(true)
     setErrored(false)
-    // Optimistically render the user's bubble. Functional updater so
-    // any interleaved write (future refactor, concurrent events) does
-    // not clobber state - we always extend the latest snapshot.
+    // Build the next-history snapshot synchronously over the current
+    // closure-captured `history`, then push the same array into BOTH
+    // the optimistic setState AND the fetch wire body. The prior
+    // pattern split this into two setState calls — first to add the
+    // user bubble, then a second functional updater that read `prev`
+    // to capture the wire body. React 18 batches functional updaters
+    // and runs them deferred, so the second updater's `prev` arrived
+    // BEFORE the first updater's bubble was applied. The result: the
+    // wire body landed with an empty `history`, so the server's
+    // `_latest_user_turn(history)` returned "" and the #100
+    // deterministic intent extractor had nothing to scan. Building
+    // `nextHistory` synchronously here removes the race.
     const bubble = params.userBubble ?? params.userText
-    if (bubble) {
-      setHistory((prev) => [...prev, { role: "user", content: bubble }])
-    }
+    const nextHistory: HistoryTurn[] = bubble
+      ? [...history, { role: "user", content: bubble }]
+      : history
+    setHistory(nextHistory)
     let answersSent = false
     try {
       answersSent = !!params.answers
-      // Build wire history. The server reconstructs questions
-      // deterministically from `draft_so_far`, so we drop our local
-      // `questions` metadata. We capture the latest snapshot via a
-      // functional setter that also serves as a read; this avoids the
-      // closure-capture race entirely.
-      let wireHistory: { role: "user" | "assistant"; content: string }[] = []
-      setHistory((prev) => {
-        wireHistory = prev.map((h) => ({ role: h.role, content: h.content }))
-        return prev
-      })
+      const wireHistory: { role: "user" | "assistant"; content: string }[] =
+        nextHistory.map((h) => ({ role: h.role, content: h.content }))
       const res = await fetch("/api/policies/compile-interactive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
