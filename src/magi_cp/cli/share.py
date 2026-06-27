@@ -63,12 +63,43 @@ def load_events(path: Path) -> list[dict]:
     return events
 
 
+_LEDGER_DIR = "~/.magi-cp/source-checks"
+
+
+def load_source_ledger(session_id: str) -> list[dict]:
+    """Read the control plane's evidence ledger for a session (best-effort).
+
+    Written by an audit policy (PostToolUse) at
+    ``~/.magi-cp/source-checks/<sessionId>.jsonl``. Missing file -> empty.
+    """
+    path = Path(_LEDGER_DIR).expanduser() / f"{session_id}.jsonl"
+    if not path.is_file():
+        return []
+    out: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    except OSError:
+        return []
+    return out
+
+
 def build_redacted_view(run: str, *, projects_dir: str | os.PathLike[str]) -> dict:
     """Locate, build, and redact a run's public view. Raises FileNotFoundError."""
     path = find_transcript(run, projects_dir=projects_dir)
     if path is None:
         raise FileNotFoundError(f"no Claude Code transcript found for run {run!r}")
-    view = transcript_to_run_view(load_events(path))
+    # The session id is the transcript filename stem.
+    ledger = load_source_ledger(path.stem)
+    view = transcript_to_run_view(load_events(path), source_ledger=ledger)
     return build_public_run_view(view)
 
 

@@ -275,6 +275,44 @@ def test_ask_style_permission_held_for_approval() -> None:
     assert step["status"] == "needs_approval"
 
 
+def test_source_ledger_enriches_and_adds_sources_and_governance() -> None:
+    # A WebFetch in the transcript + a ledger verdict for it -> graded source.
+    # A Bash-fetched URL only in the ledger -> added as a new source.
+    events = [
+        {"type": "assistant", "sessionId": "s", "message": {"role": "assistant", "model": "m",
+            "content": [{"type": "tool_use", "id": "w1", "name": "WebFetch",
+                         "input": {"url": "https://sec.gov/a"}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ]
+    ledger = [
+        {"toolUseId": "w1", "tool": "WebFetch", "url": "https://sec.gov/a",
+         "verdict": "CREDIBLE - official SEC EDGAR filing"},
+        {"toolUseId": "b1", "tool": "Bash", "url": "https://assets-ir.tesla.com/x.pdf",
+         "verdict": "CREDIBLE - Tesla official IR"},
+        {"toolUseId": "b2", "tool": "Bash", "url": "https://randomblog.example/x",
+         "verdict": "NOT_CREDIBLE - secondary blog"},
+    ]
+    v = transcript_to_run_view(events, source_ledger=ledger)
+    by_ref = {s["ref"]: s for s in v["sources"]}
+    assert by_ref["https://sec.gov/a"]["credibility"].startswith("CREDIBLE")  # enriched existing
+    assert "https://assets-ir.tesla.com/x.pdf" in by_ref                       # added new
+    assert by_ref["https://randomblog.example/x"]["credibility"].startswith("NOT_CREDIBLE")
+    verifs = [g for g in v["governance"] if g["kind"] == "verification"]
+    assert {g["status"] for g in verifs} == {"ok", "error"}
+    assert any(g["name"] == "sec.gov" and g["status"] == "ok" for g in verifs)
+    assert any(g["name"] == "randomblog.example" and g["status"] == "error" for g in verifs)
+
+
+def test_source_ledger_dedups_repeated_urls() -> None:
+    ledger = [
+        {"url": "https://sec.gov/a", "verdict": "CREDIBLE - x", "tool": "WebFetch"},
+        {"url": "https://sec.gov/a", "verdict": "CREDIBLE - x", "tool": "WebFetch"},
+    ]
+    v = transcript_to_run_view([], source_ledger=ledger)
+    assert len([s for s in v["sources"] if s["ref"] == "https://sec.gov/a"]) == 1
+    assert len([g for g in v["governance"] if g["kind"] == "verification"]) == 1
+
+
 def test_interactive_rejection_becomes_rejected_governance() -> None:
     # A reviewer who declines a held tool: CC writes a rejection message with NO
     # tool name; the producer recovers it from the matching trace step.
