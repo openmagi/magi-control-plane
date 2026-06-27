@@ -83,7 +83,7 @@ export default async function Image({ params }: { params: { token: string } }) {
 
           {/* the run this happened on */}
           <div style={{ display: "flex", color: C.muted, fontSize: 27, marginTop: 30 }}>
-            <span style={{ color: C.prompt }}>❯&nbsp;</span>{title}
+            <span style={{ color: C.prompt }}>$&nbsp;</span>{title}
           </div>
 
           <div style={{ display: "flex", flexGrow: 1 }} />
