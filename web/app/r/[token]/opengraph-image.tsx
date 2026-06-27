@@ -110,7 +110,7 @@ export default async function Image({ params }: { params: { token: string } }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, color: C.coral, fontSize: 19 }}>
               <svg width="20" height="14" viewBox="0 0 20 14"><path d="M2 2 L8 7 L2 12 Z M10 2 L16 7 L10 12 Z" fill={C.coral} /></svg>
-              <div style={{ display: "flex", color: C.muted }}>bypass permissions on · governed by magi</div>
+              <div style={{ display: "flex", color: C.muted }}>governed by magi · policy enforced</div>
             </div>
           </div>
 
