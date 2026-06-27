@@ -247,35 +247,71 @@ def _looks_like_verifier_intent(user_text: str) -> bool:
 # wins per verifier. The patterns are case-insensitive substring
 # matches (NOT word-boundary) so Korean particles attached to the
 # keyword (e.g. "출처를", "출처가") still match.
+# High-precision verifier vocab. Phrases here are NOT ambiguous: each
+# one names the verifier directly (by id), or names a domain-specific
+# concept that has exactly one verifier mapping. Ambiguous phrases
+# like "신뢰도", "출처 검증", "소스 검사" are INTENTIONALLY OMITTED
+# because three verifiers (source_allowlist, prompt_injection_screen,
+# citation_verify) all read as "source trustworthiness" depending on
+# operator intent. Guessing in that case is worse than asking — the
+# wizard falls through to the canonical "what should we check?"
+# question and lets the operator pick.
 _VERIFIER_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("source_allowlist", (
-        "신뢰할 수 있는 출처", "신뢰 출처", "출처 검증", "출처 검사",
-        "출처가 신뢰", "출처를 신뢰", "출처의 신뢰도", "소스의 신뢰",
-        "허용 도메인", "허용된 사이트", "도메인 허용",
-        "trustworthy source", "trusted source", "trusted sources",
-        "domain whitelist", "allowlist", "allow-list",
-        "non-allowlist", "approved domain",
+        # Allowlist-specific vocabulary only. "Trustworthy source" is
+        # explicitly NOT here — that phrase could mean any of three
+        # verifiers and we let the operator disambiguate.
+        "허용 도메인", "허용된 도메인", "허용된 사이트",
+        "도메인 허용 목록", "허용 목록",
+        "domain whitelist", "domain allowlist",
+        "allowlist", "allow-list", "allow list",
+        "non-allowlist", "approved domain", "approved domains",
+        "source_allowlist",
     )),
     ("prompt_injection_screen", (
+        # Injection-specific vocabulary. "외부 콘텐츠 신뢰" alone is
+        # too ambiguous (could be source_allowlist); the injection
+        # entries must name injection explicitly.
         "프롬프트 인젝션", "prompt injection", "indirect prompt injection",
-        "jailbreak", "가져온 내용 신뢰", "외부 콘텐츠 인젝션",
-        "fetched content", "untrusted content",
+        "jailbreak", "외부 콘텐츠 인젝션", "콘텐츠 인젝션",
+        "fetched content injection", "untrusted content injection",
+        "prompt_injection_screen",
     )),
     ("citation_verify", (
-        "citation", "citations", "출처 표기", "인용 검증", "인용 확인",
-        "인용한 출처", "근거 표기", "verify citation", "verify citations",
-        "every claim must cite",
+        # Citation-specific vocabulary: "인용" is the strongest anchor
+        # because it specifically means "quoting / citing a source"
+        # rather than just "the source itself".
+        "citation", "citations", "출처 표기", "인용 검증",
+        "인용 확인", "인용한 출처", "인용을 검증", "근거 표기",
+        "verify citation", "verify citations",
+        "every claim must cite", "citation_verify",
     )),
     ("privilege_scan", (
         "주민번호", "RRN", "PII", "특권 정보", "민감 정보",
         "셸 명령에 민감", "변호인 비밀", "work product",
         "attorney-client privilege", "secrets in shell",
-        "privilege scan",
+        "privilege scan", "privilege_scan",
     )),
     ("structured_output", (
         "JSON schema", "structured output", "응답 형식 검증",
-        "스키마", "schema enforcement", "validate response shape",
+        "스키마 검증", "schema enforcement",
+        "validate response shape", "structured_output",
     )),
+)
+
+# Ambiguous "check / verify" verbs that signal verifier INTENT but
+# do not commit to a specific verifier. When the user's text matches
+# one of these AND does not match any high-precision keyword above,
+# we leave `requires` UNSET so the wizard surfaces its canonical
+# q_requires question for the operator to choose deterministically.
+# An empty `requires` is what step 3 of the wizard is for.
+_AMBIGUOUS_VERIFIER_VERBS: tuple[str, ...] = (
+    "신뢰도", "신뢰성", "신뢰할 수 있는", "신뢰 가능",
+    "출처 검증", "출처 검사", "출처 확인",
+    "소스의 신뢰", "소스 검사", "소스 검증", "소스 확인",
+    "검사하고", "검증하고", "확인하고",
+    "trustworthy", "trusted source", "trusted sources",
+    "source check", "source verification",
 )
 
 # Tool / matcher keywords. Multi-word phrases checked first so
@@ -354,19 +390,33 @@ def _scan_first(text: str, vocab: tuple[tuple[str, tuple[str, ...]], ...],
 def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     """Deterministic intent extractor. Reads the user's freeform text
     and returns a partial draft_updates dict with whatever can be
-    inferred. The output is a strict subset of the IR fields that
-    `_apply_answer_to_draft` accepts (verifier id under a `requires`
-    row, plus `trigger.event` / `trigger.matcher` / `action`).
+    inferred unambiguously. The output is a strict subset of the IR
+    fields that `_apply_answer_to_draft` accepts.
 
-    Returns an empty dict when nothing extractable surfaced; the
-    LLM then falls back to its conversational role with no draft
-    seed.
+    Verifier extraction is HIGH-PRECISION: only phrases that uniquely
+    identify a verifier (allowlist, citation, RRN / 주민번호, schema,
+    prompt injection) populate `requires`. Ambiguous phrases like
+    "신뢰도", "출처 검증", "소스 검사" — which could mean any of
+    source_allowlist / prompt_injection_screen / citation_verify —
+    do NOT populate `requires`; the wizard falls through to its
+    canonical "what should we check?" question and the operator
+    picks. Per Kevin: "guessing wrong is worse than asking."
+
+    Lifecycle, matcher, and action are still extracted on the same
+    high-recall basis since those are operator-correctable in one
+    click via the wizard's q_lifecycle / q_matcher slots.
+
+    Returns an empty dict when nothing extractable surfaced.
     """
     out: dict[str, Any] = {}
     if not user_text or not user_text.strip():
         return out
 
     verifier = _scan_first(user_text, _VERIFIER_KEYWORDS)
+    needle = user_text.lower()
+    has_ambiguous_intent = any(v.lower() in needle
+                                for v in _AMBIGUOUS_VERIFIER_VERBS)
+
     if verifier is not None:
         out["requires"] = [{"kind": "step", "step": verifier,
                             "verdict": "pass"}]
@@ -376,6 +426,13 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
         default_event, default_matcher = _VERIFIER_DEFAULTS[verifier]
         out["trigger"] = {"event": default_event,
                           "matcher": default_matcher}
+    elif has_ambiguous_intent:
+        # The user signalled verifier intent but didn't name a
+        # specific verifier. Surface that to the question logic via a
+        # marker so step_compile prefers the canonical q_requires
+        # question. The marker is dropped before merge; only the
+        # question routing sees it.
+        out["__verifier_ambiguous__"] = True
 
     explicit_event = _scan_first(user_text, _LIFECYCLE_KEYWORDS)
     if explicit_event is not None:
@@ -400,6 +457,9 @@ def _merge_extracted_into_draft(draft: dict[str, Any],
     Existing draft fields take precedence (the user may have answered
     a prior turn's question, or a prior LLM turn may have already
     written the field — never overwrite with an inferred guess).
+
+    The marker `__verifier_ambiguous__` is intentionally NOT merged;
+    it only steers the question logic in step_compile.
     """
     if not extracted:
         return
@@ -1929,6 +1989,8 @@ def step_compile(
     # turn populated take precedence over the inferred guess.
     latest_user_text = _latest_user_turn(history)
     extracted = _extract_intent_from_text(latest_user_text)
+    verifier_is_ambiguous = bool(extracted.pop("__verifier_ambiguous__",
+                                               False))
     _merge_extracted_into_draft(draft, extracted)
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
@@ -2354,6 +2416,41 @@ def step_compile(
                 "초안이 준비되었습니다. 저장하시겠어요?"
                 if ko else "Draft ready. Want to save it?"
             )
+
+    # #100 post-iteration — verifier ambiguity nudge. The extractor
+    # flagged ambiguity when the user named a verify/check intent
+    # without naming a specific verifier. The wizard's canonical
+    # q_requires question only offers "regex / AI judge / structured /
+    # existing verifier" — operators reading "existing verifier" in
+    # KO have no idea which one they meant. Override the assistant
+    # message with an explicit short menu of the 5 wired verifiers
+    # phrased in operator-facing language, so the operator can answer
+    # in chat (next turn re-runs the extractor over their reply).
+    if (verifier_is_ambiguous
+            and not draft.get("requires")
+            and not ready_to_save):
+        menu = (
+            "어떤 종류의 검사가 필요한지 더 명확히 알려주세요.\n"
+            "  · 허용된 도메인만 fetch 가능하게 (도메인 허용 목록)\n"
+            "  · 인용한 출처가 진짜인지 확인 (인용 검증)\n"
+            "  · 가져온 콘텐츠가 prompt injection인지 검사 (인젝션 차단)\n"
+            "  · 응답에 주민번호/PII가 있는지 (민감정보 스캔)\n"
+            "  · 응답이 정해진 JSON 형식인지 (스키마 검증)\n"
+            "원하시는 것을 한 줄로 말씀해 주세요."
+            if ko else
+            "I want to make sure I pick the right check. Which one matches "
+            "your intent?\n"
+            "  · Only allow fetch to approved domains (source allowlist)\n"
+            "  · Verify the agent's citations are real (citation verify)\n"
+            "  · Screen fetched content for prompt injection (injection)\n"
+            "  · Scan response for RRN / PII (privilege scan)\n"
+            "  · Validate response matches a JSON schema (structured output)\n"
+            "Reply with one sentence."
+        )
+        # Replace assistant_message rather than append, so the menu is
+        # the visible response (LLM's polite generic intro becomes
+        # noise here).
+        assistant_message = menu
 
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty

@@ -1632,8 +1632,13 @@ def test_q100_deterministic_extraction_korean_source_allowlist():
     the LLM is called, so the LLM behavior is irrelevant for the
     happy-path extraction.
     """
-    # LLM returns empty draft_updates — proving the extraction came
-    # from the deterministic path, not the LLM.
+    # The exact KO screenshot phrase Kevin tested with. "소스의 신뢰도
+    # 검사" reads as a verify intent but does NOT name a specific
+    # verifier — three verifiers all read as "source trustworthiness"
+    # depending on intent. The extractor MUST NOT guess; instead it
+    # leaves `requires` unset and the server emits a disambiguation
+    # menu in assistant_message so the operator picks. Matcher /
+    # action are still inferred unambiguously and survive.
     canned = _llm_response(message="확인했어요.", updates={}, questions=[])
     c = _client(llm_compiler=FakeLlmProvider([canned]))
     r = c.post(
@@ -1651,14 +1656,19 @@ def test_q100_deterministic_extraction_korean_source_allowlist():
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    draft = body["draft"]
-    assert draft is not None, body
-    req = draft.get("requires")
-    assert isinstance(req, list) and len(req) == 1, req
-    assert req[0].get("step") == "source_allowlist"
-    assert draft["trigger"]["event"] == "PreToolUse"
-    assert draft["trigger"]["matcher"] == "WebFetch"
+    draft = body["draft"] or {}
+    # requires MUST be unset on this ambiguous phrasing.
+    assert not draft.get("requires"), draft
+    # The unambiguous fields (matcher + action) DO get extracted.
+    assert draft.get("trigger", {}).get("matcher") == "WebFetch"
     assert draft.get("action") == "audit"
+    # The disambiguation menu must appear in assistant_message.
+    msg = body.get("assistant_message", "")
+    assert "도메인 허용 목록" in msg, msg
+    assert "인용 검증" in msg, msg
+    assert "인젝션" in msg, msg
+    assert "민감정보 스캔" in msg, msg
+    assert "스키마 검증" in msg, msg
 
 
 def test_q100_deterministic_extraction_citation_korean():
