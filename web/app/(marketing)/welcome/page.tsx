@@ -15,8 +15,25 @@ export const metadata: Metadata = {
     type: "website",
     locale: "ko_KR",
     alternateLocale: "en_US",
+    // Next.js merges page metadata SHALLOWLY onto the layout's metadata,
+    // so a page that exports its own openGraph block wipes out the
+    // layout's openGraph.images by definition. We have to re-declare
+    // the image here. Absolute URL because Telegram + several other
+    // crawlers refuse to resolve relative og:image paths.
+    images: [{
+      url: "https://cp.openmagi.ai/og-image.png",
+      width: 1200,
+      height: 630,
+      alt: "Open Magi Control Plane: Guardrails for Claude Code",
+    }],
   },
-  twitter: { card: "summary_large_image" },
+  twitter: {
+    card: "summary_large_image",
+    title: "Open Magi · Control Plane: Guardrails for Claude Code",
+    description:
+      "Run Claude Code on systems that matter. Magi catches every agent action before it ships, with rules you author in the dashboard.",
+    images: ["https://cp.openmagi.ai/og-image.png"],
+  },
   alternates: { canonical: "/welcome" },
   robots: { index: true, follow: true },
 }
