@@ -209,6 +209,17 @@ export default async function SharedRunPage({
           ) : null}
         </div>
 
+        {/* what-this-is explainer, so a first-time viewer gets the context */}
+        <div style={{ ...card, borderLeft: `3px solid ${C.green}`, marginBottom: 20, fontSize: 13.5, lineHeight: 1.6 }}>
+          <span style={{ color: C.text }}>A <span style={{ color: C.prompt }}>Claude Code</span> session, captured and governed by{" "}
+          <span style={{ color: C.prompt }}>Magi Control Plane</span>.</span>{" "}
+          <span style={{ color: C.muted }}>
+            Every tool call is checked against policy in real time — sources are credibility-verified, high-risk
+            actions are held for human approval or blocked, and the whole run is recorded as an audit trail. This page
+            is that record; nothing was edited after the fact.
+          </span>
+        </div>
+
         <div className="run-grid">
           {/* LEFT: the run, replayed as the Claude Code TUI */}
           <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", background: C.termBg, boxShadow: "0 8px 40px rgba(0,0,0,0.4)" }}>
