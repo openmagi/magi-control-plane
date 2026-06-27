@@ -88,6 +88,13 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "Directory for token signing keys.",
   },
   {
+    name: "MAGI_CP_COMPOSIO_MASTER_KEY",
+    group: "cloud",
+    default: "(unset)",
+    ko: "플랫폼 Composio 브로커가 서버사이드에서 쓰는 마스터 Composio API 키. 대시보드(/admin/composio-key)로 넣으면 이 env는 폴백.",
+    en: "Master Composio API key the platform broker uses server-side. The dashboard (/admin/composio-key) overrides this; the env is the fallback.",
+  },
+  {
     name: "MAGI_CP_POLICY_STORE",
     group: "cloud",
     default: "sqlite",
