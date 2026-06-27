@@ -13,7 +13,18 @@ export const dynamic = "force-dynamic"
 export const metadata: Metadata = {
   title: "Shared agent run · Magi",
   description: "A Claude Code run, captured and governed by Magi.",
+  // noindex (don't list in search), but allow link unfurls (og/twitter image).
   robots: { index: false, follow: false },
+  openGraph: {
+    title: "A governed agent run · Magi",
+    description: "A Claude Code run, captured and governed by Magi.",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "A governed agent run · Magi",
+    description: "A Claude Code run, captured and governed by Magi.",
+  },
 }
 
 const C = {
