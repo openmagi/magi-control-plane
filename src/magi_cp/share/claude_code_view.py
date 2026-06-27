@@ -173,13 +173,31 @@ def _non_negative_int(value: object) -> int:
     return result if result >= 0 else 0
 
 
+def _short_domain(url: str) -> str:
+    """`https://www.sec.gov/x/y` -> `sec.gov` for a readable evidence label."""
+    m = re.match(r"https?://(?:www\.)?([^/]+)", url or "")
+    return m.group(1) if m else (url or "source")
+
+
+def _is_credible_verdict(verdict: str) -> bool:
+    up = (verdict or "").upper()
+    return "CREDIBLE" in up and "NOT_CREDIBLE" not in up and "NOT CREDIBLE" not in up
+
+
 def transcript_to_run_view(
     events: Sequence[Mapping[str, object]],
     *,
     session_id: str | None = None,
     governance: Sequence[Mapping[str, object]] | None = None,
+    source_ledger: Sequence[Mapping[str, object]] | None = None,
 ) -> dict:
-    """Build the per-run view from a Claude Code session's events."""
+    """Build the per-run view from a Claude Code session's events.
+
+    ``source_ledger`` is the control plane's evidence ledger for this session
+    (entries ``{toolUseId, url, verdict, ...}`` written by an audit policy). When
+    present, each distinct retrieved URL becomes a credibility-graded source and a
+    ``verification`` governance entry, so the page shows what the policy judged.
+    """
     goal: str | None = None
     result: str | None = None
     model: str | None = None
@@ -365,8 +383,40 @@ def transcript_to_run_view(
         if title is not None:
             summary["title"] = title
 
-    # Auto-derived blocks (from the transcript) first, then any explicit overlay.
-    all_gov = auto_gov + [
+    # Evidence ledger: each distinct retrieved URL the audit policy judged becomes
+    # a credibility-graded source + a verification governance entry. Enriches a
+    # matching transcript-derived source, or adds a new one (e.g. a Bash-fetched
+    # URL the web-source heuristic missed).
+    ledger_gov: list[dict] = []
+    if source_ledger:
+        by_url = {s["ref"]: s for s in sources if s.get("ref")}
+        seen_urls: set[str] = set()
+        for entry in source_ledger:
+            if not isinstance(entry, Mapping):
+                continue
+            url = entry.get("url")
+            verdict = entry.get("verdict")
+            if not (isinstance(url, str) and url and isinstance(verdict, str) and verdict):
+                continue
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            existing = by_url.get(url)
+            if existing is not None:
+                existing["credibility"] = verdict
+            else:
+                sources.append({"tool": str(entry.get("tool") or "fetch"), "ref": url,
+                                "isUrl": True, "credibility": verdict})
+            ledger_gov.append({
+                "name": _short_domain(url),
+                "status": "ok" if _is_credible_verdict(verdict) else "error",
+                "reason": f"Source credibility (policy): {verdict}",
+                "kind": "verification",
+            })
+
+    # Auto-derived blocks (from the transcript) first, then ledger verifications,
+    # then any explicit overlay.
+    all_gov = auto_gov + ledger_gov + [
         dict(g) for g in (governance or []) if isinstance(g, Mapping)
     ]
 
