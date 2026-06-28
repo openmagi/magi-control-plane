@@ -1,4 +1,4 @@
-"""``magi-cp share <run>`` — turn a Claude Code run into a public share link.
+"""``magi-cp share <run>`` - turn a Claude Code run into a public share link.
 
 Locates the run's Claude Code transcript (``~/.claude/projects/<cwd>/<run>.jsonl``),
 builds the ``openmagi.runView.v1`` view, redacts it (allowlist fail-closed), and
@@ -173,7 +173,7 @@ def cli(argv: list[str]) -> int:
     print("Share this run:", file=sys.stderr)
     print(url)
     print(
-        "  Redaction is best-effort — review the page before sharing publicly.",
+        "  Redaction is best-effort. Review the page before sharing publicly.",
         file=sys.stderr,
     )
     return 0

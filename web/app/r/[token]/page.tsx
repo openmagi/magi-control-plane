@@ -46,11 +46,11 @@ const DOTS = ["#FF5F56", "#FFBD2E", "#27C93F"]
 type ModelField = string | { label?: string | null; provider?: string | null } | null | undefined
 
 function modelLabel(model: ModelField): string {
-  if (typeof model === "string") return model || "—"
+  if (typeof model === "string") return model || "-"
   if (model && typeof model === "object") {
-    return [model.provider, model.label].filter(Boolean).join(" / ") || "—"
+    return [model.provider, model.label].filter(Boolean).join(" / ") || "-"
   }
-  return "—"
+  return "-"
 }
 
 /** Only http(s) hrefs reach the DOM (model-influenced refs; block javascript:). */
@@ -214,7 +214,7 @@ export default async function SharedRunPage({
           <span style={{ color: C.text }}>A <span style={{ color: C.prompt }}>Claude Code</span> session, captured and governed by{" "}
           <span style={{ color: C.prompt }}>Magi Control Plane</span>.</span>{" "}
           <span style={{ color: C.muted }}>
-            Every tool call is checked against policy in real time — sources are credibility-verified, high-risk
+            Every tool call is checked against policy in real time: sources are credibility-verified, high-risk
             actions are held for human approval or blocked, and the whole run is recorded as an audit trail. This page
             is that record; nothing was edited after the fact.
           </span>
@@ -278,7 +278,7 @@ export default async function SharedRunPage({
                       {stopped ? `✗ ${name}` : `↳ ${name}`}{detail ? <span style={{ color: C.muted }}>({detail})</span> : null}
                       {stopped ? <span style={{ marginLeft: 8 }}>· {govVerb(it.status)}</span> : null}
                     </div>
-                    {/* verification verdict (passed step) — detail collapsed */}
+                    {/* verification verdict (passed step) - detail collapsed */}
                     {g && !stopped && g.kind === "verification" && g.reason ? (
                       (() => {
                         const ok = g.status === "ok" || g.status === "verified" || g.status === "passed"
@@ -348,7 +348,7 @@ export default async function SharedRunPage({
                 <>
                   <div style={{ color: C.text, fontSize: 13.5, margin: "8px 0 12px" }}>
                     Magi applied {governance.length} {governance.length === 1 ? "policy" : "policies"} to this run
-                    {held > 0 || blocked > 0 ? <> — {[held ? `${held} held` : null, blocked ? `${blocked} blocked` : null].filter(Boolean).join(", ")} before running.</> : "."}
+                    {held > 0 || blocked > 0 ? <> - {[held ? `${held} held` : null, blocked ? `${blocked} blocked` : null].filter(Boolean).join(", ")} before running.</> : "."}
                   </div>
                   <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                     {governance.map((g, i) => {
