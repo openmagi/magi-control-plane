@@ -278,29 +278,19 @@ def test_full_walkthrough_requires_body_and_id_before_ready():
     body5 = r5.json()
     d5 = body5["draft"]
     assert d5["action"] == "block"
-    # Still not ready: id is missing.
-    assert body5["ready_to_save"] is False
-    assert "id" in body5["missing_fields"]
-
-    # Turn 6: answer q_id. The draft now passes the IR validator and
-    # ready_to_save flips to True.
-    r6 = c.post(
-        "/policies/compile-interactive",
-        headers=HEADERS,
-        json={
-            "history": [],
-            "draft_so_far": d5,
-            "answers": {"q_id": "block-bash-rm"},
-        },
-    )
-    assert r6.status_code == 200, r6.text
-    body = r6.json()
-    assert body["ready_to_save"] is True, body
-    assert body["missing_fields"] == []
-    assert body["draft"]["id"] == "block-bash-rm"
+    # Q102 — id auto-gen: once every behavioral field is filled,
+    # the server synthesises an id from matcher + verifier/action so
+    # the operator never has to type a policy id by hand. The id is
+    # overrideable in a follow-up turn by the operator; for the
+    # default flow ready_to_save flips True here.
+    assert body5["ready_to_save"] is True, body5
+    assert body5["missing_fields"] == []
+    # Auto-id is matcher + action slug (no verifier step in this
+    # regex-based draft).
+    assert d5["id"] == "bash-block"
     # The draft round-trips through the IR loader cleanly.
     from magi_cp.policy.ir import policy_from_dict
-    p = policy_from_dict(body["draft"])
+    p = policy_from_dict(d5)
     assert p.action == "block"
     assert p.trigger.matcher == "Bash"
 
@@ -524,9 +514,19 @@ def test_invalid_policy_id_answer_dropped():
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    # Bad id was rejected; missing_fields still includes id.
-    assert "id" in body["missing_fields"], body
-    assert "id" not in body["draft"], body
+    # Q102 — bad id explicitly typed by the operator is dropped, and
+    # the server falls back to the auto-id slug so the operator is
+    # never blocked. The auto-id has the canonical
+    # `<matcher>-<verifier>-<action>` shape; the malicious
+    # "../escape" is gone from the draft.
+    assert body["draft"].get("id") != "../escape"
+    # ready_to_save flips True via auto-id (the prior behavioral
+    # fields are all set in `prior`).
+    assert body["ready_to_save"] is True
+    assert body["missing_fields"] == []
+    # Auto-id shape: lowercase, hyphenated, no traversal chars.
+    auto_id = body["draft"].get("id", "")
+    assert auto_id and "/" not in auto_id and ".." not in auto_id
 
 
 # ── edge cases ────────────────────────────────────────────────────────

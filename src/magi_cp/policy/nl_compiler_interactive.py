@@ -387,6 +387,68 @@ def _scan_first(text: str, vocab: tuple[tuple[str, tuple[str, ...]], ...],
     return None
 
 
+def _auto_id_for_draft(draft: dict[str, Any]) -> str:
+    """Synthesize a slug-shaped id from the draft's verifier + matcher.
+
+    Output shape: `<matcher-token>-<verifier-step>-<action>` truncated
+    to 60 chars. Avoids guessing on run_command drafts (caller gates).
+
+    Examples:
+      WebFetch + source_allowlist + audit -> webfetch-source_allowlist-audit
+      Bash     + privilege_scan   + block -> bash-privilege_scan-block
+      *        + citation_verify  + audit -> all-citation_verify-audit
+    """
+    req = draft.get("requires")
+    step = ""
+    if isinstance(req, list) and req:
+        first = req[0]
+        if isinstance(first, dict):
+            s = first.get("step")
+            if isinstance(s, str):
+                step = s.strip()
+    trigger = draft.get("trigger") or {}
+    matcher = trigger.get("matcher") if isinstance(trigger, dict) else None
+    action = draft.get("action")
+    matcher_token = matcher if isinstance(matcher, str) and matcher else "all"
+    if matcher_token == "*":
+        matcher_token = "all"
+    parts = [p for p in (matcher_token, step, action) if p]
+    if not parts:
+        return ""
+    # Lowercase, replace any non-id-safe char with `-`, collapse runs.
+    raw = "-".join(parts).lower()
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", raw)
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+    return cleaned[:60]
+
+
+def _auto_description_for_draft(draft: dict[str, Any], ko: bool) -> str:
+    """One-sentence operator-readable description, KO or EN."""
+    req = draft.get("requires")
+    step = ""
+    if isinstance(req, list) and req:
+        first = req[0]
+        if isinstance(first, dict):
+            s = first.get("step")
+            if isinstance(s, str):
+                step = s
+    trigger = draft.get("trigger") or {}
+    event = trigger.get("event") if isinstance(trigger, dict) else None
+    matcher = trigger.get("matcher") if isinstance(trigger, dict) else None
+    action = draft.get("action")
+    if not (step and action):
+        return ""
+    if ko:
+        return (
+            f"{event} {matcher or '*'} 시점에 {step} 검증기로 검사하고 "
+            f"결과를 {action} 처리합니다."
+        )
+    return (
+        f"Check {step} at {event} on {matcher or '*'} and {action} "
+        f"the result."
+    )
+
+
 def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     """Deterministic intent extractor. Reads the user's freeform text
     and returns a partial draft_updates dict with whatever can be
@@ -2324,6 +2386,25 @@ def step_compile(
     # LLM-merge so the question set reflects what's actually missing.
     missing = _missing_fields_for_draft(draft)
 
+    # #100 UX follow-up: ID and description should NOT be the thing
+    # that blocks Save. When everything else is filled and only `id`
+    # (and optionally `description`) is missing, server-side
+    # auto-generate both from the draft's verifier_step + tool matcher.
+    # The user can still override either by typing a custom name in
+    # chat; the next turn's LLM merge will pick it up if they do.
+    # Without this, conversational mode ends in a confusing "ID와
+    # 설명만 추가하면 완성" assistant message with no input box to add
+    # those two fields, leaving the operator stuck. (Screenshot
+    # feedback from Kevin.)
+    if (missing == ["id"]
+            or (set(missing) <= {"id"} and not _is_run_command_draft(draft))):
+        auto_id = _auto_id_for_draft(draft)
+        if auto_id and not draft.get("id"):
+            draft["id"] = auto_id
+        if not draft.get("description"):
+            draft["description"] = _auto_description_for_draft(draft, ko)
+        missing = _missing_fields_for_draft(draft)
+
     def _canonical_question_for(field: FieldName) -> Question:
         if field == "requires_body":
             return _question_for_requires_body(draft, ko)
@@ -2409,12 +2490,28 @@ def step_compile(
     # If everything is filled AND the IR validator agreed, suppress
     # questions and synthesise a confirmation status line so the client
     # can render a save CTA even if the LLM forgot the closing message.
+    # The ready message ALWAYS overrides the LLM's pre-save message
+    # because the LLM frequently emitted "ID와 설명을 추가하면 완성" or
+    # similar — pointing the operator at an input box that does not
+    # exist on the conversational surface (screenshot feedback from
+    # Kevin). The right copy is "준비 끝, 우측 Save 누르세요".
     if ready_to_save:
         questions = []
-        if not assistant_message:
+        # Build the ready message regardless of whether the LLM
+        # supplied one. Overrides the LLM's text.
+        rid = draft.get("id", "")
+        if ko:
             assistant_message = (
-                "초안이 준비되었습니다. 저장하시겠어요?"
-                if ko else "Draft ready. Want to save it?"
+                f"초안 준비됐어요. ID는 `{rid}` 로 잡았고, 우측 "
+                f"Live draft 패널의 \"Save this rule\" 버튼으로 "
+                f"저장하면 됩니다. ID 나 설명을 바꾸고 싶으면 그냥 "
+                f"\"ID를 X 로\" 라고 알려주세요."
+            )
+        else:
+            assistant_message = (
+                f"Draft is ready. I set the id to `{rid}`. Click "
+                f"\"Save this rule\" on the right to save. To change "
+                f"the id or description, just tell me."
             )
 
     # #100 post-iteration — verifier ambiguity nudge. The extractor
