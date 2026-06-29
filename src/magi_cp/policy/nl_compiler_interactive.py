@@ -387,6 +387,48 @@ def _scan_first(text: str, vocab: tuple[tuple[str, tuple[str, ...]], ...],
     return None
 
 
+def _looks_like_body_answer(history: list[dict[str, str]] | None) -> bool:
+    """Heuristic: the latest assistant turn looks like a body question
+    (regex pattern / llm_critic criterion / shacl shape). When true,
+    the latest user turn is treated as the body answer and copied
+    into the requires[0].<body_field> directly.
+
+    Anchored on a small set of distinctive phrases the wizard emits
+    when q_requires_body fires. Anchoring on phrasing is brittle by
+    design — we only want this fallback to trigger when the prior
+    turn was almost certainly the body question. False positives are
+    cheap (operator gets a body they did not intend; they edit on
+    the next turn), but false negatives leave Save disabled which is
+    the actual bug.
+    """
+    if not isinstance(history, list) or not history:
+        return False
+    # Walk back to the most recent assistant turn (skipping the user
+    # turn at the tail of the live history snapshot).
+    for t in reversed(history):
+        if not isinstance(t, dict):
+            continue
+        if t.get("role") != "assistant":
+            continue
+        content = t.get("content") or ""
+        if not isinstance(content, str):
+            return False
+        anchors = (
+            # KO question prompts that the canonical body question emits.
+            "AI가 어떤 기준으로 판단",
+            "한 문장으로 적어",
+            "어떤 패턴을",
+            "어떤 SHACL",
+            "structured rule을",
+            # EN equivalents.
+            "by what criterion",
+            "what pattern",
+            "what shape",
+        )
+        return any(a in content for a in anchors)
+    return False
+
+
 def _auto_id_for_draft(draft: dict[str, Any]) -> str:
     """Synthesize a slug-shaped id from the draft's verifier + matcher.
 
@@ -2069,8 +2111,16 @@ def step_compile(
     # turn populated take precedence over the inferred guess.
     latest_user_text = _latest_user_turn(history)
     extracted = _extract_intent_from_text(latest_user_text)
+    # Ambiguity is a FIRST-TURN concern. Once the draft has already
+    # committed to a verifier (in a prior turn), later turns just
+    # refine the body (criterion / pattern / etc.). Suppressing the
+    # LLM's draft_updates in that case would block the operator from
+    # ever filling the criterion, which is exactly what they were
+    # answering when they typed the freeform response.
     verifier_is_ambiguous = bool(extracted.pop("__verifier_ambiguous__",
                                                False))
+    if draft.get("requires"):
+        verifier_is_ambiguous = False
     _merge_extracted_into_draft(draft, extracted)
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
@@ -2416,6 +2466,33 @@ def step_compile(
     # LLM-merge so the question set reflects what's actually missing.
     missing = _missing_fields_for_draft(draft)
 
+    # #100 UX follow-up: when the wizard just asked the operator for
+    # the requires_body (regex pattern / llm_critic criterion / shacl
+    # shape) and the operator answered in freeform chat instead of via
+    # the canonical answers payload, the LLM often fails to translate
+    # that freeform text into draft_updates.requires.body. Deterministic
+    # fallback: if requires_body is the ONLY thing still missing and
+    # the latest user turn is non-empty AND the prior assistant turn
+    # appears to be the body-question, copy that text into the body
+    # field directly. This unblocks Save without depending on the LLM.
+    if (missing
+            and missing[0] == "requires_body"
+            and latest_user_text
+            and _looks_like_body_answer(history)):
+        reqs = draft.get("requires")
+        if isinstance(reqs, list) and reqs and isinstance(reqs[0], dict):
+            kind = reqs[0].get("kind")
+            target_key = {
+                "regex":      "pattern",
+                "llm_critic": "criterion",
+                "shacl":      "shape_ttl",
+                "step":       "step",
+            }.get(kind)
+            if target_key and not reqs[0].get(target_key):
+                reqs[0][target_key] = latest_user_text.strip()
+                draft["requires"] = reqs
+                missing = _missing_fields_for_draft(draft)
+
     # #100 UX follow-up: ID and description should NOT be the thing
     # that blocks Save. When everything else is filled and only `id`
     # (and optionally `description`) is missing, server-side
@@ -2545,6 +2622,57 @@ def step_compile(
                 f"\"Save this rule\" on the right to save. To change "
                 f"the id or description, just tell me."
             )
+
+    # #100 UX — anti-confusion: when ready_to_save is FALSE but the
+    # LLM emitted a confident "거의 다 됐어요 / 완벽해요 / draft is
+    # ready" message, the operator is sent to the right-hand panel
+    # looking for a Save button that isn't there yet (screenshot
+    # feedback from Kevin). Override that subset of LLM phrases with
+    # an explicit "다음 답이 필요해요" prefix so the operator stays
+    # in the chat to answer the next question instead.
+    if not ready_to_save and missing and assistant_message:
+        confident_phrases = (
+            "거의 다 됐", "거의 다됐", "거의 다 끝", "거의 다 완성",
+            "완벽해", "완성됐", "준비됐", "준비되었", "준비됬",
+            "Draft is ready", "Draft ready", "All set",
+            "Almost done", "Nearly done",
+        )
+        if any(p in assistant_message for p in confident_phrases):
+            field = missing[0]
+            next_step = {
+                "requires_body": (
+                    "지금은 검증 내용이 비어 있어요. 한 문장으로 더 "
+                    "구체적으로 알려주세요."
+                    if ko else
+                    "The check body is still empty. Tell me more "
+                    "specifically in one sentence."
+                ),
+                "lifecycle": (
+                    "언제 동작해야 할지 알려주세요."
+                    if ko else "Tell me when this should run."
+                ),
+                "matcher": (
+                    "어떤 도구에 적용할지 알려주세요."
+                    if ko else "Tell me which tool to apply to."
+                ),
+                "requires": (
+                    "어떤 검사를 원하시는지 알려주세요."
+                    if ko else "Tell me what kind of check you want."
+                ),
+                "on_missing": (
+                    "검사가 실패하면 어떻게 처리할지 알려주세요 "
+                    "(차단 / 사람 확인 / 기록만)."
+                    if ko else
+                    "Tell me what to do when the check fails "
+                    "(block / ask / record)."
+                ),
+            }.get(field, "")
+            if next_step:
+                # Override the LLM's misleading "completed" framing
+                # with a fresh, clear next-step prompt. Drop the LLM
+                # text entirely so the operator does not see the
+                # contradictory "completed" wording.
+                assistant_message = next_step
 
     # #100 post-iteration — verifier ambiguity nudge. The extractor
     # flagged ambiguity when the user named a verify/check intent
