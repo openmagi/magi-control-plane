@@ -32,8 +32,8 @@
 
   <!-- Top right tag -->
   <g transform="translate(1140, 70)">
-    <rect x="-150" y="-22" width="150" height="36" rx="18" fill="#7C3AED" fill-opacity="0.12" stroke="#7C3AED" stroke-opacity="0.5" stroke-width="1"/>
-    <text x="-75" y="2" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#A78BFA" letter-spacing="0.04em">SELF-HOST · APACHE 2.0</text>
+    <rect x="-140" y="-22" width="140" height="40" rx="20" fill="#7C3AED" fill-opacity="0.12" stroke="#7C3AED" stroke-opacity="0.5" stroke-width="1"/>
+    <text x="-70" y="4" font-family="Inter, system-ui, sans-serif" font-size="15" font-weight="600" text-anchor="middle" dominant-baseline="middle" fill="#A78BFA" letter-spacing="0.12em">OPEN SOURCE</text>
   </g>
 
   <!-- Title -->
