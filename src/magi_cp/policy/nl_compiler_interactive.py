@@ -1372,28 +1372,46 @@ EXTRACTION DIRECTIVE — FIRST PRINCIPLE, OVERRIDES EVERYTHING BELOW:
   "block", "차단", "막아" → action="block". When they say "ask",
   "묻기", "확인" → action="ask".
 
+DISAMBIGUATION RULE (read this BEFORE the examples below):
+  "신뢰도", "신뢰성", "출처 검증", "소스 검사", "trustworthy
+  source", "trusted source" are AMBIGUOUS phrases. They could
+  mean source_allowlist (block fetch outside an approved domain
+  list), prompt_injection_screen (screen fetched content for
+  jailbreak attempts), or citation_verify (verify cited sources
+  in the final answer). DO NOT pick one. Emit:
+    draft_updates = {{}}  (no requires, no id, no description)
+    questions = []
+  The server will surface a 5-option disambiguation menu in
+  assistant_message; your role here is to stay out of the way.
+  Trigger / matcher / action MAY still be set when the user
+  named them explicitly (e.g. "WebFetch", "감사", "audit").
+
+  Pick a verifier ONLY when the user names that verifier
+  uniquely:
+    "allowlist" / "허용 도메인"        → source_allowlist (only)
+    "prompt injection" / "프롬프트 인젝션" → prompt_injection_screen (only)
+    "citation" / "인용 검증" / "인용한 출처" → citation_verify (only)
+    "RRN" / "주민번호"                  → privilege_scan (only)
+    "JSON schema" / "스키마 검증"       → structured_output (only)
+
 EXAMPLE — turn 1 extraction (study these patterns; emit the same
 shape on real first turns):
 
   User: "리서치 목적으로 외부 web search를 할 때 신뢰할 수 있는
          출처인지를 검사하고 로그를 남기고 싶어"
-  Reasoning (do NOT output): "외부 web search" + "신뢰할 수 있는
-    출처" → source_allowlist. "로그를 남기고" → audit. Tool =
-    WebFetch. Lifecycle = PreToolUse.
+  Reasoning (do NOT output): "신뢰할 수 있는 출처" is AMBIGUOUS
+    (could be source_allowlist / prompt_injection_screen /
+    citation_verify). Per the disambiguation rule, DO NOT pick a
+    verifier. Tool = WebFetch (explicit), action = audit
+    ("로그를 남기고"). Emit those, leave requires empty.
   Output:
     draft_updates = {{
-      "id": "research-source-allowlist-audit",
-      "description": "Audit WebFetch source allowlist on research",
       "trigger": {{ "event": "PreToolUse", "matcher": "WebFetch" }},
-      "requires": [{{ "kind":"step", "step":"source_allowlist",
-                      "verdict":"pass" }}],
       "action": "audit"
     }}
     questions = []
-    assistant_message = "리서치 작업에서 WebFetch 호출의 출처를
-      source_allowlist 로 검증하고 결과를 감사 로그에 남기도록
-      잡았어요. 허용 도메인 목록은 verifier 설정에서 따로 등록해
-      주셔야 실제로 검사됩니다."
+    assistant_message = ""
+    (server fills the disambiguation menu)
 
   User: "최종 답변에서 인용한 출처가 진짜인지 확인하고 안 맞으면
          경고만 띄워줘"
@@ -2115,6 +2133,18 @@ def step_compile(
     #   * `action` / `on_missing` are restricted to `_ON_MISSING_VALUES`.
     #   * `id` is validated via `_validate_id`.
     updates_raw = parsed.get("draft_updates")
+    # #100 hardening — when the deterministic extractor flagged
+    # ambiguity (the user named a verify intent without naming a
+    # specific verifier), the LLM still frequently guesses a verifier
+    # anyway because the system prompt + few-shot examples bias it
+    # toward the "research + external + trustworthy => source_allowlist"
+    # pattern. Strip the LLM's verifier-related fields when ambiguity
+    # is flagged so the disambiguation menu surfaces instead of a
+    # confident-sounding wrong guess. Trigger / matcher / action stay
+    # because those are independent of the verifier choice.
+    if verifier_is_ambiguous and isinstance(updates_raw, dict):
+        for k in ("requires", "id", "description"):
+            updates_raw.pop(k, None)
     if isinstance(updates_raw, dict):
         # Track which canonical fields the user just answered so the
         # LLM cannot overwrite them on this same turn.
@@ -2396,8 +2426,10 @@ def step_compile(
     # 설명만 추가하면 완성" assistant message with no input box to add
     # those two fields, leaving the operator stuck. (Screenshot
     # feedback from Kevin.)
-    if (missing == ["id"]
-            or (set(missing) <= {"id"} and not _is_run_command_draft(draft))):
+    if (not verifier_is_ambiguous
+            and (missing == ["id"]
+                 or (set(missing) <= {"id"}
+                     and not _is_run_command_draft(draft)))):
         auto_id = _auto_id_for_draft(draft)
         if auto_id and not draft.get("id"):
             draft["id"] = auto_id

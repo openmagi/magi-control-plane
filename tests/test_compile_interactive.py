@@ -1590,36 +1590,50 @@ def test_q100_source_allowlist_korean_phrasing_extraction():
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    draft = body["draft"]
-    assert draft is not None, body
-    req = draft.get("requires")
-    assert isinstance(req, list) and len(req) == 1, req
-    assert req[0].get("step") == "source_allowlist"
-    assert draft["trigger"]["event"] == "PreToolUse"
-    assert draft["trigger"]["matcher"] == "WebFetch"
+    draft = body["draft"] or {}
+    # Q102 — this phrasing is AMBIGUOUS ("신뢰할 수 있는 출처" could be
+    # any of source_allowlist / prompt_injection_screen /
+    # citation_verify). The server now strips the LLM's guessed
+    # verifier and surfaces the disambiguation menu instead of
+    # committing source_allowlist confidently.
+    assert not draft.get("requires"), draft
+    assert draft.get("trigger", {}).get("matcher") == "WebFetch"
     assert draft.get("action") == "audit"
-    assert body["ready_to_save"] is True
-    assert body["questions"] == []
+    assert body["ready_to_save"] is False
+    msg = body.get("assistant_message", "")
+    assert "도메인 허용 목록" in msg
 
 
-def test_q100_directive_carries_korean_natural_phrasings():
-    """Pin the natural Korean phrasings in the system prompt so a
-    future refactor that drops them (causing the Korean extraction
-    regression we just fixed) trips loudly.
+def test_q100_directive_carries_disambiguation_rule():
+    """Pin the system prompt's disambiguation rule so a future
+    refactor that drops it (and slides the LLM back into "guess
+    source_allowlist for any trustworthy-source phrase" behaviour)
+    trips loudly.
     """
     from magi_cp.policy.nl_compiler_interactive import (
         _SYSTEM_INTERACTIVE_TMPL,
     )
     tmpl = _SYSTEM_INTERACTIVE_TMPL
-    # Natural Korean phrasings that the original directive missed.
-    assert "신뢰할 수 있는 출처" in tmpl
-    assert "외부 web search" in tmpl
+    # The disambiguation rule + the four ambiguous trigger phrases.
+    assert "DISAMBIGUATION RULE" in tmpl
+    assert "신뢰도" in tmpl
+    assert "신뢰성" in tmpl
     assert "출처 검증" in tmpl
-    # Few-shot examples are the strongest LLM control. Pin two.
-    assert "EXAMPLE" in tmpl
-    assert "research-source-allowlist-audit" in tmpl
-    assert "final-answer-citation-audit" in tmpl
-    # Turn-1 mandate language pinned.
+    assert "trusted source" in tmpl
+    # The rule must list the 5 wired verifiers under "Pick a
+    # verifier ONLY when".
+    assert "Pick a verifier ONLY when" in tmpl
+    assert "source_allowlist" in tmpl
+    assert "prompt_injection_screen" in tmpl
+    assert "citation_verify" in tmpl
+    assert "privilege_scan" in tmpl
+    assert "structured_output" in tmpl
+    # The few-shot example for the ambiguous phrasing must NOT
+    # emit a verifier; the prior research-source-allowlist-audit
+    # example was the source of the bias.
+    assert "research-source-allowlist-audit" not in tmpl
+    # Turn-1 mandate language still pinned (kept for unambiguous
+    # extraction cases).
     assert "TURN 1 MANDATE" in tmpl
 
 
