@@ -4,6 +4,11 @@ import { getLocale } from "@/lib/i18n/server"
 
 export const dynamic = "force-dynamic"
 
+/** Bump when og-image.png changes visibly. The OG image URL embeds
+ *  this version as a query string so Telegram / Slack / X crawlers
+ *  drop their cached preview and refetch on the next link share. */
+const OG_IMAGE_VERSION = "3"
+
 export const metadata: Metadata = {
   title: "Open Magi · Control Plane: Guardrails for Claude Code",
   description:
@@ -20,8 +25,13 @@ export const metadata: Metadata = {
     // layout's openGraph.images by definition. We have to re-declare
     // the image here. Absolute URL because Telegram + several other
     // crawlers refuse to resolve relative og:image paths.
+    //
+    // OG_IMAGE_VERSION is the cache-buster. Bumping it forces Telegram /
+    // Slack / X crawlers to refetch the image instead of serving their
+    // stale cached copy. Increment whenever og-image.png changes
+    // visibly.
     images: [{
-      url: "https://cp.openmagi.ai/og-image.png",
+      url: `https://cp.openmagi.ai/og-image.png?v=${OG_IMAGE_VERSION}`,
       width: 1200,
       height: 630,
       alt: "Open Magi Control Plane: Guardrails for Claude Code",
@@ -32,7 +42,7 @@ export const metadata: Metadata = {
     title: "Open Magi · Control Plane: Guardrails for Claude Code",
     description:
       "Run Claude Code on systems that matter. Magi catches every agent action before it ships, with rules you author in the dashboard.",
-    images: ["https://cp.openmagi.ai/og-image.png"],
+    images: [`https://cp.openmagi.ai/og-image.png?v=${OG_IMAGE_VERSION}`],
   },
   alternates: { canonical: "/welcome" },
   robots: { index: true, follow: true },
