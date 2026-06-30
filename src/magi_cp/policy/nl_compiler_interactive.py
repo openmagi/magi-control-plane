@@ -1333,6 +1333,280 @@ def _apply_answer_to_draft(draft: dict[str, Any], field: FieldName,
     return draft
 
 
+# ── Q103 conversation state model ─────────────────────────────────────
+# Replaces the brittle pattern-match overrides (the "거의 다 됐어요 /
+# 완성됐 / Draft is ready" phrase list + the first-turn-only ambiguity
+# hack) with an explicit state machine. The LLM still runs each turn,
+# but its assistant_message is treated as untrusted garbage and replaced
+# server-side by `_build_assistant_message` keyed on the current state.
+#
+# Five states track progression through verifier authoring:
+#   S0_intent_unknown    - draft.requires not committed.
+#   S1_verifier_selected - verifier row exists, body field empty.
+#   S2_body_filled       - body filled but draft.id is empty.
+#   S3_id_pending        - id present but the IR validator still fails.
+#   S4_ready             - draft round-trips through policy_from_dict.
+#
+# run_command drafts share the same state names but S1 is unreachable
+# (no verifier vs body split); the body slot is the `command` /
+# `script_path` field. The /scripts fallback synthesizer still runs
+# after `_build_assistant_message` for run_command drafts whose body is
+# empty.
+ConversationState = Literal[
+    "S0_intent_unknown",
+    "S1_verifier_selected",
+    "S2_body_filled",
+    "S3_id_pending",
+    "S4_ready",
+]
+
+_CONVERSATION_STATES: tuple[ConversationState, ...] = (
+    "S0_intent_unknown",
+    "S1_verifier_selected",
+    "S2_body_filled",
+    "S3_id_pending",
+    "S4_ready",
+)
+
+
+def _conversation_state(draft: dict[str, Any] | None) -> ConversationState:
+    """Compute the conversation state given the current draft.
+
+    Pure function: depends only on the draft, never on history or the
+    turn count. Replaces the "first-turn-only" history-walking gate that
+    earlier revisions used. A state computed here is stable across
+    turns: the same draft always produces the same state.
+
+    For run_command drafts the body slot is `command` / `script_path`;
+    S1 is unreachable since there is no verifier-vs-body split. The
+    other states (S0/S2/S3/S4) carry the same meaning.
+    """
+    if not isinstance(draft, dict):
+        return "S0_intent_unknown"
+    if _is_run_command_draft(draft):
+        body_present = bool(
+            (isinstance(draft.get("command"), str) and draft["command"].strip())
+            or (isinstance(draft.get("script_path"), str)
+                and draft["script_path"].strip())
+        )
+        if not body_present:
+            return "S0_intent_unknown"
+        if not draft.get("id"):
+            return "S2_body_filled"
+        ok, _err = _draft_passes_ir_validator(draft)
+        return "S4_ready" if ok else "S3_id_pending"
+    # Evidence archetype.
+    requires = draft.get("requires")
+    if not (isinstance(requires, list) and requires):
+        return "S0_intent_unknown"
+    if _requires_first_body_is_empty(draft):
+        return "S1_verifier_selected"
+    if not draft.get("id"):
+        return "S2_body_filled"
+    ok, _err = _draft_passes_ir_validator(draft)
+    return "S4_ready" if ok else "S3_id_pending"
+
+
+def _should_apply_ambiguity_disambiguation(
+    draft: dict[str, Any] | None,
+    extracted: dict[str, Any] | None,
+) -> bool:
+    """True iff state is S0 (no verifier yet) AND extracted flagged
+    ambiguity. The single-line replacement for the "first-turn-only"
+    hack the prior revision used.
+    """
+    if not isinstance(extracted, dict):
+        return False
+    if not extracted.get("__verifier_ambiguous__"):
+        return False
+    return _conversation_state(draft) == "S0_intent_unknown"
+
+
+# Disambiguation menu copy. Surfaced when state is S0 and the extractor
+# flagged the user's freeform text as a verify intent without naming a
+# specific verifier.
+_DISAMBIG_MENU_KO = (
+    "어떤 종류의 검사가 필요한지 더 명확히 알려주세요.\n"
+    "  · 허용된 도메인만 fetch 가능하게 (도메인 허용 목록)\n"
+    "  · 인용한 출처가 진짜인지 확인 (인용 검증)\n"
+    "  · 가져온 콘텐츠가 prompt injection인지 검사 (인젝션 차단)\n"
+    "  · 응답에 주민번호/PII가 있는지 (민감정보 스캔)\n"
+    "  · 응답이 정해진 JSON 형식인지 (스키마 검증)\n"
+    "원하시는 것을 한 줄로 말씀해 주세요."
+)
+_DISAMBIG_MENU_EN = (
+    "I want to make sure I pick the right check. Which one matches "
+    "your intent?\n"
+    "  · Only allow fetch to approved domains (source allowlist)\n"
+    "  · Verify the agent's citations are real (citation verify)\n"
+    "  · Screen fetched content for prompt injection (injection)\n"
+    "  · Scan response for RRN / PII (privilege scan)\n"
+    "  · Validate response matches a JSON schema (structured output)\n"
+    "Reply with one sentence."
+)
+
+
+def _extracted_partial_summary(extracted: dict[str, Any] | None,
+                                ko: bool) -> str:
+    """Human-readable summary of what the deterministic extractor
+    captured this turn (lifecycle / matcher / action), used in the S0
+    "got it, next step" message when the extractor populated something
+    other than the verifier.
+
+    Returns "" when nothing summarisable was extracted; the caller
+    falls back to the generic S0 prompt in that case.
+    """
+    if not isinstance(extracted, dict):
+        return ""
+    parts: list[str] = []
+    trig = extracted.get("trigger")
+    if isinstance(trig, dict):
+        m = trig.get("matcher")
+        if isinstance(m, str) and m:
+            parts.append(
+                (f"도구는 `{m}`") if ko else (f"tool=`{m}`")
+            )
+        ev = trig.get("event")
+        if isinstance(ev, str) and ev:
+            parts.append(
+                (f"동작 시점은 `{ev}`") if ko else (f"when=`{ev}`")
+            )
+    action = extracted.get("action")
+    if isinstance(action, str) and action:
+        parts.append(
+            (f"동작은 `{action}`") if ko else (f"action=`{action}`")
+        )
+    return ", ".join(parts)
+
+
+def _build_assistant_message(
+    state: ConversationState,
+    draft: dict[str, Any] | None,
+    *,
+    ko: bool,
+    extracted: dict[str, Any] | None = None,
+    ambiguous: bool = False,
+    validator_error: str | None = None,
+) -> str:
+    """Build the deterministic assistant_message for the given state.
+
+    The LLM's own assistant_message is dropped on every turn — this
+    function is the sole source of the user-facing status line. Each
+    state maps to one canonical message; the S0 branch additionally
+    forks on the ambiguity flag (disambiguation menu) and on whether
+    the extractor populated lifecycle / matcher / action this turn.
+
+    For run_command drafts whose body is empty (S0), this function
+    returns "" and lets the caller's /scripts fallback synthesizer
+    take over so the operator gets the upload-first guidance. The
+    other run_command states (S2 / S3 / S4) reuse the evidence copy
+    since the wording ("name it / one more tweak / ready") generalises.
+    """
+    draft = draft or {}
+    is_run_command = _is_run_command_draft(draft)
+
+    if state == "S0_intent_unknown":
+        if ambiguous and not is_run_command:
+            return _DISAMBIG_MENU_KO if ko else _DISAMBIG_MENU_EN
+        if is_run_command:
+            # Body missing on run_command: let /scripts fallback drive
+            # the message. We return "" here so the synthesizer kicks
+            # in (it triggers on empty assistant_message).
+            return ""
+        summary = _extracted_partial_summary(extracted, ko)
+        if summary:
+            if ko:
+                return (
+                    f"{summary}(으)로 잡았어요. 다음으로 어떤 검사를 "
+                    f"원하시는지 알려주세요."
+                )
+            return (
+                f"Got it: {summary}. Next, what should we check?"
+            )
+        return (
+            "어떤 검사를 원하시는지 알려주세요."
+            if ko else
+            "What should we check?"
+        )
+
+    if state == "S1_verifier_selected":
+        # Evidence-only. Tailor the body prompt per kind so the operator
+        # knows what shape of answer is expected.
+        reqs = draft.get("requires") or []
+        first = reqs[0] if isinstance(reqs, list) and reqs else {}
+        if not isinstance(first, dict):
+            first = {}
+        kind = first.get("kind") or ("step" if "step" in first else None)
+        if kind == "regex":
+            return (
+                "어떤 패턴을 찾아야 하나요? 한 줄로 알려주세요 "
+                "(예: \\brm -rf\\b)."
+                if ko else
+                "What pattern should we look for? One line "
+                "(e.g. \\brm -rf\\b)."
+            )
+        if kind == "llm_critic":
+            return (
+                "AI가 어떤 기준으로 판단해야 하나요? 한 문장으로 "
+                "적어주세요."
+                if ko else
+                "What criterion should the AI judge use? One sentence."
+            )
+        if kind == "shacl":
+            return (
+                "구조 규칙(Turtle SHACL 형식)을 붙여넣어 주세요."
+                if ko else
+                "Paste the structured rule (Turtle SHACL)."
+            )
+        # step archetype: body is the verifier name.
+        return (
+            "어떤 검증기를 사용할까요? 등록된 이름을 적어주세요."
+            if ko else
+            "Which verifier should we use? Enter its registered name."
+        )
+
+    if state == "S2_body_filled":
+        proposed = _auto_id_for_draft(draft) or (
+            "policy" if not ko else "policy"
+        )
+        if ko:
+            return (
+                f"이름을 정해주세요. 비워두면 `{proposed}`로 잡을게요."
+            )
+        return (
+            f"Pick a short id. If you leave it blank, I'll use "
+            f"`{proposed}`."
+        )
+
+    if state == "S3_id_pending":
+        err = _to_plain_language(validator_error or "")
+        if ko:
+            return (
+                f"{err}. 한 단계 더 손봐주세요."
+                if err else
+                "한 단계 더 손봐주세요."
+            )
+        return (
+            f"{err}. One more tweak needed."
+            if err else
+            "One more tweak needed."
+        )
+
+    if state == "S4_ready":
+        rid = draft.get("id", "")
+        if ko:
+            return (
+                f"초안 준비됐어요. ID는 `{rid}`. 우측 \"Save this rule\" "
+                f"버튼으로 저장하면 됩니다."
+            )
+        return (
+            f"Draft is ready. The id is `{rid}`. Click "
+            f"\"Save this rule\" on the right."
+        )
+
+    return ""
+
+
 # ── LLM prompt template ───────────────────────────────────────────────
 _SYSTEM_INTERACTIVE_TMPL = """You are a CONVERSATIONAL policy authoring assistant for magi-control-plane.
 
@@ -2111,16 +2385,16 @@ def step_compile(
     # turn populated take precedence over the inferred guess.
     latest_user_text = _latest_user_turn(history)
     extracted = _extract_intent_from_text(latest_user_text)
-    # Ambiguity is a FIRST-TURN concern. Once the draft has already
-    # committed to a verifier (in a prior turn), later turns just
-    # refine the body (criterion / pattern / etc.). Suppressing the
-    # LLM's draft_updates in that case would block the operator from
-    # ever filling the criterion, which is exactly what they were
-    # answering when they typed the freeform response.
-    verifier_is_ambiguous = bool(extracted.pop("__verifier_ambiguous__",
-                                               False))
-    if draft.get("requires"):
-        verifier_is_ambiguous = False
+    # Q103 — explicit state-model predicate replaces the prior
+    # "first-turn-only" hack. Disambiguation fires iff the current
+    # post-merge state is S0_intent_unknown AND the extractor flagged
+    # ambiguity. No history walking, no turn counting.
+    verifier_is_ambiguous = _should_apply_ambiguity_disambiguation(
+        draft, extracted,
+    )
+    # The marker is consumed by the predicate; drop it before merge so
+    # it never lands on the wire-shape draft.
+    extracted.pop("__verifier_ambiguous__", None)
     _merge_extracted_into_draft(draft, extracted)
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
@@ -2145,10 +2419,13 @@ def step_compile(
     raw = provider.complete(messages)
     parsed = _parse_json_response(raw, kind="interactive")
 
-    assistant_message_raw = parsed.get("assistant_message")
-    assistant_message = (
-        assistant_message_raw if isinstance(assistant_message_raw, str) else ""
-    )
+    # Q103 — the LLM's `assistant_message` is intentionally discarded.
+    # The state-machine builder (`_build_assistant_message`, called
+    # below after all merges) is the sole source of the user-facing
+    # status line. We still parse `draft_updates` and `questions` from
+    # the LLM (those are structured and validated by per-field
+    # allowlists), but the prose status string is server-authoritative.
+    assistant_message = ""
 
     # Merge LLM's proposed draft updates. The LLM is told it may
     # update any subset of the IR fields. We apply each key individually
@@ -2458,9 +2735,9 @@ def step_compile(
             # on_signature_invalid, sentinel_re, ...) is intentionally
             # ignored. The whitelist is fail-closed.
 
-    # Step 6: scrub plain-language slips. Apply both to the message
-    # the LLM produced AND to anything we re-derive from it.
-    assistant_message = _to_plain_language(assistant_message)
+    # Step 6: assistant_message is always empty at this point (the LLM's
+    # value was discarded per Q103). The deterministic builder runs
+    # below in Step 9 once `missing` + `ready_to_save` are computed.
 
     # Recompute missing fields AFTER both the answer-merge and the
     # LLM-merge so the question set reflects what's actually missing.
@@ -2580,134 +2857,35 @@ def step_compile(
     # `policy_from_dict()` would reject on PUT.
     needs_more = len(missing) > 0
     ready_to_save = False
+    validator_error: str | None = None
     if not needs_more:
         ok, _err = _draft_passes_ir_validator(draft)
         ready_to_save = ok
         if not ok:
             # The heuristic said "complete" but the validator disagrees.
-            # Surface the validator error as the assistant_message so
-            # the operator can react. We do NOT trust the validator
-            # error string to be plain-language safe (it can contain
-            # internal terms like "EvidenceReq" or "matcher"); run it
-            # through the scrubber.
+            # Drive the operator-facing message through the state
+            # machine; capture the error so the S3 branch can surface it.
             needs_more = True
-            if _err:
-                assistant_message = _to_plain_language(
-                    f"Almost there. The draft did not pass validation: {_err}"
-                )
+            validator_error = _err
 
-    # If everything is filled AND the IR validator agreed, suppress
-    # questions and synthesise a confirmation status line so the client
-    # can render a save CTA even if the LLM forgot the closing message.
-    # The ready message ALWAYS overrides the LLM's pre-save message
-    # because the LLM frequently emitted "ID와 설명을 추가하면 완성" or
-    # similar — pointing the operator at an input box that does not
-    # exist on the conversational surface (screenshot feedback from
-    # Kevin). The right copy is "준비 끝, 우측 Save 누르세요".
     if ready_to_save:
         questions = []
-        # Build the ready message regardless of whether the LLM
-        # supplied one. Overrides the LLM's text.
-        rid = draft.get("id", "")
-        if ko:
-            assistant_message = (
-                f"초안 준비됐어요. ID는 `{rid}` 로 잡았고, 우측 "
-                f"Live draft 패널의 \"Save this rule\" 버튼으로 "
-                f"저장하면 됩니다. ID 나 설명을 바꾸고 싶으면 그냥 "
-                f"\"ID를 X 로\" 라고 알려주세요."
-            )
-        else:
-            assistant_message = (
-                f"Draft is ready. I set the id to `{rid}`. Click "
-                f"\"Save this rule\" on the right to save. To change "
-                f"the id or description, just tell me."
-            )
 
-    # #100 UX — anti-confusion: when ready_to_save is FALSE but the
-    # LLM emitted a confident "거의 다 됐어요 / 완벽해요 / draft is
-    # ready" message, the operator is sent to the right-hand panel
-    # looking for a Save button that isn't there yet (screenshot
-    # feedback from Kevin). Override that subset of LLM phrases with
-    # an explicit "다음 답이 필요해요" prefix so the operator stays
-    # in the chat to answer the next question instead.
-    if not ready_to_save and missing and assistant_message:
-        confident_phrases = (
-            "거의 다 됐", "거의 다됐", "거의 다 끝", "거의 다 완성",
-            "완벽해", "완성됐", "준비됐", "준비되었", "준비됬",
-            "Draft is ready", "Draft ready", "All set",
-            "Almost done", "Nearly done",
-        )
-        if any(p in assistant_message for p in confident_phrases):
-            field = missing[0]
-            next_step = {
-                "requires_body": (
-                    "지금은 검증 내용이 비어 있어요. 한 문장으로 더 "
-                    "구체적으로 알려주세요."
-                    if ko else
-                    "The check body is still empty. Tell me more "
-                    "specifically in one sentence."
-                ),
-                "lifecycle": (
-                    "언제 동작해야 할지 알려주세요."
-                    if ko else "Tell me when this should run."
-                ),
-                "matcher": (
-                    "어떤 도구에 적용할지 알려주세요."
-                    if ko else "Tell me which tool to apply to."
-                ),
-                "requires": (
-                    "어떤 검사를 원하시는지 알려주세요."
-                    if ko else "Tell me what kind of check you want."
-                ),
-                "on_missing": (
-                    "검사가 실패하면 어떻게 처리할지 알려주세요 "
-                    "(차단 / 사람 확인 / 기록만)."
-                    if ko else
-                    "Tell me what to do when the check fails "
-                    "(block / ask / record)."
-                ),
-            }.get(field, "")
-            if next_step:
-                # Override the LLM's misleading "completed" framing
-                # with a fresh, clear next-step prompt. Drop the LLM
-                # text entirely so the operator does not see the
-                # contradictory "completed" wording.
-                assistant_message = next_step
-
-    # #100 post-iteration — verifier ambiguity nudge. The extractor
-    # flagged ambiguity when the user named a verify/check intent
-    # without naming a specific verifier. The wizard's canonical
-    # q_requires question only offers "regex / AI judge / structured /
-    # existing verifier" — operators reading "existing verifier" in
-    # KO have no idea which one they meant. Override the assistant
-    # message with an explicit short menu of the 5 wired verifiers
-    # phrased in operator-facing language, so the operator can answer
-    # in chat (next turn re-runs the extractor over their reply).
-    if (verifier_is_ambiguous
-            and not draft.get("requires")
-            and not ready_to_save):
-        menu = (
-            "어떤 종류의 검사가 필요한지 더 명확히 알려주세요.\n"
-            "  · 허용된 도메인만 fetch 가능하게 (도메인 허용 목록)\n"
-            "  · 인용한 출처가 진짜인지 확인 (인용 검증)\n"
-            "  · 가져온 콘텐츠가 prompt injection인지 검사 (인젝션 차단)\n"
-            "  · 응답에 주민번호/PII가 있는지 (민감정보 스캔)\n"
-            "  · 응답이 정해진 JSON 형식인지 (스키마 검증)\n"
-            "원하시는 것을 한 줄로 말씀해 주세요."
-            if ko else
-            "I want to make sure I pick the right check. Which one matches "
-            "your intent?\n"
-            "  · Only allow fetch to approved domains (source allowlist)\n"
-            "  · Verify the agent's citations are real (citation verify)\n"
-            "  · Screen fetched content for prompt injection (injection)\n"
-            "  · Scan response for RRN / PII (privilege scan)\n"
-            "  · Validate response matches a JSON schema (structured output)\n"
-            "Reply with one sentence."
-        )
-        # Replace assistant_message rather than append, so the menu is
-        # the visible response (LLM's polite generic intro becomes
-        # noise here).
-        assistant_message = menu
+    # Q103 — deterministic assistant_message. The LLM's `assistant_message`
+    # field was already extracted from `parsed` above; we discard it here
+    # and replace with state-machine-driven copy. The pattern-match
+    # overrides ("거의 다 됐어요" prefix, "Draft is ready" override,
+    # disambiguation menu shadow-rewrite) are gone — `_build_assistant_message`
+    # owns this surface end-to-end.
+    state = _conversation_state(draft)
+    assistant_message = _build_assistant_message(
+        state,
+        draft,
+        ko=ko,
+        extracted=extracted,
+        ambiguous=verifier_is_ambiguous,
+        validator_error=validator_error,
+    )
 
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty

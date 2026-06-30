@@ -644,25 +644,23 @@ def test_endpoint_requires_admin_key():
     assert r.status_code == 401
 
 
-def test_assistant_message_strips_internal_vocab():
-    """The server scrubs ALL eight forbidden internal terms (regex /
-    shacl / llm_critic / matcher / lifecycle / on_missing /
-    EvidenceReq / kind) out of any user-facing string, even when the
-    LLM leaks them. Also exercises the Korean surface so a future
-    scrubber regression that re-introduces any of these in either
-    language ships red.
+def test_assistant_message_is_state_authored_not_llm_authored():
+    """Q103 — the LLM's `assistant_message` is dropped on every turn
+    and the server emits its own state-machine-driven copy. Even when
+    the LLM tries to leak internal vocabulary or push marketing text,
+    the wire `assistant_message` reflects the deterministic builder
+    output for the current conversation state.
     """
-    canned = _llm_response(
-        message=(
-            "Pick a regex or a regular expression or a SHACL shape. "
-            "Use llm_critic when you need an LLM judge. Build the "
-            "EvidenceReq with the right kind. Lifecycle drives the "
-            "matcher. Then choose on_missing. "
-            "한글로도 LLM이 판단합니다, kind를 고르세요."
-        ),
-        updates={},
-        questions=[],
+    # The LLM emits a forbidden-term grab-bag and a confident "ready"
+    # pre-claim. Both must be invisible on the wire.
+    bogus = (
+        "Draft is ready! Pick a regex or a SHACL shape. Use llm_critic "
+        "when you need an LLM judge. Build the EvidenceReq with the "
+        "right kind. Lifecycle drives the matcher. Then choose "
+        "on_missing. 한글로도 LLM이 판단합니다, kind를 고르세요. "
+        "Marketing tagline: buy our enterprise edition."
     )
+    canned = _llm_response(message=bogus, updates={}, questions=[])
     c = _client(llm_compiler=FakeLlmProvider([canned]))
     r = c.post(
         "/policies/compile-interactive",
@@ -671,8 +669,18 @@ def test_assistant_message_strips_internal_vocab():
     )
     assert r.status_code == 200
     msg = r.json()["assistant_message"]
-    # Internal vocabulary is gone (all eight terms + the bare LLM
-    # acronym + the lowercase EvidenceReq spelling).
+    # The LLM's bogus content is verifiably gone — not a single one of
+    # its distinctive phrases leaks through.
+    for leaked in (
+        "Draft is ready",
+        "Marketing tagline",
+        "enterprise edition",
+        "EvidenceReq",
+        "llm_critic",
+    ):
+        assert leaked not in msg, (leaked, msg)
+    # Internal vocabulary that the LLM used must not appear in any
+    # form (the deterministic builder never emits these terms).
     for forbidden in (
         "regex", "regular expression",
         "shacl",
@@ -684,9 +692,8 @@ def test_assistant_message_strips_internal_vocab():
         "kind",
     ):
         assert forbidden.lower() not in msg.lower(), (forbidden, msg)
-    # Plain-language replacements are present.
-    assert "a pattern in the response" in msg.lower()
-    assert "a structured rule" in msg.lower()
+    # The deterministic S0 copy is what surfaces.
+    assert msg == "What should we check?"
 
 
 def test_at_most_two_questions_per_turn():
@@ -1744,3 +1751,341 @@ def test_q100_deterministic_extraction_does_not_overwrite_existing_draft():
     draft = body["draft"]
     assert draft["requires"][0]["step"] == "citation_verify"
     assert draft["action"] == "block"
+
+
+# ── Q103 — conversation state model ───────────────────────────────────
+
+
+def test_q103_conversation_state_returns_correct_state_for_each_shape():
+    """`_conversation_state(draft)` is a pure function of the draft and
+    returns the canonical state enum for the five shaped drafts the
+    state model recognises. No history, no turn counting.
+    """
+    from magi_cp.policy.nl_compiler_interactive import _conversation_state
+
+    # S0: no requires committed yet. Empty dict, None, missing
+    # `requires` all collapse to the same state.
+    assert _conversation_state(None) == "S0_intent_unknown"
+    assert _conversation_state({}) == "S0_intent_unknown"
+    assert _conversation_state(
+        {"trigger": {"event": "Stop", "matcher": "*"}}
+    ) == "S0_intent_unknown"
+
+    # S1: requires row seeded but the body field is still empty
+    # (kind picked, no pattern / criterion / shape_ttl / step yet).
+    assert _conversation_state({
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "regex", "pattern": ""}],
+    }) == "S1_verifier_selected"
+    assert _conversation_state({
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "llm_critic", "criterion": ""}],
+    }) == "S1_verifier_selected"
+
+    # S2: body filled, id empty. on_missing may still be missing —
+    # the state model still reports S2 because body is filled.
+    assert _conversation_state({
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": r"\brm -rf\b"}],
+        "action": "block",
+        # id intentionally missing.
+    }) == "S2_body_filled"
+
+    # S4: every field filled, validator passes.
+    s4_draft = {
+        "id": "bash-block",
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": r"\brm -rf\b"}],
+        "action": "block",
+    }
+    assert _conversation_state(s4_draft) == "S4_ready"
+
+    # S3: id present but the validator still rejects — e.g. a regex
+    # pattern that exceeds the IR's 2000-char per-body cap. The
+    # missing-fields heuristic says "complete" (id + body + trigger +
+    # action all present) but `policy_from_dict` raises.
+    assert _conversation_state({
+        "id": "bash-block",
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+        # 3000-char pattern: passes the body-empty check (truthy string)
+        # but the IR's EvidenceReq.validate() rejects on `>2000 chars`.
+        "requires": [{"kind": "regex", "pattern": "x" * 3000}],
+        "action": "block",
+    }) == "S3_id_pending"
+
+
+def test_q103_conversation_state_handles_run_command_drafts():
+    """run_command drafts share the state enum but S1 is unreachable.
+    Body absence collapses to S0; body present + no id = S2; ready = S4.
+    """
+    from magi_cp.policy.nl_compiler_interactive import _conversation_state
+
+    # S0 — type=run_command but neither `command` nor `script_path`.
+    assert _conversation_state({
+        "type": "run_command",
+        "trigger": {"event": "Stop", "matcher": "*"},
+    }) == "S0_intent_unknown"
+
+    # S2 — body set via `command`, no id.
+    assert _conversation_state({
+        "type": "run_command",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "runtime": "bash",
+        "command": "pytest -q",
+    }) == "S2_body_filled"
+
+    # S4 — body + id + valid trigger.
+    assert _conversation_state({
+        "type": "run_command",
+        "id": "rerun-pytest",
+        "trigger": {
+            "host": "claude-code", "event": "Stop", "matcher": "*",
+        },
+        "runtime": "bash",
+        "command": "pytest -q",
+    }) == "S4_ready"
+
+
+def test_q103_build_assistant_message_emits_state_correct_copy():
+    """`_build_assistant_message(state, draft, ko=...)` returns the
+    deterministic copy mapped to each state. Verifies both KO and EN
+    surfaces for the five states + the S0 ambiguity fork.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _build_assistant_message,
+    )
+
+    # S0 + nothing extracted, KO + EN.
+    msg_ko = _build_assistant_message(
+        "S0_intent_unknown", {}, ko=True,
+    )
+    assert msg_ko == "어떤 검사를 원하시는지 알려주세요."
+    msg_en = _build_assistant_message(
+        "S0_intent_unknown", {}, ko=False,
+    )
+    assert msg_en == "What should we check?"
+
+    # S0 + ambiguous extraction → disambiguation menu (5 verifiers).
+    msg_amb = _build_assistant_message(
+        "S0_intent_unknown", {}, ko=True, ambiguous=True,
+    )
+    assert "도메인 허용 목록" in msg_amb
+    assert "인용 검증" in msg_amb
+    assert "인젝션" in msg_amb
+    assert "민감정보 스캔" in msg_amb
+    assert "스키마 검증" in msg_amb
+
+    # S0 + something extracted (matcher + action), no verifier yet.
+    msg_partial = _build_assistant_message(
+        "S0_intent_unknown",
+        {"trigger": {"matcher": "WebFetch"}, "action": "audit"},
+        ko=True,
+        extracted={
+            "trigger": {"matcher": "WebFetch"},
+            "action": "audit",
+        },
+    )
+    assert "WebFetch" in msg_partial
+    assert "audit" in msg_partial
+    assert "다음으로" in msg_partial
+
+    # S1 + per-kind body prompts.
+    s1_regex = {"requires": [{"kind": "regex", "pattern": ""}]}
+    assert "패턴" in _build_assistant_message(
+        "S1_verifier_selected", s1_regex, ko=True,
+    )
+    s1_llm = {"requires": [{"kind": "llm_critic", "criterion": ""}]}
+    assert "AI" in _build_assistant_message(
+        "S1_verifier_selected", s1_llm, ko=True,
+    )
+    s1_shacl = {"requires": [{"kind": "shacl", "shape_ttl": ""}]}
+    assert "SHACL" in _build_assistant_message(
+        "S1_verifier_selected", s1_shacl, ko=True,
+    )
+    s1_step = {"requires": [{"kind": "step", "step": "", "verdict": "pass"}]}
+    assert "검증기" in _build_assistant_message(
+        "S1_verifier_selected", s1_step, ko=True,
+    )
+
+    # S2 — name-it prompt with auto-id preview embedded.
+    s2_draft = {
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": r"\brm\b"}],
+        "action": "block",
+    }
+    msg_s2 = _build_assistant_message(
+        "S2_body_filled", s2_draft, ko=True,
+    )
+    assert "이름" in msg_s2
+    assert "bash-block" in msg_s2  # auto-id preview
+
+    # S3 — validator error surfaced with plain-language scrub.
+    msg_s3 = _build_assistant_message(
+        "S3_id_pending", {"id": "x"}, ko=True,
+        validator_error="EvidenceReq.pattern is missing",
+    )
+    # Internal vocab is scrubbed.
+    assert "EvidenceReq" not in msg_s3
+    # Plain-language guidance is present.
+    assert "한 단계 더" in msg_s3
+
+    # S4 — ready message embeds the id.
+    msg_s4 = _build_assistant_message(
+        "S4_ready", {"id": "block-bash-rm"}, ko=True,
+    )
+    assert "초안 준비됐어요" in msg_s4
+    assert "block-bash-rm" in msg_s4
+    assert "Save this rule" in msg_s4
+    msg_s4_en = _build_assistant_message(
+        "S4_ready", {"id": "block-bash-rm"}, ko=False,
+    )
+    assert "Draft is ready" in msg_s4_en
+    assert "block-bash-rm" in msg_s4_en
+
+
+def test_q103_should_apply_ambiguity_disambiguation_predicate():
+    """`_should_apply_ambiguity_disambiguation(draft, extracted)` is
+    the single-line replacement for the prior first-turn-only hack.
+    Returns True iff the post-merge draft is still in S0 AND the
+    extractor flagged ambiguity.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _should_apply_ambiguity_disambiguation,
+    )
+
+    # Ambiguous extraction + S0 draft → True.
+    assert _should_apply_ambiguity_disambiguation(
+        {}, {"__verifier_ambiguous__": True},
+    ) is True
+    assert _should_apply_ambiguity_disambiguation(
+        None, {"__verifier_ambiguous__": True},
+    ) is True
+
+    # Ambiguous extraction but draft already has a verifier row
+    # (S1+) → False. Replaces the prior `if draft.get("requires"):`
+    # hack with a state-based check.
+    assert _should_apply_ambiguity_disambiguation(
+        {"requires": [{"kind": "regex", "pattern": "x"}]},
+        {"__verifier_ambiguous__": True},
+    ) is False
+
+    # No ambiguity flag → False regardless of state.
+    assert _should_apply_ambiguity_disambiguation(
+        {}, {"trigger": {"matcher": "WebFetch"}},
+    ) is False
+    assert _should_apply_ambiguity_disambiguation({}, None) is False
+    assert _should_apply_ambiguity_disambiguation({}, {}) is False
+
+
+def test_q103_llm_assistant_message_is_dropped_marketing_text():
+    """The LLM emits "totally bogus marketing text" as its
+    assistant_message, but the server replaces it with the
+    deterministic state-correct message. Pins the contract that the
+    LLM cannot author the user-facing status line.
+    """
+    bogus = (
+        "BUY OUR ENTERPRISE EDITION! Draft is ready! "
+        "Click here to upgrade. Limited time offer. "
+        "100% money back guarantee. Five-star reviews."
+    )
+    canned = _llm_response(message=bogus, updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    msg = r.json()["assistant_message"]
+    # No fragment of the bogus LLM text leaks.
+    for leaked in (
+        "BUY OUR", "ENTERPRISE EDITION", "money back", "Click here",
+        "Draft is ready", "Five-star",
+    ):
+        assert leaked not in msg, (leaked, msg)
+    # The deterministic S0 message is what surfaces (empty draft,
+    # empty history → S0 + nothing extracted, English locale).
+    assert msg == "What should we check?"
+
+
+def test_q103_llm_assistant_message_is_dropped_when_state_is_s4():
+    """When the merged draft is fully ready, the LLM's premature
+    "I'm working on it" or unrelated message MUST be replaced by the
+    deterministic S4 ready copy. This used to be enforced by a phrase
+    list override; the state machine now owns it directly.
+    """
+    bogus = "Hold on, still thinking — give me a moment."
+    canned = _llm_response(message=bogus, updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "block-bash-rm",
+        "description": "Block destructive bash",
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": r"\brm\b"}],
+        "action": "block",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_save"] is True
+    msg = body["assistant_message"]
+    # LLM's "give me a moment" framing is gone.
+    assert "Hold on" not in msg
+    assert "give me a moment" not in msg
+    # Deterministic S4 framing surfaces.
+    assert "Draft is ready" in msg
+    assert "block-bash-rm" in msg
+    assert "Save this rule" in msg
+
+
+def test_q103_llm_premature_completion_claim_replaced_by_state_message():
+    """Replaces the deleted "거의 다 됐어요 / 완성됐 / Draft is ready"
+    pattern-match override. When the LLM falsely claims completion
+    while the draft is still in S1 (verifier picked, body empty), the
+    server now emits the deterministic S1 body-prompt copy instead.
+    """
+    bogus_ko = "거의 다 됐어요! 그냥 우측 Save 누르세요."
+    canned = _llm_response(message=bogus_ko, updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        # Verifier picked, body empty → S1.
+        "requires": [{"kind": "regex", "pattern": ""}],
+        "action": "block",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": "안녕"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    msg = body["assistant_message"]
+    # The bogus "거의 다 됐어요" is gone.
+    assert "거의 다 됐어요" not in msg
+    # Deterministic S1 regex-body prompt surfaces.
+    assert "패턴" in msg
+    # And the draft is not ready_to_save.
+    assert body["ready_to_save"] is False
