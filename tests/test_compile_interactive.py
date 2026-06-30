@@ -2089,3 +2089,457 @@ def test_q103_llm_premature_completion_claim_replaced_by_state_message():
     assert "패턴" in msg
     # And the draft is not ready_to_save.
     assert body["ready_to_save"] is False
+
+
+# ── Q101 — conv compose covers all guided archetypes + condition kinds
+
+
+# Q101.1 — Lifecycle vocab expansion (KO + EN per added event). The
+# guided wizard surfaces 30 lifecycle events; the conversational
+# extractor now recognises a representative slice (~12) so an operator
+# can name the event in freeform text. One assertion per (phrase,
+# lifecycle) tuple; KO and EN tested independently.
+
+import pytest
+
+
+_Q101_LIFECYCLE_PHRASE_CASES: list[tuple[str, str]] = [
+    # PreCompact / PostCompact (content-flow family).
+    ("압축 전에 확인해줘", "PreCompact"),
+    ("Run a check before compact", "PreCompact"),
+    ("압축 후에 기록", "PostCompact"),
+    ("Log after compact runs", "PostCompact"),
+    # UserPromptSubmit / UserPromptExpansion.
+    ("사용자 프롬프트 제출 시점에", "UserPromptSubmit"),
+    ("On user prompt submit", "UserPromptSubmit"),
+    ("프롬프트 확장 단계에서", "UserPromptExpansion"),
+    ("During user prompt expansion", "UserPromptExpansion"),
+    # SessionStart / SessionEnd.
+    ("세션 시작 시", "SessionStart"),
+    ("at session start", "SessionStart"),
+    ("세션 종료 시", "SessionEnd"),
+    ("at session end", "SessionEnd"),
+    # Notification.
+    ("알림이 발생했을 때", "Notification"),
+    ("on notification", "Notification"),
+    # Permission gate.
+    ("권한 요청 시점에", "PermissionRequest"),
+    ("On a permission request", "PermissionRequest"),
+    ("권한 거부 후", "PermissionDenied"),
+    ("After a permission denied", "PermissionDenied"),
+    # Subagent / stop boundary.
+    ("서브에이전트 시작 시", "SubagentStart"),
+    ("on subagent start", "SubagentStart"),
+    ("서브에이전트 종료 후", "SubagentStop"),
+    ("after subagent stop", "SubagentStop"),
+    ("정지 실패 후", "StopFailure"),
+    ("after stop failure", "StopFailure"),
+    # Elicitation.
+    ("사용자에게 질문할 때 검사", "Elicitation"),
+    ("during elicitation", "Elicitation"),
+    ("사용자 응답 후 처리", "ElicitationResult"),
+    ("after elicitation result", "ElicitationResult"),
+    # Lifecycle / observability.
+    ("태스크 생성 시점에 기록", "TaskCreated"),
+    ("on task created", "TaskCreated"),
+    ("태스크 완료 후 기록", "TaskCompleted"),
+    ("after task completed", "TaskCompleted"),
+    ("팀메이트 유휴 상태일 때", "TeammateIdle"),
+    ("when teammate idle", "TeammateIdle"),
+    ("메모리 파일 로드 시", "InstructionsLoaded"),
+    ("on instructions loaded", "InstructionsLoaded"),
+    ("작업 디렉토리 변경 시", "CwdChanged"),
+    ("when cwd changed", "CwdChanged"),
+    ("파일 변경 시점에", "FileChanged"),
+    ("on file changed", "FileChanged"),
+    ("워크트리 생성 시", "WorktreeCreate"),
+    ("on worktree create", "WorktreeCreate"),
+    ("메시지 표시 직전", "MessageDisplay"),
+    ("on message display", "MessageDisplay"),
+    # Tool-context family expansion.
+    ("도구 실행 실패 후", "PostToolUseFailure"),
+    ("after tool fails", "PostToolUseFailure"),
+    ("도구 배치 후", "PostToolBatch"),
+    ("after a batch of tools", "PostToolBatch"),
+]
+
+
+@pytest.mark.parametrize("phrase,expected_event", _Q101_LIFECYCLE_PHRASE_CASES)
+def test_q101_lifecycle_phrase_extracts_event(phrase, expected_event):
+    """Each Q101-added lifecycle phrase (KO + EN) lands on
+    `extracted.trigger.event`. The extractor is called directly so the
+    matrix-gate / merge logic does not interfere.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    out = _extract_intent_from_text(phrase)
+    trig = out.get("trigger")
+    assert isinstance(trig, dict), (phrase, out)
+    assert trig.get("event") == expected_event, (phrase, out)
+
+
+# Q101.2 — Action archetype extraction (block / ask / audit /
+# inject_context / input_rewrite / run_command).
+
+_Q101_ACTION_PHRASE_CASES: list[tuple[str, str]] = [
+    # ask (newly expanded vocab).
+    ("사람 확인 받고 진행", "ask"),
+    ("Ask a human first", "ask"),
+    ("사람에게 묻고", "ask"),
+    ("Ask the human before running", "ask"),
+    # inject_context.
+    ("추가 컨텍스트를 모델에 주입해줘", "inject_context"),
+    ("inject context after the tool", "inject_context"),
+    ("Add additional context to the next turn", "inject_context"),
+    ("컨텍스트 추가하면 좋겠어", "inject_context"),
+    # input_rewrite.
+    ("입력 재작성으로 처리", "input_rewrite"),
+    ("Rewrite the prompt before submission", "input_rewrite"),
+    ("프롬프트 재작성", "input_rewrite"),
+    # run_command — extractor flags via _ACTION_KEYWORDS too.
+    ("스크립트 실행으로 검증", "run_command"),
+    ("Run the script to verify", "run_command"),
+    ("execute the script", "run_command"),
+]
+
+
+@pytest.mark.parametrize("phrase,expected_action", _Q101_ACTION_PHRASE_CASES)
+def test_q101_action_archetype_phrase_extracts_action(phrase, expected_action):
+    """Each Q101-added action archetype phrase (KO + EN) lands on
+    `extracted.action`. block / audit phrases keep their pre-Q101
+    behaviour; this test pins the new archetypes."""
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    out = _extract_intent_from_text(phrase)
+    assert out.get("action") == expected_action, (phrase, out)
+
+
+# Q101.3 — Condition kind extraction (regex / llm_critic / shacl /
+# none). Each non-none kind seeds an empty-body requires row of the
+# corresponding kind so the wizard's S1 body prompt fires next.
+
+_Q101_KIND_PHRASE_CASES: list[tuple[str, str]] = [
+    ("정규식으로 검사", "regex"),
+    ("Use a regex match", "regex"),
+    ("패턴 매칭으로", "regex"),
+    ("Pattern matching against tool output", "regex"),
+    ("AI 판단으로 결정", "llm_critic"),
+    ("AI judge picks the verdict", "llm_critic"),
+    ("LLM critic decides", "llm_critic"),
+    ("SHACL로 구조 검증", "shacl"),
+    ("Use a structured rule", "shacl"),
+    ("구조화된 규칙으로", "shacl"),
+]
+
+
+@pytest.mark.parametrize("phrase,expected_kind", _Q101_KIND_PHRASE_CASES)
+def test_q101_condition_kind_phrase_seeds_empty_requires_row(
+    phrase, expected_kind,
+):
+    """A condition-kind phrase (KO + EN) seeds an empty-body requires
+    row of that kind. The wizard's S1 body prompt fires next when the
+    draft contains this seed.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    out = _extract_intent_from_text(phrase)
+    req = out.get("requires")
+    assert isinstance(req, list) and len(req) == 1, (phrase, out)
+    assert req[0].get("kind") == expected_kind, (phrase, out)
+    if expected_kind == "regex":
+        assert req[0].get("pattern") == "", (phrase, out)
+    elif expected_kind == "llm_critic":
+        assert req[0].get("criterion") == "", (phrase, out)
+    elif expected_kind == "shacl":
+        assert req[0].get("shape_ttl") == "", (phrase, out)
+
+
+_Q101_KIND_NONE_PHRASES: list[str] = [
+    "no check needed, just fire on the trigger",
+    "no verification, only audit",
+    "without check, just record",
+    "without verification, just notify",
+    "검사 없이 트리거만",
+    "확인 없이 그냥 기록",
+    "검증 없이 audit",
+    "그냥 트리거만 잡고",
+]
+
+
+@pytest.mark.parametrize("phrase", _Q101_KIND_NONE_PHRASES)
+def test_q101_condition_kind_none_phrase_drops_requires(phrase):
+    """kind=none phrases drop the requires array entirely. The
+    archetype-only path is signalled via the
+    `__condition_kind_none__` marker.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    out = _extract_intent_from_text(phrase)
+    assert "requires" not in out, (phrase, out)
+    assert out.get("__condition_kind_none__") is True, (phrase, out)
+
+
+# Q101.4 — Combinatorial smoke: 12 (lifecycle, action, condition kind)
+# tuples through step_compile end-to-end. Each tuple builds a freeform
+# user text whose phrases land on every column. The draft returned by
+# the wire endpoint is asserted to carry the right values.
+
+_Q101_COMBOS: list[tuple[str, str, str | None, str, str]] = [
+    # (phrase, expected_event, expected_matcher, expected_action, kind_or_none)
+    (
+        "도구 실행 전에 정규식으로 검사하고 막아줘 bash",
+        "PreToolUse", "Bash", "block", "regex",
+    ),
+    (
+        "도구 실행 후에 정규식으로 검사하고 기록 남겨줘",
+        "PostToolUse", None, "audit", "regex",
+    ),
+    (
+        "Before tool runs, use a regex match and block it",
+        "PreToolUse", None, "block", "regex",
+    ),
+    (
+        "최종 응답 전에 AI 판단으로 검사하고 기록",
+        "Stop", None, "audit", "llm_critic",
+    ),
+    (
+        "After file changed, use a structured rule and log the result",
+        "FileChanged", None, "audit", "shacl",
+    ),
+    (
+        "세션 시작 시 추가 컨텍스트를 모델에 주입해줘",
+        "SessionStart", None, "inject_context", None,
+    ),
+    (
+        "도구 실행 전에 입력 재작성으로 처리",
+        "PreToolUse", None, "input_rewrite", None,
+    ),
+    (
+        "도구 실행 실패 후 스크립트 실행으로 처리",
+        "PostToolUseFailure", None, "run_command", None,
+    ),
+    (
+        "권한 요청 시 사람 확인 받고 진행",
+        "PermissionRequest", None, "ask", None,
+    ),
+    (
+        "Before final answer, use a regex match and audit",
+        "Stop", None, "audit", "regex",
+    ),
+    (
+        "압축 전에 AI judge picks the verdict and log it",
+        "PreCompact", None, "audit", "llm_critic",
+    ),
+    (
+        "파일 변경 시 정규식 검사하고 기록 audit",
+        "FileChanged", None, "audit", "regex",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "phrase,expected_event,expected_matcher,expected_action,expected_kind",
+    _Q101_COMBOS,
+)
+def test_q101_combinatorial_smoke_step_compile(
+    phrase, expected_event, expected_matcher, expected_action, expected_kind,
+):
+    """End-to-end smoke: each (lifecycle, action, kind) tuple lands on
+    the wire draft after step_compile runs. The LLM stub is told to do
+    nothing so the deterministic extractor is the sole source of the
+    draft.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": phrase}],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"] or {}
+    trig = draft.get("trigger") or {}
+    assert trig.get("event") == expected_event, (phrase, draft)
+    if expected_matcher is not None:
+        assert trig.get("matcher") == expected_matcher, (phrase, draft)
+    # Action values that aren't in _ON_MISSING_VALUES (inject_context /
+    # input_rewrite / run_command) are still surfaced on the draft by
+    # the merge; the wizard treats them as "still missing" so the
+    # canonical on_missing question fires later. We only assert the
+    # draft carries the right marker here.
+    assert draft.get("action") == expected_action, (phrase, draft)
+    if expected_kind in ("regex", "llm_critic", "shacl"):
+        req = draft.get("requires")
+        assert isinstance(req, list) and len(req) == 1, (phrase, draft)
+        assert req[0].get("kind") == expected_kind, (phrase, draft)
+
+
+# Q101.5 — Inject-context guardrail. When the operator names a
+# lifecycle in `_CONTEXT_INJECTION_EXCLUDED_EVENTS` AND asks for
+# inject_context in the same turn, the extractor rewrites the action
+# to audit and sets a marker the assistant_message builder turns into
+# a plain-language explanation.
+
+_Q101_INJECT_EXCLUDED_PHRASES: list[tuple[str, str]] = [
+    # 8 events live in _CONTEXT_INJECTION_EXCLUDED_EVENTS today.
+    ("사용자에게 질문할 때 컨텍스트 주입", "Elicitation"),
+    ("사용자 응답 후 추가 컨텍스트", "ElicitationResult"),
+    ("워크트리 생성 시 추가 컨텍스트", "WorktreeCreate"),
+    ("메시지 표시 직전 컨텍스트 주입", "MessageDisplay"),
+    ("최종 응답 전에 추가 컨텍스트", "Stop"),
+    ("정지 실패 후 컨텍스트 주입", "StopFailure"),
+    ("세션 종료 시 컨텍스트 주입", "SessionEnd"),
+    ("서브에이전트 종료 후 추가 컨텍스트", "SubagentStop"),
+]
+
+
+@pytest.mark.parametrize(
+    "phrase,excluded_event", _Q101_INJECT_EXCLUDED_PHRASES,
+)
+def test_q101_inject_context_guardrail_rewrites_action_to_audit(
+    phrase, excluded_event,
+):
+    """When lifecycle is in _CONTEXT_INJECTION_EXCLUDED_EVENTS AND
+    action=inject_context, the extractor rewrites the action to audit
+    and flags a marker explaining the rewrite.
+    """
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    out = _extract_intent_from_text(phrase)
+    # Action is rewritten to audit, NOT inject_context.
+    assert out.get("action") == "audit", (phrase, out)
+    # Marker names the excluded event so the assistant_message builder
+    # can surface it to the operator.
+    assert out.get("__inject_context_rewritten__") == excluded_event, (
+        phrase, out,
+    )
+
+
+def test_q101_inject_context_guardrail_explains_in_assistant_message_ko():
+    """End-to-end Korean: the rewrite is surfaced in
+    assistant_message so the operator reads why the action was
+    changed before the next question.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "사용자에게 질문할 때 컨텍스트 주입",
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"] or {}
+    assert draft.get("action") == "audit", draft
+    msg = body["assistant_message"]
+    # The plain-language explanation must reference the excluded event
+    # name and the rewrite target ("audit").
+    assert "Elicitation" in msg, msg
+    assert "audit" in msg, msg
+
+
+def test_q101_inject_context_guardrail_explains_in_assistant_message_en():
+    """End-to-end English: same rewrite + explanation in the EN
+    surface.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": (
+                    "At session end, inject context into the next turn"
+                ),
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"] or {}
+    assert draft.get("action") == "audit", draft
+    msg = body["assistant_message"]
+    assert "SessionEnd" in msg, msg
+    assert "audit" in msg, msg
+    # The plain-language explanation MUST surface the rewrite reason in
+    # English.
+    assert "not available" in msg or "switched" in msg, msg
+
+
+def test_q101_inject_context_legal_event_keeps_action_inject_context():
+    """When lifecycle is NOT in the excluded set, action=inject_context
+    is preserved (no rewrite, no marker)."""
+    from magi_cp.policy.nl_compiler_interactive import (
+        _extract_intent_from_text,
+    )
+    # PostToolUse is NOT in _CONTEXT_INJECTION_EXCLUDED_EVENTS so the
+    # archetype is legal and the guardrail does NOT fire.
+    out = _extract_intent_from_text(
+        "도구 실행 후 추가 컨텍스트를 모델에 주입",
+    )
+    assert out.get("action") == "inject_context", out
+    assert "__inject_context_rewritten__" not in out, out
+
+
+def test_q101_inject_context_guardrail_fires_on_multi_turn_event():
+    """Multi-turn case: lifecycle was set in a prior turn via answers;
+    this turn the operator types "inject context" without naming a
+    lifecycle. The post-merge guardrail rewrites the action because
+    the effective event (from the prior draft) is excluded.
+
+    Uses Stop as the prior event because it is BOTH in the wizard's
+    `_EVENT_TO_LIFECYCLE` (survives sanitize on the client-supplied
+    draft) AND in `_CONTEXT_INJECTION_EXCLUDED_EVENTS` (triggers the
+    guardrail). The other excluded events (Elicitation /
+    ElicitationResult / WorktreeCreate / MessageDisplay /
+    StopFailure / SessionEnd / SubagentStop) are not in the wizard's
+    sanitize allowlist so a multi-turn `draft_so_far` carrying them
+    is dropped at the boundary — this is by design, the wizard only
+    persists 3 high-level buckets across turns today.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    prior_draft = {
+        "trigger": {
+            "host": "claude-code",
+            "event": "Stop",
+            "matcher": "*",
+        },
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": "추가 컨텍스트 주입"}],
+            "draft_so_far": prior_draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"] or {}
+    assert draft.get("trigger", {}).get("event") == "Stop"
+    assert draft.get("action") == "audit"
+    msg = body["assistant_message"]
+    assert "Stop" in msg, msg

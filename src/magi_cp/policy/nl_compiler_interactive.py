@@ -188,6 +188,18 @@ _RUNNABLE_INTENT_RE = re.compile(
     r"execute|executes|executed|executing|"
     r"rerun|reruns|reran|rerunning|"
     r"invoke|invokes|invoked|invoking|"
+    # Q101 — broaden the runnable-verb set so the verifier-intent
+    # heuristic (`_looks_like_verifier_intent`) correctly classifies
+    # phrasings like "trigger the script" / "fire the recovery
+    # command" / "launch the linter" / "spawn the worker" as run-shaped
+    # intent. The English verbs below were chosen to be unambiguously
+    # run-shaped — they only appear in evidence-intent prose by
+    # accident (matrix.LEGAL_COMBINATIONS audit verbs use "check" /
+    # "verify" / "ensure"; none collide with this set).
+    r"trigger|triggers|triggered|triggering|"
+    r"fire|fires|fired|firing|"
+    r"launch|launches|launched|launching|"
+    r"spawn|spawns|spawned|spawning|"
     r"shell\s+out|shells\s+out|"
     r"call|calls|called|calling)\b",
     re.IGNORECASE,
@@ -332,10 +344,30 @@ _MATCHER_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 # Lifecycle / event keywords.
+#
+# Q101 expansion: the wizard surfaces 30 lifecycle events; the
+# conversational compose extractor now covers ~20 of them via natural
+# KO + EN phrases so an operator can name an event in freeform text
+# instead of having to pick from the canonical q_lifecycle menu. Scan
+# order matters: more specific phrases (PostToolUseFailure /
+# PostToolBatch / ElicitationResult / SessionEnd / PostCompact) come
+# BEFORE their base event so a substring like "after tool fails" does
+# not first match the shorter "after tool" entry under PostToolUse.
+#
+# Entries that historically pre-dated Q101 (Stop / PostToolUse /
+# PreToolUse) keep their original phrase set so the older extraction
+# tests remain green. New entries below them are additive only.
 _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Stop", (
-        "최종 응답", "최종 답변", "최종 답", "final answer",
-        "before final answer", "agent finish",
+    # ── tool-context family (specific-first) ──────────────────────────
+    ("PostToolUseFailure", (
+        "도구 실행 실패 후", "도구 실패 후", "도구 실패",
+        "after tool fails", "after tool failure", "tool failure",
+        "PostToolUseFailure",
+    )),
+    ("PostToolBatch", (
+        "도구 배치 후", "도구 묶음 후", "한 묶음의 도구",
+        "tool batch", "after a batch of tools",
+        "PostToolBatch",
     )),
     ("PostToolUse", (
         "도구 실행 후", "도구 결과", "after a tool runs",
@@ -345,20 +377,191 @@ _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "도구 실행 전", "before a tool runs", "before tool",
         "before bash", "도구가 실행되기 전",
     )),
+    # ── permission gate ───────────────────────────────────────────────
+    ("PermissionDenied", (
+        "권한 거부", "권한 거절", "권한이 거부", "permission denied",
+        "permission refused", "PermissionDenied",
+    )),
+    ("PermissionRequest", (
+        "권한 요청", "권한 묻", "권한이 필요",
+        "permission request", "permission asked",
+        "PermissionRequest",
+    )),
+    # ── content-flow family ───────────────────────────────────────────
+    ("PreCompact", (
+        "압축 전", "compaction 전", "before compact",
+        "before compaction", "PreCompact",
+    )),
+    ("PostCompact", (
+        "압축 후", "compaction 후", "after compact",
+        "after compaction", "PostCompact",
+    )),
+    ("UserPromptExpansion", (
+        "프롬프트 확장", "user prompt expansion", "prompt expansion",
+        "UserPromptExpansion",
+    )),
+    ("UserPromptSubmit", (
+        "사용자 프롬프트 제출", "프롬프트 제출", "사용자 프롬프트",
+        "user prompt submit", "prompt submit", "UserPromptSubmit",
+    )),
+    ("ElicitationResult", (
+        "사용자 응답 후", "사용자 입력 결과", "elicitation result",
+        "ElicitationResult",
+    )),
+    ("Elicitation", (
+        "사용자에게 질문할 때", "사용자에게 물어볼 때",
+        "elicitation", "Elicitation",
+    )),
+    # ── subagent + stop boundary ──────────────────────────────────────
+    ("SubagentStart", (
+        "서브에이전트 시작", "subagent start", "child agent start",
+        "SubagentStart",
+    )),
+    ("SubagentStop", (
+        "서브에이전트 종료", "서브에이전트 끝", "subagent stop",
+        "subagent finish", "child agent stop", "SubagentStop",
+    )),
+    ("StopFailure", (
+        "정지 실패", "종료 실패", "stop failure", "stop failed",
+        "StopFailure",
+    )),
+    ("Stop", (
+        "최종 응답", "최종 답변", "최종 답", "final answer",
+        "before final answer", "agent finish",
+    )),
+    # ── lifecycle / observability ────────────────────────────────────
+    ("SessionStart", (
+        "세션 시작", "세션을 시작", "session start", "session begin",
+        "SessionStart",
+    )),
+    ("SessionEnd", (
+        "세션 종료", "세션 끝", "session end", "session over",
+        "SessionEnd",
+    )),
+    ("Notification", (
+        "알림이 발생", "알림 발생", "알림이 떴을 때", "notification",
+        "Notification",
+    )),
+    ("TaskCreated", (
+        "태스크 생성", "task 생성", "task created", "TaskCreated",
+    )),
+    ("TaskCompleted", (
+        "태스크 완료", "task 완료", "task completed", "task finished",
+        "TaskCompleted",
+    )),
+    ("TeammateIdle", (
+        "팀메이트 유휴", "서브에이전트 유휴", "서브에이전트 휴면",
+        "subagent became idle", "subagent idle", "teammate idle",
+        "SubagentBecameIdle", "TeammateIdle",
+    )),
+    ("InstructionsLoaded", (
+        "메모리 파일 로드", "메모리 로드", "memory file loaded",
+        "instructions loaded", "MemoryFileLoaded",
+        "InstructionsLoaded",
+    )),
+    ("CwdChanged", (
+        "작업 디렉토리 변경", "작업 디렉터리 변경", "디렉토리 변경",
+        "cwd changed", "working directory changed", "CwdChanged",
+    )),
+    ("FileChanged", (
+        "파일 변경", "파일이 변경", "file changed", "file change",
+        "FileChanged",
+    )),
+    ("WorktreeCreate", (
+        "워크트리 생성", "worktree create", "worktree created",
+        "WorktreeCreate",
+    )),
+    ("MessageDisplay", (
+        "메시지 표시", "message display", "message displayed",
+        "MessageDisplay",
+    )),
 )
 
 # Action keywords.
+#
+# Q101 expansion: the guided wizard surfaces 6 action archetypes
+# (block / ask / audit / inject_context / input_rewrite / run_command).
+# The conversational extractor now flags every archetype so the wizard
+# can branch into the right authoring path. The two evidence-only
+# archetypes (block / ask / audit) keep their original vocab so the
+# pre-Q101 extraction tests stay green; multi-word archetypes
+# (inject_context / input_rewrite / run_command) come BEFORE the
+# single-word evidence archetypes so a longer phrase like "추가
+# 컨텍스트 주입" wins over a stray "차단" / "기록" later in the
+# sentence. Vocab is intentionally biased toward unambiguous phrases —
+# extraction false positives are operator-correctable in one click,
+# while bad partial matches lock the wizard onto the wrong path.
 _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # ── ARCHETYPE-level actions (multi-word, highest specificity) ────
+    ("inject_context", (
+        "컨텍스트 주입", "컨텍스트 추가", "추가 컨텍스트",
+        "additional context", "inject context", "inject_context",
+    )),
+    ("input_rewrite", (
+        "입력 재작성", "프롬프트 재작성", "프롬프트 다시 작성",
+        "input rewrite", "rewrite the prompt", "rewrite the input",
+        "rewrite input", "input_rewrite",
+    )),
+    ("run_command", (
+        "스크립트 실행", "셸 스크립트", "쉘 스크립트",
+        "명령 실행", "쉘 명령 실행",
+        "run a script", "run the script", "execute the script",
+        "run a command", "run command", "shell out",
+        "run_command",
+    )),
+    # ── EVIDENCE-only actions (block / ask / audit) ──────────────────
     ("block", (
         "차단", "막아", "block", "deny", "거부",
     )),
     ("ask", (
-        "묻기", "확인", "ask", "human", "사람에게",
+        "사람 확인", "사람에게 묻", "사람에게 확인",
+        "묻기", "확인", "ask a human", "ask the human", "ask",
+        "human", "사람에게",
     )),
     ("audit", (
         "기록", "감사", "남기고", "log", "record", "audit",
     )),
 )
+
+# Condition KIND keywords.
+#
+# Q101 expansion: the guided wizard offers 5 condition kinds — none /
+# evidence_ref (step) / regex / shacl / llm_critic. The conversational
+# extractor now recognises four of them (the fifth, evidence_ref, is
+# handled by the verifier-name vocabulary above — naming a wired
+# verifier ("citation_verify" / "source_allowlist" / ...) already
+# commits the user to kind="step"). When an operator types a kind
+# keyword without naming a specific verifier, the extractor seeds an
+# EMPTY-bodied requires row of that kind so the wizard's S1 body
+# prompt fires next ("what pattern" / "what criterion" / "what
+# shape"). For kind=none the extractor explicitly DROPS the requires
+# array, signalling to the wizard that the operator wants the action
+# archetype to fire without any verification predicate (block / ask /
+# audit / inject_context / input_rewrite / run_command on the trigger
+# alone). EN + KO phrases are kept narrow to avoid false positives:
+# generic words like "없음" or bare "none" are intentionally OMITTED
+# because they appear too often in unrelated freeform text.
+_CONDITION_KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("regex", (
+        "정규식", "패턴 매칭", "패턴 매치",
+        "regex", "regular expression", "pattern match", "pattern matching",
+    )),
+    ("llm_critic", (
+        "AI 판단", "AI 심사", "AI가 판단",
+        "ai judge", "llm critic", "llm-critic",
+    )),
+    ("shacl", (
+        "shacl", "구조화된 규칙", "구조 규칙", "구조적 규칙",
+        "structural rule", "structured rule",
+    )),
+    ("none", (
+        "검사 없이", "확인 없이", "검증 없이",
+        "그냥 트리거만",
+        "no check", "no verification", "no check needed",
+        "without check", "without verification",
+    )),
+)
+
 
 # Per-verifier default lifecycle + matcher tuples. Used when the user
 # names a verifier but does NOT name a lifecycle / matcher explicitly.
@@ -520,6 +723,12 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     needle = user_text.lower()
     has_ambiguous_intent = any(v.lower() in needle
                                 for v in _AMBIGUOUS_VERIFIER_VERBS)
+    # Q101 — condition KIND extraction. Recognised independently of the
+    # verifier so an operator typing "정규식으로 검사" or
+    # "쉘 명령으로 검사" picks the kind even without naming a wired
+    # verifier. When a wired verifier IS named, its evidence_ref kind
+    # wins (the verifier defaults set requires below).
+    explicit_kind = _scan_first(user_text, _CONDITION_KIND_KEYWORDS)
 
     if verifier is not None:
         out["requires"] = [{"kind": "step", "step": verifier,
@@ -530,6 +739,20 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
         default_event, default_matcher = _VERIFIER_DEFAULTS[verifier]
         out["trigger"] = {"event": default_event,
                           "matcher": default_matcher}
+    elif explicit_kind is not None and explicit_kind != "none":
+        # Q101 — operator picked a condition kind without naming a
+        # specific verifier. Seed an empty-body requires row of that
+        # kind so the wizard's S1 body prompt fires next ("what
+        # pattern" / "what criterion" / "what shape"). The empty body
+        # is the same shape the canonical kind picker produces today,
+        # so the downstream missing-fields + builder logic stays
+        # identical.
+        if explicit_kind == "regex":
+            out["requires"] = [{"kind": "regex", "pattern": ""}]
+        elif explicit_kind == "llm_critic":
+            out["requires"] = [{"kind": "llm_critic", "criterion": ""}]
+        elif explicit_kind == "shacl":
+            out["requires"] = [{"kind": "shacl", "shape_ttl": ""}]
     elif has_ambiguous_intent:
         # The user signalled verifier intent but didn't name a
         # specific verifier. Surface that to the question logic via a
@@ -537,6 +760,16 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
         # question. The marker is dropped before merge; only the
         # question routing sees it.
         out["__verifier_ambiguous__"] = True
+
+    if explicit_kind == "none":
+        # Q101 — operator explicitly opted out of any verification
+        # predicate ("그냥 트리거만", "no check needed"). Drop any
+        # requires row a verifier-default might have just seeded so
+        # the merged draft carries only the trigger + action / archetype
+        # intent. The marker is kept on the extracted dict only; merge
+        # does not write it onto the draft.
+        out.pop("requires", None)
+        out["__condition_kind_none__"] = True
 
     explicit_event = _scan_first(user_text, _LIFECYCLE_KEYWORDS)
     if explicit_event is not None:
@@ -551,6 +784,33 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     explicit_action = _scan_first(user_text, _ACTION_KEYWORDS)
     if explicit_action is not None:
         out["action"] = explicit_action
+
+    # Q101 — inject-context guardrail. The CC hook stdout JSON
+    # contract silently drops `additionalContext` on 8 lifecycle events
+    # (the _CONTEXT_INJECTION_EXCLUDED_EVENTS set in policy/ir.py). If
+    # the operator's text names one of those lifecycles AND asks for
+    # inject_context in the same turn, the matrix gate would refuse the
+    # combination at save time. Rewrite the action to `audit` here so
+    # the draft is still author-able, and surface a marker the
+    # assistant_message builder turns into an explanation so the
+    # operator knows WHY their wording was reinterpreted. Audit is
+    # always legal on every lifecycle, so the rewrite never produces a
+    # second matrix gate refusal.
+    if out.get("action") == "inject_context":
+        chosen_event = None
+        trig = out.get("trigger")
+        if isinstance(trig, dict):
+            ev = trig.get("event")
+            if isinstance(ev, str) and ev:
+                chosen_event = ev
+        if chosen_event is not None:
+            try:
+                from .ir import _CONTEXT_INJECTION_EXCLUDED_EVENTS
+            except ImportError:  # pragma: no cover - defensive
+                _CONTEXT_INJECTION_EXCLUDED_EVENTS = frozenset()
+            if chosen_event in _CONTEXT_INJECTION_EXCLUDED_EVENTS:
+                out["action"] = "audit"
+                out["__inject_context_rewritten__"] = chosen_event
 
     return out
 
@@ -589,6 +849,28 @@ def _merge_extracted_into_draft(draft: dict[str, Any],
     # action: set when missing.
     if "action" in extracted and not draft.get("action"):
         draft["action"] = extracted["action"]
+
+    # Q101 — post-merge inject-context guardrail. Mirrors the in-extractor
+    # check, but using the EFFECTIVE event after merge so a multi-turn
+    # case (user picked lifecycle in turn 1, said "inject context" in
+    # turn 2) still gets rewritten. Both paths land on the same
+    # `__inject_context_rewritten__` marker, which the assistant_message
+    # builder turns into a plain-language explanation.
+    if draft.get("action") == "inject_context":
+        cur_event: str | None = None
+        cur_trig = draft.get("trigger")
+        if isinstance(cur_trig, dict):
+            ev = cur_trig.get("event")
+            if isinstance(ev, str) and ev:
+                cur_event = ev
+        if cur_event:
+            try:
+                from .ir import _CONTEXT_INJECTION_EXCLUDED_EVENTS
+            except ImportError:  # pragma: no cover - defensive
+                _CONTEXT_INJECTION_EXCLUDED_EVENTS = frozenset()
+            if cur_event in _CONTEXT_INJECTION_EXCLUDED_EVENTS:
+                draft["action"] = "audit"
+                extracted["__inject_context_rewritten__"] = cur_event
 
 
 # Map the wizard's three lifecycle labels (see web/app/(console)/policies/
@@ -1501,35 +1783,74 @@ def _build_assistant_message(
     take over so the operator gets the upload-first guidance. The
     other run_command states (S2 / S3 / S4) reuse the evidence copy
     since the wording ("name it / one more tweak / ready") generalises.
+
+    Q101 — when the extractor (or merge-time guardrail) rewrote an
+    inject_context action to audit because the chosen lifecycle does
+    not support `additionalContext`, the rewrite is surfaced as a
+    plain-language prefix BEFORE the state-driven body so the
+    operator understands why their wording was reinterpreted.
     """
     draft = draft or {}
     is_run_command = _is_run_command_draft(draft)
 
+    # Q101 — inject_context rewrite notice. Read the marker the
+    # extractor / merge guardrail leaves on the extracted dict and
+    # turn it into a plain-language explanation. Placed AHEAD of the
+    # state body so the operator reads "why we switched" before the
+    # next question.
+    inject_rewrite_prefix = ""
+    if isinstance(extracted, dict):
+        rewritten_event = extracted.get("__inject_context_rewritten__")
+        if isinstance(rewritten_event, str) and rewritten_event:
+            if ko:
+                inject_rewrite_prefix = (
+                    f"`{rewritten_event}` 시점에서는 컨텍스트 주입이 "
+                    f"지원되지 않아서 `audit`(기록)으로 바꿨습니다. "
+                    f"필요하면 다른 시점을 골라주세요.\n\n"
+                )
+            else:
+                inject_rewrite_prefix = (
+                    f"Inject context is not available on "
+                    f"`{rewritten_event}`; switched to `audit` instead. "
+                    f"Pick a different lifecycle if you need the "
+                    f"additionalContext channel.\n\n"
+                )
+
+    # Compute the state-driven body first so the inject-context rewrite
+    # prefix can prepend cleanly across every state branch. An empty
+    # body (S0 run_command path) still emits the prefix so the operator
+    # sees the rewrite notice even when the /scripts synthesizer is
+    # about to take over.
+    body = ""
+
     if state == "S0_intent_unknown":
         if ambiguous and not is_run_command:
-            return _DISAMBIG_MENU_KO if ko else _DISAMBIG_MENU_EN
-        if is_run_command:
+            body = _DISAMBIG_MENU_KO if ko else _DISAMBIG_MENU_EN
+        elif is_run_command:
             # Body missing on run_command: let /scripts fallback drive
             # the message. We return "" here so the synthesizer kicks
             # in (it triggers on empty assistant_message).
-            return ""
-        summary = _extracted_partial_summary(extracted, ko)
-        if summary:
-            if ko:
-                return (
-                    f"{summary}(으)로 잡았어요. 다음으로 어떤 검사를 "
-                    f"원하시는지 알려주세요."
+            body = ""
+        else:
+            summary = _extracted_partial_summary(extracted, ko)
+            if summary:
+                if ko:
+                    body = (
+                        f"{summary}(으)로 잡았어요. 다음으로 어떤 검사를 "
+                        f"원하시는지 알려주세요."
+                    )
+                else:
+                    body = (
+                        f"Got it: {summary}. Next, what should we check?"
+                    )
+            else:
+                body = (
+                    "어떤 검사를 원하시는지 알려주세요."
+                    if ko else
+                    "What should we check?"
                 )
-            return (
-                f"Got it: {summary}. Next, what should we check?"
-            )
-        return (
-            "어떤 검사를 원하시는지 알려주세요."
-            if ko else
-            "What should we check?"
-        )
 
-    if state == "S1_verifier_selected":
+    elif state == "S1_verifier_selected":
         # Evidence-only. Tailor the body prompt per kind so the operator
         # knows what shape of answer is expected.
         reqs = draft.get("requires") or []
@@ -1538,73 +1859,82 @@ def _build_assistant_message(
             first = {}
         kind = first.get("kind") or ("step" if "step" in first else None)
         if kind == "regex":
-            return (
+            body = (
                 "어떤 패턴을 찾아야 하나요? 한 줄로 알려주세요 "
                 "(예: \\brm -rf\\b)."
                 if ko else
                 "What pattern should we look for? One line "
                 "(e.g. \\brm -rf\\b)."
             )
-        if kind == "llm_critic":
-            return (
+        elif kind == "llm_critic":
+            body = (
                 "AI가 어떤 기준으로 판단해야 하나요? 한 문장으로 "
                 "적어주세요."
                 if ko else
                 "What criterion should the AI judge use? One sentence."
             )
-        if kind == "shacl":
-            return (
+        elif kind == "shacl":
+            body = (
                 "구조 규칙(Turtle SHACL 형식)을 붙여넣어 주세요."
                 if ko else
                 "Paste the structured rule (Turtle SHACL)."
             )
-        # step archetype: body is the verifier name.
-        return (
-            "어떤 검증기를 사용할까요? 등록된 이름을 적어주세요."
-            if ko else
-            "Which verifier should we use? Enter its registered name."
-        )
+        else:
+            # step archetype: body is the verifier name.
+            body = (
+                "어떤 검증기를 사용할까요? 등록된 이름을 적어주세요."
+                if ko else
+                "Which verifier should we use? Enter its registered name."
+            )
 
-    if state == "S2_body_filled":
+    elif state == "S2_body_filled":
         proposed = _auto_id_for_draft(draft) or (
             "policy" if not ko else "policy"
         )
         if ko:
-            return (
+            body = (
                 f"이름을 정해주세요. 비워두면 `{proposed}`로 잡을게요."
             )
-        return (
-            f"Pick a short id. If you leave it blank, I'll use "
-            f"`{proposed}`."
-        )
+        else:
+            body = (
+                f"Pick a short id. If you leave it blank, I'll use "
+                f"`{proposed}`."
+            )
 
-    if state == "S3_id_pending":
+    elif state == "S3_id_pending":
         err = _to_plain_language(validator_error or "")
         if ko:
-            return (
+            body = (
                 f"{err}. 한 단계 더 손봐주세요."
                 if err else
                 "한 단계 더 손봐주세요."
             )
-        return (
-            f"{err}. One more tweak needed."
-            if err else
-            "One more tweak needed."
-        )
+        else:
+            body = (
+                f"{err}. One more tweak needed."
+                if err else
+                "One more tweak needed."
+            )
 
-    if state == "S4_ready":
+    elif state == "S4_ready":
         rid = draft.get("id", "")
         if ko:
-            return (
+            body = (
                 f"초안 준비됐어요. ID는 `{rid}`. 우측 \"Save this rule\" "
                 f"버튼으로 저장하면 됩니다."
             )
-        return (
-            f"Draft is ready. The id is `{rid}`. Click "
-            f"\"Save this rule\" on the right."
-        )
+        else:
+            body = (
+                f"Draft is ready. The id is `{rid}`. Click "
+                f"\"Save this rule\" on the right."
+            )
 
-    return ""
+    if inject_rewrite_prefix and not body:
+        # Strip the trailing blank line we added for visual separation
+        # before the (missing) body so the prefix isn't followed by
+        # dangling whitespace.
+        return inject_rewrite_prefix.rstrip()
+    return inject_rewrite_prefix + body
 
 
 # ── LLM prompt template ───────────────────────────────────────────────
