@@ -147,6 +147,10 @@ export function ConversationalCompose({
   const [history, setHistory] = useState<HistoryTurn[]>([])
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [readyToSave, setReadyToSave] = useState(false)
+  // Q102: track the server's canonical missing-field set so the
+  // IrDraftPane can render the "still missing: ..." footer and
+  // surface NAMED placeholders per row instead of an empty stub.
+  const [missingFields, setMissingFields] = useState<string[]>([])
   const [pending, setPending] = useState(false)
   // D56b: prefill the input with the `?nl=` seed forwarded by the
   // `?mode=nl` backcompat redirect so a bookmarked legacy URL renders
@@ -282,6 +286,7 @@ export function ConversationalCompose({
           draft?: Record<string, unknown> | null
           questions?: QuestionVM[]
           ready_to_save?: boolean
+          missing_fields?: unknown
         }
         if (!mountedRef.current) return
         if (myId !== reqIdRef.current) return
@@ -297,6 +302,15 @@ export function ConversationalCompose({
         )
         setDraft(data.draft ?? null)
         setReadyToSave(!!data.ready_to_save)
+        // Q102: defensively narrow missing_fields to string[] for
+        // IrDraftPane; the seed-mount endpoint's wire shape is loosely
+        // typed (the proxy passes the cloud payload through) so we
+        // can't trust the field's element type at the boundary.
+        setMissingFields(
+          Array.isArray(data.missing_fields)
+            ? data.missing_fields.filter((f): f is string => typeof f === "string")
+            : [],
+        )
       } catch (e) {
         if ((e as { name?: string } | null)?.name === "AbortError") return
         // Network throw / parse error — surface the same bubble path
@@ -448,6 +462,17 @@ export function ConversationalCompose({
       ])
       setDraft(data.draft ?? null)
       setReadyToSave(!!data.ready_to_save)
+      // Q102: thread the canonical missing-field set through to the
+      // IrDraftPane so its named placeholders + "still missing"
+      // footer track each turn's server view. InteractiveTurnResponse
+      // already pins missing_fields: string[], so the wire shape is
+      // sound; we still defensively coerce to handle a malformed
+      // server response without crashing the right column.
+      setMissingFields(
+        Array.isArray(data.missing_fields)
+          ? data.missing_fields.filter((f): f is string => typeof f === "string")
+          : [],
+      )
     } catch (e) {
       // AbortError is the normal cancellation path when a newer turn
       // started; swallow without surfacing an error bubble.
@@ -731,6 +756,7 @@ export function ConversationalCompose({
         draft={draft}
         readyToSave={readyToSave}
         saveAction={saveAction}
+        missingFields={missingFields}
       />
     </div>
   )

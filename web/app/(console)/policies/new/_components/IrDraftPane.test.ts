@@ -103,3 +103,128 @@ describe("IrDraftPane run_command rendering invariants", () => {
     expect(src).toMatch(/action === "run_command"/)
   })
 })
+
+/* ── Q102 invariants ────────────────────────────────────────────────── */
+
+describe("Q102: Live draft missing summary + Save this rule prominence", () => {
+  const src = read("IrDraftPane.tsx")
+  const dictPath = path.join(
+    HERE, "..", "..", "..", "..", "..", "lib", "i18n", "dict.ts",
+  )
+  const dict = readFileSync(dictPath, "utf-8")
+
+  it("declares the missingFields prop on the public Props interface", () => {
+    // The IrDraftPane must accept a missing-field set from the
+    // conversational compose state so its named placeholders and
+    // bottom "still missing" line can track the server's view.
+    expect(src).toMatch(/missingFields\?:\s*readonly\s+string\[\]/)
+  })
+
+  it("always renders the status pill (drafting/ready), not just on the ready branch", () => {
+    // The legacy code rendered the READY pill behind a `readyToSave &&`
+    // guard so the operator had no at-a-glance status while drafting.
+    // Q102 promotes it to a constant pill with the data-state
+    // discriminator the test pins below.
+    expect(src).toContain('data-testid="ir-draft-status-pill"')
+    expect(src).toMatch(/data-state=\{readyToSave\s*\?\s*"ready"\s*:\s*"drafting"\}/)
+  })
+
+  it("maps the status pill to amber (drafting) and emerald (ready)", () => {
+    // Status pill colour pin per the brief: amber while drafting,
+    // emerald once the server flips ready_to_save.
+    expect(src).toMatch(/bg-amber-100/)
+    expect(src).toMatch(/text-amber-900/)
+    expect(src).toMatch(/bg-emerald-100/)
+    expect(src).toMatch(/text-emerald-800/)
+  })
+
+  it("references the statusDrafting / statusReady i18n keys", () => {
+    // The pill's visible label routes through translate(...) so KO/EN
+    // copy stays in dict.ts and the test pins both keys exist there.
+    expect(src).toContain('"newPolicy.conv.liveDraft.statusDrafting"')
+    expect(src).toContain('"newPolicy.conv.liveDraft.statusReady"')
+    expect(dict).toContain('"newPolicy.conv.liveDraft.statusDrafting"')
+    expect(dict).toContain('"newPolicy.conv.liveDraft.statusReady"')
+  })
+
+  it("names every canonical missing field via a dedicated i18n key", () => {
+    // The pane must NAME each missing field (not surface raw IR
+    // tokens). One key per FieldName in the server's
+    // _missing_fields_for_draft helper, pinned both in source (so the
+    // mapping switch can't lose a branch) and in dict.ts (so the KO+EN
+    // copy stays in step).
+    const FIELDS = [
+      "lifecycle", "matcher", "requires", "requires_body",
+      "on_missing", "id",
+    ]
+    for (const f of FIELDS) {
+      const key = `"newPolicy.conv.liveDraft.missing.${f}"`
+      expect(src).toContain(key)
+      expect(dict).toContain(key)
+    }
+  })
+
+  it("renders a named-missing placeholder helper instead of legacy stubs", () => {
+    // The whenLabel / conditionLabel / actionLabel branches replace
+    // the empty "Waiting for an AI judge criterion" / "(not chosen
+    // yet)" placeholders with namedMissingPlaceholder(field, t) so the
+    // copy NAMES what's missing.
+    expect(src).toMatch(/namedMissingPlaceholder\("lifecycle"/)
+    expect(src).toMatch(/namedMissingPlaceholder\("matcher"/)
+    expect(src).toMatch(/namedMissingPlaceholder\("requires"/)
+    expect(src).toMatch(/namedMissingPlaceholder\("requires_body"/)
+    expect(src).toMatch(/namedMissingPlaceholder\("on_missing"/)
+    // The placeholder format uses {name} substitution.
+    expect(src).toContain('"newPolicy.conv.liveDraft.placeholderMissing"')
+    expect(dict).toContain('"newPolicy.conv.liveDraft.placeholderMissing"')
+  })
+
+  it("drops the legacy 'Waiting for an AI judge criterion' stub", () => {
+    // The brief specifically names this legacy placeholder as the one
+    // being replaced. Confirm it is gone so a future refactor doesn't
+    // silently bring it back.
+    expect(src).not.toContain("Waiting for an AI judge criterion")
+    expect(src).not.toContain("AI 판단 기준 입력 대기 중")
+  })
+
+  it("renders the bottom 'this항목이 비어 있어요' footer when missing fields remain", () => {
+    // The quiet footer surfaces the full missing-field list under
+    // the card whenever the draft is not yet ready_to_save. Routes
+    // through `newPolicy.conv.liveDraft.missingList` and joins names
+    // via missingFieldLabel(...).
+    expect(src).toContain('data-testid="ir-draft-missing-list"')
+    expect(src).toContain('"newPolicy.conv.liveDraft.missingList"')
+    expect(src).toMatch(/!readyToSave\s*&&\s*knownMissing\.length\s*>\s*0/)
+    expect(dict).toContain('"newPolicy.conv.liveDraft.missingList"')
+    // KO + EN copy must NAME the missing items per the brief.
+    expect(dict).toContain('이 항목이 비어 있어요')
+    expect(dict).toContain('Still missing:')
+  })
+
+  it("gates the Save CTA prominence (size=lg + motion-safe pulse) on ready", () => {
+    // Save CTA gets size="lg" (vs prior "md") and a subtle pulse
+    // animation that respects prefers-reduced-motion. The brand purple
+    // remains via variant="primary" (--color-accent = #7C3AED).
+    expect(src).toMatch(/size="lg"/)
+    expect(src).toMatch(/motion-safe:animate-pulse/)
+    expect(src).toMatch(/data-testid="ir-draft-save"/)
+    expect(src).toMatch(/variant="primary"/)
+  })
+
+  it("uses locale: 'ko' | 'en' (no t closure forced into the i18n contract)", () => {
+    // The hard rule from the brief: locale prop, not a t closure
+    // baked at the boundary. The pane DOES take a t closure (per the
+    // prior contract test above) but it ALSO takes a locale so child
+    // surfaces and Q102's status pill can branch.
+    expect(src).toMatch(/locale:\s*"ko"\s*\|\s*"en"/)
+  })
+
+  it("never em-dashes (project hard rule) in any new Q102 dict copy", () => {
+    // KO live-draft copy must use commas/periods/parens, never an em
+    // dash. We scope the assertion to the new key block so this test
+    // doesn't drift against unrelated dict entries.
+    const koBlock = dict.split('"newPolicy.conv.liveDraft.statusDrafting"')[1] ?? ""
+    const koHead = koBlock.split('"newPolicy.conv.liveDraft.placeholderMissing"')[0] ?? ""
+    expect(koHead).not.toContain("—")
+  })
+})

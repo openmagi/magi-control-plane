@@ -56,8 +56,67 @@ export interface IrDraftPaneProps {
   /** Server action posted to by the Save CTA. The parent (page.tsx)
    *  threads through `saveCompiled` from its server-action wiring. */
   saveAction: (fd: FormData) => Promise<void>
+  /** Q102: canonical missing-field set from the conversational compiler
+   *  (mirrors `_missing_fields_for_draft` server-side). Drives the
+   *  status pill (DRAFTING/READY), the per-row "named missing" copy,
+   *  and the quiet "이 항목이 비어 있어요: ..." line under the card.
+   *  Optional so existing callers (handoff seed mounts that have not
+   *  yet round-tripped) still render the legacy placeholder copy. */
+  missingFields?: readonly string[]
   /** Optional test id for the root container. */
   testId?: string
+}
+
+/* ── Q102: missing-field name lookup ────────────────────────────────── */
+
+/** Canonical missing-field names the server emits. Mirror of
+ *  `FieldName` in src/magi_cp/policy/nl_compiler_interactive.py. */
+type MissingField =
+  | "lifecycle" | "matcher" | "requires" | "requires_body"
+  | "on_missing" | "id"
+
+const MISSING_FIELD_KEYS: ReadonlyArray<MissingField> = [
+  "lifecycle", "matcher", "requires", "requires_body", "on_missing", "id",
+]
+
+/** Resolve a missing-field name (lifecycle / matcher / ...) to its
+ *  user-facing label via i18n. Internal vocabulary stays internal:
+ *  the dict keys map to plain-language strings ("시점" / "trigger
+ *  timing") so the operator never sees raw IR field names. */
+function missingFieldLabel(field: MissingField, t: T): string {
+  // Map each known field name to its i18n key. Inline so a typo in
+  // any branch is caught by TKey at build time.
+  switch (field) {
+    case "lifecycle":
+      return t("newPolicy.conv.liveDraft.missing.lifecycle")
+    case "matcher":
+      return t("newPolicy.conv.liveDraft.missing.matcher")
+    case "requires":
+      return t("newPolicy.conv.liveDraft.missing.requires")
+    case "requires_body":
+      return t("newPolicy.conv.liveDraft.missing.requires_body")
+    case "on_missing":
+      return t("newPolicy.conv.liveDraft.missing.on_missing")
+    case "id":
+      return t("newPolicy.conv.liveDraft.missing.id")
+  }
+}
+
+/** True when the given name is one we know how to label. Anything
+ *  else (a future field added server-side before the dashboard
+ *  catches up) is silently dropped from the bottom list so we never
+ *  surface a raw IR field name. */
+function isKnownMissingField(s: string): s is MissingField {
+  return (MISSING_FIELD_KEYS as ReadonlyArray<string>).includes(s)
+}
+
+/** Build the "{name} 항목이 비어 있어요" placeholder for a single
+ *  missing field. Used by the WHEN / CONDITION rows so the placeholder
+ *  NAMES the missing field instead of an empty-state stub. */
+function namedMissingPlaceholder(field: MissingField, t: T): string {
+  return t("newPolicy.conv.liveDraft.placeholderMissing", {
+    name: missingFieldLabel(field, t),
+  })
 }
 
 /* ── plain-language summary helpers ─────────────────────────────────── */
@@ -183,7 +242,19 @@ function maybeFriendlyPath(
 function conditionLabel(
   d: Record<string, unknown> | null,
   ko: boolean,
+  t: T,
+  missingFields: ReadonlySet<MissingField>,
 ): string {
+  // Q102: when the server reports the CONDITION row is what's missing,
+  // NAME the missing field instead of the legacy "waiting for ..."
+  // placeholder. requires_body is the more specific signal so it takes
+  // priority over requires (an item exists but its body is empty).
+  if (missingFields.has("requires_body")) {
+    return namedMissingPlaceholder("requires_body", t)
+  }
+  if (missingFields.has("requires")) {
+    return namedMissingPlaceholder("requires", t)
+  }
   if (!d || typeof d !== "object") {
     return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
   }
@@ -205,17 +276,17 @@ function conditionLabel(
   switch (kind) {
     case "regex": {
       const pat = typeof item.pattern === "string" ? item.pattern : ""
-      if (!pat) return ko ? "응답에서 어떤 패턴을 찾을지 기다리는 중" : "Waiting for a pattern to look for"
+      if (!pat) return namedMissingPlaceholder("requires_body", t)
       return ko ? `응답에서 패턴 발견` : `Pattern in the response`
     }
     case "llm_critic": {
       const c = typeof item.criterion === "string" ? item.criterion : ""
-      if (!c) return ko ? "AI 판단 기준 입력 대기 중" : "Waiting for an AI judge criterion"
+      if (!c) return namedMissingPlaceholder("requires_body", t)
       return ko ? "AI 판단" : "AI judge"
     }
     case "shacl": {
       const ttl = typeof item.shape_ttl === "string" ? item.shape_ttl : ""
-      if (!ttl) return ko ? "구조 규칙 입력 대기 중" : "Waiting for a structured rule"
+      if (!ttl) return namedMissingPlaceholder("requires_body", t)
       // D64: when the shacl entry carries an explicit `path` (the
       // conversational compiler can stash the target path alongside the
       // shape ttl during incremental compose), surface the friendly
@@ -231,7 +302,7 @@ function conditionLabel(
     }
     case "step": {
       const step = typeof item.step === "string" ? item.step : ""
-      if (!step) return ko ? "필요한 확인 항목을 기다리는 중" : "Waiting for a required check"
+      if (!step) return namedMissingPlaceholder("requires_body", t)
       return ko ? `필수 확인: ${step}` : `Required check: ${step}`
     }
     default:
@@ -272,9 +343,22 @@ function prettyOneTool(m: string, ko: boolean): string {
   return m
 }
 
-function whenLabel(d: Record<string, unknown> | null, ko: boolean): string {
+function whenLabel(
+  d: Record<string, unknown> | null,
+  ko: boolean,
+  t: T,
+  missingFields: ReadonlySet<MissingField>,
+): string {
   const life = lifecycleFromDraft(d)
-  if (!life) return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
+  // Q102: when the server reports the lifecycle (trigger timing) is
+  // missing, NAME the missing field instead of the legacy "(not chosen
+  // yet)" placeholder.
+  if (!life) {
+    if (missingFields.has("lifecycle")) {
+      return namedMissingPlaceholder("lifecycle", t)
+    }
+    return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
+  }
   const m = matcherFromDraft(d)
   // D56d (P2 #14): widened lifecycle map mirrors page.tsx
   // LIFECYCLE_LABEL_KO / _EN. CC Stop fires after the agent finishes
@@ -306,12 +390,34 @@ function whenLabel(d: Record<string, unknown> | null, ko: boolean): string {
       ? `${lifeLabel} (${friendly})`
       : `${lifeLabel} (${friendly})`
   }
+  // Q102: lifecycle is set but the server reports the matcher (target
+  // tool) is still missing. Append a NAMED placeholder so the operator
+  // sees exactly what's blocking save next to the resolved lifecycle.
+  if (missingFields.has("matcher")) {
+    return `${lifeLabel} (${namedMissingPlaceholder("matcher", t)})`
+  }
   return lifeLabel
 }
 
-function actionLabel(d: Record<string, unknown> | null, ko: boolean): string {
+function actionLabel(
+  d: Record<string, unknown> | null,
+  ko: boolean,
+  t: T,
+  missingFields: ReadonlySet<MissingField>,
+): string {
   const a = actionFromDraft(d)
-  if (!a) return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
+  if (!a) {
+    // Q102: the action archetype itself isn't on the canonical
+    // missing-field list, but `on_missing` (the fallback verdict the
+    // wizard maps onto the action archetype server-side) is. When the
+    // compiler reports on_missing is missing AND we don't have a
+    // resolved action archetype to render, NAME the missing field
+    // instead of the legacy "(not chosen yet)" placeholder.
+    if (missingFields.has("on_missing")) {
+      return namedMissingPlaceholder("on_missing", t)
+    }
+    return ko ? "(아직 정해지지 않음)" : "(not chosen yet)"
+  }
   return ko
     ? ({
         block: "차단",
@@ -332,12 +438,21 @@ function actionLabel(d: Record<string, unknown> | null, ko: boolean): string {
 /* ── component ─────────────────────────────────────────────────────── */
 
 export function IrDraftPane({
-  t, locale, draft, readyToSave, saveAction, testId,
+  t, locale, draft, readyToSave, saveAction, missingFields, testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
   const irJson = draft ? JSON.stringify(draft, null, 2) : ""
   const hasDraft = !!draft && Object.keys(draft).length > 0
+
+  // Q102: normalize the optional missing-field set into a typed Set so
+  // the helpers below can do O(1) lookups without re-validating each
+  // call. Unknown server-emitted field names (a future field added
+  // before the dashboard catches up) are silently dropped so we never
+  // surface a raw IR field name.
+  const knownMissing: ReadonlyArray<MissingField> = (missingFields ?? [])
+    .filter(isKnownMissingField)
+  const missingSet: ReadonlySet<MissingField> = new Set(knownMissing)
 
   return (
     <aside
@@ -349,14 +464,23 @@ export function IrDraftPane({
         <h2 className="text-sm font-semibold text-[var(--color-text-primary)] m-0">
           {t("newPolicy.conv.draftPane.title")}
         </h2>
-        {readyToSave && (
-          <span
-            className="text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--color-accent)]"
-            data-testid="ir-draft-ready-pill"
-          >
-            {t("newPolicy.conv.saveReady")}
-          </span>
-        )}
+        {/* Q102: status pill is now ALWAYS rendered (amber DRAFTING by
+         *  default, emerald READY once the server flips ready_to_save).
+         *  The pill drives at-a-glance "is this savable?" feedback so
+         *  the operator never wonders whether the panel is alive. */}
+        <span
+          data-testid="ir-draft-status-pill"
+          data-state={readyToSave ? "ready" : "drafting"}
+          className={
+            readyToSave
+              ? "rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-800"
+              : "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-900"
+          }
+        >
+          {readyToSave
+            ? t("newPolicy.conv.liveDraft.statusReady")
+            : t("newPolicy.conv.liveDraft.statusDrafting")}
+        </span>
       </header>
 
       <section
@@ -375,19 +499,19 @@ export function IrDraftPane({
               {ko ? "언제" : "When"}
             </dt>
             <dd className="m-0" data-testid="ir-draft-when">
-              {whenLabel(draft, ko)}
+              {whenLabel(draft, ko, t, missingSet)}
             </dd>
             <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
               {ko ? "조건" : "Condition"}
             </dt>
             <dd className="m-0" data-testid="ir-draft-condition">
-              {conditionLabel(draft, ko)}
+              {conditionLabel(draft, ko, t, missingSet)}
             </dd>
             <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
               {ko ? "동작" : "Action"}
             </dt>
             <dd className="m-0" data-testid="ir-draft-action">
-              <span>{actionLabel(draft, ko)}</span>
+              <span>{actionLabel(draft, ko, t, missingSet)}</span>
               {action === "run_command" && (
                 <span
                   data-testid="ir-draft-action-warning"
@@ -523,15 +647,45 @@ export function IrDraftPane({
         >
           <input type="hidden" name="ir_json" value={irJson} />
           <input type="hidden" name="source" value="org" />
+          {/* Q102: Save CTA prominence on the ready transition. size=lg
+           *  + extra padding/text bumps it above the surrounding chrome,
+           *  and `motion-safe:animate-pulse` adds a subtle pulse the
+           *  user notices on mount; the global reduced-motion rule in
+           *  app/globals.css short-circuits the animation duration to
+           *  1ms so users with `prefers-reduced-motion: reduce` get the
+           *  static styled CTA. The CTA variant stays "primary", which
+           *  already maps to brand purple via --color-accent (#7C3AED).
+           */}
           <Button
             type="submit"
             variant="primary"
-            size="md"
+            size="lg"
             data-testid="ir-draft-save"
+            className="text-base px-5 shadow-md motion-safe:animate-pulse"
           >
             {t("newPolicy.conv.saveReady")}
           </Button>
         </form>
+      )}
+
+      {/* Q102: quiet "missing fields" footer. Renders only while the
+       *  draft is not yet ready_to_save AND the server reported at
+       *  least one known missing field. The line names every missing
+       *  field in plain language so the operator immediately knows
+       *  what to type next. Sub-text styling keeps it unobtrusive
+       *  (color-text-tertiary, italic) so it does not compete with
+       *  the summary rows above. */}
+      {!readyToSave && knownMissing.length > 0 && (
+        <p
+          data-testid="ir-draft-missing-list"
+          className="m-0 text-[11px] italic text-[var(--color-text-tertiary)]"
+        >
+          {t("newPolicy.conv.liveDraft.missingList", {
+            names: knownMissing
+              .map((f) => missingFieldLabel(f, t))
+              .join(", "),
+          })}
+        </p>
       )}
     </aside>
   )
