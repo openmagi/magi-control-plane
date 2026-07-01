@@ -761,6 +761,19 @@ Codex install required.
 
 ### 11.2 Decisions pending, blocking specific phases
 
+> AUTONOMOUS-BUILD DIRECTIVE (2026-07-01, Kevin): live tests are NOT
+> run yet, and the pending decisions below do NOT block the build.
+> Because the entire adapter ships behind `MAGI_CP_CODEX_RUNTIME_ENABLED`
+> (default OFF), additive, reversible, with the CC path byte-equivalent
+> when the flag is off, every phase implements against the RECOMMENDED
+> DEFAULT stated in each pending decision (drawn from the research
+> report). Mark each assumption at its call site with a
+> `# TODO(live-test D<N>): <one-line assumption>` comment so a later
+> validation pass is a single grep. Do NOT stall a phase waiting for a
+> live-test answer. If a live test later contradicts an assumption, it
+> becomes a small follow-up fix on dormant, flag-off code. Proceed
+> through P1 to P4 without pausing.
+
 Each pending decision maps to a live-test item (see Section 12 and the
 standalone `2026-06-30-codex-live-test-checklist.md`).
 
