@@ -138,15 +138,27 @@ describe("rules page source invariants (D82a)", () => {
     expect(evidenceSrc).toContain("rules.evidenceRecords.recentEmissions")
   })
 
-  // ── Regressions on the still-shipping bits ────────────────────
-  it("PoliciesTab still renders the prebuilt section above user policies", () => {
+  // ── D82f: unified card list — prebuilt + user in one grid ─────
+  it("PoliciesTab renders prebuilts and user policies in ONE unified grid, not separate sections", () => {
+    // D82a-e treated prebuilts as their own section (own header +
+    // own row style + own action set) while user policies rendered
+    // as cards below. Screenshot review flagged the inconsistency.
+    // D82f collapses to one grid. Both use the same Card shell; a
+    // BUILT-IN badge is the only prebuilt-specific marker.
     expect(src).toContain("cloud.listPrebuiltPolicies")
-    expect(policiesTabSrc).toContain("PrebuiltSection")
-    const idxPrebuilt = policiesTabSrc.indexOf("<PrebuiltSection")
-    const idxPolicyList = policiesTabSrc.indexOf("rules.summary.policies")
-    expect(idxPrebuilt).toBeGreaterThan(-1)
-    expect(idxPolicyList).toBeGreaterThan(-1)
-    expect(idxPrebuilt).toBeLessThan(idxPolicyList)
+    expect(policiesTabSrc).toContain("PrebuiltCard")
+    expect(policiesTabSrc).toContain("UserPolicyCard")
+    // The separate PrebuiltSection component and its row layout are
+    // gone. Pin the absence so a future refactor that re-splits the
+    // list trips loudly.
+    expect(policiesTabSrc).not.toContain("PrebuiltSection")
+    expect(policiesTabSrc).not.toContain("PrebuiltRow")
+    // Prebuilts render before user policies in the same grid.
+    const idxPrebuiltMap = policiesTabSrc.indexOf("prebuilt.map(")
+    const idxUserMap = policiesTabSrc.indexOf("userPolicies.map(")
+    expect(idxPrebuiltMap).toBeGreaterThan(-1)
+    expect(idxUserMap).toBeGreaterThan(-1)
+    expect(idxPrebuiltMap).toBeLessThan(idxUserMap)
   })
 
   it("prebuiltDraftHref still double-encodes and lands on wizard step 6", () => {
@@ -156,14 +168,17 @@ describe("rules page source invariants (D82a)", () => {
     expect(policiesTabSrc).toContain("step=6")
   })
 
-  // ── D82a: prebuilt = rows, not card grid ──────────────────────
-  it("PrebuiltSection renders rows (PrebuiltRow), not a card grid", () => {
-    // The pre-D82a section emitted `<Card key=...>` per entry inside
-    // a `grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3` wrapper.
-    // The new layout is a `<ul>` of `PrebuiltRow` items.
-    expect(policiesTabSrc).toContain("PrebuiltRow")
-    expect(policiesTabSrc).toMatch(/items\.map\(\s*\(\s*p\s*\)\s*=>\s*\(\s*<li\s/)
-    expect(policiesTabSrc).not.toMatch(/grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3[\s\S]{0,200}items\.map/)
+  it("D82f: PrebuiltCard uses the same <Card> shell + toggle affordance as UserPolicyCard", () => {
+    // Both card components mount the design system <Card> and expose
+    // an on/off pill next to the toggle. Sanity-check the shared shape
+    // so a future refactor cannot silently diverge them again.
+    expect(policiesTabSrc).toMatch(/function PrebuiltCard\(/)
+    expect(policiesTabSrc).toMatch(/function UserPolicyCard\(/)
+    // Same Card import used by both cards.
+    expect(policiesTabSrc).toContain("<Card")
+    // Prebuilt-specific BUILT-IN badge lives inside the card body,
+    // not in a separate section header.
+    expect(policiesTabSrc).toContain("rules.prebuilt.badge")
   })
 
   it("PrebuiltRow is a client component with an expander", () => {
@@ -246,13 +261,17 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc).toContain("setupDocsHref")
   })
 
-  it("D67: user-policies grid filters prebuilt rows before mapping", () => {
+  it("D67/D82f: user-policies grid filters prebuilt rows before mapping", () => {
+    // D82f keeps the D67 filter so a materialized prebuilt (id
+    // "prebuilt/...") never renders twice — once as a PrebuiltCard
+    // and once as a UserPolicyCard. The count that drives the empty
+    // state / summary badge is now `totalCards` (prebuilt + user).
     expect(policiesTabSrc).toMatch(
       /\.filter\(\s*\(\s*p\s*\)\s*=>\s*!\s*p\.id\.startsWith\(['"]prebuilt\/['"]\)\s*\)/,
     )
     expect(policiesTabSrc).toContain("userPolicies.map(")
-    expect(policiesTabSrc).toContain("nfFormat(userPolicies.length)")
-    expect(policiesTabSrc).toMatch(/userPolicies\.length\s*===\s*0/)
+    expect(policiesTabSrc).toContain("nfFormat(totalCards)")
+    expect(policiesTabSrc).toMatch(/totalCards\s*===\s*0/)
   })
 
   it("D67: a literal items.map<Card> is NOT present in PoliciesTab", () => {
