@@ -128,6 +128,46 @@ CODEX_PRETOOLUSE_COVERED_TOOLS: frozenset[str] = frozenset({
     "unified_exec", "apply_patch",
 })
 
+# CC tool-name -> Codex tool-name translation for EMITTED hook matchers
+# (§11.4 F4). A hook table's ``matcher`` must name a Codex tool or it fires
+# ZERO times — the "false sense of coverage" failure mode 4.1 warns about.
+# Only CONFIRMED mappings live here (identity for everything else):
+#   - CONFIRMED live 2026-07-01 from real rollout ``function_call`` names:
+#     ``exec_command`` (2855x, the shell tool), ``apply_patch`` (file
+#     mutation), ``spawn_agent`` (multi_agent), ``update_plan``,
+#     ``write_stdin``. Codex has NO discrete Read/Grep/Glob/Edit/Write
+#     tool: reads run as ``exec_command`` sub-actions and edits as
+#     ``apply_patch``.
+# So CC ``Bash`` -> ``exec_command`` and CC ``Edit``/``Write``/``MultiEdit``
+# -> ``apply_patch``. Read-family CC matchers (``Read``/``Grep``/``Glob``/
+# ...) have no 1:1 Codex tool and pass through unchanged; they stay inert
+# on Codex, which ``coverage_report`` already surfaces as a downgrade
+# (design doc §14 "Costs"). ``spawn_agent``/``apply_patch``/``exec_command``
+# and any already-Codex name are identity. Regex/alternation matchers
+# (``Edit|Write``) and the empty all-tools matcher pass through unchanged;
+# translating those is a documented follow-up.
+_CC_TO_CODEX_TOOL: dict[str, str] = {
+    "Bash": "exec_command",
+    "Edit": "apply_patch",
+    "Write": "apply_patch",
+    "MultiEdit": "apply_patch",
+    # CC's single-subagent-spawn tool ``Task`` maps onto Codex's
+    # ``spawn_agent`` (design doc 4.4 — a covered PreToolUse tool). Without
+    # this, a ``matcher = "Task"`` table never fires on Codex (false
+    # coverage). ``spawn_agent`` itself is unauthorable via the IR (rejected
+    # by the CC matcher grammar); it reaches the emitter only through Shim
+    # D's internal mirror, where it translates identity.
+    "Task": "spawn_agent",
+}
+
+
+def translate_matcher_cc_to_codex(matcher: str) -> str:
+    """Map a Claude Code tool-name matcher to its confirmed Codex tool
+    name for hook emission. Identity for regex/alternation matchers, the
+    empty all-tools matcher, already-Codex names, and any CC tool without
+    a confirmed 1:1 Codex tool (read-family). See ``_CC_TO_CODEX_TOOL``."""
+    return _CC_TO_CODEX_TOOL.get(matcher, matcher)
+
 # Subagent lifecycle events whose hook fanout may not fire on Codex's
 # internal reviewers (design doc 4.4). A policy triggered on one of these
 # gets the ``codex_internal_subagent_gap`` marker + the emitter's
