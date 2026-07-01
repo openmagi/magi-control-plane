@@ -71,8 +71,16 @@ describe("Q96 developer docs", () => {
   })
 
   it("no internal-only planning files were retained under docs/", () => {
+    // Q96 dropped the legacy internal-only files that used to sit
+    // alongside the developer docs. The list below stays banned.
+    //
+    // `docs/plans/` is DELIBERATELY NOT banned: the /docs renderer
+    // uses the DOCS_INDEX allowlist (see the invariant below), never
+    // a filesystem glob, so plan / design markdown living under
+    // docs/plans/ is never rendered on the public site. Keeping the
+    // design docs in-repo (pack-centric runtime, codex adapter, etc.)
+    // is useful and safe as long as the renderer stays allowlist-based.
     const banned = [
-      "plans",
       "workflows",
       "clawy-integration.md",
       "design-partner-onepager.md",
@@ -83,6 +91,18 @@ describe("Q96 developer docs", () => {
     ]
     for (const name of banned) {
       expect(existsSync(path.join(docsDir, name)), `internal-only path remains: ${name}`).toBe(false)
+    }
+  })
+
+  it("the renderer is allowlist-based: no DOCS_INDEX slug escapes into a subdirectory", () => {
+    // The protective intent behind the ban above is "internal plans
+    // must never render on the public /docs page." That intent is
+    // enforced here structurally: every rendered slug must be a
+    // flat top-level docs/<slug>.md. A slug containing a path
+    // separator (which is how a plans/ file would sneak in) fails.
+    for (const doc of DOCS_INDEX) {
+      expect(doc.slug.includes("/"), `slug escapes to a subdir: ${doc.slug}`).toBe(false)
+      expect(doc.slug.includes(".."), `slug traverses: ${doc.slug}`).toBe(false)
     }
   })
 })
