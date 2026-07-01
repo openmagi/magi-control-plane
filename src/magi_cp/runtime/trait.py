@@ -151,15 +151,15 @@ class CoverageReport:
 # source of truth mapping the driver's raw ``status`` / ``downgrade``
 # onto the dashboard vocabulary the design doc Section 7.2 pins:
 #
-#   "enforced"       green  — the runtime enforces the policy natively.
-#   "downgraded"     amber  — enforced through a compat fallback
+#   "enforced"       green  - the runtime enforces the policy natively.
+#   "downgraded"     amber  - enforced through a compat fallback
 #                             (post-hoc audit / systemMessage / deferred).
-#   "unsupported"    red    — a gap marker with no fallback path
+#   "unsupported"    red    - a gap marker with no fallback path
 #                             (Codex native-config-pending archetypes).
-#   "not_applicable" gray   — the policy is not applicable to this runtime.
+#   "not_applicable" gray   - the policy is not applicable to this runtime.
 #
 # Unlike ``CoverageReport.enforced_count`` / ``downgraded_count`` (which
-# overlap — a status="enforced" policy can still carry a Shim-B
+# overlap - a status="enforced" policy can still carry a Shim-B
 # ``system_message`` downgrade), the cells are mutually exclusive so a
 # rollup's four counts always sum to the policy total.
 COVERAGE_CELLS = ("enforced", "downgraded", "unsupported", "not_applicable")

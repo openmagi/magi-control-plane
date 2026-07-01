@@ -115,7 +115,7 @@ export async function saveLlmKeysAction(formData: FormData): Promise<SaveResult>
  * (403 → surfaced as an inline error), and persists tenants.runtime_id
  * otherwise. Single-tenant-beta tenant id is "default" (the same synthetic
  * tenant the rest of the self-host dashboard reads). The admin key stays
- * server-side — the client component only sees the result envelope.
+ * server-side - the client component only sees the result envelope.
  */
 export type RuntimeSwitchResult =
   | { ok: true; runtimeId: string }

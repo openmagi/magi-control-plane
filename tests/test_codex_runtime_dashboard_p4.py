@@ -4,13 +4,13 @@ Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
 Section 7 (dashboard changes) + Section 9.3 (feature-flag ladder).
 
 Covered here:
-  - GET /policies/{id}/coverage/{runtime} — per-policy strip data,
+  - GET /policies/{id}/coverage/{runtime} - per-policy strip data,
     green on CC, amber (downgraded) on Codex for a silent-skip tool.
-  - GET /packs/{id}/coverage/{runtime} — per-pack rollup, mutually
+  - GET /packs/{id}/coverage/{runtime} - per-pack rollup, mutually
     exclusive counts summing to the member total.
-  - GET /tenants/{id}/runtime — picker state incl. codex_enabled flag
+  - GET /tenants/{id}/runtime - picker state incl. codex_enabled flag
     (reflecting MAGI_CP_CODEX_RUNTIME_ENABLED) + per-runtime rollup.
-  - POST /tenants/{id}/runtime — refuses codex with the flag off (403),
+  - POST /tenants/{id}/runtime - refuses codex with the flag off (403),
     accepts it with the flag on and persists tenants.runtime_id (E2E).
   - the admin key is required on every coverage/runtime read.
 """
@@ -212,6 +212,43 @@ def test_get_tenant_runtime_reflects_codex_enabled(cloud, monkeypatch):
     assert r.json()["codex_enabled"] is True
 
 
+def test_picker_rollup_counts_floor_pack_members_with_empty_store(tmp_path):
+    """Regression: a pack-centric tenant with an EMPTY policy_store but a
+    built-in floor pack must not report "0 policies enforced". The picker
+    rollup unions floor-pack members (resolved via the prebuilt catalog)
+    so its total matches the per-pack coverage cards instead of
+    under-reporting."""
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    dsn = f"sqlite:///{tmp_path}/cloud.sqlite"
+    policy_path = str(tmp_path / "policies.json")
+    pack_path = str(tmp_path / "packs.json")
+    # Empty operator policy store.
+    PolicyStore(path=policy_path).save([])
+    # Floor pack made of two prebuilt members (no store rows exist for them).
+    floor_members = [
+        "prebuilt/citation-verify-at-final",
+        "prebuilt/privilege-scan-bash",
+    ]
+    PackStore(path=pack_path).save([
+        UserPackRow(
+            id="user-pack/floor", name="Floor", description="",
+            policy_ids=floor_members, is_floor=True,
+        ),
+    ])
+    app = create_app(
+        keystore=ks, dsn=dsn,
+        policy_store_path=policy_path,
+        pack_store_path=pack_path,
+    )
+    client = TestClient(app)
+    body = _admin(client, "GET", "/tenants/default/runtime").json()
+    cc = next(rt for rt in body["runtimes"] if rt["id"] == "claude-code")
+    # CC enforces every policy natively: the picker now counts the two
+    # floor-pack members instead of showing 0.
+    assert cc["total"] == len(floor_members)
+    assert cc["enforced"] == len(floor_members)
+
+
 # ── runtime switch (feature-flag ladder + persistence) ───────────────
 def test_switch_to_codex_refused_when_flag_off(cloud):
     r = _admin(cloud["client"], "POST", "/tenants/default/runtime",
@@ -236,7 +273,7 @@ def test_switch_to_codex_persists_when_flag_on(cloud, monkeypatch):
 
 def test_switch_back_to_cc_always_allowed(cloud, monkeypatch):
     # Put the tenant on codex first (flag on), then flip flag off and
-    # revert — reverting to CC must not require the flag.
+    # revert - reverting to CC must not require the flag.
     monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "1")
     _admin(cloud["client"], "POST", "/tenants/default/runtime",
            json={"runtime_id": "codex"})

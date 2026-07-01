@@ -1,9 +1,9 @@
 "use client"
 
 /**
- * P4 (Codex runtime adapter) — runtime picker on /settings.
+ * P4 (Codex runtime adapter) - runtime picker on /settings.
  *
- * Sub-path imports only (NEVER the `@/components/ui` barrel — it drags a
+ * Sub-path imports only (NEVER the `@/components/ui` barrel - it drags a
  * server-only chain into the client bundle). Takes `locale` explicitly
  * and resolves copy with `translate(locale, key, vars)` since a client
  * component must not call the server-only translator factory.
@@ -45,19 +45,30 @@ export function RuntimePicker({
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const current = initial.runtime_id
-  // The runtime the operator has *selected to preview* — starts on the
+  // The runtime the operator has *selected to preview* - starts on the
   // persisted current runtime, so step 1 (radio click) is a pure preview.
   const [selected, setSelected] = useState<string>(current)
   const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
 
   const rollupFor = (id: string): RuntimeCoverage | undefined =>
     initial.runtimes.find((r) => r.id === id)
 
+  // Selecting a preview (or cancelling) clears any prior success/error so
+  // the live region never announces a stale outcome for the new choice.
+  const previewRuntime = useCallback((id: string) => {
+    setSelected(id)
+    setSaved(false)
+    setError(null)
+  }, [])
+
   const confirmSwitch = useCallback(() => {
     setError(null)
+    setSaved(false)
     startTransition(async () => {
       const res = await setRuntimeAction(selected)
       if (res.ok) {
+        setSaved(true)
         router.refresh()
       } else {
         setError(res.error)
@@ -72,6 +83,17 @@ export function RuntimePicker({
     selected !== current && (selected !== "codex" || codexSelectable)
 
   const currentRollup = rollupFor(current)
+
+  // A single polite live region gives screen-reader users parity with the
+  // visible UI: success ("Runtime switched."), the in-flight switch, and the
+  // step-1 preview state are each announced as they happen.
+  const statusMessage = saved
+    ? t("settings.runtime.saved")
+    : pending
+      ? t("settings.runtime.switching")
+      : selected !== current
+        ? t("settings.runtime.preview")
+        : ""
 
   return (
     <section className="rounded-2xl border border-black/[0.06] bg-[var(--color-surface-1,#f9fafb)]/40 p-4">
@@ -93,7 +115,7 @@ export function RuntimePicker({
         </div>
       </div>
 
-      {/* Alternatives — a radio per known runtime. */}
+      {/* Alternatives - a radio per known runtime. */}
       <fieldset className="mt-4">
         <legend className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
           {t("settings.runtime.alternatives")}
@@ -120,7 +142,10 @@ export function RuntimePicker({
                     value={id}
                     checked={selected === id}
                     disabled={disabled}
-                    onChange={() => !disabled && setSelected(id)}
+                    aria-describedby={
+                      disabled ? `runtime-reason-${id}` : undefined
+                    }
+                    onChange={() => !disabled && previewRuntime(id)}
                   />
                   <span className="font-medium">
                     {t(RUNTIME_NAME_KEY[id])}
@@ -132,7 +157,10 @@ export function RuntimePicker({
                   )}
                 </span>
                 {disabled && (
-                  <span className="pl-6 text-[11px] text-[var(--color-text-tertiary)]">
+                  <span
+                    id={`runtime-reason-${id}`}
+                    className="pl-6 text-[11px] text-[var(--color-text-tertiary)]"
+                  >
                     {t("settings.runtime.requiresFlag")}
                   </span>
                 )}
@@ -156,7 +184,7 @@ export function RuntimePicker({
       </fieldset>
 
       {/* Step 2: confirm. Only rendered once the operator previewed a
-          different, selectable runtime — an accidental radio click never
+          different, selectable runtime - an accidental radio click never
           persists on its own. */}
       {canConfirm && (
         <div className="mt-3 flex items-center gap-3">
@@ -172,7 +200,7 @@ export function RuntimePicker({
           <button
             type="button"
             disabled={pending}
-            onClick={() => setSelected(current)}
+            onClick={() => previewRuntime(current)}
             className="text-xs text-[var(--color-text-tertiary)] hover:underline"
           >
             {t("settings.runtime.cancel")}
@@ -181,10 +209,16 @@ export function RuntimePicker({
       )}
 
       {error && (
-        <p className="mt-2 text-xs text-red-700">
+        <p role="alert" className="mt-2 text-xs text-red-700">
           {t("settings.runtime.error", { detail: error })}
         </p>
       )}
+
+      {/* Visually-hidden polite live region: announces preview/pending/success
+          transitions so screen-reader users track the two-step confirm. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {statusMessage}
+      </div>
     </section>
   )
 }

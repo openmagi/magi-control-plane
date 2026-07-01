@@ -183,7 +183,7 @@ class TenantRepo:
     def get_runtime(self, tenant_id: str) -> str:
         """Return the tenant's ``runtime_id``.
 
-        Falls back to ``"claude-code"`` when the tenant has no DB row —
+        Falls back to ``"claude-code"`` when the tenant has no DB row -
         the single-tenant beta's synthetic ``default`` tenant (env-key
         auth path) never materializes a row until the operator flips the
         runtime picker, so its default runtime is CC.

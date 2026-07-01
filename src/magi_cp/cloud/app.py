@@ -2315,7 +2315,7 @@ def create_app(
         return _metrics_summary_to_dict(summary)
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
-    # ── Codex runtime adapter (P4) — coverage + per-tenant runtime ────
+    # ── Codex runtime adapter (P4) - coverage + per-tenant runtime ────
     # Registered BEFORE _attach_policy_routes so the specific
     # `/policies/{id}/coverage/{runtime}` route is matched ahead of that
     # helper's greedy `/policies/{policy_id:path}` catch-all.
@@ -5060,10 +5060,10 @@ def _attach_runtime_routes(
     ``MAGI_CP_CODEX_RUNTIME_ENABLED`` (default off).
 
     Routes:
-      - GET  /policies/{policy_id}/coverage/{runtime_id}  — per-policy strip
-      - GET  /packs/{pack_id}/coverage/{runtime_id}       — per-pack rollup
-      - GET  /tenants/{tenant_id}/runtime                 — picker state
-      - POST /tenants/{tenant_id}/runtime                 — switch runtime
+      - GET  /policies/{policy_id}/coverage/{runtime_id}  - per-policy strip
+      - GET  /packs/{pack_id}/coverage/{runtime_id}       - per-pack rollup
+      - GET  /tenants/{tenant_id}/runtime                 - picker state
+      - POST /tenants/{tenant_id}/runtime                 - switch runtime
 
     All coverage reads reuse ``HookRuntime.coverage_report`` (P1) so the
     dashboard never re-derives coverage semantics.
@@ -5098,11 +5098,38 @@ def _attach_runtime_routes(
         return build_prebuilt_evidence_policy(policy_id)
 
     def _all_store_ir() -> list:
-        """Every operator-saved policy IR — the catalog the per-tenant
-        picker rollup measures coverage against."""
-        if policy_store is None:
-            return []
-        return [ov.policy for ov in policy_store.load()]
+        """The catalog the per-tenant picker rollup measures coverage
+        against: operator-saved policies PLUS the members of the
+        always-on floor pack.
+
+        A pack-centric tenant can run with an empty ``policy_store``
+        while all enforcement flows from the built-in floor pack.
+        Counting store rows alone would make the picker under-report
+        ("0 policies enforced") even as the per-pack rollup cards show
+        the real non-zero counts. Resolving floor-pack members through
+        ``_policy_ir_by_id`` (store row first, prebuilt catalog
+        fallback) keeps the picker total aligned with those cards.
+        Deduped by policy id so a member that is also an operator-saved
+        row is counted exactly once."""
+        seen: set[str] = set()
+        out: list = []
+        if policy_store is not None:
+            for ov in policy_store.load():
+                if ov.policy.id not in seen:
+                    seen.add(ov.policy.id)
+                    out.append(ov.policy)
+        if pack_store is not None:
+            for row in pack_store.load():
+                if not getattr(row, "is_floor", False):
+                    continue
+                for mid in row.policy_ids:
+                    if mid in seen:
+                        continue
+                    ir = _policy_ir_by_id(mid)
+                    if ir is not None:
+                        seen.add(mid)
+                        out.append(ir)
+        return out
 
     def _resolve_pack_member_ids(pack_id: str) -> list[str] | None:
         """Ordered member policy ids for a pack, or None when unknown.

@@ -10,7 +10,7 @@ type TFunc = (k: TKey, v?: Record<string, string | number>) => string
  * A single mapping from the normalized coverage cell (see
  * src/magi_cp/runtime/trait.py `coverage_cell`) onto the design-system
  * Badge variant + the i18n label. Green enforced / amber downgraded /
- * red unsupported / gray n-a — matching Section 7.2 of the design doc.
+ * red unsupported / gray n-a - matching Section 7.2 of the design doc.
  */
 const CELL_VARIANT: Record<CoverageCell, "ok" | "review" | "deny" | "muted"> = {
   enforced: "ok",

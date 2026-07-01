@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * P4 (Codex runtime adapter) — source-level invariants for the coverage
+ * P4 (Codex runtime adapter) - source-level invariants for the coverage
  * strip + per-pack rollup, and the cloud lib methods that feed them.
  * Sibling grep pattern to the rest of the (console) test suite.
  */

@@ -1045,17 +1045,18 @@ const KO_RAW = {
   "settings.llm.testResult.fail": "실패: {provider}: {detail}",
   "settings.llm.clearLabel": "비우고 저장 (키 삭제)",
 
-  /* ── P4: Codex runtime adapter — runtime picker + coverage ──────── */
+  /* ── P4: Codex runtime adapter - runtime picker + coverage ──────── */
   "settings.runtime.label": "런타임",
   "settings.runtime.description": "이 테넌트의 게이트가 어떤 코딩 에이전트 런타임을 쓰는지 선택합니다. 기본값은 Claude Code 입니다.",
   "settings.runtime.coverage_preview": "커버리지: 정책 {enforced}개 강제 적용",
   "settings.runtime.coverage_preview_full": "정책 {enforced}개 강제, {downgraded}개 다운그레이드, {unsupported}개 미지원",
   "settings.runtime.switch_confirm": "전환 확정",
   "settings.runtime.alternatives": "다른 런타임",
-  "settings.runtime.requiresFlag": "MAGI_CP_CODEX_RUNTIME_ENABLED=1 이 필요합니다.",
+  "settings.runtime.requiresFlag": "이 배포에서는 Codex 런타임이 비활성화되어 있습니다. MAGI_CP_CODEX_RUNTIME_ENABLED=1이 필요합니다.",
   "settings.runtime.preview": "커버리지 미리 보기",
   "settings.runtime.current": "현재 런타임",
   "settings.runtime.saved": "런타임이 전환되었습니다.",
+  "settings.runtime.switching": "런타임을 전환하는 중입니다.",
   "settings.runtime.error": "전환 실패: {detail}",
   "settings.runtime.cancel": "취소",
   "runtime.name.claude-code": "Claude Code",
@@ -2105,17 +2106,18 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "settings.llm.testResult.fail": "FAIL: {provider}: {detail}",
   "settings.llm.clearLabel": "Save empty (clears the key)",
 
-  /* ── P4: Codex runtime adapter — runtime picker + coverage ──────── */
+  /* ── P4: Codex runtime adapter - runtime picker + coverage ──────── */
   "settings.runtime.label": "Runtime",
   "settings.runtime.description": "Choose which coding-agent runtime this tenant's gate speaks. Defaults to Claude Code.",
   "settings.runtime.coverage_preview": "Coverage: {enforced} policies enforced",
   "settings.runtime.coverage_preview_full": "{enforced} enforced, {downgraded} downgraded, {unsupported} unsupported",
   "settings.runtime.switch_confirm": "Confirm switch",
   "settings.runtime.alternatives": "Alternatives",
-  "settings.runtime.requiresFlag": "Requires MAGI_CP_CODEX_RUNTIME_ENABLED=1.",
+  "settings.runtime.requiresFlag": "Codex runtime is disabled on this deployment. Requires MAGI_CP_CODEX_RUNTIME_ENABLED=1.",
   "settings.runtime.preview": "Preview coverage",
   "settings.runtime.current": "Current runtime",
   "settings.runtime.saved": "Runtime switched.",
+  "settings.runtime.switching": "Switching runtime.",
   "settings.runtime.error": "Switch failed: {detail}",
   "settings.runtime.cancel": "Cancel",
   "runtime.name.claude-code": "Claude Code",

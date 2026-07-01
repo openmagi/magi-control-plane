@@ -213,7 +213,9 @@ function PrebuiltCard({
         </div>
       </div>
       {packCentric && <PackChips packs={packs} t={t} />}
-      <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
+      {codexEnabled && (
+        <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
+      )}
       <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
         {entry.ir.trigger ? (
           <span>{t("policies.trigger")}: <Code>{entry.ir.trigger.event}</Code> · <Code>{entry.ir.trigger.matcher}</Code></span>
@@ -300,7 +302,9 @@ function UserPolicyCard({
         ) : null}
         <span>{t("policies.source")}: <Code>{item.source}</Code></span>
       </div>
-      <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
+      {codexEnabled && (
+        <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
+      )}
       {packCentric && <PackChips packs={packs} t={t} />}
     </Card>
   )

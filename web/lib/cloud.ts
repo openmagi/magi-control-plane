@@ -1316,7 +1316,7 @@ export const cloud = {
       { method: "GET", keyType: "admin" },
     ),
 
-  /** P4: picker state for a tenant — current runtime, whether the codex
+  /** P4: picker state for a tenant - current runtime, whether the codex
    * runtime is enabled on this build (MAGI_CP_CODEX_RUNTIME_ENABLED),
    * and a whole-catalog coverage rollup per known runtime. */
   getTenantRuntime: (tenantId: string): Promise<TenantRuntimeState> =>
@@ -1373,7 +1373,7 @@ export type PackCoverage = {
 }
 
 /** P4: whole-catalog coverage rollup for one runtime (no per-policy
- * list — the picker only needs the counts). */
+ * list - the picker only needs the counts). */
 export type RuntimeCoverage = {
   id: string
   enforced: number
@@ -1383,7 +1383,7 @@ export type RuntimeCoverage = {
   total: number
 }
 
-/** P4: GET /tenants/{id}/runtime — runtime picker state. */
+/** P4: GET /tenants/{id}/runtime - runtime picker state. */
 export type TenantRuntimeState = {
   tenant_id: string
   runtime_id: string

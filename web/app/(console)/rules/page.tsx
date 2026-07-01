@@ -136,7 +136,7 @@ export default async function RulesPage({
   // P4 (Codex runtime adapter): whether THIS tenant has the Codex
   // runtime enabled, plus per-policy / per-pack coverage cells for the
   // dashboard strips. Only fetched when the tab needs it AND the build
-  // has codex on (MAGI_CP_CODEX_RUNTIME_ENABLED) — a CC-only tenant
+  // has codex on (MAGI_CP_CODEX_RUNTIME_ENABLED) - a CC-only tenant
   // never pays the per-card coverage round-trips, and the strips render
   // CC-only. Tenant id is the single-tenant-beta "default".
   let codexEnabled = false

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 /**
- * P4 (Codex runtime adapter) — source-level invariants for the runtime
+ * P4 (Codex runtime adapter) - source-level invariants for the runtime
  * picker client component. Sibling pattern to LlmKeysForm.test.ts +
  * the rules/_components/*.test.ts grep suites. The two-step confirm +
  * flag-gated radio behaviour is the load-bearing contract; a refactor
