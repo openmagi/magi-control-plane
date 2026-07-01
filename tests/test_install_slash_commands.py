@@ -63,11 +63,22 @@ def test_command_bodies_invoke_the_cli(tmp_path):
 
 
 @pytest.mark.skipif(not _INSTALL_SH.exists(), reason="install.sh missing")
-def test_install_is_idempotent(tmp_path):
+def test_install_preserves_user_edits_on_rerun(tmp_path):
+    """A re-run must NOT clobber operator edits to the command files,
+    same policy as the docker-compose.yml preservation block."""
     home = tmp_path / "home"
     home.mkdir()
     assert _run_installer(home).returncode == 0
-    # Second run must not fail (files simply overwritten).
-    assert _run_installer(home).returncode == 0
+
     cmd_dir = home / ".claude" / "commands" / "magi"
-    assert (cmd_dir / "pack.md").is_file()
+    pack = cmd_dir / "pack.md"
+    # Operator hand-edits a command body after the first install.
+    sentinel = "\n<!-- operator edit: do not clobber -->\n"
+    pack.write_text(pack.read_text("utf-8") + sentinel, "utf-8")
+
+    # Second run must succeed AND leave the edit intact.
+    assert _run_installer(home).returncode == 0
+    assert sentinel in pack.read_text("utf-8"), "user edit was clobbered"
+    # The other files are still present (nothing deleted).
+    for name in _COMMAND_FILES:
+        assert (cmd_dir / name).is_file()

@@ -159,6 +159,20 @@ def test_touch_invalidation_file_creates_it_and_returns_true():
     assert mtime > 0.0
 
 
+def test_touch_invalidation_file_is_not_world_readable():
+    """P2 hardening: the sentinel is a security-relevant freshness
+    signal — a non-root neighbour must not be able to read (and thus
+    spoof / freeze) it. It is written 0600, and its parent dir tree is
+    created 0700, mirroring the gate's pubkey/heartbeat cache."""
+    import stat as _stat
+
+    assert touch_invalidation_file(_S, _T) is True
+    path = invalidation_file_path(_S, _T)
+    assert _stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    parent = os.path.dirname(path)
+    assert (os.stat(parent).st_mode & 0o077) == 0
+
+
 def test_touch_invalidation_file_bumps_mtime():
     assert touch_invalidation_file(_S, _T) is True
     first = current_invalidation_mtime(_S, _T)

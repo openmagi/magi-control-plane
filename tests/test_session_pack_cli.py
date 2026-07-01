@@ -8,6 +8,7 @@ Covers the two behavioural contracts the design brief calls out:
 """
 import json
 import os
+import stat
 
 import pytest
 
@@ -138,6 +139,48 @@ def test_session_id_falls_back_to_state_file(monkeypatch, tmp_path):
     state.write_text(json.dumps({"session_id": "sess_from_file"}), "utf-8")
     monkeypatch.setenv("MAGI_CP_SESSION_FILE", str(state))
     assert cli.resolve_session_id() == "sess_from_file"
+
+
+def test_gate_persists_session_id_for_cli_resolution(monkeypatch):
+    """ON-path P1: the gate is the PRODUCER of the tier-4 state file.
+
+    Drive a normal (non-sentinel) hook through ``gate.evaluate``; it
+    writes the session id CC handed it, and the CLI's tier-4 fallback
+    then resolves that same id with no ``--session-id`` / env set. This
+    closes the "documented fallback with no writer" gap.
+    """
+    from magi_cp.local import cli, gate, session_cache
+
+    payload = {
+        "session_id": "sess_from_gate",
+        "hook_event_name": "PreToolUse",
+        # No FILE_COURT_ sentinel → gate short-circuits to _allow() (exit 0),
+        # but must STILL have persisted the session id before that.
+        "tool_input": {"command": "echo hello"},
+    }
+    with pytest.raises(SystemExit) as exc:
+        gate.evaluate(payload)
+    assert exc.value.code == 0  # allow lane
+
+    path = session_cache.session_state_file_path()
+    assert os.path.exists(path)
+    # Written 0600 (not world/group readable) via tmp+rename O_NOFOLLOW.
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    # The reader resolves the exact id the gate wrote.
+    assert cli.resolve_session_id() == "sess_from_gate"
+
+
+def test_sticky_file_written_0600(monkeypatch, tmp_path):
+    """P2: the sticky-packs file is not world/group readable."""
+    from magi_cp.local import cli
+
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+
+    assert cli.cli(["pack", "sticky", "user-pack/a"]) == 0
+    path = tmp_path / "sticky-packs.json"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
 def test_dispatch_routes_session_to_cli(monkeypatch):

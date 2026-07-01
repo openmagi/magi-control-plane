@@ -243,6 +243,92 @@ def sticky_packs_file_path() -> str:
     )
 
 
+def session_state_file_path() -> str:
+    """Full path to the state file the gate writes the last-seen CC
+    session id into and the ``magi-cp session pack …`` CLI reads back.
+
+    The gate is the WRITER (see :func:`persist_session_id`, called from
+    ``gate.evaluate`` on every hook it observes); the CLI is the READER
+    (``cli.resolve_session_id`` tier-4 fallback). Both resolve the path
+    here so the writer/reader contract can never drift. Overridable via
+    ``MAGI_CP_SESSION_FILE`` so tests never touch a real ``~/.magi-cp``
+    tree.
+    """
+    return os.environ.get(
+        "MAGI_CP_SESSION_FILE",
+        os.path.join(_state_dir(), "session.json"),
+    )
+
+
+def _make_secure_dir(path: str) -> None:
+    """Create ``path`` (and parents) with mode 0700.
+
+    ``os.makedirs(mode=0o700)`` can only REMOVE bits via the process
+    umask, never add them, so the resulting tree is at most 0700 —
+    never group/world readable regardless of a loose operator umask.
+    Mirrors the defence-in-depth the gate applies to its pubkey /
+    heartbeat cache. Pre-existing dirs keep their mode (we do not chmod
+    an operator's directory out from under them).
+    """
+    if not path:
+        return
+    os.makedirs(path, mode=0o700, exist_ok=True)
+
+
+def persist_session_id(session_id: str) -> bool:
+    """Atomically persist the last-seen CC session id to the state file.
+
+    This is the PRODUCER for the tier-4 session-id fallback the CLI
+    reads (:func:`session_state_file_path`). Called by the gate from
+    ``gate.evaluate`` on every hook it observes so a bare
+    ``magi-cp session pack activate <id>`` (no ``--session-id``, no
+    ``MAGI_CP_SESSION_ID``) resolves to the session CC is actually
+    running.
+
+    The write is hardened like the gate's other trust files:
+      * ``tmp + os.replace`` so a crash mid-write cannot leave a
+        truncated / half-written state file the reader would choke on.
+      * ``O_CREAT|O_TRUNC|O_NOFOLLOW`` at mode 0o600 so a pre-planted
+        symlink cannot redirect the write and the file is not
+        world/group readable regardless of umask.
+
+    Returns ``True`` when the id landed on disk, ``False`` on any
+    OSError (unwritable state dir, symlink swap) — best-effort; a
+    missed write just means the CLI falls back to erroring on "no
+    session id" rather than resolving, exactly as before this producer
+    existed.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return False
+    path = session_state_file_path()
+    try:
+        _make_secure_dir(os.path.dirname(path))
+        tmp = f"{path}.tmp.{os.getpid()}"
+        fd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            os.write(
+                fd,
+                json.dumps(
+                    {"session_id": session_id}, ensure_ascii=False,
+                ).encode("utf-8"),
+            )
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+        return True
+    except OSError as exc:
+        _LOGGER.warning(
+            "persist_session_id failed: session=%r errno=%s path=%s "
+            "reason=%s",
+            session_id, getattr(exc, "errno", None), path, exc,
+        )
+        return False
+
+
 # Read at most this many bytes of the sentinel body. The nonce is a
 # short token; a bounded read means a hostile-neighbour that grows the
 # file cannot force an unbounded read on every hook call.
@@ -330,15 +416,28 @@ def touch_invalidation_file(session_id: str, tenant_id: str) -> bool:
     """
     path = invalidation_file_path(session_id, tenant_id)
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        _make_secure_dir(os.path.dirname(path) or ".")
         # Write a fresh, unique nonce into the body (truncating any
         # prior value). The nonce is the mtime-granularity-independent
         # change signal: two rapid touches always differ here even when
         # the filesystem's coarse mtime tick would otherwise collide.
         # The write itself bumps mtime; the explicit utime() keeps mtime
         # advancing as a secondary signal / defence-in-depth.
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(_fresh_nonce())
+        #
+        # Hardened like the gate's other trust files (pubkey / heartbeat
+        # cache): O_NOFOLLOW refuses a pre-planted symlink swap, and mode
+        # 0o600 keeps the sentinel out of a non-root neighbour's reach so
+        # its (mtime, nonce) freshness signal cannot be spoofed or frozen
+        # to keep the gate serving a stale policy map after a deactivate.
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            os.write(fd, _fresh_nonce().encode("utf-8"))
+        finally:
+            os.close(fd)
         os.utime(path, None)
         return True
     except OSError as exc:
@@ -723,7 +822,9 @@ __all__ = [
     "inherit_packs_on_subagent",
     "invalidation_file_path",
     "load_sticky_packs_for_project",
+    "persist_session_id",
     "resolve_via_cache",
+    "session_state_file_path",
     "sticky_packs_file_path",
     "touch_invalidation_file",
 ]

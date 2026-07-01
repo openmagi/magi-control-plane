@@ -46,6 +46,17 @@ install_slash_commands() {
   local cmd_dir="$HOME/.claude/commands/magi"
   mkdir -p "$cmd_dir"
 
+  # Preserve operator edits on re-run — same policy as docker-compose.yml
+  # below. If the commands are already installed we leave every file
+  # (and any hand-edits to its body / frontmatter / allowed-tools)
+  # untouched. Delete a file to have this installer refetch the template
+  # on the next run.
+  if [ -f "$cmd_dir/pack.md" ]; then
+    step "Preserving existing /magi:pack-* slash commands in $cmd_dir"
+    ok "slash commands kept (delete a file to refresh it on next run)"
+    return 0
+  fi
+
   cat > "$cmd_dir/pack.md" <<'MD'
 ---
 description: Magi policy packs (activate/deactivate/status for this session)

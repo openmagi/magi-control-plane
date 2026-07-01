@@ -345,6 +345,18 @@ def evaluate(payload: dict) -> None:
 
     Exits the process directly (CC reads stdout + exit code).
     """
+    # Persist the session id CC handed us on this hook so the
+    # ``magi-cp session pack …`` CLI's tier-4 fallback
+    # (``MAGI_CP_SESSION_FILE``) has a real producer. The gate is the
+    # writer; the CLI only reads. Best-effort — a failed write just
+    # means the CLI falls back to erroring on "no session id" as it did
+    # before this producer existed, so we never let it affect the
+    # allow/deny decision below. Runs before the sentinel short-circuit
+    # so EVERY observed hook (not just sentinel-bearing commands)
+    # refreshes the last-seen id.
+    from . import session_cache as _session_cache
+    _session_cache.persist_session_id(payload.get("session_id") or "")
+
     hook_event_name = payload.get("hook_event_name") or "PreToolUse"
     cmd = payload.get("tool_input", {}).get("command", "")
     matches = list(SENTINEL_RE.finditer(cmd))

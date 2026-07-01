@@ -89,11 +89,13 @@ def _get(cloud_url: str, path: str, api_key: str) -> dict:
 # ── session id + project resolution ───────────────────────────────────
 def _session_state_file() -> str:
     """Path the gate writes the last-seen session id to. Overridable so
-    tests never touch a real ``~/.magi-cp`` tree."""
-    return os.environ.get(
-        "MAGI_CP_SESSION_FILE",
-        os.path.join(session_cache._state_dir(), "session.json"),
-    )
+    tests never touch a real ``~/.magi-cp`` tree.
+
+    Delegates to :func:`session_cache.session_state_file_path` so the
+    reader (this CLI) and the writer (``gate.persist_session_id``) can
+    never resolve to different files.
+    """
+    return session_cache.session_state_file_path()
 
 
 def resolve_session_id(explicit: str | None = None) -> str | None:
@@ -319,11 +321,22 @@ def _cmd_sticky(args) -> int:
         ids.append(args.pack_id)
     data[project] = ids
     # Atomic write so a crash mid-write cannot corrupt the sticky file
-    # (the gate reads it on every fresh session boot).
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # (the gate reads it on every fresh session boot). Hardened like the
+    # gate's trust files: dir tree 0700, and the tmp written via os.open
+    # with O_NOFOLLOW at 0o600 so a pre-planted symlink cannot redirect
+    # the write and the sticky list is not world/group readable.
+    session_cache._make_secure_dir(os.path.dirname(path) or ".")
     tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
+    fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600,
+    )
+    try:
+        os.write(
+            fd,
+            json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+    finally:
+        os.close(fd)
     os.replace(tmp, path)
     print(
         f"sticky: {args.pack_id} will auto-activate for project {project}. "
