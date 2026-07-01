@@ -6133,7 +6133,55 @@ def _build_production_app() -> FastAPI:
             "magi-cp: saved-policy lifecycle drift sweep failed; "
             "PUT/PATCH gates still defend the live surface",
         )
+    # P5 pack-centric runtime: one-time enabled -> floor-pack migration.
+    # Runs on the deployed binary only (test factories call create_app
+    # directly and never hit this hook), so the shared store + tenants
+    # table are migrated once at boot without perturbing hermetic test
+    # fixtures. Idempotent via `tenants.pack_centric_migrated_at`.
+    try:
+        _migrate_enabled_policies_into_floor_pack(app)
+    except Exception:  # pragma: no cover - defensive
+        # Best-effort: never block boot on the migration. A failure
+        # leaves the tenant unstamped so the next boot retries; if the
+        # flag is on and the floor is still empty the operator can
+        # roll back with MAGI_CP_PACK_CENTRIC_RUNTIME=0.
+        import logging
+        logging.getLogger(__name__).exception(
+            "magi-cp: pack-centric floor-pack migration failed; "
+            "retrying on next boot (set MAGI_CP_PACK_CENTRIC_RUNTIME=0 "
+            "to roll back to the legacy per-policy path)",
+        )
     return app
+
+
+def _migrate_enabled_policies_into_floor_pack(app: FastAPI) -> None:
+    """P5 boot hook: move each tenant's enabled policies into its floor
+    pack once, so the pack-centric default flip is zero-downtime.
+
+    Reconstructs the PolicyStore + PackStore from the same env-path
+    resolution `create_app` uses (they live in closures, not app.state,
+    mirroring `_warn_on_saved_policy_lifecycle_drift`). The engine is
+    read off `app.state.engine`. Delegates the actual work to
+    `pack_centric_migration.migrate_tenants_to_pack_centric`, which is
+    idempotent.
+    """
+    from pathlib import Path
+    from .pack_store import PackStore
+    from .policy_store import PolicyStore
+    from .pack_centric_migration import migrate_tenants_to_pack_centric
+
+    engine = getattr(app.state, "engine", None)
+    if engine is None:  # pragma: no cover (create_app always sets it)
+        return
+    policy_store = PolicyStore(path=os.environ.get(
+        "MAGI_CP_POLICY_STORE",
+        str(Path.home() / ".magi-cp" / "policies.json"),
+    ))
+    pack_store = PackStore(path=os.environ.get(
+        "MAGI_CP_PACK_STORE",
+        str(Path.home() / ".magi-cp" / "packs.json"),
+    ))
+    migrate_tenants_to_pack_centric(engine, policy_store, pack_store)
 
 
 def _warn_on_saved_policy_lifecycle_drift(app: FastAPI) -> None:

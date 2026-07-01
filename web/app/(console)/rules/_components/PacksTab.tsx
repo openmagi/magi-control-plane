@@ -1,6 +1,8 @@
 import type { PolicyPackEntry } from "@/lib/cloud"
+import type { Locale } from "@/lib/i18n/dict"
 import { ErrorState } from "@/components/ui"
 import { PackSection } from "./PackSection"
+import { MigrationBanner } from "./MigrationBanner"
 
 type TFunc = (
   k: import("@/lib/i18n/dict").TKey,
@@ -24,11 +26,12 @@ type TFunc = (
  * cloud-error banner. Same content, different home.
  */
 export function PacksTab({
-  items, err, t, packCentric = false,
+  items, err, t, locale, packCentric = false,
 }: {
   items: PolicyPackEntry[]
   err: string | null
   t: TFunc
+  locale: Locale
   /** P4 legacy-guard: only under the pack-centric runtime does the
    *  floor pack render as a server-locked ALWAYS-ON pack (no toggle).
    *  With the flag off it renders like any other pack. */
@@ -36,6 +39,10 @@ export function PacksTab({
 }) {
   return (
     <section>
+      {/* P5: one-time migration banner. Only shown under the
+          pack-centric runtime, where the boot migration moved enabled
+          policies into the floor pack. Dismissable (localStorage). */}
+      {packCentric && <MigrationBanner locale={locale} />}
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
         {t("rules.tab.packs.hint")}
       </p>

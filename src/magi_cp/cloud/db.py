@@ -478,6 +478,18 @@ def _apply_migrations(engine: Engine) -> None:
             col_type = "JSONB" if engine.dialect.name == "postgresql" else "TEXT"
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE shared_run ADD COLUMN edits {col_type}"))
+    # P5 pack-centric runtime: additive, nullable stamp on `tenants`. A
+    # pre-P5 deployment pulling this code keeps the table from create_all
+    # (which never adds columns to an existing table), so the boot
+    # migration's `UPDATE tenants SET pack_centric_migrated_at = ...`
+    # would fail with `no such column` without this step.
+    if "tenants" in insp.get_table_names():
+        tcols = {c["name"] for c in insp.get_columns("tenants")}
+        if "pack_centric_migrated_at" not in tcols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE tenants ADD COLUMN pack_centric_migrated_at BIGINT"
+                ))
     if "hitl_item" not in insp.get_table_names():
         # Fresh DB — create_all just built the table from the PR4-shape
         # ORM declaration, nothing to migrate.

@@ -164,10 +164,10 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
   {
     name: "MAGI_CP_PACK_CENTRIC_RUNTIME",
     group: "cloud",
-    default: "0",
+    default: "1",
     allowed: "0 | 1",
-    ko: "팩 중심·세션 스코프 정책 런타임을 켭니다. 끄면 기존 per-policy enabled 경로를 씁니다.",
-    en: "Enable the pack-centric, session-scoped policy runtime. Off keeps the legacy per-policy enabled path.",
+    ko: "팩 중심·세션 스코프 정책 런타임(P5부터 기본 켜짐). 부팅 마이그레이션이 enabled 정책을 floor 팩으로 옮깁니다. 0으로 설정하면 기존 per-policy enabled 경로로 롤백합니다.",
+    en: "Pack-centric, session-scoped policy runtime (default ON since P5). The boot migration moves enabled policies into the floor pack. Set to 0 to roll back to the legacy per-policy enabled path.",
   },
   {
     name: "MAGI_CP_LLM_COMPILER",

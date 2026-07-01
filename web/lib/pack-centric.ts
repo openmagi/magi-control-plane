@@ -1,24 +1,34 @@
 /**
- * P4 (pack-centric runtime): shared server-side read of the
+ * Pack-centric runtime: shared server-side read of the
  * MAGI_CP_PACK_CENTRIC_RUNTIME flag.
  *
- * Default OFF preserves the legacy per-policy `enabled` path — the 47
- * live policy ids keep firing on their enabled bit regardless of pack
- * membership or session activation. Every pack-centric-only surface
- * (the /sessions tab, the pack-membership picker, the floor-pack
- * always-on specialization) gates its render behind this so an operator
- * on the legacy runtime is never shown a governance model that is not
- * yet in effect.
+ * P5 flipped the default to ON. Unset now means the pack-centric,
+ * session-scoped runtime is active. The boot migration has moved every
+ * enabled policy into the tenant's floor pack, so the pack-centric
+ * surfaces (the /sessions tab, the pack-membership picker, the
+ * floor-pack always-on specialization) are the canonical view. An
+ * operator only sees the legacy /rules toggle switchboard after an
+ * explicit rollback (MAGI_CP_PACK_CENTRIC_RUNTIME=0).
  *
  * Server-only: this reads process.env, so call it from server
  * components / server actions and thread the resulting boolean down to
  * any client components that need it.
  *
- * Truthy string values ("1", "true", "yes", "on") flip it on. Mirrors
- * the local `_packCentricEnabled()` used by the /rules page (kept there
- * for its existing source-grep test contract).
+ * Only an explicit falsy value ("0", "false", "no", "off", or empty)
+ * rolls it back. Mirrors the code-side
+ * `magi_cp.config.pack_centric_runtime_enabled()` and the local
+ * `_packCentricEnabled()` used by the /rules page (kept there for its
+ * existing source-grep test contract).
  */
 export function isPackCentricEnabled(): boolean {
-  const raw = (process.env.MAGI_CP_PACK_CENTRIC_RUNTIME || "").trim().toLowerCase()
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+  const raw = process.env.MAGI_CP_PACK_CENTRIC_RUNTIME
+  if (raw === undefined) return true
+  const norm = raw.trim().toLowerCase()
+  return !(
+    norm === "0" ||
+    norm === "false" ||
+    norm === "no" ||
+    norm === "off" ||
+    norm === ""
+  )
 }

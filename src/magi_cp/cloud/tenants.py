@@ -38,6 +38,15 @@ class Tenant(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     suspended_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # P5 pack-centric runtime: epoch-seconds stamp set the first time the
+    # boot migration moved this tenant's enabled policies into its floor
+    # pack. NULL means "not yet migrated"; the migration keys idempotency
+    # on this column so it never re-runs for a tenant. Additive + nullable
+    # so a pre-P5 DB reads unchanged after the `init_schema` DDL upgrade.
+    # Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+    pack_centric_migrated_at: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+    )
 
 
 class ApiKey(Base):

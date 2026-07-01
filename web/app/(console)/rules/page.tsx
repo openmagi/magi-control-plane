@@ -242,7 +242,13 @@ export default async function RulesPage({
         />
       )}
       {tab === "packs" && (
-        <PacksTab items={packs} err={packsErr} t={t} packCentric={packCentric} />
+        <PacksTab
+          items={packs}
+          err={packsErr}
+          t={t}
+          locale={locale}
+          packCentric={packCentric}
+        />
       )}
       {tab === "checks" && (
         <ChecksTab
@@ -269,13 +275,17 @@ export default async function RulesPage({
 
 type TFunc = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
 
-/** P4: read the pack-centric runtime flag. Truthy string values ("1",
- * "true", "yes", "on") flip the Policies tab into read-only preview.
- * Default OFF preserves the legacy per-policy toggle path (zero-downtime
- * rollout — 47 policy ids stay live). */
+/** Read the pack-centric runtime flag. P5 flipped the default to ON:
+ * unset renders the Policies tab as a read-only preview (activation
+ * lives in Claude Code). Only an explicit falsy value ("0", "false",
+ * "no", "off", empty) rolls back to the legacy per-policy toggle path.
+ * Mirrors `magi_cp.config.pack_centric_runtime_enabled()` and
+ * `@/lib/pack-centric#isPackCentricEnabled`. */
 function _packCentricEnabled(): boolean {
-  const raw = (process.env.MAGI_CP_PACK_CENTRIC_RUNTIME || "").trim().toLowerCase()
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+  const raw = process.env.MAGI_CP_PACK_CENTRIC_RUNTIME
+  if (raw === undefined) return true
+  const norm = raw.trim().toLowerCase()
+  return !(norm === "0" || norm === "false" || norm === "no" || norm === "off" || norm === "")
 }
 
 /** P4: fold the pack list into a `policyId -> [packName, ...]` index so

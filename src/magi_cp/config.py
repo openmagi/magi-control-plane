@@ -13,33 +13,41 @@ from __future__ import annotations
 import os
 
 
-# ── Phase 1..4 rollout gate for the pack-centric session-scoped runtime.
+# ── Rollout gate for the pack-centric session-scoped runtime.
 # Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
 #
-# Phase 1 (this file's introduction) only REGISTERS the name. The gate
-# resolution shift lives in Phase 2 — the gate binary reads this flag to
-# decide whether to walk `session_active_packs` + the floor pack instead
-# of the legacy per-policy `enabled` bit. Phase 5 flips the default to
-# True.
+# Phase 1 registered the name; Phase 2 wired the gate resolution shift
+# (walk `session_active_packs` + the floor pack instead of the legacy
+# per-policy `enabled` bit). Phase 5 (this change) FLIPS THE DEFAULT TO
+# ON: unset now means the pack-centric runtime is active, because the
+# boot migration has moved every enabled policy into the tenant's floor
+# pack so the same set that fired yesterday fires today.
 #
-# Default OFF: unset / any non-truthy value keeps the legacy pipeline.
+# Default ON. Operators who need to roll back to the legacy per-policy
+# `enabled` path set MAGI_CP_PACK_CENTRIC_RUNTIME to an explicit falsy
+# value (``0`` / ``false`` / ``no`` / ``off``). See the design doc's
+# "Migration" + Phase 5 sections for the rollback contract.
 _PACK_CENTRIC_ENV = "MAGI_CP_PACK_CENTRIC_RUNTIME"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off", ""})
 
 
 def pack_centric_runtime_enabled() -> bool:
-    """Return True iff MAGI_CP_PACK_CENTRIC_RUNTIME is set to a truthy
-    value.
+    """Return True unless MAGI_CP_PACK_CENTRIC_RUNTIME is set to an
+    explicit falsy value.
 
-    Truthy values (case-insensitive): ``1``, ``true``, ``yes``, ``on``.
-    Anything else (including unset) returns False so P1 remains a
-    schema-only migration.
+    Phase 5 default flip: unset returns True (pack-centric runtime is
+    the canonical path). The only way to reach the legacy per-policy
+    ``enabled`` pipeline is an explicit falsy value: ``0``, ``false``,
+    ``no``, ``off`` (case-insensitive), or the empty string. Any other
+    value (including the truthy tokens ``1`` / ``true`` / ``yes`` /
+    ``on``) keeps the runtime ON.
     """
     raw = os.environ.get(_PACK_CENTRIC_ENV)
     if raw is None:
-        return False
-    return raw.strip().lower() in _TRUTHY
+        return True
+    return raw.strip().lower() not in _FALSY
 
 
 __all__ = [

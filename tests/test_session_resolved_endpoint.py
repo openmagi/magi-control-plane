@@ -33,8 +33,10 @@ def _env(monkeypatch):
     monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", ADMIN_KEY)
     monkeypatch.setenv("MAGI_CP_API_KEY", LEGACY_API_KEY)
     monkeypatch.setenv("MAGI_CP_HITL_API_KEY", "res-hitl-key")
-    # Flag OFF by default; tests that need ON monkeypatch explicitly.
-    monkeypatch.delenv("MAGI_CP_PACK_CENTRIC_RUNTIME", raising=False)
+    # Flag OFF baseline; tests that need ON monkeypatch explicitly.
+    # P5 flipped the default to ON, so we must set the explicit rollback
+    # value "0" here rather than unsetting (unset now means ON).
+    monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", "0")
 
 
 def _make_policy(pid: str, *, event="PreToolUse", matcher="Bash",

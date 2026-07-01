@@ -272,6 +272,54 @@ decision blocks below when we get there.
   `MAGI_CP_PACK_CENTRIC_RUNTIME=1` as default. Deprecate the
   per-policy `enabled` column in a later release.
 
+## Phase 5: implemented (2026-07-01)
+
+Shipped in the "P5: migrate enabled -> floor pack + flip
+MAGI_CP_PACK_CENTRIC_RUNTIME default" commit.
+
+**Boot migration.** `src/magi_cp/cloud/pack_centric_migration.py`
+(`migrate_tenants_to_pack_centric`) runs on cloud boot from
+`_build_production_app`. For each tenant whose
+`tenants.pack_centric_migrated_at` is NULL it:
+
+1. ensures the floor pack exists (`ensure_floor_pack`),
+2. unions every `enabled=true` policy id into the floor pack's member
+   list (idempotent membership check before append),
+3. leaves the policy's `enabled` bit untouched (the flipped-on gate
+   ignores it, and leaving it intact keeps the rollback byte-identical),
+4. stamps `tenants.pack_centric_migrated_at` so a re-boot never
+   re-runs.
+
+Idempotent on two layers: the per-tenant DB stamp skips whole tenants,
+the membership check skips already-present ids. When the `tenants` table
+is empty (a legacy single-tenant install authenticating via
+`MAGI_CP_API_KEY`, whose "default" tenant is synthetic and never
+persisted) the migration seeds the `default` row so the shared store's
+floor still gets populated and the flipped-on gate keeps firing. The
+migration is best-effort at boot: a failure never blocks startup and
+leaves the tenant unstamped for the next boot to retry.
+
+**Default flip.** `magi_cp.config.pack_centric_runtime_enabled()` now
+returns True when the env var is unset. Mirrored on the web side in
+`web/lib/pack-centric.ts`, `web/app/(console)/rules/page.tsx`
+(`_packCentricEnabled`), and the env catalog
+(`web/lib/env-reference.ts` default `1`).
+
+**Rollback.** Operators who need the legacy per-policy `enabled` path
+set `MAGI_CP_PACK_CENTRIC_RUNTIME` to an explicit falsy value (`0`,
+`false`, `no`, `off`, or empty). The legacy resolver
+(`legacy_resolve_policies_for_hook`) is retained as a safety net, now
+carrying a deprecation note; it is NOT deleted. The migration is not
+reverted on rollback because the moved policies keep their `enabled`
+bit, so the legacy path fires exactly the same set it did before P5.
+
+**Migration banner.** The Packs tab renders a one-time, dismissable
+banner (`MigrationBanner`, localStorage key
+`magi_cp.pack_centric_migration_dismissed.v1`) under the pack-centric
+runtime, telling the operator their enabled policies moved into the
+floor pack and to split them into session-scoped packs at their
+convenience.
+
 ## Trade-offs summary
 
 **Wins**

@@ -162,6 +162,17 @@ def legacy_resolve_policies_for_hook(
 ) -> list[AnyPolicy]:
     """Legacy behaviour: enabled overrides whose trigger matches.
 
+    DEPRECATED (P5): the pack-centric runtime is now the default
+    (``MAGI_CP_PACK_CENTRIC_RUNTIME`` defaults ON). This per-policy
+    ``enabled``-bit path only runs after an explicit operator rollback
+    to ``MAGI_CP_PACK_CENTRIC_RUNTIME=0``. It is retained as a safety
+    net, NOT deleted, until a later release removes the per-policy
+    ``enabled`` column. Do not build new behaviour on it; author new
+    resolution logic in the pack-centric branch of
+    :func:`resolve_policies_for_hook`.
+    Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+
+
     Preserves the pre-P2 semantics so the flag-OFF path stays
     byte-for-byte identical: per-policy ``enabled=True`` gates
     participation; the tighten-only ``ResolvedPolicySet`` pipeline is

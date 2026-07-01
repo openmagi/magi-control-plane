@@ -62,8 +62,19 @@ def _override(policy, *, source="user", enabled=True) -> PolicyOverride:
 
 
 # ── pack_centric_enabled flag semantics ──────────────────────────────
-def test_flag_default_off(monkeypatch):
+def test_flag_default_on_after_p5(monkeypatch):
+    """P5 flipped the default: unset now means pack-centric ON. The boot
+    migration moved every enabled policy into the floor pack, so the
+    default runtime is the pack-centric path."""
     monkeypatch.delenv("MAGI_CP_PACK_CENTRIC_RUNTIME", raising=False)
+    assert pack_centric_enabled() is True
+
+
+@pytest.mark.parametrize("falsy", ["0", "false", "no", "off", "OFF", ""])
+def test_flag_explicit_falsy_rolls_back(monkeypatch, falsy):
+    """The only way back to the legacy per-policy path is an explicit
+    falsy value. Rollback contract for P5."""
+    monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", falsy)
     assert pack_centric_enabled() is False
 
 
@@ -74,8 +85,12 @@ def test_flag_env_truthy_flips_on(monkeypatch, truthy):
 
 
 def test_flag_cloud_setting_placeholder_true_flips_on(monkeypatch):
-    """Cloud-side global setting placeholder: caller passes True."""
-    monkeypatch.delenv("MAGI_CP_PACK_CENTRIC_RUNTIME", raising=False)
+    """Cloud-side global setting placeholder: caller passes True.
+
+    P5 note: the env default is now ON, so to isolate the cloud-side
+    placeholder as the deciding source we roll the env back to ``0``.
+    With the env off, the cloud setting is the only lever."""
+    monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", "0")
     assert pack_centric_enabled(cloud_setting=True) is True
     # Explicit False stays off (both sources must disagree).
     assert pack_centric_enabled(cloud_setting=False) is False
@@ -87,8 +102,12 @@ def test_flag_off_output_matches_legacy(monkeypatch):
     ``legacy_resolve_policies_for_hook`` for the same inputs. This
     is the semantic-parity guarantee that lets P5 flip the default
     without changing what fires on any given hook.
+
+    P5 note: the default is now ON, so "flag OFF" means an explicit
+    rollback value (``0``). This is the legacy path an operator lands on
+    after ``MAGI_CP_PACK_CENTRIC_RUNTIME=0``.
     """
-    monkeypatch.delenv("MAGI_CP_PACK_CENTRIC_RUNTIME", raising=False)
+    monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", "0")
     overrides = [
         _override(_make_evidence("a", matcher="Bash")),
         _override(_make_evidence("b", matcher="Bash"), enabled=False),
