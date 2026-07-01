@@ -39,20 +39,25 @@ describe("PrebuiltRow + PrebuiltSourceDialog source invariants (Q94)", () => {
   )
 
   // ── Trigger button on the row ──────────────────────────────────
-  it("PrebuiltRow renders a View source button that opens the dialog", () => {
+  it("PrebuiltRow renders a View source menu item that opens the dialog", () => {
+    // D82e: View source moved from a sibling button into the kebab
+    // menu. The i18n key + dialog wiring still lives here.
     expect(rowSrc).toContain("rules.prebuilt.viewSource")
-    expect(rowSrc).toContain("rules.prebuilt.viewSourceAria")
-    expect(rowSrc).toMatch(/onClick=\{\(\)\s*=>\s*setSourceOpen\(true\)/)
+    expect(rowSrc).toMatch(/setSourceOpen\(true\)/)
     expect(rowSrc).toContain("PrebuiltSourceDialog")
   })
 
-  it("the View source button is a sibling of the toggle + Setup/Edit links", () => {
-    // Pin that the trigger is a plain <button> (not a Link) and lives
-    // alongside the toggle + secondary-action link in the same flex
-    // container. We grep for the comment marker on the control block.
-    expect(rowSrc).toMatch(
-      /Control block: toggle \+ secondary action link[\s\S]{0,1200}rules\.prebuilt\.viewSource/,
-    )
+  it("D82e: secondary actions live inside a kebab menu, not inline on the row", () => {
+    // Screenshot review flagged the D82d layout (three inline actions
+    // per row) as UI-overwhelming. D82e collapses the row to
+    // identity + status + toggle + one kebab; secondary actions
+    // (Details / View source / Setup or Edit) live behind the kebab.
+    expect(rowSrc).toContain("rules.prebuilt.moreAria")
+    expect(rowSrc).toMatch(/aria-haspopup="menu"/)
+    expect(rowSrc).toContain('role="menu"')
+    expect(rowSrc).toContain('role="menuitem"')
+    // Kebab item that opens the source dialog.
+    expect(rowSrc).toMatch(/setSourceOpen\(true\);\s*setMenuOpen\(false\)/)
   })
 
   it("PrebuiltRow passes a triggerRef to the dialog so focus restores on close", () => {

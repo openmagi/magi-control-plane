@@ -170,17 +170,20 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc.startsWith('"use client"')).toBe(true)
   })
 
-  it("D82d: outer row has no role=button, no aria-expanded, no expander buttons", () => {
+  it("D82d/e: outer row is not a role=button and has no D82a-era expander state", () => {
     // D82a wrapped the row in chevron-expander buttons (identity +
-    // caret) that opened a collapsible description. Screenshot review
-    // flagged the caret as "an empty button on the right". D82d drops
-    // the expander; the description renders inline as quieter
-    // tertiary copy. Pin the absence of every prior expander hook so
-    // a refactor that re-introduces them trips loudly.
+    // caret). D82d dropped that. D82e re-introduces a kebab menu
+    // (which legitimately uses aria-expanded on the kebab button) so
+    // the pin is scoped to what D82a specifically emitted:
+    // outer role=button + setExpanded state + a caret-toggle
+    // aria-controls id. The kebab's aria-expanded / aria-haspopup
+    // are the CORRECT WAI-ARIA disclosure pattern for a menu button.
     expect(prebuiltRowSrc).not.toMatch(/role="button"/)
-    expect(prebuiltRowSrc).not.toContain("aria-expanded")
-    expect(prebuiltRowSrc).not.toContain("aria-controls")
     expect(prebuiltRowSrc).not.toContain("setExpanded")
+    expect(prebuiltRowSrc).not.toContain("expandLabelKey")
+    // D82e sanity: the aria-expanded that IS present belongs to the
+    // kebab menu, not a row-level expander.
+    expect(prebuiltRowSrc).toMatch(/aria-haspopup="menu"/)
   })
 
   it("PrebuiltRow no longer needs stopPropagation (toggle/link are siblings, not descendants)", () => {
@@ -212,8 +215,10 @@ describe("rules page source invariants (D82a)", () => {
   })
 
   it("PrebuiltRow still renders the 'Edit before enabling' secondary link", () => {
+    // D82e moved the link into the kebab menu; the i18n key still
+    // ships. `editBeforeAria` on the outer row is gone because the
+    // control now lives inside a role=menuitem inside the kebab.
     expect(prebuiltRowSrc).toContain("rules.prebuilt.editBefore")
-    expect(prebuiltRowSrc).toContain("editBeforeAria")
   })
 
   // ── D60 / D67 invariants preserved on the new component file ──
@@ -223,13 +228,16 @@ describe("rules page source invariants (D82a)", () => {
     expect(prebuiltRowSrc).toContain("enabled={entry.enabled}")
   })
 
-  // ── D82d invariants ──
-  it("D82d: PrebuiltRow has no caret expander / collapsible summary wrapper", () => {
-    // The empty-button caret + collapsible grid was the "what is the
-    // empty button on the right" UX complaint. Pin its absence.
-    expect(prebuiltRowSrc).not.toContain("aria-expanded")
+  // ── D82d/e invariants ──
+  it("D82d/e: PrebuiltRow has no D82a caret expander / collapsible summary grid", () => {
+    // The D82a empty-button caret + collapsible grid was the UX
+    // complaint. D82d dropped it and D82e keeps it dropped. Pin the
+    // absence of the D82a-era hooks; the aria-expanded that CAN
+    // appear now belongs to the kebab menu button (WAI-ARIA menu
+    // disclosure pattern), which is legitimate.
     expect(prebuiltRowSrc).not.toContain("collapseAria")
     expect(prebuiltRowSrc).not.toContain("grid-template-rows")
+    expect(prebuiltRowSrc).not.toContain("setExpanded")
   })
 
   it("D82d: PrebuiltRow renders a Setup button only when entry.setup_required", () => {

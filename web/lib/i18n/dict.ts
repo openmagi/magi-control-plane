@@ -560,6 +560,11 @@ const KO_RAW = {
   "rules.prebuilt.setupAria": "{title} 셋업 가이드 열기",
   "rules.prebuilt.needsSetup": "사전 설정 필요",
   "rules.prebuilt.transportError": "변경 실패. 네트워크 또는 클라우드 오류. 다시 시도해 주세요.",
+  /* D82e: density-reduced row. Secondary actions live behind a
+     kebab menu; details drawer surfaces verifier/trigger/action. */
+  "rules.prebuilt.moreAria": "{title} 추가 옵션",
+  "rules.prebuilt.showDetails": "세부 정보 보기",
+  "rules.prebuilt.hideDetails": "세부 정보 숨기기",
   /* D82a: prebuilt = row (cards collapsed to single-line rows). */
   "rules.prebuilt.row.trigger": "Trigger",
   "rules.prebuilt.row.expand": "설명 보기",
@@ -1560,6 +1565,9 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.prebuilt.setupAria": "Open setup guide for {title}",
   "rules.prebuilt.needsSetup": "Needs setup",
   "rules.prebuilt.transportError": "Toggle failed. Network or cloud error. Please retry.",
+  "rules.prebuilt.moreAria": "More options for {title}",
+  "rules.prebuilt.showDetails": "Show details",
+  "rules.prebuilt.hideDetails": "Hide details",
   "rules.prebuilt.row.trigger": "Trigger",
   "rules.prebuilt.row.expand": "Show description",
   "rules.prebuilt.row.collapse": "Hide description",

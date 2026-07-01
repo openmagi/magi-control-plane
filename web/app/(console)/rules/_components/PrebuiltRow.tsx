@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import type { PrebuiltPolicyEntry } from "@/lib/cloud"
 import { Code } from "@/components/ui/Code"
@@ -15,27 +15,27 @@ type TFunc = (
 ) => string
 
 /**
- * D82d: flattened prebuilt row.
+ * D82e: density-reduced prebuilt row.
  *
- * Earlier revisions wrapped the row in an outer chevron-expander button
- * with a collapsible summary block, and showed a yellow "Verifier-side
- * setup required" callout when toggling a setup_required prebuilt. Both
- * showed up in screenshot review as confusing UI ("the empty button on
- * the far right", "the UI is weird"). The row now:
+ * Screenshot review flagged the D82d row layout as UI-overwhelming:
+ * per-row it surfaced badge + title + status + verifier + trigger +
+ * action + two full lines of description + toggle + View source +
+ * Setup / Edit before enabling — five distinct meta labels + three
+ * action controls on ONE row. With five rows on-screen the whole
+ * Prebuilts section read as noise.
  *
- *   - badge + title + status pill (NOT a toggle target — caret expander
- *     gone, the summary is rendered inline as quieter tertiary copy)
- *   - meta (verifier · trigger · action)
- *   - toggle (plain on/off, no setup-required popover)
- *   - secondary action: either "Setup →" (setup_required) → docs page
- *     that explains how to configure the verifier knob, or
- *     "Edit before enabling →" → wizard step 6 prefilled with the IR
+ * The new layout collapses everything except identity + status +
+ * toggle behind a kebab (`⋯`) menu. Description is line-clamped to
+ * one line; the operator opens the details drawer (from the kebab)
+ * or the source dialog when they want to know more. The kebab menu
+ * groups the three secondary actions:
+ *   - Details (verifier / trigger / action + full summary)
+ *   - View source (JSON IR)
+ *   - Setup / Edit before enabling
  *
- * Setup-required prebuilts surface their config requirement via a
- * dedicated button on the row, not via a popover sprung from the
- * toggle. Operators who genuinely need to configure first take the
- * Setup → docs path; operators who already configured (CLI override)
- * toggle directly without an interstitial gate.
+ * Toggle stays as the row's PRIMARY control (visible without a
+ * click) because operators scanning the list are looking for
+ * on/off state and want to flip it in place.
  */
 export function PrebuiltRow({
   entry, draftHref, locale,
@@ -49,19 +49,40 @@ export function PrebuiltRow({
     [locale],
   )
 
-  // Q94: per-row view-source dialog state. Each row owns its own
-  // dialog instance keyed by the trigger ref so focus restoration on
-  // close lands back on the exact button the operator clicked.
   const viewSourceTriggerRef = useRef<HTMLButtonElement>(null)
   const [sourceOpen, setSourceOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null)
+
+  // Close menu on outside click + Escape.
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDoc(e: MouseEvent) {
+      const root = menuRef.current
+      if (root && !root.contains(e.target as Node)) setMenuOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setMenuOpen(false)
+        menuButtonRef.current?.focus()
+      }
+    }
+    document.addEventListener("mousedown", onDoc)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onDoc)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [menuOpen])
 
   return (
-    <div className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-black/[0.02]">
-      <div className="flex flex-wrap items-center gap-3">
-        {/* Identity block: badge + name + status pill. Plain inline
-            row, no outer interactive wrapper. */}
-        <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
-          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]">
+    <div className="flex flex-col gap-1 px-4 py-2.5 transition-colors hover:bg-black/[0.02]">
+      <div className="flex items-center gap-3">
+        {/* Identity: badge + title + status pill. */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)] shrink-0">
             {t("rules.prebuilt.badge")}
           </span>
           <span className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
@@ -70,72 +91,118 @@ export function PrebuiltRow({
           <PrebuiltStatusPill entry={entry} t={t} />
         </div>
 
-        {/* Meta block: verifier · trigger · action. Hides on narrow
-            widths; reappears under the row on mobile. */}
-        <div className="hidden md:flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
-          <span>
-            {t("rules.prebuilt.verifier")}: <Code>{entry.verifier_step}</Code>
-          </span>
-          {entry.ir.trigger ? (
-            <span>
-              {t("rules.prebuilt.row.trigger")}:{" "}
-              <Code>{entry.ir.trigger.event}</Code>{" · "}
-              <Code>{entry.ir.trigger.matcher}</Code>
-            </span>
-          ) : null}
-          {entry.ir.action ? (
-            <span>
-              {t("rules.prebuilt.action")}: <Code>{entry.ir.action}</Code>
-            </span>
-          ) : null}
-        </div>
+        {/* Primary control: toggle. */}
+        <PrebuiltToggle
+          prebuiltId={entry.id}
+          enabled={entry.enabled}
+          action={togglePrebuiltAction}
+          labelOn={t("rules.prebuilt.disable", { title: entry.title })}
+          labelOff={t("rules.prebuilt.enable", { title: entry.title })}
+          copy={{
+            transportError: t("rules.prebuilt.transportError"),
+          }}
+        />
 
-        {/* Control block: toggle + secondary action link. */}
-        <div className="flex items-center gap-3">
-          <PrebuiltToggle
-            prebuiltId={entry.id}
-            enabled={entry.enabled}
-            action={togglePrebuiltAction}
-            labelOn={t("rules.prebuilt.disable", { title: entry.title })}
-            labelOff={t("rules.prebuilt.enable", { title: entry.title })}
-            copy={{
-              transportError: t("rules.prebuilt.transportError"),
-            }}
-          />
-          {/* Q94: View source sits next to Setup / Edit. Opens a
-              modal with the prebuilt's underlying Policy IR JSON so
-              operators can inspect what the prebuilt actually does
-              before flipping the toggle. */}
+        {/* Kebab menu: secondary actions. */}
+        <div ref={menuRef} className="relative">
           <button
-            ref={viewSourceTriggerRef}
+            ref={menuButtonRef}
             type="button"
-            onClick={() => setSourceOpen(true)}
-            aria-label={t("rules.prebuilt.viewSourceAria", { title: entry.title })}
-            className="text-[11px] font-medium text-[var(--color-text-secondary)] hover:underline whitespace-nowrap"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={t("rules.prebuilt.moreAria", { title: entry.title })}
+            onClick={() => setMenuOpen((v) => !v)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)] hover:bg-black/[0.04] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]/40"
           >
-            {t("rules.prebuilt.viewSource")}
+            <svg viewBox="0 0 20 20" className="h-4 w-4" fill="currentColor" aria-hidden="true">
+              <circle cx="10" cy="4" r="1.5" />
+              <circle cx="10" cy="10" r="1.5" />
+              <circle cx="10" cy="16" r="1.5" />
+            </svg>
           </button>
-          {entry.setup_required ? (
-            <Link
-              href={setupDocsHref(entry.id)}
-              aria-label={t("rules.prebuilt.setupAria", { title: entry.title })}
-              className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 whitespace-nowrap"
-              title={entry.setup_hint || undefined}
+          {menuOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full mt-1 z-20 min-w-[200px] rounded-lg border border-black/[0.08] bg-white py-1 shadow-lg"
             >
-              {t("rules.prebuilt.setup")}
-              <span aria-hidden>→</span>
-            </Link>
-          ) : (
-            <Link
-              href={draftHref}
-              aria-label={t("rules.prebuilt.editBeforeAria", { title: entry.title })}
-              className="text-[11px] font-medium text-[var(--color-accent-light)] hover:underline whitespace-nowrap"
-            >
-              {t("rules.prebuilt.editBefore")}
-            </Link>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setDetailsOpen((v) => !v); setMenuOpen(false) }}
+                className="flex w-full items-center px-3 py-2 text-left text-xs text-[var(--color-text-primary)] hover:bg-black/[0.03]"
+              >
+                {detailsOpen ? t("rules.prebuilt.hideDetails") : t("rules.prebuilt.showDetails")}
+              </button>
+              <button
+                ref={viewSourceTriggerRef}
+                type="button"
+                role="menuitem"
+                onClick={() => { setSourceOpen(true); setMenuOpen(false) }}
+                className="flex w-full items-center px-3 py-2 text-left text-xs text-[var(--color-text-primary)] hover:bg-black/[0.03]"
+              >
+                {t("rules.prebuilt.viewSource")}
+              </button>
+              {entry.setup_required ? (
+                <Link
+                  href={setupDocsHref(entry.id)}
+                  role="menuitem"
+                  onClick={() => setMenuOpen(false)}
+                  className="flex w-full items-center px-3 py-2 text-left text-xs font-medium text-amber-900 hover:bg-amber-50"
+                >
+                  {t("rules.prebuilt.setup")}
+                  <span aria-hidden className="ml-1">→</span>
+                </Link>
+              ) : (
+                <Link
+                  href={draftHref}
+                  role="menuitem"
+                  onClick={() => setMenuOpen(false)}
+                  className="flex w-full items-center px-3 py-2 text-left text-xs text-[var(--color-accent-light)] hover:bg-black/[0.03]"
+                >
+                  {t("rules.prebuilt.editBefore")}
+                </Link>
+              )}
+            </div>
           )}
         </div>
       </div>
+
+      {/* One-line summary (line-clamped). Full summary lives in the
+       *  Details drawer below. */}
+      {entry.summary ? (
+        <p className="text-xs text-[var(--color-text-secondary)] truncate">
+          {entry.summary}
+        </p>
+      ) : null}
+
+      {/* Details drawer: verifier · trigger · action + full summary.
+       *  Hidden by default; opened via the kebab menu. */}
+      {detailsOpen ? (
+        <div className="mt-2 rounded-lg border border-black/[0.06] bg-black/[0.02] px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
+            <span>
+              {t("rules.prebuilt.verifier")}: <Code>{entry.verifier_step}</Code>
+            </span>
+            {entry.ir.trigger ? (
+              <span>
+                {t("rules.prebuilt.row.trigger")}:{" "}
+                <Code>{entry.ir.trigger.event}</Code>{" · "}
+                <Code>{entry.ir.trigger.matcher}</Code>
+              </span>
+            ) : null}
+            {entry.ir.action ? (
+              <span>
+                {t("rules.prebuilt.action")}: <Code>{entry.ir.action}</Code>
+              </span>
+            ) : null}
+          </div>
+          {entry.summary ? (
+            <p className="mt-2 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+              {entry.summary}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <PrebuiltSourceDialog
         entry={entry}
@@ -144,35 +211,6 @@ export function PrebuiltRow({
         locale={locale}
         triggerRef={viewSourceTriggerRef}
       />
-
-      {/* Meta meta (narrow widths) — verifier/trigger/action wraps below
-          the row controls on mobile. */}
-      <div className="md:hidden flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
-        <span>
-          {t("rules.prebuilt.verifier")}: <Code>{entry.verifier_step}</Code>
-        </span>
-        {entry.ir.trigger ? (
-          <span>
-            {t("rules.prebuilt.row.trigger")}:{" "}
-            <Code>{entry.ir.trigger.event}</Code>{" · "}
-            <Code>{entry.ir.trigger.matcher}</Code>
-          </span>
-        ) : null}
-        {entry.ir.action ? (
-          <span>
-            {t("rules.prebuilt.action")}: <Code>{entry.ir.action}</Code>
-          </span>
-        ) : null}
-      </div>
-
-      {/* Inline summary as quieter tertiary copy, always visible. The
-          earlier collapsible expander caused more confusion than it
-          saved vertical space. */}
-      {entry.summary ? (
-        <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          {entry.summary}
-        </p>
-      ) : null}
     </div>
   )
 }
@@ -195,7 +233,7 @@ function PrebuiltStatusPill({
   if (entry.setup_required) {
     return (
       <span
-        className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-800"
+        className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-800 shrink-0"
         title={entry.setup_hint}
       >
         {t("rules.prebuilt.row.statusNeedsSetup")}
@@ -204,13 +242,13 @@ function PrebuiltStatusPill({
   }
   if (entry.enabled) {
     return (
-      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-800">
+      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-800 shrink-0">
         {t("rules.prebuilt.row.statusActive")}
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700">
+    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-gray-100 text-gray-700 shrink-0">
       {t("rules.prebuilt.row.statusOff")}
     </span>
   )
