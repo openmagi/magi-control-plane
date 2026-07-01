@@ -2,6 +2,7 @@
 
 Subcommands:
   gate           run the PreToolUse gate (reads hook JSON on stdin)
+  session        session-scoped pack activation (pack activate/…)
   emit           request a citation_verify token from the cloud
   await-approval poll /hitl until a review item is approved, then write the
                  signed token to local WAL (closes the money-demo loop)
@@ -32,6 +33,9 @@ def main(argv: list[str] | None = None) -> int:
         from ..local.gate import cli as gate_cli
         sys.argv = ["magi-cp-gate", *rest]
         return gate_cli()
+    if cmd == "session":
+        from ..local.cli import cli as session_cli
+        return session_cli(rest)
     if cmd == "emit":
         from ..local.emit import cli as emit_cli
         sys.argv = ["magi-cp-emit", *rest]

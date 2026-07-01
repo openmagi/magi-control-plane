@@ -54,6 +54,19 @@ services:
       # pair.
       MAGI_CP_LLM_COMPILER: "${MAGI_CP_LLM_COMPILER:-magi_cp.llm.anthropic_provider:anthropic_default}"
       MAGI_CP_LLM_REVIEWER: "${MAGI_CP_LLM_REVIEWER:-magi_cp.llm.openai_provider:openai_default}"
+      # magi-cp session-pack CLI passthrough. Rare in the beta (operators
+      # normally run `magi-cp session pack …` from the host, driven by the
+      # Claude Code slash commands), but keep it working when someone runs
+      # the CLI inside the container via `docker compose exec cloud magi-cp
+      # session …`. env_file already flows every .env KV; these pin
+      # in-container defaults so the CLI reaches the cloud on localhost and
+      # keeps its sticky-pack + cache-invalidation state on the writable
+      # /data volume (the rootfs is read_only).
+      MAGI_CP_CLOUD_URL: "${MAGI_CP_CLOUD_URL:-http://127.0.0.1:8787}"
+      MAGI_CP_SESSION_ID: "${MAGI_CP_SESSION_ID:-}"
+      MAGI_CP_TENANT_ID: "${MAGI_CP_TENANT_ID:-default}"
+      MAGI_CP_STATE_DIR: "${MAGI_CP_STATE_DIR:-/data/state}"
+      MAGI_CP_STICKY_PACKS_FILE: "${MAGI_CP_STICKY_PACKS_FILE:-/data/sticky-packs.json}"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz',timeout=2).status==200 else 1)"]
       interval: 10s

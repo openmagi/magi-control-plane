@@ -36,6 +36,79 @@ echo ""
 banner "Open Magi · Control Plane installer (self-host)"
 echo ""
 
+# ── Claude Code slash commands (/magi:pack-*) ───────────────────────────
+# Drop the four command markdown files under ~/.claude/commands/magi/.
+# Each command shells out to the `magi-cp session pack …` CLI and relays
+# its stdout. Factored into a function so the installer test can exercise
+# JUST this step (MAGI_CP_INSTALL_COMMANDS_ONLY=1) without standing up
+# docker; the normal flow also calls it in the Claude Code wiring step.
+install_slash_commands() {
+  local cmd_dir="$HOME/.claude/commands/magi"
+  mkdir -p "$cmd_dir"
+
+  cat > "$cmd_dir/pack.md" <<'MD'
+---
+description: Magi policy packs (activate/deactivate/status for this session)
+---
+Magi control-plane session packs. Subcommands:
+
+- `/magi:pack-activate <pack_id>`: turn a pack on for this session
+- `/magi:pack-deactivate <pack_id>`: turn it off
+- `/magi:pack-status`: show active packs and how many policies will fire
+
+Packs group policies by intent (research-mode, coding-safety, and so on).
+The floor pack is always on. Activation lasts until the session ends or
+you run `/magi:pack-deactivate`.
+MD
+
+  cat > "$cmd_dir/pack-activate.md" <<'MD'
+---
+description: Activate a Magi policy pack for this Claude Code session
+allowed-tools: Bash(magi-cp session pack activate:*)
+---
+Activate the named Magi policy pack for the current session, then report
+the result verbatim. The pack's policies fire on matching tool hooks
+until the session ends or `/magi:pack-deactivate` is run.
+
+!`magi-cp session pack activate "$ARGUMENTS"`
+MD
+
+  cat > "$cmd_dir/pack-deactivate.md" <<'MD'
+---
+description: Deactivate a Magi policy pack for this session
+allowed-tools: Bash(magi-cp session pack deactivate:*)
+---
+Deactivate the named Magi policy pack for the current session, then
+report the result verbatim. The always-on floor pack always remains.
+
+!`magi-cp session pack deactivate "$ARGUMENTS"`
+MD
+
+  cat > "$cmd_dir/pack-status.md" <<'MD'
+---
+description: Show which Magi policy packs are active this session
+allowed-tools: Bash(magi-cp session pack status:*)
+---
+Show the Magi policy packs active for the current session, including the
+always-on floor pack and a count of how many policies will fire, then
+report it verbatim.
+
+!`magi-cp session pack status`
+MD
+
+  chmod 0644 "$cmd_dir"/pack.md "$cmd_dir"/pack-activate.md \
+    "$cmd_dir"/pack-deactivate.md "$cmd_dir"/pack-status.md
+  ok "installed /magi:pack-* slash commands → $cmd_dir"
+}
+
+# Test / re-run shortcut: drop the slash commands and exit without
+# touching docker. Lets the bash-driven installer test assert the four
+# files land with the right permissions on a scratch HOME.
+if [ "${MAGI_CP_INSTALL_COMMANDS_ONLY:-0}" = "1" ]; then
+  install_slash_commands
+  exit 0
+fi
+
 # ── docker check ────────────────────────────────────────────────────────
 # Platform-aware install hint when Docker is missing. We DON'T auto-install
 # Docker (heavy, requires admin, distro-specific). Instead we print the
@@ -264,6 +337,9 @@ case ":$PATH:" in
   *":$LBIN:"*) ;;
   *) warn "$LBIN is not on PATH. Add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell rc." ;;
 esac
+
+# Drop the /magi:pack-* slash commands alongside the gate wiring.
+install_slash_commands
 
 # Rewrite managed-settings to use per-user path + local cloud URL.
 PY=""
