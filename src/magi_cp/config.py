@@ -53,33 +53,39 @@ def pack_centric_runtime_enabled() -> bool:
 # ── Rollout gate for the Codex CLI runtime adapter.
 # Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
 #
-# Default OFF (opposite of the pack-centric flag). With this unset or
-# falsy, the runtime dispatcher (``magi_cp.runtime.detect.detect_runtime``)
-# returns ``"cc"`` unconditionally, so the entire Codex path is dead code
-# and the Claude Code path is byte-identical to the pre-adapter gate.
-#
-# Operators opt a build into the Codex adapter by setting
-# ``MAGI_CP_CODEX_RUNTIME_ENABLED`` to a truthy token (``1`` / ``true`` /
-# ``yes`` / ``on``, case-insensitive). Per-tenant selection then flows
-# through ``tenants.runtime_id`` (see the design doc's Section 9.3
-# feature-flag ladder). This env var is the global kill switch.
+# Default ON (2026-07-01, no-default-OFF policy). This is a GLOBAL
+# AVAILABILITY switch, not an auto-migration: with it ON the dispatcher
+# still returns ``"cc"`` for every tenant whose ``tenants.runtime_id`` is
+# ``"claude-code"`` (the column default), so existing CC tenants are
+# byte-identical. Flipping the default ON only makes the Codex runtime
+# SELECTABLE (the settings RuntimePicker becomes usable and the cloud
+# stops rejecting ``runtime_id = "codex"``); a tenant reaches the Codex
+# path only by explicitly choosing it. Per the policy the goal is to make
+# what is implemented visible and let any breakage surface (the known
+# ``codex exec`` config.toml-hook gap, §11.4 F2, then shows up rather than
+# hiding). Operators roll the whole adapter back with an explicit falsy
+# token (``0`` / ``false`` / ``no`` / ``off`` / empty); that is the global
+# kill switch and reverts the dispatcher to "CC only".
 _CODEX_RUNTIME_ENV = "MAGI_CP_CODEX_RUNTIME_ENABLED"
 
 
 def codex_runtime_enabled() -> bool:
-    """Return True only when MAGI_CP_CODEX_RUNTIME_ENABLED is set to an
-    explicit truthy value.
+    """Return True unless MAGI_CP_CODEX_RUNTIME_ENABLED is set to an
+    explicit falsy value.
 
-    Default OFF: unset (or any non-truthy value) returns False. Only the
-    canonical truthy tokens ``1`` / ``true`` / ``yes`` / ``on``
-    (case-insensitive) enable the Codex runtime adapter. This is the
-    global kill switch from the design doc's feature-flag ladder; the
-    dispatcher treats a False here as "CC only".
+    Default-ON flip (2026-07-01): unset returns True, so the Codex runtime
+    adapter is globally AVAILABLE. Per-tenant routing still flows through
+    ``tenants.runtime_id`` (default ``"claude-code"``), so this only makes
+    Codex selectable, not active for existing tenants. The only way to
+    disable the adapter globally (dispatcher forced to "CC only") is an
+    explicit falsy value: ``0`` / ``false`` / ``no`` / ``off``
+    (case-insensitive) or the empty string. Any other value (including the
+    truthy tokens) keeps it ON.
     """
     raw = os.environ.get(_CODEX_RUNTIME_ENV)
     if raw is None:
-        return False
-    return raw.strip().lower() in _TRUTHY
+        return True
+    return raw.strip().lower() not in _FALSY
 
 
 __all__ = [

@@ -89,6 +89,10 @@ from .trait import (
 # matchers (identity where the names coincide, e.g. ``spawn_agent``;
 # mapped otherwise). Not built yet; the deny-list below is expressed in CC
 # names on the assumption the translation lands before the flag flips ON.
+# CONFIRMED (2026-07-01 live, §11.4 F4): Codex's shell tool is named
+# ``exec_command`` (args ``{cmd, workdir, yield_time_ms}``), NOT ``Bash``.
+# So the CC->Codex map must include Bash/Shell -> ``exec_command`` and
+# apply_patch/MCP tool names; a ``matcher = "Bash"`` never fires on Codex.
 CODEX_SILENT_SKIP_TOOLS: tuple[str, ...] = (
     # CC tool matchers that map onto Codex silent-skip tools.
     "AskUser",
@@ -137,8 +141,14 @@ _SUBAGENT_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
 # "reason": ...}`` (retry-feedback), same split as CC's PostToolUse*
 # channel plus UserPromptSubmit (which Codex documents as accepting
 # ``decision: "block"``). See design doc Section 2.2.
-# TODO(live-test D5): confirm the exact block-channel event set against a
-# real Codex install; PostToolUse post-hoc block is documented.
+# TODO(block-channel event set): confirm the exact block-channel event set
+# against a real Codex install; PostToolUse post-hoc block is documented.
+# (This marker was mislabeled "D5" — D5 is transcript_path, now RESOLVED:
+# §11.4 F7 = Codex rollout JSONL, separate reader.) Live event set (F1):
+# PreToolUse, PreToolUsePermissionRequest, PostToolUse, PreCompact,
+# PostCompact, SessionStart, UserPromptSubmit, SubagentStart, SubagentStop,
+# Stop — no Notification/SessionEnd, so SessionEnd-hosted logic below must
+# ride Stop.
 _BLOCK_CHANNEL_EVENTS: frozenset[str] = frozenset({
     "PostToolUse",
     "UserPromptSubmit",
