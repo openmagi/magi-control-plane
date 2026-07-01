@@ -2356,10 +2356,15 @@ def create_app(
     # ── /session/{session_id}/packs — P1 pack-centric runtime ─────────
     # Session-scoped activation surface. See
     # docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md.
+    # P2 folds the ``/session/{id}/resolved`` gate-cache feeder into
+    # the same attach helper so the pack + policy stores share one
+    # closure (the resolver reads BOTH to fold pack membership into a
+    # (event, matcher) -> policies map for the gate binary cache).
     _attach_session_pack_routes(
         app, engine,
         pack_store=pack_store,
         pack_store_lock=pack_store_lock,
+        policy_store=policy_store,
     )
 
     return app
@@ -4477,13 +4482,15 @@ def _attach_session_pack_routes(
     *,
     pack_store: "PackStore | None",
     pack_store_lock: asyncio.Lock | None,
+    policy_store: "PolicyStore | None" = None,
 ) -> None:
-    """P1 pack-centric runtime — session-scoped activation surface.
+    """P1+P2 pack-centric runtime — session-scoped activation + resolver.
 
     Endpoints:
       - POST /session/{session_id}/packs/activate   {pack_id}
       - POST /session/{session_id}/packs/deactivate {pack_id}
       - GET  /session/{session_id}/packs
+      - GET  /session/{session_id}/resolved          (P2)
 
     Each endpoint requires tenant auth (X-Api-Key) so the session row
     is keyed on (session_id, tenant_id) — one tenant cannot see or
@@ -4501,8 +4508,12 @@ def _attach_session_pack_routes(
       - GET creates the floor pack lazily so a fresh session with no
         activations still gets a coherent ``floor_pack_id`` field.
 
-    Phase 2 will read this state from the gate binary; Phase 1 only
-    writes it. No hook resolution changes here.
+    P2 adds ``GET /session/{id}/resolved`` which returns the pre-folded
+    ``policies_by_hook`` map the gate binary caches. The route is a
+    read-only projection over the same session-state row + pack
+    store; the resolver's flag-OFF branch returns byte-identical
+    output to the legacy path so the runtime shim can be switched
+    over without a semantic change.
     """
     from ..policy.floor_pack import ensure_floor_pack_async
     from .db import SessionActivePacksRepo
@@ -4671,6 +4682,165 @@ def _attach_session_pack_routes(
         envelope = _envelope(row, floor_pack_id)
         envelope["session_id"] = session_id
         return envelope
+
+    # ── P2 gate-cache feeder: fold pack membership → policies_by_hook ──
+    def _pack_members(pack_id: str) -> list[str]:
+        """Return the ordered member policy ids of ``pack_id``.
+
+        Built-ins expand through ``_builtin_member_ids`` so inline IRs
+        + prebuilt refs land in the same list; user packs read straight
+        from the pack store. Unknown pack ids return ``[]`` so the
+        resolver can silently skip them (see resolver docstring on
+        "missing pieces, silent").
+        """
+        from ..policy.pack import (
+            _builtin_member_ids, builtin_pack_spec_by_id,
+        )
+        if not isinstance(pack_id, str) or not pack_id:
+            return []
+        spec = builtin_pack_spec_by_id(pack_id)
+        if spec is not None:
+            return _builtin_member_ids(spec)
+        if pack_id.startswith("user-pack/") and pack_store is not None:
+            for row in pack_store.load():
+                if row.id == pack_id:
+                    return list(row.policy_ids)
+        return []
+
+    def _hook_key_of(policy: "AnyPolicy") -> tuple[str | None, str | None]:
+        """Return ``(event, matcher)`` for a policy, or ``(None, None)``
+        when the archetype does not participate in hook dispatch.
+
+        Mirrors ``resolver._extract_event_matcher`` but kept local so
+        this route can call it without importing the resolver's whole
+        surface (the resolver stays a pure library the runtime shim
+        talks to; the cloud only needs the extract for the fold below).
+        """
+        trig = getattr(policy, "trigger", None)
+        if trig is not None:
+            return (
+                getattr(trig, "event", None),
+                getattr(trig, "matcher", None),
+            )
+        event = getattr(policy, "event", None)
+        if event is not None:
+            return event, getattr(policy, "matcher", None)
+        return None, None
+
+    @app.get(
+        "/session/{session_id}/resolved",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    async def session_pack_resolved(
+        session_id: str, request: Request,
+    ) -> dict:
+        """P2 gate-cache feeder.
+
+        Return the pre-folded policy map the gate binary caches for a
+        single ``(session_id, tenant_id)`` pair. Response shape::
+
+            {
+              "session_id": str,
+              "tenant_id":  str,   # so a caller can round-trip the row
+              "active_packs":  [pack_id, ...],   # activation-order
+              "floor_pack_id": str | None,
+              "pack_centric_enabled": bool,      # advisory (matches env)
+              "policies_by_hook": [
+                {"event": str, "matcher": str | None,
+                 "policies": [<serialized_policy>, ...]},
+                ...
+              ]
+            }
+
+        Behavior mirrors the resolver library so the flag-OFF path
+        returns the SAME set of policies for a given hook that the
+        legacy runtime path would return today. That symmetry is what
+        makes the runtime cut-over a pure caching change instead of a
+        semantic change (see plan doc Phase 2).
+
+        Under flag-OFF: returns every enabled policy grouped by
+        (event, matcher), IGNORING active_packs. Fresh gates seeing a
+        flag-OFF cloud can consume the same envelope without a
+        branchy decode.
+
+        Under flag-ON: only policies whose id belongs to (floor ∪
+        activated packs) survive; the per-policy ``enabled`` bit is
+        ignored per the plan doc's runtime section. Order is
+        deterministic: ``policies_by_hook`` iteration follows the
+        (event, matcher) first-seen order over the pack-walk, so a
+        floor pack member always precedes an activated pack member on
+        the same hook.
+        """
+        from ..policy.resolver import (
+            legacy_resolve_policies_for_hook,
+            pack_centric_enabled,
+            resolve_policies_for_hook,
+        )
+        tenant_id = request.state.tenant_id
+        # Ensure the floor exists so the envelope always carries an id
+        # under pack-centric semantics (mirrors GET /session/{id}/packs).
+        floor_pack_id = await _resolve_floor(tenant_id)
+        repo = SessionActivePacksRepo(engine)
+        row = repo.touch(session_id, tenant_id)
+        active_packs = list(row.pack_ids) if row is not None else []
+        overrides = policy_store.load() if policy_store is not None else []
+        flag_on = pack_centric_enabled()
+
+        # Collect the hook coordinates we need to answer for. Two
+        # sources:
+        #   (a) every event/matcher pair present on any override —
+        #       gives the flag-OFF envelope 1:1 parity with today's
+        #       linear-scan gate.
+        #   (b) every event/matcher pair reachable via the pack union
+        #       under flag-ON. Under flag-OFF this is a subset of (a),
+        #       so we just take the union without branching.
+        coord_seen: set[tuple[str, str | None]] = set()
+        coord_order: list[tuple[str, str | None]] = []
+        for ov in overrides:
+            coord = _hook_key_of(ov.policy)
+            if coord[0] is None:
+                continue
+            if coord in coord_seen:
+                continue
+            coord_seen.add(coord)
+            coord_order.append(coord)  # type: ignore[arg-type]
+
+        policies_by_hook: list[dict] = []
+        for event, matcher in coord_order:
+            if flag_on:
+                matched = resolve_policies_for_hook(
+                    session_id=session_id, tenant_id=tenant_id,
+                    event=event, matcher=matcher,
+                    overrides=overrides,
+                    active_packs=active_packs,
+                    floor_pack_id=floor_pack_id,
+                    pack_member_lookup=_pack_members,
+                )
+            else:
+                matched = legacy_resolve_policies_for_hook(
+                    overrides, event, matcher,
+                )
+            if not matched:
+                # Under flag-ON a coord that no pack covers yields an
+                # empty list; drop it from the envelope so the gate
+                # cache doesn't grow O(all_events) empty slots per
+                # session. Under flag-OFF an empty list means every
+                # override on the coord is disabled — same treatment.
+                continue
+            policies_by_hook.append({
+                "event": event,
+                "matcher": matcher,
+                "policies": [_serialize_policy_for_api(p) for p in matched],
+            })
+
+        return {
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "active_packs": active_packs,
+            "floor_pack_id": floor_pack_id,
+            "pack_centric_enabled": flag_on,
+            "policies_by_hook": policies_by_hook,
+        }
 
 
 def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
