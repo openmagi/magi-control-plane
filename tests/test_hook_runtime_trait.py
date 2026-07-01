@@ -73,3 +73,32 @@ def test_driver_methods_return_canonical_types():
 
     paths = driver.default_install_paths()
     assert isinstance(paths, InstallPaths)
+
+
+# ── CC universal side channels (continue / systemMessage) ────────────
+def test_cc_plain_allow_stays_silent():
+    # Byte-equivalence: a plain allow with no side channels is empty.
+    driver = CCDriver()
+    assert driver.emit_verdict(Verdict(decision="allow")) == b""
+
+
+def test_cc_continue_false_layers_onto_silent_allow():
+    import json
+
+    driver = CCDriver()
+    out = driver.emit_verdict(Verdict(decision="allow", continue_=False))
+    assert json.loads(out.decode()) == {"continue": False}
+
+
+def test_cc_system_message_layers_onto_deny():
+    import json
+
+    driver = CCDriver()
+    out = driver.emit_verdict(Verdict(
+        decision="deny", reason="no", hook_event_name="PreToolUse",
+        system_message="stopped",
+    ))
+    obj = json.loads(out.decode())
+    assert obj["systemMessage"] == "stopped"
+    # per-event deny channel still present alongside the side channel.
+    assert obj["hookSpecificOutput"]["permissionDecision"] == "deny"

@@ -19,7 +19,12 @@ import os
 import sys
 
 from ..policy.codex_toml_emitter import compile_to_codex_requirements
-from ..policy.ir import AnyPolicy
+from ..policy.ir import (
+    AnyPolicy,
+    McpGatingPolicy,
+    PermissionPolicy,
+    SubagentPolicy,
+)
 from .trait import (
     CoveragePolicyStatus,
     CoverageReport,
@@ -27,6 +32,25 @@ from .trait import (
     InstallPaths,
     ManagedConfigBundle,
     Verdict,
+    merge_verdict_side_channels,
+)
+
+
+# Archetypes CC compiles to a NATIVE managed-config surface
+# (``permissions.{allow,deny,ask}`` / ``allowedMcpServers`` /
+# ``permissions.deny += Agent(<name>)``) but Codex does NOT yet: the
+# ``codex_toml_emitter`` skips Permission / Mcp entirely and
+# ``SubagentPolicy`` only flips ``[features].multi_agent`` (never a deny
+# rule). Until the out-of-band Codex permission/mcp/subagent emitter
+# exists, these compile to ZERO enforceable Codex config, so
+# ``coverage_report`` must NOT report them "enforced".
+# TODO(live-test P2): land the Codex permission/mcp/subagent-disable
+# config emitter, then drop these from the pending set so the status
+# flips back to "enforced".
+_CODEX_NATIVE_CONFIG_PENDING = (
+    PermissionPolicy,
+    McpGatingPolicy,
+    SubagentPolicy,
 )
 
 
@@ -113,8 +137,14 @@ class CodexDriver:
         ``decision.behavior`` shape, the block-channel events use
         top-level ``decision``/``reason``, and everything else uses
         ``hookSpecificOutput.permissionDecision``.
+
+        The universal ``continue`` / ``systemMessage`` side channels
+        (design doc Section 2.2 — accepted on every Codex event) layer on
+        last via ``merge_verdict_side_channels``, including on an
+        otherwise-silent allow so a populated side channel is never
+        dropped.
         """
-        obj = self._verdict_obj(verdict)
+        obj = merge_verdict_side_channels(self._verdict_obj(verdict), verdict)
         if obj is None:
             return b""
         return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
@@ -176,15 +206,32 @@ class CodexDriver:
 
     # ── coverage ─────────────────────────────────────────────────────
     def coverage_report(self, ir: list[AnyPolicy]) -> CoverageReport:
-        """P1: report every policy as enforced. The gap-shim coverage
-        markers (silent-skip, no-session-end, internal-subagent) land in
-        P2 alongside the shim implementations."""
-        # TODO(live-test D3): PreToolUse tool-coverage silent-skip markers
-        # arrive with P2 shim A.
+        """Per-policy Codex coverage.
+
+        Hook-producing archetypes (Evidence / InputRewrite / RunCommand /
+        ContextInjection) report ``"enforced"`` in P1. The native-surface
+        archetypes CC compiles to ``permissions`` / ``allowedMcpServers``
+        / ``Agent(<name>)`` deny (Permission / Mcp / Subagent) have NO
+        Codex managed-config emitter yet, so they report
+        ``"codex_native_config_pending"`` rather than a false
+        ``"enforced"`` (see ``_CODEX_NATIVE_CONFIG_PENDING``). The
+        gap-shim markers (silent-skip, no-session-end,
+        internal-subagent) land in P2 alongside the shim implementations.
+        """
+        # TODO(live-test P2): PreToolUse tool-coverage silent-skip markers
+        # (D3) arrive with shim A; the permission/mcp/subagent-disable
+        # emitter (native_config_pending) flips those back to "enforced".
         return CoverageReport(
             runtime_id=self.runtime_id,
             policies=tuple(
-                CoveragePolicyStatus(policy_id=p.id, status="enforced")
+                CoveragePolicyStatus(
+                    policy_id=p.id,
+                    status=(
+                        "codex_native_config_pending"
+                        if isinstance(p, _CODEX_NATIVE_CONFIG_PENDING)
+                        else "enforced"
+                    ),
+                )
                 for p in ir
             ),
         )

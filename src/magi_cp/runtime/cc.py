@@ -35,6 +35,7 @@ from .trait import (
     InstallPaths,
     ManagedConfigBundle,
     Verdict,
+    merge_verdict_side_channels,
 )
 
 
@@ -92,36 +93,48 @@ class CCDriver:
         the emitted JSON is byte-identical to ``gate._deny``'s output
         (``json.dumps(..., ensure_ascii=False)`` with a trailing
         newline, matching ``print``).
+
+        The universal ``continue`` / ``systemMessage`` side channels
+        (design doc Section 2.2) layer on last via
+        ``merge_verdict_side_channels``. They are ``None`` on every
+        current ``decide()`` path, so this stays byte-identical to the
+        legacy ``gate._allow`` / ``gate._deny`` output.
         """
         event = verdict.hook_event_name or "PreToolUse"
+        obj = merge_verdict_side_channels(
+            self._decision_obj(verdict, event), verdict,
+        )
+        if obj is None:
+            # Silent allow — no stdout (matches gate._allow).
+            return b""
+        return self._dump(obj)
+
+    @staticmethod
+    def _decision_obj(verdict: Verdict, event: str) -> dict | None:
+        """The per-decision CC stdout object, before side channels.
+
+        ``None`` means a silent allow (empty stdout)."""
         if verdict.decision == "allow":
             if verdict.updated_input is not None:
-                obj = {
+                return {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "allow",
                         "updatedInput": verdict.updated_input,
                     }
                 }
-                return self._dump(obj)
             if verdict.additional_context is not None:
-                obj = {
+                return {
                     "hookSpecificOutput": {
                         "hookEventName": event,
                         "additionalContext": verdict.additional_context,
                     }
                 }
-                return self._dump(obj)
-            # Silent allow — no stdout (matches gate._allow).
-            return b""
+            return None
         if verdict.decision == "ask":
-            return self._dump(
-                emit_ask_payload(verdict.reason, hook_event_name=event)
-            )
+            return emit_ask_payload(verdict.reason, hook_event_name=event)
         # deny (default / fail-closed)
-        return self._dump(
-            emit_deny_payload(verdict.reason, hook_event_name=event)
-        )
+        return emit_deny_payload(verdict.reason, hook_event_name=event)
 
     @staticmethod
     def _dump(obj: dict) -> bytes:

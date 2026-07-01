@@ -10,6 +10,14 @@ from __future__ import annotations
 
 import json
 
+from magi_cp.policy.ir import (
+    EvidencePolicy,
+    EvidenceReq,
+    McpGatingPolicy,
+    PermissionPolicy,
+    SubagentPolicy,
+    Trigger,
+)
 from magi_cp.runtime.codex import CodexDriver
 from magi_cp.runtime.trait import HookEvent, Verdict
 
@@ -157,3 +165,88 @@ def test_stop_allow_is_silent():
     out = driver.emit_verdict(Verdict(decision="allow",
                                       hook_event_name=ev.hook_event_name))
     assert out == b""
+
+
+# ── universal continue / systemMessage side channels ─────────────────
+def test_continue_false_layers_onto_deny():
+    driver = CodexDriver()
+    obj = _emit_obj(driver, Verdict(
+        decision="deny", reason="stop now", hook_event_name="PreToolUse",
+        continue_=False,
+    ))
+    # per-event decision channel is preserved...
+    assert obj["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # ...and the universal continue side channel is attached.
+    assert obj["continue"] is False
+
+
+def test_system_message_layers_onto_silent_allow():
+    # A silent allow (empty stdout) that carries a systemMessage MUST NOT
+    # drop it — the field-completeness fix mints an object for it.
+    driver = CodexDriver()
+    obj = _emit_obj(driver, Verdict(
+        decision="allow", hook_event_name="PreToolUse",
+        system_message="heads up",
+    ))
+    assert obj == {"systemMessage": "heads up"}
+
+
+def test_no_side_channels_stays_silent_allow():
+    driver = CodexDriver()
+    out = driver.emit_verdict(Verdict(
+        decision="allow", hook_event_name="PreToolUse",
+    ))
+    assert out == b""
+
+
+# ── coverage_report distinguishes native-config-pending archetypes ───
+def _permission() -> PermissionPolicy:
+    return PermissionPolicy(
+        id="perm1", description="deny rm", version="0.1",
+        trigger=Trigger(host="claude-code", event="PreToolUse",
+                        matcher="Bash"),
+        permission="deny", pattern="Bash(rm -rf /*)",
+    )
+
+
+def _mcp() -> McpGatingPolicy:
+    return McpGatingPolicy(
+        id="mcp1", description="deny server", version="0.1",
+        server="github", action="deny",
+    )
+
+
+def _subagent() -> SubagentPolicy:
+    return SubagentPolicy(
+        id="sub1", description="disable child", version="0.1",
+        subagent_type="researcher",
+    )
+
+
+def _evidence() -> EvidencePolicy:
+    return EvidencePolicy(
+        id="ev1", description="audit bash", version="0.1",
+        trigger=Trigger(host="claude-code", event="PreToolUse",
+                        matcher="Bash"),
+        sentinel_re=None,
+        requires=[EvidenceReq(kind="step", step="citation_verify",
+                              verdict="pass")],
+        action="block", on_signature_invalid="deny",
+        gate_binary="/usr/local/bin/magi-gate.sh",
+    )
+
+
+def test_coverage_marks_permission_mcp_subagent_pending():
+    driver = CodexDriver()
+    report = driver.coverage_report(
+        [_evidence(), _permission(), _mcp(), _subagent()]
+    )
+    by_id = {p.policy_id: p.status for p in report.policies}
+    # Hook-producing archetype is truthfully enforced.
+    assert by_id["ev1"] == "enforced"
+    # Native-surface archetypes have no Codex managed-config emitter yet.
+    assert by_id["perm1"] == "codex_native_config_pending"
+    assert by_id["mcp1"] == "codex_native_config_pending"
+    assert by_id["sub1"] == "codex_native_config_pending"
+    # And they are NOT counted as enforced in the rollup.
+    assert report.enforced_count == 1

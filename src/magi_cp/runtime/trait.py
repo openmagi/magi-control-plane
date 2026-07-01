@@ -72,6 +72,35 @@ class Verdict:
     continue_: bool | None = None
 
 
+def merge_verdict_side_channels(
+    obj: dict | None, verdict: "Verdict",
+) -> dict | None:
+    """Layer the universal ``continue`` / ``systemMessage`` side channels
+    onto a driver's decision object.
+
+    Design doc Section 2.2: both CC and Codex accept a top-level
+    ``continue: false`` and ``systemMessage`` on every event, on top of
+    whatever the per-event decision channel emits. Every ``emit_verdict``
+    routes its final object through this helper so a policy path that
+    populates ``Verdict.continue_`` / ``Verdict.system_message`` is not
+    silently dropped (the field-completeness gap this closes).
+
+    Returns ``obj`` unchanged when neither side channel is set, so the
+    byte-equivalence contract holds on every current ``decide()`` path
+    (both fields are ``None`` today). When a side channel IS set on a
+    silent-allow verdict (``obj is None``), a fresh dict is minted so the
+    channel still reaches stdout.
+    """
+    if verdict.continue_ is None and verdict.system_message is None:
+        return obj
+    merged: dict = dict(obj) if obj is not None else {}
+    if verdict.continue_ is not None:
+        merged["continue"] = verdict.continue_
+    if verdict.system_message is not None:
+        merged["systemMessage"] = verdict.system_message
+    return merged
+
+
 # ── Coverage report shapes ───────────────────────────────────────────
 @dataclass(frozen=True)
 class CoveragePolicyStatus:
@@ -79,9 +108,10 @@ class CoveragePolicyStatus:
 
     ``status`` is ``"enforced"`` on the full-coverage path, or one of the
     Codex gap markers (``"codex_silent_skip"``,
-    ``"codex_no_session_end"``, ``"codex_internal_subagent_gap"``) once
-    the P2 shims land. ``downgrade`` names the compat fallback, or None
-    when the policy enforces natively.
+    ``"codex_no_session_end"``, ``"codex_internal_subagent_gap"``,
+    ``"codex_native_config_pending"``) once the P2 shims / native
+    permission-mcp emitter land. ``downgrade`` names the compat fallback,
+    or None when the policy enforces natively.
     """
 
     policy_id: str
@@ -171,6 +201,7 @@ __all__ = [
     "HookRuntime",
     "HookEvent",
     "Verdict",
+    "merge_verdict_side_channels",
     "CoveragePolicyStatus",
     "CoverageReport",
     "ManagedConfigBundle",
