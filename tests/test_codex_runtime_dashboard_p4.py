@@ -43,7 +43,9 @@ def _env(monkeypatch):
     monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", ADMIN_KEY)
     monkeypatch.setenv("MAGI_CP_API_KEY", LEGACY_API_KEY)
     monkeypatch.setenv("MAGI_CP_HITL_API_KEY", "p4-runtime-hitl-key")
-    # Default OFF: every test that needs codex-on flips it explicitly.
+    # Default ON (2026-07-01): unset means the adapter is available, so
+    # tests here run codex-on unless they explicitly set the flag falsy.
+    # The two disabled-path tests below set MAGI_CP_CODEX_RUNTIME_ENABLED=0.
     monkeypatch.delenv("MAGI_CP_CODEX_RUNTIME_ENABLED", raising=False)
 
 

@@ -827,7 +827,7 @@ reverted from backup afterward (byte-identical diff confirmed).
   `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `Stop`.
   No `Notification`/`SessionEnd`. This trims the emitter's event map.
 
-- **F2. CRITICAL — user `config.toml [[hooks.*]]` blocks do NOT fire under
+- **F2. CRITICAL: user `config.toml [[hooks.*]]` blocks do NOT fire under
   `codex exec` (headless).** Proven: the rollout shows `function_call
   exec_command {cmd:"echo MAGIHOOKTEST"}` ran to exit 0, while the hook log
   stayed at 0 lines. Tested BOTH the nested CC-style TOML shape
@@ -862,7 +862,7 @@ reverted from backup afterward (byte-identical diff confirmed).
   session_flags > plugin` (`ManagedHooksRequirements`, `cloud_requirements`,
   `cloud_managed_config`, `legacy_managed_config_*`). **Enforcement that a
   user cannot untrust or bypass must go through requirements.toml / the
-  managed layer, expressed as `forbidden`/`prompt` only — never `allow`.**
+  managed layer, expressed as `forbidden`/`prompt` only, never `allow`.**
   This is the true analog of CC's managed-settings.json. Confirms L6's target
   but constrains the compiler: the Codex IR->requirements.toml lowering can
   only express deny/prompt, so "allow" = absence of a deny rule.
@@ -885,7 +885,7 @@ reverted from backup afterward (byte-identical diff confirmed).
 the code the F2/F5 concerns turned out to be MOSTLY already-correct by
 design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
 
-1. Registration surface — ALREADY CORRECT, no retarget needed. The
+1. Registration surface: ALREADY CORRECT, no retarget needed. The
    installer (`local/codex_install.py`) writes the compiled hooks to
    `/etc/codex/requirements.toml` (the MANAGED enforcement layer, F5) and
    NEVER touches user `~/.codex/config.toml`. F2's dead-surface finding was
@@ -899,11 +899,11 @@ design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
    Edit/Write/MultiEdit->apply_patch, Task->spawn_agent; read-family +
    regex pass through) (F4). This was the one genuine bug: without it every
    emitted `matcher` named a nonexistent Codex tool and fired zero times.
-3. Event-map trim to the F1 set — the emitter emits only events that
+3. Event-map trim to the F1 set: the emitter emits only events that
    actually appear on authored policies, so no stale events leak; the F1
    set is recorded at the block-channel marker for when SessionEnd-hosted
    logic is added. No code change required now.
-4. Codex-specific transcript reader (F7) — DEFERRED (YAGNI). The gate does
+4. Codex-specific transcript reader (F7): DEFERRED (YAGNI). The gate does
    NOT read transcripts for evidence today (`verifier/descriptors.py`: the
    cloud never pulls `transcript_path`); the only transcript reader is the
    CC-only run-share path. When a transcript-consuming feature is built for

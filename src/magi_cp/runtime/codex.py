@@ -130,7 +130,7 @@ CODEX_PRETOOLUSE_COVERED_TOOLS: frozenset[str] = frozenset({
 
 # CC tool-name -> Codex tool-name translation for EMITTED hook matchers
 # (§11.4 F4). A hook table's ``matcher`` must name a Codex tool or it fires
-# ZERO times — the "false sense of coverage" failure mode 4.1 warns about.
+# ZERO times, the "false sense of coverage" failure mode 4.1 warns about.
 # Only CONFIRMED mappings live here (identity for everything else):
 #   - CONFIRMED live 2026-07-01 from real rollout ``function_call`` names:
 #     ``exec_command`` (2855x, the shell tool), ``apply_patch`` (file
@@ -148,11 +148,17 @@ CODEX_PRETOOLUSE_COVERED_TOOLS: frozenset[str] = frozenset({
 # translating those is a documented follow-up.
 _CC_TO_CODEX_TOOL: dict[str, str] = {
     "Bash": "exec_command",
+    # Every CC file-mutation tool lowers to Codex's single ``apply_patch``
+    # tool. NotebookEdit is included so it does not stay in
+    # CODEX_PRETOOLUSE_COVERED_TOOLS reporting "enforced" while emitting a
+    # ``matcher = "NotebookEdit"`` that fires zero times (Codex has no
+    # notebook tool; .ipynb edits ride apply_patch).
     "Edit": "apply_patch",
     "Write": "apply_patch",
     "MultiEdit": "apply_patch",
+    "NotebookEdit": "apply_patch",
     # CC's single-subagent-spawn tool ``Task`` maps onto Codex's
-    # ``spawn_agent`` (design doc 4.4 — a covered PreToolUse tool). Without
+    # ``spawn_agent`` (design doc 4.4, a covered PreToolUse tool). Without
     # this, a ``matcher = "Task"`` table never fires on Codex (false
     # coverage). ``spawn_agent`` itself is unauthorable via the IR (rejected
     # by the CC matcher grammar); it reaches the emitter only through Shim
@@ -183,11 +189,11 @@ _SUBAGENT_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
 # ``decision: "block"``). See design doc Section 2.2.
 # TODO(block-channel event set): confirm the exact block-channel event set
 # against a real Codex install; PostToolUse post-hoc block is documented.
-# (This marker was mislabeled "D5" — D5 is transcript_path, now RESOLVED:
+# (This marker was mislabeled "D5", D5 is transcript_path, now RESOLVED:
 # §11.4 F7 = Codex rollout JSONL, separate reader.) Live event set (F1):
 # PreToolUse, PreToolUsePermissionRequest, PostToolUse, PreCompact,
 # PostCompact, SessionStart, UserPromptSubmit, SubagentStart, SubagentStop,
-# Stop — no Notification/SessionEnd, so SessionEnd-hosted logic below must
+# Stop, no Notification/SessionEnd, so SessionEnd-hosted logic below must
 # ride Stop.
 _BLOCK_CHANNEL_EVENTS: frozenset[str] = frozenset({
     "PostToolUse",

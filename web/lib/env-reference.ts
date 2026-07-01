@@ -172,10 +172,10 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
   {
     name: "MAGI_CP_CODEX_RUNTIME_ENABLED",
     group: "cloud",
-    default: "0",
+    default: "1",
     allowed: "0 | 1",
-    ko: "Codex CLI 런타임 어댑터의 전역 킬 스위치(기본 꺼짐). 켜야 대시보드 런타임 선택기가 Codex 전환을 허용하고 게이트 디스패처가 Codex 경로를 실행합니다. 꺼져 있으면 Claude Code 경로가 바이트 동일합니다.",
-    en: "Global kill switch for the Codex CLI runtime adapter (default OFF). Must be on for the dashboard runtime picker to allow a switch to Codex and for the gate dispatcher to run the Codex path. With it off the Claude Code path is byte-identical.",
+    ko: "Codex CLI 런타임 어댑터의 전역 가용성 스위치(기본 켜짐). 켜져 있으면 대시보드 런타임 선택기가 Codex 전환을 허용합니다. 단 이것은 가용성만 켤 뿐이고, 테넌트는 runtime_id가 codex일 때만 실제로 Codex 경로를 탑니다. 명시적 falsy 값(0/false/off)으로 설정하면 어댑터가 꺼지고 Claude Code 경로가 바이트 동일합니다.",
+    en: "Global availability switch for the Codex CLI runtime adapter (default ON). When on, the dashboard runtime picker allows a switch to Codex; this only makes Codex selectable (a tenant reaches the Codex path only when its runtime_id is codex). Set an explicit falsy value (0/false/off) to disable the adapter, after which the Claude Code path is byte-identical.",
   },
   {
     name: "MAGI_CP_RUNTIME",

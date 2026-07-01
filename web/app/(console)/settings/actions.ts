@@ -111,8 +111,9 @@ export async function saveLlmKeysAction(formData: FormData): Promise<SaveResult>
 /**
  * P4 (Codex runtime adapter): switch the tenant's runtime.
  *
- * The cloud refuses "codex" unless MAGI_CP_CODEX_RUNTIME_ENABLED is set
- * (403 → surfaced as an inline error), and persists tenants.runtime_id
+ * The cloud refuses "codex" only when MAGI_CP_CODEX_RUNTIME_ENABLED is set
+ * to an explicit falsy value (default ON) (403, surfaced as an inline
+ * error), and persists tenants.runtime_id
  * otherwise. Single-tenant-beta tenant id is "default" (the same synthetic
  * tenant the rest of the self-host dashboard reads). The admin key stays
  * server-side - the client component only sees the result envelope.

@@ -111,18 +111,21 @@ def test_bash_matcher_translates_to_exec_command():
     assert '"exec_command"' in bundle.hooks_json_sidecar
 
 
-def test_edit_and_write_dedupe_to_single_apply_patch_table():
-    # Distinct CC tools that collapse to one Codex tool must emit exactly
-    # one hook table, not two identical ``apply_patch`` tables.
+def test_file_mutation_tools_dedupe_to_single_apply_patch_table():
+    # Every CC file-mutation tool (Edit/Write/MultiEdit/NotebookEdit)
+    # collapses to Codex's single ``apply_patch`` tool and must emit
+    # exactly one hook table, not four identical ones.
     policies = [
         _evidence("e", event="PreToolUse", matcher="Edit"),
         _evidence("w", event="PreToolUse", matcher="Write"),
+        _evidence("m", event="PreToolUse", matcher="MultiEdit"),
+        _evidence("n", event="PreToolUse", matcher="NotebookEdit"),
     ]
     bundle = compile_to_codex_requirements(policies)
     assert bundle.requirements_toml.count("[[hooks.PreToolUse]]") == 1
     assert bundle.requirements_toml.count('matcher = "apply_patch"') == 1
-    assert '"Edit"' not in bundle.requirements_toml
-    assert '"Write"' not in bundle.requirements_toml
+    for cc in ('"Edit"', '"Write"', '"MultiEdit"', '"NotebookEdit"'):
+        assert cc not in bundle.requirements_toml
 
 
 def test_read_family_and_regex_matchers_pass_through_unchanged():

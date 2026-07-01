@@ -5055,9 +5055,10 @@ def _attach_runtime_routes(
     runtime preference for the dashboard runtime picker.
 
     Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
-    Section 7. Everything here is READ-safe with the flag off; only the
+    Section 7. Everything here is READ-safe; only the
     ``POST /tenants/{id}/runtime`` switch to ``codex`` is gated on
-    ``MAGI_CP_CODEX_RUNTIME_ENABLED`` (default off).
+    ``MAGI_CP_CODEX_RUNTIME_ENABLED`` (default ON; the switch is refused
+    only when the flag is set to an explicit falsy value).
 
     Routes:
       - GET  /policies/{policy_id}/coverage/{runtime_id}  - per-policy strip
@@ -5235,7 +5236,8 @@ def _attach_runtime_routes(
         if canonical == "codex" and not codex_runtime_enabled():
             raise HTTPException(
                 403,
-                "codex runtime disabled: set MAGI_CP_CODEX_RUNTIME_ENABLED=1",
+                "codex runtime disabled: MAGI_CP_CODEX_RUNTIME_ENABLED is set "
+                "to an explicit falsy value (unset it to re-enable; default ON)",
             )
         TenantRepo(engine).set_runtime(tenant_id, runtime_id=canonical)
         return {"tenant_id": tenant_id, "runtime_id": canonical}

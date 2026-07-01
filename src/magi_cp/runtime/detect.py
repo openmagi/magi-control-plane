@@ -10,10 +10,16 @@ Section 3.4. Detection order (highest priority first):
   3. Presence of ``CLAUDE_CODE_SESSION_ID`` env var (CC sets this).
   4. Fallback: ``"cc"``.
 
-GLOBAL KILL SWITCH: with ``MAGI_CP_CODEX_RUNTIME_ENABLED`` unset / falsy
-(the default), this returns ``"cc"`` unconditionally BEFORE any sniffing,
-so the entire Codex path is dead code and the CC path is byte-identical
-to the pre-adapter gate.
+GLOBAL KILL SWITCH: ``MAGI_CP_CODEX_RUNTIME_ENABLED`` is default-ON
+(2026-07-01 flip), so an unset flag leaves the Codex path available and
+the tiers above run normally. The kill switch is now an explicit falsy
+token (``0`` / ``false`` / ``no`` / ``off`` / empty): when set falsy this
+returns ``"cc"`` unconditionally BEFORE any sniffing, so the Codex path
+is dead code and the CC path is byte-identical to the pre-adapter gate.
+Note this is only an AVAILABILITY switch: a tenant still reaches Codex
+only when its own routing (``MAGI_CP_RUNTIME`` / payload sniff /
+``tenants.runtime_id``) selects it; a bare CC payload with no Codex
+markers still resolves to ``"cc"`` even with the flag on.
 """
 from __future__ import annotations
 
