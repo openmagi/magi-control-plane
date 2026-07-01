@@ -30,8 +30,8 @@ Cache contents (per ``(session_id, tenant_id)`` row):
   * A pre-resolved ``policies_by_hook`` map so hook dispatch is a
     dict lookup, not another linear scan.
   * A timestamp for the cache row.
-  * The mtime of the cache-invalidation sentinel file at the moment
-    the row was loaded, used by the invalidation check.
+  * The ``(mtime, nonce)`` of the cache-invalidation sentinel file at
+    the moment the row was loaded, used by the invalidation check.
 
 Cache lifetime is intentionally NOT wall-clock TTL. Decision 5 (locked
 in the design doc) makes activation persist "until the session ends OR
@@ -53,15 +53,65 @@ cross-session flush (a CLI ``/magi:pack:activate`` on session-A dropped
 the cache row for every other concurrent session, stampeding the
 cloud). Per-session sentinels keep invalidation surgical.
 
+The coordinate -> path mapping (:func:`_safe_component`) is
+collision-resistant: it appends a short sha256 of the ORIGINAL id, so
+two distinct sessions (or tenants) can never resolve to the SAME
+sentinel file. Separator-collapsing alone was NOT injective
+(``a/b`` and ``a_b`` both collapsed to ``a_b``, and ``..x`` and ``x``
+both stripped to ``x``), which under a crafted-input threat model would
+let one session's touch invalidate -- or fail to invalidate -- another
+session's row through a shared sentinel.
+
+Invalidation signal (why not mtime alone)
+=========================================
+The freshness proof is NOT the sentinel's mtime by itself. mtime is not
+a strictly-monotonic change signal: on a filesystem whose mtime
+granularity is >= the interval between two touches (1-2s on FAT / some
+NFS / older ext), two CLI touches landing in the same granularity tick
+share an mtime, so an mtime-equality check would keep serving the STALE
+row after the second touch. To make invalidation independent of FS
+mtime resolution, :func:`touch_invalidation_file` also writes a fresh,
+unique nonce into the sentinel's body on every touch, and the freshness
+check compares the ``(mtime, nonce)`` pair. Two rapid touches always
+produce a different nonce even when the mtime tick collides, so a stale
+row is observably dropped within one hook call regardless of the
+underlying filesystem.
+
+Invalidation scope (what the sentinel does NOT cover)
+=====================================================
+The sentinel is a SESSION-scoped freshness signal, not a
+membership-drift signal. It is bumped by (a) session end and (b) a CLI
+``/magi:pack:*`` touch of the per-session sentinel. Pack MEMBERSHIP
+edits made through the dashboard -- adding/removing a policy from a
+pack, or editing the always-on FLOOR pack's membership -- do NOT bump
+any session's sentinel today. Consequently, once a persistence lane
+exists (the on-disk / daemon follow-ups above), a long-lived active
+session would keep evaluating its cached ``policies_by_hook`` snapshot
+(including a stale floor pack) until the operator runs a CLI pack
+command or the session ends. Tightening the floor pack (a "never
+bypass" safety edit) would not reach already-active sessions.
+
+For membership edits to be observable on an active cached session, the
+CLOUD must touch the per-``(session_id, tenant_id)`` sentinel for every
+affected active session on a membership write (reusing
+:func:`touch_invalidation_file` -- its nonce bump is now the reliable
+drift signal). Until that cloud-side fan-out lands, membership edits are
+observable only on session end or the next ``/magi:pack:*`` touch.
+
+P3 persistence authors: the ``(mtime, nonce)`` pair is the freshness
+contract for SESSION-scoped activation changes. It is NOT sufficient on
+its own for membership drift -- do not assume a cache hit implies the
+underlying pack contents are unchanged.
+
 Round-trip race
 ===============
-``resolve_via_cache`` snapshots ``current_invalidation_mtime`` BEFORE
-calling the fetcher and stamps the returned entry with that
-pre-fetch mtime. A CLI ``touch`` that lands DURING the fetch therefore
-still bumps the sentinel past the entry's mtime, so the very next hook
-call observes the invalidation. The alternative (fetcher-supplied
-post-round-trip mtime) opened a window where a mid-fetch touch could
-be masked forever.
+``resolve_via_cache`` snapshots ``current_invalidation_signal`` (the
+``(mtime, nonce)`` pair) BEFORE calling the fetcher and stamps the
+returned entry with that pre-fetch signal. A CLI ``touch`` that lands
+DURING the fetch therefore changes the sentinel's nonce (and mtime) away
+from the entry's stamped signal, so the very next hook call observes the
+invalidation. The alternative (fetcher-supplied post-round-trip signal)
+opened a window where a mid-fetch touch could be masked forever.
 
 Subagent inheritance (decision 2)
 =================================
@@ -86,6 +136,7 @@ no cache hit" so a corrupt file cannot brick the gate.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -121,22 +172,45 @@ def _state_dir() -> str:
 
 
 def _safe_component(name: str) -> str:
-    """Return ``name`` collapsed to a filesystem-safe component.
+    """Return ``name`` mapped to a filesystem-safe, collision-resistant
+    path component.
 
     Session ids come from CC (uuidv4) and tenant ids are typed but the
-    invalidation path is a security-adjacent surface: a caller that
-    manages to pass ``../foo`` should not escape the state dir. We
-    replace any path separator with ``_`` and strip leading dots so a
-    ``..`` cannot travel up the tree. Empty input becomes ``__anon__``
-    so we never join an empty component (which would collapse the path
-    to the state dir root and let a stat racy-collide across
-    coordinates).
+    invalidation path is a security-adjacent surface with two distinct
+    requirements:
+
+    * **Traversal safety.** A caller that manages to pass ``../foo``
+      must not escape the state dir. We replace any path separator with
+      ``_`` and strip leading dots so a ``..`` cannot travel up the
+      tree.
+    * **Injectivity.** Two distinct ids must never map to the SAME
+      component, or a CLI touch for one session could invalidate -- or
+      fail to invalidate -- another session's cache row through a shared
+      sentinel. Separator-collapsing alone is NOT injective:
+      ``a/b`` and ``a_b`` both collapse to ``a_b``; ``..x`` and ``x``
+      both strip to ``x``. We therefore append a short sha256 of the
+      ORIGINAL id. The readable (sanitised) prefix is kept purely for
+      debuggability; the hash suffix is what guarantees distinct ids get
+      distinct files. The traversal strip stays on top as
+      defence-in-depth so the readable prefix can never itself escape.
+
+    Empty input becomes ``__anon__`` so we never join an empty component
+    (which would collapse the path to the state dir root and let a stat
+    racy-collide across coordinates). Only the empty string maps there;
+    every non-empty id resolves to a hashed component.
     """
     if not isinstance(name, str) or not name:
         return "__anon__"
     cleaned = name.replace(os.sep, "_").replace("/", "_").replace("\\", "_")
     cleaned = cleaned.lstrip(".")
-    return cleaned or "__anon__"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+    # Cap the readable prefix so a pathological id cannot blow past the
+    # per-component NAME_MAX (255); the hash suffix preserves uniqueness
+    # regardless of truncation. Fall back to ``id`` when the sanitised
+    # prefix is empty (e.g. an all-dots/all-separator id) so the
+    # component never starts with a bare ``.``.
+    prefix = cleaned[:96] or "id"
+    return f"{prefix}.{digest}"
 
 
 def invalidation_file_path(session_id: str, tenant_id: str) -> str:
@@ -169,21 +243,67 @@ def sticky_packs_file_path() -> str:
     )
 
 
-def current_invalidation_mtime(session_id: str, tenant_id: str) -> float:
-    """Return the mtime of the ``(session_id, tenant_id)`` sentinel, or
-    ``0.0`` when the file is missing.
+# Read at most this many bytes of the sentinel body. The nonce is a
+# short token; a bounded read means a hostile-neighbour that grows the
+# file cannot force an unbounded read on every hook call.
+_MAX_NONCE_BYTES = 256
 
-    Any OSError (permission, dir doesn't exist, ELOOP on a symlink
-    swap) is coerced to ``0.0`` so a hostile-neighbour scenario
-    cannot brick hook resolution. The worst outcome is that the cache
-    goes stale-forever until the operator manually invalidates by
-    creating the file; steady-state we recover on the next successful
-    stat.
+
+def current_invalidation_signal(
+    session_id: str, tenant_id: str,
+) -> tuple[float, str]:
+    """Return the ``(mtime, nonce)`` freshness signal for the
+    ``(session_id, tenant_id)`` sentinel, or ``(0.0, "")`` when the file
+    is missing.
+
+    The ``nonce`` is the sentinel's body, written fresh (and unique) on
+    every :func:`touch_invalidation_file` call. Comparing the PAIR --
+    not the mtime alone -- makes invalidation independent of filesystem
+    mtime granularity: two rapid touches always change the nonce even
+    when the coarse mtime tick collides (see module docstring
+    §"Invalidation signal").
+
+    The file is opened ONCE (fstat for mtime + a bounded body read for
+    the nonce) so the hot path is a single open, not a stat plus a
+    separate read.
+
+    Any OSError (permission, dir doesn't exist, ELOOP on a symlink swap)
+    is coerced to ``(0.0, "")`` so a hostile-neighbour scenario cannot
+    brick hook resolution. A read failure degrades toward "row looks
+    stale -> refetch", never toward "serve stale silently"; steady-state
+    we recover on the next successful read.
     """
     try:
-        return os.stat(invalidation_file_path(session_id, tenant_id)).st_mtime
+        with open(
+            invalidation_file_path(session_id, tenant_id), "rb",
+        ) as handle:
+            mtime = os.fstat(handle.fileno()).st_mtime
+            body = handle.read(_MAX_NONCE_BYTES)
+        return (mtime, body.decode("utf-8", "replace").strip())
     except (FileNotFoundError, OSError):
-        return 0.0
+        return (0.0, "")
+
+
+def current_invalidation_mtime(session_id: str, tenant_id: str) -> float:
+    """Return just the mtime half of :func:`current_invalidation_signal`
+    (``0.0`` when the file is missing).
+
+    Retained for callers/tests that only care about the mtime; the
+    freshness check itself compares the full ``(mtime, nonce)`` pair so
+    it does not depend on mtime granularity.
+    """
+    return current_invalidation_signal(session_id, tenant_id)[0]
+
+
+def _fresh_nonce() -> str:
+    """A short, unique, strictly-changing token for the sentinel body.
+
+    ``time.time_ns()`` supplies a high-resolution, monotone-ish prefix;
+    the random suffix guarantees two touches in the SAME nanosecond
+    still differ. The value only has to CHANGE per touch -- it is never
+    parsed, only compared for equality.
+    """
+    return f"{time.time_ns():x}-{os.urandom(12).hex()}"
 
 
 def touch_invalidation_file(session_id: str, tenant_id: str) -> bool:
@@ -211,11 +331,14 @@ def touch_invalidation_file(session_id: str, tenant_id: str) -> bool:
     path = invalidation_file_path(session_id, tenant_id)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        # Open + close truncates existing content but that is fine;
-        # the file is a signal, not a payload. utime() alone would
-        # fail when the file does not exist yet.
-        with open(path, "a", encoding="utf-8"):
-            pass
+        # Write a fresh, unique nonce into the body (truncating any
+        # prior value). The nonce is the mtime-granularity-independent
+        # change signal: two rapid touches always differ here even when
+        # the filesystem's coarse mtime tick would otherwise collide.
+        # The write itself bumps mtime; the explicit utime() keeps mtime
+        # advancing as a secondary signal / defence-in-depth.
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(_fresh_nonce())
         os.utime(path, None)
         return True
     except OSError as exc:
@@ -286,6 +409,12 @@ class SessionCacheEntry:
     )
     loaded_at: float = 0.0
     invalidation_mtime: float = 0.0
+    # Body nonce of the sentinel at load time. Paired with
+    # ``invalidation_mtime`` so freshness detection does not depend on
+    # filesystem mtime granularity (see module docstring
+    # §"Invalidation signal"). Empty string when the sentinel was
+    # missing at load time.
+    invalidation_nonce: str = ""
 
 
 # ── Cache class ───────────────────────────────────────────────────────
@@ -311,11 +440,14 @@ class SessionCache:
         """Return the cached row for ``(session_id, tenant_id)`` iff it
         is still fresh, or ``None`` when a refetch is required.
 
-        Freshness is decided by mtime comparison against the
-        ``(session_id, tenant_id)``-scoped on-disk invalidation
-        sentinel. When the sentinel's mtime differs from the row's
+        Freshness is decided by comparing the ``(mtime, nonce)`` pair
+        against the ``(session_id, tenant_id)``-scoped on-disk
+        invalidation sentinel. When EITHER half differs from the row's
         snapshot we DROP the row so a caller that ignores the ``None``
-        and re-populates does not race a second reader.
+        and re-populates does not race a second reader. Comparing the
+        nonce (not the mtime alone) keeps invalidation reliable on
+        coarse-mtime filesystems — see module docstring
+        §"Invalidation signal".
 
         Per-session sentinel means an invalidation on session-A does
         NOT flush session-B — see module docstring.
@@ -324,8 +456,12 @@ class SessionCache:
         entry = self._entries.get(key)
         if entry is None:
             return None
-        if entry.invalidation_mtime != current_invalidation_mtime(
+        cur_mtime, cur_nonce = current_invalidation_signal(
             session_id, tenant_id,
+        )
+        if (
+            entry.invalidation_mtime != cur_mtime
+            or entry.invalidation_nonce != cur_nonce
         ):
             # Drop stale row so the next read forces a refetch.
             self._entries.pop(key, None)
@@ -337,21 +473,21 @@ class SessionCache:
         entry: SessionCacheEntry,
     ) -> None:
         """Store a fresh row. The caller is expected to have populated
-        ``entry.invalidation_mtime`` via
-        :func:`current_invalidation_mtime` (with the SAME
+        both ``entry.invalidation_mtime`` and ``entry.invalidation_nonce``
+        via :func:`current_invalidation_signal` (with the SAME
         ``(session_id, tenant_id)`` coordinates the row is keyed on) so
-        freshness comparisons against later mtime bumps work.
+        freshness comparisons against later sentinel bumps work.
 
         ``resolve_via_cache`` handles this stamping automatically by
-        snapshotting the mtime BEFORE the fetcher round-trip; direct
-        callers must do the same.
+        snapshotting the ``(mtime, nonce)`` pair BEFORE the fetcher
+        round-trip; direct callers must do the same.
         """
         self._entries[(session_id, tenant_id)] = entry
 
     def drop(self, session_id: str, tenant_id: str) -> None:
-        """Explicit invalidation lane. Not usually needed — the mtime
-        stat handles it — but exposed so a caller that KNOWS its row
-        is stale (e.g. an in-band 401 rebind) can drop without
+        """Explicit invalidation lane. Not usually needed — the
+        sentinel signal handles it — but exposed so a caller that KNOWS
+        its row is stale (e.g. an in-band 401 rebind) can drop without
         touching the sentinel.
         """
         self._entries.pop((session_id, tenant_id), None)
@@ -368,8 +504,9 @@ FetchStateFn = Callable[[str, str], "SessionCacheEntry"]
 """Signature the caller supplies to :func:`resolve_via_cache` so we do
 not hard-wire the HTTP transport into this module. The function must
 return a fully-populated ``SessionCacheEntry``; the caller
-(``resolve_via_cache``) overwrites ``invalidation_mtime`` with a
-pre-fetch snapshot so a mid-round-trip CLI touch is not masked.
+(``resolve_via_cache``) overwrites the ``(invalidation_mtime,
+invalidation_nonce)`` pair with a pre-fetch snapshot so a mid-round-trip
+CLI touch is not masked.
 """
 
 
@@ -447,15 +584,16 @@ def resolve_via_cache(
     """Return the policies to evaluate for one hook call.
 
     Steps:
-      1. Cache lookup (mtime-checked). Hit → return the
+      1. Cache lookup (signal-checked). Hit → return the
          ``policies_by_hook`` slice for ``(event, matcher)`` (empty
          list when the pack set covers no policies on this hook).
-      2. Miss → snapshot ``current_invalidation_mtime`` BEFORE calling
-         the fetcher (closes the "CLI touches sentinel mid-fetch" race
-         — see module docstring §"Round-trip race"), invoke
-         ``fetcher(session_id, tenant_id)``, overwrite
-         ``entry.invalidation_mtime`` with the pre-fetch snapshot,
-         store, and return the slice.
+      2. Miss → snapshot ``current_invalidation_signal`` (the
+         ``(mtime, nonce)`` pair) BEFORE calling the fetcher (closes the
+         "CLI touches sentinel mid-fetch" race — see module docstring
+         §"Round-trip race"), invoke ``fetcher(session_id, tenant_id)``,
+         overwrite the entry's ``(invalidation_mtime,
+         invalidation_nonce)`` with the pre-fetch snapshot, store, and
+         return the slice.
 
     ``fetcher`` is the ONE injection point that talks to the cloud.
     The gate's real fetcher POSTs to ``/session/{id}/resolved`` (see
@@ -469,18 +607,23 @@ def resolve_via_cache(
     """
     entry = cache.get(session_id, tenant_id)
     if entry is None:
-        # SNAPSHOT the mtime BEFORE the fetch begins. A CLI touch that
-        # lands between this line and cache.put must still shift the
-        # stored mtime past our snapshot so the very next .get() drops
-        # the row. Deferring the mtime read until after the fetcher
-        # returns (the pre-fix behaviour) would let the fetcher's
-        # post-round-trip mtime mask the touch permanently.
-        mtime_snapshot = current_invalidation_mtime(session_id, tenant_id)
+        # SNAPSHOT the (mtime, nonce) pair BEFORE the fetch begins. A
+        # CLI touch that lands between this line and cache.put changes
+        # the sentinel nonce (and mtime), so the stored signal no longer
+        # matches and the very next .get() drops the row. Deferring the
+        # signal read until after the fetcher returns (the pre-fix
+        # behaviour) would let the fetcher's post-round-trip signal mask
+        # the touch permanently. The nonce also closes the coarse-mtime
+        # variant of this race where the touch shares an mtime tick.
+        mtime_snapshot, nonce_snapshot = current_invalidation_signal(
+            session_id, tenant_id,
+        )
         entry = fetcher(session_id, tenant_id)
-        # Overwrite whatever mtime the fetcher stamped with our
+        # Overwrite whatever signal the fetcher stamped with our
         # pre-fetch snapshot. The fetcher is not required to know the
         # snapshot timing rule — this module owns it.
         entry.invalidation_mtime = mtime_snapshot
+        entry.invalidation_nonce = nonce_snapshot
         cache.put(session_id, tenant_id, entry)
     return list(entry.policies_by_hook.get((event, matcher), []))
 
@@ -576,6 +719,7 @@ __all__ = [
     "bootstrap_sticky_packs",
     "build_entry_from_state",
     "current_invalidation_mtime",
+    "current_invalidation_signal",
     "inherit_packs_on_subagent",
     "invalidation_file_path",
     "load_sticky_packs_for_project",

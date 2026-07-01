@@ -37,6 +37,7 @@ from magi_cp.local.session_cache import (
     bootstrap_sticky_packs,
     build_entry_from_state,
     current_invalidation_mtime,
+    current_invalidation_signal,
     inherit_packs_on_subagent,
     invalidation_file_path,
     load_sticky_packs_for_project,
@@ -74,11 +75,49 @@ def _isolated_dirs(tmp_path, monkeypatch):
 # ── path resolution ──────────────────────────────────────────────────
 def test_invalidation_file_path_lives_under_state_dir(tmp_path):
     path = invalidation_file_path(_S, _T)
-    # Path shape: {state}/cache-invalidation/{tenant}/{session}
-    assert path.endswith(f"{_T}/{_S}") or path.endswith(f"{_T}\\{_S}")
+    # Path shape: {state}/cache-invalidation/{tenant}.{hash}/{session}.{hash}
     # Bubbles under the env-var-scoped state dir set by the autouse fixture.
     assert "/state/" in path or "\\state\\" in path
     assert "cache-invalidation" in path
+    # The readable id is kept as a component prefix (a collision-resistant
+    # hash suffix is appended), so both coordinates still appear in path.
+    assert _S in path
+    assert _T in path
+
+
+def test_invalidation_file_path_is_collision_resistant():
+    """Fix: the coordinate→path mapping must be injective. The old
+    separator-collapsing mapping aliased distinct ids
+    (``a/b`` and ``a_b`` both → ``a_b``; ``..x`` and ``x`` both → ``x``),
+    letting one session's touch invalidate — or fail to invalidate —
+    another session's cache row through a shared sentinel.
+    """
+    # Session axis: previously-colliding pairs must now differ.
+    assert invalidation_file_path("a/b", "t") != invalidation_file_path("a_b", "t")
+    assert invalidation_file_path("..x", "t") != invalidation_file_path("x", "t")
+    # Tenant axis too.
+    assert invalidation_file_path("s", "a/b") != invalidation_file_path("s", "a_b")
+    assert invalidation_file_path("s", "..x") != invalidation_file_path("s", "x")
+
+
+def test_collision_resistant_sentinels_do_not_cross_invalidate():
+    """End-to-end: a CLI touch on session ``a/b`` must NOT invalidate the
+    cache row for the (formerly-aliased) session ``a_b``.
+    """
+    cache = SessionCache()
+    touch_invalidation_file("a/b", _T)
+    touch_invalidation_file("a_b", _T)
+    cache.put("a/b", _T, _entry(session_id="a/b", active=["x"]))
+    cache.put("a_b", _T, _entry(session_id="a_b", active=["y"]))
+    assert cache.get("a/b", _T) is not None
+    assert cache.get("a_b", _T) is not None
+    # Touch only ``a/b``.
+    time.sleep(1.05)
+    touch_invalidation_file("a/b", _T)
+    assert cache.get("a/b", _T) is None
+    got = cache.get("a_b", _T)
+    assert got is not None, "aliased sentinel cross-invalidated a distinct session"
+    assert got.active_packs == ["y"]
 
 
 def test_invalidation_file_path_is_per_session_and_tenant():
@@ -167,14 +206,19 @@ def test_touch_invalidation_file_returns_false_on_oserror(caplog):
 # ── cache freshness ──────────────────────────────────────────────────
 def _entry(session_id=_S, tenant_id=_T, active=(), floor=None,
            by_hook=None, mtime=None):
+    # Snapshot the CURRENT (mtime, nonce) so a put()→get() with no
+    # intervening touch is a hit. Freshness now compares the pair, so the
+    # nonce must be stamped too (not just the mtime).
+    cur_mtime, cur_nonce = current_invalidation_signal(session_id, tenant_id)
     if mtime is None:
-        mtime = current_invalidation_mtime(session_id, tenant_id)
+        mtime = cur_mtime
     return SessionCacheEntry(
         active_packs=list(active),
         floor_pack_id=floor,
         policies_by_hook=dict(by_hook or {}),
         loaded_at=time.time(),
         invalidation_mtime=mtime,
+        invalidation_nonce=cur_nonce,
     )
 
 
@@ -238,6 +282,45 @@ def test_cache_invalidation_is_per_session_isolated():
         "invalidated sess-B's cache row"
     )
     assert got_b.active_packs == ["b"]
+
+
+def test_touch_writes_changing_nonce_without_sleep():
+    """Fix: the sentinel body carries a strictly-changing nonce, so two
+    touches inside the SAME mtime granularity tick still produce an
+    observable change signal.
+    """
+    touch_invalidation_file(_S, _T)
+    _, n1 = current_invalidation_signal(_S, _T)
+    # No sleep — on a coarse-mtime FS these two touches could share mtime.
+    touch_invalidation_file(_S, _T)
+    _, n2 = current_invalidation_signal(_S, _T)
+    assert n1 and n2
+    assert n1 != n2, "nonce must change on every touch regardless of mtime"
+
+
+def test_cache_invalidation_when_mtime_forced_equal():
+    """Fix regression: invalidation must NOT depend on mtime advancing.
+
+    We simulate a filesystem whose mtime granularity is coarser than the
+    interval between two touches by FORCING the sentinel's mtime back to
+    its pre-touch value after the second touch. The body nonce still
+    changed, so the stale row must be dropped even though mtime is
+    unchanged — the exact FAT/old-ext/NFS failure mode the lens flags.
+    """
+    cache = SessionCache()
+    touch_invalidation_file(_S, _T)
+    path = invalidation_file_path(_S, _T)
+    fixed = os.stat(path).st_mtime
+    cache.put(_S, _T, _entry(active=["a"]))
+    assert cache.get(_S, _T) is not None
+    # Second touch (new nonce), then pin mtime back so it looks unchanged.
+    touch_invalidation_file(_S, _T)
+    os.utime(path, (fixed, fixed))
+    assert os.stat(path).st_mtime == fixed, "precondition: mtime pinned equal"
+    assert cache.get(_S, _T) is None, (
+        "stale row survived a same-mtime-tick touch: invalidation must "
+        "compare the body nonce, not rely on mtime granularity"
+    )
 
 
 def test_cache_drop_is_explicit_lane():
