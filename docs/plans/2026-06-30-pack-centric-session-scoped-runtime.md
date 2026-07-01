@@ -149,11 +149,33 @@ Pack cards is worse.
 - Useful when the operator wants to know "did anyone leave the strict
   block pack turned off yesterday?"
 
-### `/policies/new`
+### `/policies/new` — pack membership at authoring time
 
-- Add a required `pack` selector on save.
-- Prebuilts become pack templates: enabling a prebuilt = adding its
-  target policies to one of your packs.
+The policy authoring surfaces (Guided wizard Step 1 "When", Raw / IR
+editor, Conversational compose) grow a "pack membership" field on the
+same screen as the lifecycle picker. Semantics:
+
+- Field: `packs: string[]` (0..n existing pack ids).
+- 0 packs selected: the policy is created but not a member of any
+  activated pack. It only fires if the operator later adds it to a
+  pack. This is a legitimate "author now, wire up later" state — the
+  new-policy card in the dashboard shows an amber "orphan" chip.
+- 1..n packs selected: on save the cloud add-to-pack for each id.
+- Special case: the floor pack always appears at the top of the
+  pack picker with an "ALWAYS-ON" chip so an operator who wants the
+  policy to fire everywhere can select it directly.
+- The pack picker is a multi-select combobox with search; the same
+  primitive powers the wizard, the raw editor, and the conversational
+  handoff summary card. Do not build three separate pickers.
+
+Conversational compose extractor: when the user's freeform text names
+a work context (e.g. "리서치 세션", "coding safety", "compliance
+audit"), the extractor SUGGESTS the matching pack in the picker but
+does not auto-commit. The operator confirms.
+
+Prebuilts: enabling a prebuilt = adding its target policy to the
+picker-selected pack list. The prebuilt still ships with its own IR;
+the pack picker is what turns it into a session-activatable rule.
 
 ## Slash command UX inside Claude Code
 
