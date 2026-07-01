@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 
 
@@ -125,10 +126,35 @@ class PackStore:
             }
             for r in rows_sorted
         ]
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(body, f, ensure_ascii=False, indent=2, sort_keys=True)
-            f.write("\n")
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        # Atomic write: P5 elevated packs.json to a governance-load-bearing
+        # file (the floor pack decides what always fires, and it is read on
+        # every /session/{id}/resolved call AND written by the boot
+        # migration). A truncate-in-place write leaves a partially-written
+        # file if the process crashes mid-dump, which would break BOTH the
+        # boot migration and the live floor read (json parse error / the
+        # duplicate-is_floor guard). Write to a sibling temp file, fsync,
+        # then os.replace() onto the target so a crash can never expose a
+        # torn packs.json.
+        fd, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix=".packs-", suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(
+                    body, f, ensure_ascii=False, indent=2, sort_keys=True,
+                )
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def validate_user_slug(slug: str) -> str:

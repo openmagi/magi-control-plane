@@ -305,13 +305,70 @@ returns True when the env var is unset. Mirrored on the web side in
 (`_packCentricEnabled`), and the env catalog
 (`web/lib/env-reference.ts` default `1`).
 
-**Rollback.** Operators who need the legacy per-policy `enabled` path
-set `MAGI_CP_PACK_CENTRIC_RUNTIME` to an explicit falsy value (`0`,
-`false`, `no`, `off`, or empty). The legacy resolver
-(`legacy_resolve_policies_for_hook`) is retained as a safety net, now
-carrying a deprecation note; it is NOT deleted. The migration is not
-reverted on rollback because the moved policies keep their `enabled`
-bit, so the legacy path fires exactly the same set it did before P5.
+### Rollback runbook (copy-paste)
+
+The default is now **ON**. The intuitive move of *unsetting* the var is
+WRONG: unset resolves to `True` (pack-centric stays on). Rollback
+requires an **explicit falsy value** (`0` / `false` / `no` / `off` /
+empty). The flag is read INDEPENDENTLY by two deployments, so a complete
+rollback sets it in **both** surfaces.
+
+1. Roll back the Python cloud API (fly.io `magi-cp`):
+
+   ```bash
+   fly secrets set MAGI_CP_PACK_CENTRIC_RUNTIME=0 -a magi-cp
+   ```
+
+   (`fly secrets set` triggers a rolling restart automatically.)
+
+2. Roll back the Next.js dashboard (Vercel `magi-cp-dashboard`):
+
+   ```bash
+   vercel env rm MAGI_CP_PACK_CENTRIC_RUNTIME production
+   vercel env add MAGI_CP_PACK_CENTRIC_RUNTIME production   # enter: 0
+   vercel --prod                                            # redeploy
+   ```
+
+3. Verify the API is on the legacy path (expect `pack_centric_enabled:
+   false` and your enabled policies grouped by hook):
+
+   ```bash
+   curl -s https://api.openmagi.ai/session/rollback-probe/resolved \
+     -H "X-Api-Key: $MAGI_CP_API_KEY" | jq '.pack_centric_enabled'
+   # -> false
+   ```
+
+4. Verify the dashboard: the **Policies** tab shows the per-policy
+   enabled/disabled toggle switchboard (not the read-only pack preview).
+
+**DB state to reverse: none.** The migration is not reverted. The moved
+policies keep their per-policy `enabled` bit, so the legacy resolver
+fires exactly the set it did before P5. `legacy_resolve_policies_for_hook`
+is retained as a safety net (deprecation-noted, NOT deleted).
+
+**Dashboard behaviour after rollback** (post-flip verification checkpoint):
+
+- Policies tab reverts to the per-policy `enabled` toggle switchboard.
+- The migration banner, the floor-pack always-on lock, the `/sessions`
+  tab, and the pack-membership picker are all hidden.
+
+**Roll-forward asymmetry (know before you roll back).** The boot
+migration is a one-shot snapshot keyed on `pack_centric_migrated_at`; it
+moves each tenant's enabled ids into the floor exactly once and never
+re-runs for a stamped tenant. Consequences:
+
+- Do **not** enable new policies via the per-policy path while rolled
+  back and expect them to fire after rolling forward. A policy set
+  `enabled=true` *after* its tenant was stamped is never unioned into the
+  floor, so under the default-ON runtime it silently does not fire. If
+  you must add governance while rolled back, add the policy to the
+  **floor pack membership directly** (pack detail endpoint) so it fires
+  under both runtimes.
+- Per-tenant fail-safe: a tenant whose boot migration never completed
+  (`pack_centric_migrated_at IS NULL`) stays on the legacy resolver even
+  while the global flag is ON, so a failed migration fails **closed**
+  (yesterday's enabled set keeps firing) rather than resolving against an
+  empty floor.
 
 **Migration banner.** The Packs tab renders a one-time, dismissable
 banner (`MigrationBanner`, localStorage key

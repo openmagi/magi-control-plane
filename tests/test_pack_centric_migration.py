@@ -188,6 +188,53 @@ def test_migration_seeds_default_tenant_when_table_empty(env):
         assert list(s.execute(select(Tenant.id)).scalars()) == ["default"]
 
 
+# ── 3b. durable audit ledger provenance ──────────────────────────────
+def test_migration_writes_durable_audit_ledger_entry(env):
+    """A schema-mutating migration that unions ids into the floor pack
+    must leave a durable, append-only ledger record of exactly which ids
+    moved for which tenant, so 'which policies migrated when' is
+    answerable from canonical truth (not mutable floor state)."""
+    from magi_cp.cloud.db import LedgerRepo
+
+    TenantRepo(env["engine"]).create(tenant_id="tenant-a")
+    _seed_policies(env, [
+        (_make_policy("a", matcher="Bash"), True),
+        (_make_policy("b", matcher="Read"), False),   # disabled: excluded
+        (_make_policy("c", matcher="Write"), True),
+    ])
+    migrate_tenants_to_pack_centric(
+        env["engine"], env["policy_store"], env["pack_store"], now=1000,
+    )
+
+    entries = [
+        e for e in LedgerRepo(env["engine"]).list_all()
+        if e.matter == "pack_centric_migration"
+    ]
+    assert len(entries) == 1
+    body = entries[0].body
+    assert body["tenant_id"] == "tenant-a"
+    assert body["source"] == "p5_boot_migration"
+    # The record captures the EXACT ids appended (a, c), not the full
+    # enabled-set count, and not the excluded disabled id "b".
+    assert sorted(body["appended_policy_ids"]) == ["a", "c"]
+    assert body["floor_pack_id"] is not None
+
+
+def test_migration_audits_synthetic_default_tenant_autoprovision(env):
+    """When the tenants table is empty the migration auto-provisions the
+    synthetic ``default`` row; that origin must be recorded so an auditor
+    can distinguish it from a genuinely provisioned tenant."""
+    from magi_cp.cloud.db import LedgerRepo
+
+    _seed_policies(env, [(_make_policy("a"), True)])
+    migrate_tenants_to_pack_centric(
+        env["engine"], env["policy_store"], env["pack_store"], now=1000,
+    )
+    subjects = [e.matter for e in LedgerRepo(env["engine"]).list_all()]
+    assert "tenant_autoprovisioned" in subjects
+    assert "pack_centric_migration" in subjects
+
+
 # ── 4. multiple tenants ──────────────────────────────────────────────
 def test_migration_stamps_every_pending_tenant(env):
     TenantRepo(env["engine"]).create(tenant_id="tenant-a")

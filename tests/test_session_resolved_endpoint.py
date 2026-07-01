@@ -39,6 +39,23 @@ def _env(monkeypatch):
     monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", "0")
 
 
+def _stamp_migrated(engine, tenant_id: str, ts: int = 1) -> None:
+    """Simulate a completed P5 boot migration for ``tenant_id`` by
+    stamping ``pack_centric_migrated_at`` so the resolved endpoint treats
+    it as pack-centric-active under the flag-ON gate."""
+    from magi_cp.cloud.tenants import Tenant
+    from sqlalchemy import update
+    from sqlalchemy.orm import Session
+
+    with Session(engine) as s:
+        s.execute(
+            update(Tenant)
+            .where(Tenant.id == tenant_id)
+            .values(pack_centric_migrated_at=ts)
+        )
+        s.commit()
+
+
 def _make_policy(pid: str, *, event="PreToolUse", matcher="Bash",
                  action="block") -> EvidencePolicy:
     return EvidencePolicy(
@@ -69,6 +86,13 @@ def cloud(tmp_path):
     client = TestClient(app)
     engine = app.state.engine
     TenantRepo(engine).create(tenant_id="tenant-a")
+    # P5 zero-downtime guard: the pack-centric path fires for a tenant
+    # ONLY after the boot migration confirmed-populated its floor
+    # (`pack_centric_migrated_at IS NOT NULL`). `create_app` does not run
+    # the boot migration in tests, so stamp tenant-a directly to simulate
+    # a migrated tenant for the flag-ON assertions below. Unstamped
+    # fallback is covered by its own test.
+    _stamp_migrated(engine, "tenant-a")
     key = ApiKeyRepo(engine).issue(tenant_id="tenant-a").cleartext
     return {
         "client": client,
@@ -309,6 +333,64 @@ def test_resolved_flag_on_empty_floor_still_emits_activated_members(
         headers={"X-Api-Key": cloud["key"]},
     )
     body = r.json()
+    coord_to_ids = {
+        (row["event"], row["matcher"]): [p["id"] for p in row["policies"]]
+        for row in body["policies_by_hook"]
+    }
+    assert coord_to_ids.get(("PreToolUse", "Bash")) == ["a"]
+
+
+# ── P5 zero-downtime: unmigrated tenant fails closed to legacy ───────
+def test_resolved_flag_on_unmigrated_tenant_falls_back_to_legacy(
+    tmp_path, monkeypatch,
+):
+    """Global flag ON but the tenant's boot migration never completed
+    (`pack_centric_migrated_at IS NULL`): the endpoint must NOT resolve
+    against an empty floor (which would silently return zero policies for
+    every hook — a total governance bypass). It must fall back to the
+    legacy per-policy `enabled` resolver so yesterday's enabled set still
+    fires today.
+    """
+    monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", ADMIN_KEY)
+    monkeypatch.setenv("MAGI_CP_API_KEY", LEGACY_API_KEY)
+    monkeypatch.setenv("MAGI_CP_HITL_API_KEY", "res-hitl-key")
+    monkeypatch.setenv("MAGI_CP_PACK_CENTRIC_RUNTIME", "1")  # global ON
+
+    ks = KeyStore(dir=str(tmp_path / "keys"))
+    dsn = f"sqlite:///{tmp_path}/cloud.sqlite"
+    policy_path = str(tmp_path / "policies.json")
+    pack_path = str(tmp_path / "packs.json")
+    app = create_app(
+        keystore=ks, dsn=dsn,
+        policy_store_path=policy_path,
+        pack_store_path=pack_path,
+    )
+    client = TestClient(app)
+    engine = app.state.engine
+    # Create the tenant but DO NOT stamp pack_centric_migrated_at:
+    # simulates a tenant whose best-effort boot migration failed.
+    TenantRepo(engine).create(tenant_id="tenant-a")
+    key = ApiKeyRepo(engine).issue(tenant_id="tenant-a").cleartext
+
+    PolicyStore(path=policy_path).save([
+        PolicyOverride(
+            policy=_make_policy("a", matcher="Bash"), source="user",
+            enabled=True,
+        ),
+        PolicyOverride(
+            policy=_make_policy("b", matcher="Bash"), source="user",
+            enabled=False,
+        ),
+    ])
+
+    r = client.get(
+        "/session/s1/resolved", headers={"X-Api-Key": key},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Fell back to legacy: envelope advertises pack_centric_enabled False
+    # and the enabled policy "a" still fires (b is disabled → dropped).
+    assert body["pack_centric_enabled"] is False
     coord_to_ids = {
         (row["event"], row["matcher"]): [p["id"] for p in row["policies"]]
         for row in body["policies_by_hook"]

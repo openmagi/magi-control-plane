@@ -4875,7 +4875,21 @@ def _attach_session_pack_routes(
             resolve_policies_for_hook,
         )
         tenant_id = request.state.tenant_id
-        flag_on = pack_centric_enabled()
+        # Zero-downtime guard (P5 fail-open fix): the global env flag says
+        # "pack-centric is the default", but the pack-centric path only
+        # fires policies that live in a pack. If the best-effort boot
+        # migration never populated THIS tenant's floor (corrupt/locked
+        # store, disk error, permanent per-tenant failure), its
+        # `pack_centric_migrated_at` stamp is NULL and its floor is empty
+        # — resolving under pack-centric would silently return zero
+        # policies for every hook, a total governance bypass. So a tenant
+        # is treated as pack-centric ONLY when the global flag is on AND
+        # its migration is confirmed complete; otherwise we fall back to
+        # the legacy per-policy `enabled` resolver so yesterday's enabled
+        # set still fires today (fail-closed against silent bypass).
+        flag_on = pack_centric_enabled() and _tenant_pack_centric_migrated(
+            engine, tenant_id,
+        )
         # Flag-neutrality: this endpoint is REGISTERED under both flag
         # settings so smoke probes + dashboards can render envelope
         # shape without a mode flip. But side-effects (floor-pack seed
@@ -6152,6 +6166,43 @@ def _build_production_app() -> FastAPI:
             "to roll back to the legacy per-policy path)",
         )
     return app
+
+
+def _tenant_pack_centric_migrated(engine, tenant_id: str) -> bool:
+    """Return True iff the P5 boot migration has confirmed-populated this
+    tenant's floor pack (``tenants.pack_centric_migrated_at IS NOT NULL``).
+
+    This is the per-tenant half of the zero-downtime guarantee. The
+    default-ON env flag is global and env-driven, decoupled from whether
+    the best-effort boot migration actually seeded a given tenant's
+    floor. Gating the pack-centric runtime on the per-tenant stamp makes
+    a migration failure fail-CLOSED: an unstamped tenant keeps using the
+    legacy per-policy `enabled` resolver (yesterday's set still fires)
+    instead of resolving against an empty floor (silent total bypass).
+
+    Any query error also fails closed to legacy — the security-control
+    plane must never drop to zero governance because a status read hit a
+    transient DB error.
+    """
+    from .tenants import Tenant
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+    try:
+        with Session(engine) as s:
+            stamp = s.scalar(
+                select(Tenant.pack_centric_migrated_at).where(
+                    Tenant.id == tenant_id
+                )
+            )
+        return stamp is not None
+    except Exception:  # pragma: no cover - defensive
+        import logging
+        logging.getLogger(__name__).exception(
+            "magi-cp: pack-centric per-tenant migration check failed for "
+            "tenant %r; falling back to the legacy per-policy resolver",
+            tenant_id,
+        )
+        return False
 
 
 def _migrate_enabled_policies_into_floor_pack(app: FastAPI) -> None:

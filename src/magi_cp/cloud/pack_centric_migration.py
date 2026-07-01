@@ -100,10 +100,16 @@ def _populate_floor(
     tenant_id: str,
     pack_store: "PackStore",
     enabled_ids: list[str],
-) -> int:
+) -> tuple[str | None, list[str]]:
     """Ensure the floor pack exists and union ``enabled_ids`` into its
-    member list. Returns the number of ids newly appended (0 when the
-    floor already covered every enabled id (the idempotent case)).
+    member list.
+
+    Returns ``(floor_pack_id, appended_ids)`` where ``appended_ids`` is
+    the exact list of ids newly appended on this call (empty when the
+    floor already covered every enabled id — the idempotent case). The
+    caller uses ``appended_ids`` for the durable audit record + log line
+    so "which policies migrated when" is answerable from the ledger
+    rather than from mutable floor-pack state.
     """
     floor_id = ensure_floor_pack(tenant_id, pack_store)
     rows = pack_store.load()
@@ -113,15 +119,15 @@ def _populate_floor(
             floor = row
             break
     if floor is None:  # pragma: no cover (ensure_floor_pack just made it)
-        return 0
-    added = 0
+        return floor_id, []
+    appended: list[str] = []
     for pid in enabled_ids:
         if pid not in floor.policy_ids:
             floor.policy_ids.append(pid)
-            added += 1
-    if added:
+            appended.append(pid)
+    if appended:
         pack_store.save(rows)
-    return added
+    return floor_id, appended
 
 
 def migrate_tenants_to_pack_centric(
@@ -149,6 +155,14 @@ def migrate_tenants_to_pack_centric(
     enabled_ids = _enabled_policy_ids(policy_store)
 
     migrated: list[str] = []
+    seeded_default = False
+    # Per-tenant provenance captured for the durable ledger audit + the
+    # human-facing log line. Records the EXACT ids appended per tenant,
+    # not the size of the full enabled set (which over-counts on an
+    # idempotent re-run / partially-migrated deploy).
+    appended_by_tenant: dict[str, list[str]] = {}
+    floor_by_tenant: dict[str, str | None] = {}
+
     with Session(engine) as s:
         pending = list(
             s.execute(
@@ -172,6 +186,7 @@ def migrate_tenants_to_pack_centric(
                     pack_centric_migrated_at=None,
                 ))
                 s.flush()
+                seeded_default = True
                 pending = list(
                     s.execute(
                         select(Tenant).where(
@@ -180,17 +195,78 @@ def migrate_tenants_to_pack_centric(
                     ).scalars()
                 )
 
+        # Commit PER TENANT (not once after the whole loop) so each
+        # processed tenant is either fully migrated-and-stamped or not
+        # touched at all. A crash mid-loop can never leave a tenant's
+        # floor file mutated but its stamp unwritten (the floor union is
+        # idempotent, and the stamp lands in its own transaction right
+        # after). This is the crash-safety the review lens asserts and
+        # is what the per-tenant-store multi-tenant future requires.
         for tenant in pending:
-            _populate_floor(tenant.id, pack_store, enabled_ids)
+            floor_id, appended = _populate_floor(
+                tenant.id, pack_store, enabled_ids,
+            )
             tenant.pack_centric_migrated_at = ts
+            s.commit()
             migrated.append(tenant.id)
-        s.commit()
+            appended_by_tenant[tenant.id] = appended
+            floor_by_tenant[tenant.id] = floor_id
 
+    # Durable audit: a schema-mutating migration that touches the live
+    # policy set must leave an entry in the append-only hash-chained
+    # ledger so "which policies migrated when" is answerable six months
+    # later from canonical truth, not from mutable floor-pack state.
+    # Best-effort: the stamps are already committed, so an audit failure
+    # must not undo a successful (zero-downtime) migration; it is logged
+    # loudly instead. Ledger appends are extremely rare to fail.
     if migrated:
+        try:
+            from .db import LedgerRepo
+            ledger = LedgerRepo(engine)
+            for tid in migrated:
+                if seeded_default and tid == _DEFAULT_TENANT_ID:
+                    # Record that this tenant row was auto-provisioned by
+                    # the P5 boot migration (vs genuinely provisioned) so
+                    # a later auditor can tell the two apart.
+                    ledger.append(
+                        subject="tenant_autoprovisioned",
+                        body={
+                            "tenant_id": tid,
+                            "ts": ts,
+                            "source": "p5_pack_centric_migration",
+                        },
+                        token="", tenant_id=tid,
+                    )
+                ledger.append(
+                    subject="pack_centric_migration",
+                    body={
+                        "tenant_id": tid,
+                        "floor_pack_id": floor_by_tenant.get(tid),
+                        # Full enabled set considered + the exact delta
+                        # appended to the floor on this boot.
+                        "enabled_policy_ids": list(enabled_ids),
+                        "appended_policy_ids": list(
+                            appended_by_tenant.get(tid, [])
+                        ),
+                        "ts": ts,
+                        "source": "p5_boot_migration",
+                    },
+                    token="", tenant_id=tid,
+                )
+        except Exception:  # pragma: no cover (defensive)
+            _LOG.exception(
+                "pack-centric migration: durable audit-ledger append "
+                "failed after tenants were stamped; migration state is "
+                "intact but provenance was not recorded",
+            )
+
+        total_appended = sum(
+            len(v) for v in appended_by_tenant.values()
+        )
         _LOG.info(
-            "pack-centric migration: moved %d enabled policy id(s) into "
-            "the floor pack for %d tenant(s): %r",
-            len(enabled_ids), len(migrated), migrated,
+            "pack-centric migration: stamped %d tenant(s) %r; appended "
+            "%d policy id(s) to floor pack(s): %r",
+            len(migrated), migrated, total_appended, appended_by_tenant,
         )
     return migrated
 
