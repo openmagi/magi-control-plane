@@ -191,41 +191,44 @@ For an existing tenant:
    session-scoped packs (research-mode, coding-safety, etc.) so you can
    activate them per session."
 
-## Open questions
+## Decisions locked (2026-06-30)
 
-Before writing any code, decide:
+Kevin walked the open-question list; decisions below.
 
-1. **Multiple active packs per session?** Recommendation yes: an
-   operator can be "in research mode AND coding-safety" at the same time
-   (union of policies). Ordering: floor is always first, then
-   activation order for tie-breaking.
-2. **Subagent inheritance.** When CC spawns a subagent, does it
-   inherit the parent's active packs? Recommendation yes by default —
-   the safest carry-over.
-3. **Session identity across CC restart.** If CC persists sessionId
-   across restart, our activation persists. If it does not, an
-   activation is lost when the terminal closes. Confirm CC behaviour;
-   if lost, add an optional "sticky pack" that reactivates on next
-   session boot for the same user.
-4. **Slash command distribution.** Two options for shipping
-   `~/.claude/commands/magi/`:
-   - **A.** Installer writes them once (fixed content).
-   - **B.** MCP server exposes them dynamically (magi-agent already
-     ships an MCP server).
-   Recommendation A for beta — simpler; move to B if we start iterating
-   command content.
-5. **Cache TTL and refresh cadence.** How long can the gate cache a
-   session's active-pack set before refetching? A hot loop of tool
-   calls should not hit the cloud on every call. 5 min TTL + refresh
-   on any `/magi:pack:*` command is my starting point.
-6. **Floor pack contents.** Ship it seeded with what? Recommendation:
-   ship it empty. Migration fills it for existing tenants.
-7. **What happens if the operator deactivates the floor pack.**
-   Recommendation: we do not allow it. The pack itself is editable but
-   the "always-on" bit is not.
-8. **Air-gapped self-host.** No slash-command post to cloud — the gate
-   binary needs a local `magi-cp state ...` fallback to write to the
-   local WAL. Cloud is optional in the model.
+1. **Multiple active packs per session — YES.** Union of policies.
+   Ordering: floor first, then activation order.
+2. **Subagent inheritance — YES.** Spawned subagent inherits the
+   parent session's active packs.
+3. **CC-restart persistence — YES.** Activation survives CC restart
+   as long as the session id survives. If CC drops the session id on
+   restart, the activation is effectively lost (fresh session id has
+   no state); we add a "sticky pack" (per-user, per-project default)
+   that auto-reactivates on the next session boot to close the gap.
+4. **Slash command distribution — A (installer files) for beta.**
+   Migrate to MCP-exposed commands if we iterate content.
+5. **Activation lifetime.** ONE-SHOT activate; persists **until the
+   session ends OR the operator runs `/magi:pack:deactivate`.**
+   No auto-expire, no TTL. The `expires_at` field in the store is
+   there only for garbage collection of orphaned sessions (a session
+   that stopped talking to us for N days).
+   Distinct from **gate cache refresh** (an implementation detail):
+   the gate binary invalidates its local cache whenever the operator
+   runs `/magi:pack:*` and refetches once per session boot.
+6. **Floor pack ships empty.** Migration populates it for existing
+   tenants (moves everything currently `enabled=true` into floor).
+7. **Floor pack cannot be deactivated.** The pack is editable
+   (add/remove policies) but the "always-on" bit is server-locked.
+8. **Air-gapped self-host — deferred.** Not addressed in the beta.
+   For context: an "air-gapped" install runs the gate without a
+   cloud (no `magi-cp cloud` process), which today's stack does not
+   support anyway (the gate always talks to a cloud). Everyone in
+   the beta runs cloud + gate on the same machine via docker
+   compose, so the cloud is always reachable. Revisit only if a
+   real air-gapped deploy request lands.
+
+All eight decisions unblock Phase 1. Phases 3-5 will surface
+implementation questions of their own — those get their own
+decision blocks below when we get there.
 
 ## Phased rollout
 
