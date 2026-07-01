@@ -112,11 +112,47 @@ MD
   ok "installed /magi:pack-* slash commands → $cmd_dir"
 }
 
+# ── Codex CLI adapter surface (~/.codex/skills + prompts + managed) ─────
+# Forward-compat: when a Codex install is detected (or requested), drop
+# the Codex-shaped skills + prompts + managed enforcement files. The file
+# bodies live in the Python installer (magi_cp.local.codex_install) so the
+# two runtimes stay in lockstep; this shell function just routes to it.
+# Best-effort: if the Python package isn't importable on the host we warn
+# and continue (the CC wiring is the critical path).
+install_codex_adapter() {
+  local runtime="${1:-codex}"
+  local py=""
+  for cand in python3.13 python3.12 python3.11 python3; do
+    if command -v "$cand" >/dev/null 2>&1; then py="$cand"; break; fi
+  done
+  if [ -z "$py" ]; then
+    warn "python3 not found; skipping Codex adapter install (skills/prompts/managed)."
+    return 0
+  fi
+  if command -v magi-cp >/dev/null 2>&1; then
+    magi-cp install --runtime "$runtime" \
+      || warn "magi-cp install --runtime $runtime failed; Codex adapter not installed."
+  elif "$py" -c "import magi_cp" >/dev/null 2>&1; then
+    "$py" -m magi_cp.cli install --runtime "$runtime" \
+      || warn "python -m magi_cp.cli install --runtime $runtime failed."
+  else
+    warn "magi_cp package not importable on host; skipping Codex adapter install."
+  fi
+}
+
 # Test / re-run shortcut: drop the slash commands and exit without
 # touching docker. Lets the bash-driven installer test assert the four
 # files land with the right permissions on a scratch HOME.
 if [ "${MAGI_CP_INSTALL_COMMANDS_ONLY:-0}" = "1" ]; then
   install_slash_commands
+  exit 0
+fi
+
+# Test / re-run shortcut for the Codex adapter surface. Mirrors the
+# COMMANDS_ONLY hook above so a test can exercise JUST the Codex install
+# (skills + prompts + managed files) without standing up docker.
+if [ "${MAGI_CP_INSTALL_CODEX_ONLY:-0}" = "1" ]; then
+  install_codex_adapter "${MAGI_CP_INSTALL_RUNTIME:-codex}"
   exit 0
 fi
 
@@ -351,6 +387,16 @@ esac
 
 # Drop the /magi:pack-* slash commands alongside the gate wiring.
 install_slash_commands
+
+# If Codex CLI is also installed on this host, drop the Codex adapter
+# surface too (skills + prompts + managed enforcement). Opt out with
+# MAGI_CP_INSTALL_RUNTIME=cc. Best-effort; never fails the CC install.
+if [ "${MAGI_CP_INSTALL_RUNTIME:-auto}" = "codex" ] \
+   || [ "${MAGI_CP_INSTALL_RUNTIME:-auto}" = "both" ] \
+   || { [ "${MAGI_CP_INSTALL_RUNTIME:-auto}" = "auto" ] && command -v codex >/dev/null 2>&1; }; then
+  step "Codex CLI detected — installing Codex adapter surface"
+  install_codex_adapter codex
+fi
 
 # Rewrite managed-settings to use per-user path + local cloud URL.
 PY=""

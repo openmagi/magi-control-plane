@@ -593,6 +593,30 @@ def post_heartbeat(*, api_key: str | None = None,
         return None
 
 
+def _apply_runtime_flag(argv: list[str]) -> None:
+    """Honor a leading ``--runtime <id>`` / ``--runtime=<id>`` flag.
+
+    ``magi-cp gate --runtime codex`` is the documented convenience shape
+    (design doc Section 6.2): it is exactly equivalent to setting
+    ``MAGI_CP_RUNTIME=codex`` and dispatching. The Codex managed
+    ``requirements.toml`` emits this flag on every hook command so the
+    dispatcher resolves the Codex driver even when the payload sniff is
+    ambiguous. Setting the env var here keeps a single detection path
+    (``detect_runtime`` still reads ``MAGI_CP_RUNTIME``). Unknown / absent
+    flags are a silent no-op so the plain CC invocation is unchanged.
+    """
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--runtime" and i + 1 < len(argv):
+            os.environ["MAGI_CP_RUNTIME"] = argv[i + 1]
+            return
+        if tok.startswith("--runtime="):
+            os.environ["MAGI_CP_RUNTIME"] = tok.split("=", 1)[1]
+            return
+        i += 1
+
+
 def main() -> int:
     """Gate entry point: detect the runtime, dispatch to its driver.
 
@@ -602,6 +626,7 @@ def main() -> int:
     silent allow, malformed JSON → deny, otherwise run the policy path.
     The Codex branch is dead code with the flag off.
     """
+    _apply_runtime_flag(sys.argv[1:])
     raw_stripped = sys.stdin.read().strip()
     # Lazy import so the runtime package (and its Codex module) never
     # loads on a plain CC invocation unless the dispatcher needs it.
