@@ -881,22 +881,45 @@ reverted from backup afterward (byte-identical diff confirmed).
   Codex-specific evidence reader in `runtime/codex.py`; do NOT share the CC
   JSONL reader. Updates D5 from "pending" to "answered: separate reader".
 
-**Actions this creates (all on flag-off, dormant code):**
-1. Retarget the hook emitter from config.toml `[[hooks]]` to a PLUGIN
-   `hooks.json` sidecar (nested JSON shape, F3) for the agent/interactive
-   path, AND rely on `requirements.toml` (deny/prompt, F5) for hard
-   enforcement. The config.toml `[[hooks]]` emitter path is unreliable.
-2. Add a matcher-name translation table (CC tool names -> Codex
-   `exec_command`/`apply_patch`/`shell`/MCP names) (F4).
-3. Trim the emitter event map to the F1 event set.
-4. Ship a Codex-specific transcript reader (F7); do not factor onto the CC
-   reader (reverses the D5 "shared reader" hope).
-5. Document `codex exec` as a known gate-bypass surface unless enforcement is
-   installed via the managed requirements layer (F2/F6). This narrows the
-   coverage claim in Section 14 "Costs".
+**Actions this creates (all on flag-off, dormant code).** After auditing
+the code the F2/F5 concerns turned out to be MOSTLY already-correct by
+design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
 
-D1/D2/D3/D4/D6/D7/D8 remain unrun (need interactive TUI or MDM harness); F2's
-result makes them lower priority than fixing the registration surface first.
+1. Registration surface — ALREADY CORRECT, no retarget needed. The
+   installer (`local/codex_install.py`) writes the compiled hooks to
+   `/etc/codex/requirements.toml` (the MANAGED enforcement layer, F5) and
+   NEVER touches user `~/.codex/config.toml`. F2's dead-surface finding was
+   about USER config.toml, which the product never used for enforcement, so
+   the enforced path was right all along. The emitter also generates a
+   `hooks_json_sidecar` (F3 nested plugin shape) that is currently spare
+   (not installed); an interactive-plugin install path can adopt it later.
+   Added a regression test locking "installer writes managed requirements,
+   not user config.toml."
+2. DONE. Matcher-name translation table (CC -> Codex: Bash->exec_command,
+   Edit/Write/MultiEdit->apply_patch, Task->spawn_agent; read-family +
+   regex pass through) (F4). This was the one genuine bug: without it every
+   emitted `matcher` named a nonexistent Codex tool and fired zero times.
+3. Event-map trim to the F1 set — the emitter emits only events that
+   actually appear on authored policies, so no stale events leak; the F1
+   set is recorded at the block-channel marker for when SessionEnd-hosted
+   logic is added. No code change required now.
+4. Codex-specific transcript reader (F7) — DEFERRED (YAGNI). The gate does
+   NOT read transcripts for evidence today (`verifier/descriptors.py`: the
+   cloud never pulls `transcript_path`); the only transcript reader is the
+   CC-only run-share path. When a transcript-consuming feature is built for
+   Codex it MUST use a Codex-rollout-JSONL reader, not the CC reader
+   (recorded at the codex.py breadcrumb + F7).
+5. DONE (docs). `codex exec` documented as a gate-bypass surface unless
+   enforcement rides the managed requirements layer (F2/F6); the managed
+   installer is exactly that layer, so a correctly-installed tenant is not
+   bypassable via `codex exec`.
+
+Net: the live test found ONE real bug (F4, fixed) and otherwise CONFIRMED
+the existing architecture (managed requirements = enforced surface). The
+deny-only constraint (F5) is a forward-constraint on the not-yet-built
+PermissionPolicy->requirements lowering (`TODO(live-test P2)` in codex.py),
+recorded at the emitter docstring. D1/D2/D3/D4/D6/D7/D8 remain unrun (need
+interactive TUI or an MDM harness).
 
 ## 12. Live test checklist (pointer)
 
