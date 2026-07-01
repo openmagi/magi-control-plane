@@ -30,8 +30,10 @@
 import { useCallback, useMemo, useRef } from "react"
 import type { PolicyDraft } from "@/lib/policy-builder"
 import PolicyBuilder from "@/components/PolicyBuilder"
+import { translate } from "@/lib/i18n/dict"
 import HandoffLink from "./HandoffLink"
 import { DryRunPanel } from "../../_components/DryRunPanel"
+import { PackMultiSelect } from "./PackMultiSelect"
 
 export interface AdvancedAuthoringProps {
   locale: "ko" | "en"
@@ -134,6 +136,21 @@ export default function AdvancedAuthoring({
         labels={labels}
         dryRunSlot={dryRunSlot}
         onDraftChange={handleDraftChange}
+        packSlot={
+          <PackMultiSelect
+            locale={locale}
+            labels={{
+              heading: translate(locale, "packs.picker.heading"),
+              hint: translate(locale, "packs.picker.hint"),
+              search: translate(locale, "packs.picker.search"),
+              alwaysOn: translate(locale, "packs.alwaysOn"),
+              orphan: translate(locale, "packs.orphan"),
+              loading: translate(locale, "packs.picker.loading"),
+              empty: translate(locale, "packs.picker.empty"),
+              suggested: translate(locale, "packs.picker.suggested"),
+            }}
+          />
+        }
       />
     </div>
   )

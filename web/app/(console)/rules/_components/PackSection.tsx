@@ -42,6 +42,13 @@ export function PackSection({
   // a built-in we render a subtle nudge under the grid pointing at
   // the New Pack CTA rather than implying no packs exist.
   const userPackCount = items.filter((p) => p.source === "user").length
+  // P4: the floor pack renders first (always-on safety net). Everything
+  // else keeps its incoming order.
+  const ordered = [...items].sort((a, b) => {
+    const af = a.is_floor ? 0 : 1
+    const bf = b.is_floor ? 0 : 1
+    return af - bf
+  })
   return (
     <div className="mb-6 rounded-2xl border border-black/[0.06] bg-[var(--color-surface-1,#f9fafb)]/40 p-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
@@ -63,7 +70,7 @@ export function PackSection({
       {hasItems ? (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
-            {items.map((pack) => (
+            {ordered.map((pack) => (
               <PackCard key={pack.id} pack={pack} t={t} />
             ))}
           </div>
@@ -103,6 +110,7 @@ function PackCard({
   // D75 follow-up: stale + setup_required surfacing.
   const staleMembers = pack.stale_members ?? []
   const setupRequiredMembers = pack.setup_required_members ?? []
+  const isFloor = pack.is_floor === true
   return (
     <Card key={pack.id} className={`flex flex-col gap-2 ${borderTone}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -116,7 +124,12 @@ function PackCard({
             <span className="text-sm font-semibold text-[var(--color-text-primary)]">
               {pack.name}
             </span>
-            <PackStatusBadge pack={pack} t={t} />
+            {isFloor && (
+              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-800">
+                {t("packs.alwaysOn")}
+              </span>
+            )}
+            {!isFloor && <PackStatusBadge pack={pack} t={t} />}
             {setupRequiredMembers.length > 0 && (
               <span
                 className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-800"
@@ -143,6 +156,11 @@ function PackCard({
             {t("rules.pack.memberCount", { n: pack.member_count })}
           </p>
         </div>
+        {/* P4: the floor pack is always-on and server-locked — no
+         *  activation control. Every other pack keeps its toggle until
+         *  the pack-centric activation surface (Claude Code) fully
+         *  replaces it. */}
+        {!isFloor && (
         <PackToggle
           packId={pack.id}
           status={pack.status}
@@ -165,6 +183,7 @@ function PackCard({
             cancel: t("rules.pack.cancel"),
           }}
         />
+        )}
       </div>
       <details className="mt-1">
         <summary className="cursor-pointer text-[11px] font-medium text-[var(--color-accent-light)] hover:underline">

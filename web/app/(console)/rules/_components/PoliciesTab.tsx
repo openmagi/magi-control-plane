@@ -42,6 +42,7 @@ type TFunc = (
  */
 export function PoliciesTab({
   items, err, prebuilt, nfFormat, t, locale,
+  packCentric = false, policyPacks = {},
 }: {
   items: PolicyListItem[]
   err: string | null
@@ -49,6 +50,13 @@ export function PoliciesTab({
   nfFormat: (n: number) => string
   t: TFunc
   locale: Locale
+  /** P4: pack-centric runtime. When true the tab is a READ-ONLY
+   *  preview: per-policy toggles are dropped (activation lives in
+   *  Claude Code) and each card renders "which pack" chips. */
+  packCentric?: boolean
+  /** P4: policyId -> pack labels the policy belongs to. Only populated
+   *  under `packCentric`. */
+  policyPacks?: Record<string, string[]>
 }) {
   // D60 follow-up: GET /policies returns every row including the
   // materialized prebuilt rows (POST /policies/prebuilt/{id}/enable
@@ -64,6 +72,7 @@ export function PoliciesTab({
 
   return (
     <section>
+      {packCentric && <PackCentricBanner t={t} />}
       {showWelcome && <WelcomeBanner locale={locale} />}
       <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
         {t("rules.tab.policies.hint")}
@@ -111,10 +120,18 @@ export function PoliciesTab({
                 draftHref={prebuiltDraftHref(entry)}
                 locale={locale}
                 t={t}
+                packCentric={packCentric}
+                packs={policyPacks[entry.id] ?? []}
               />
             ))}
             {userPolicies.map((item) => (
-              <UserPolicyCard key={item.id} item={item} t={t} />
+              <UserPolicyCard
+                key={item.id}
+                item={item}
+                t={t}
+                packCentric={packCentric}
+                packs={policyPacks[item.id] ?? []}
+              />
             ))}
           </div>
         </>
@@ -128,12 +145,14 @@ export function PoliciesTab({
  *  quiet secondary link ("Setup" for setup-required, "Edit before
  *  enabling" otherwise). */
 function PrebuiltCard({
-  entry, draftHref, locale, t,
+  entry, draftHref, locale, t, packCentric = false, packs = [],
 }: {
   entry: PrebuiltPolicyEntry
   draftHref: string
   locale: Locale
   t: TFunc
+  packCentric?: boolean
+  packs?: string[]
 }) {
   const inferredEnforcement = entry.ir.action === "block"
     ? "enforcing"
@@ -156,21 +175,27 @@ function PrebuiltCard({
             </span>
             <EnforcementBadge kind={inferredEnforcement} />
           </div>
-          <div className="flex items-center gap-2">
-            <span className={`text-[11px] font-medium uppercase tracking-wider ${entry.enabled ? "text-emerald-700" : "text-[var(--color-text-tertiary)]"}`}>
-              {entry.enabled ? "on" : "off"}
-            </span>
-            <PrebuiltToggle
-              prebuiltId={entry.id}
-              enabled={entry.enabled}
-              action={togglePrebuiltAction}
-              labelOn={t("rules.prebuilt.disable", { title: entry.title })}
-              labelOff={t("rules.prebuilt.enable", { title: entry.title })}
-              copy={{ transportError: t("rules.prebuilt.transportError") }}
-            />
-          </div>
+          {/* P4: per-policy activation moves to Claude Code under
+           *  pack-centric mode, so the toggle is dropped from the
+           *  read-only preview. */}
+          {!packCentric && (
+            <div className="flex items-center gap-2">
+              <span className={`text-[11px] font-medium uppercase tracking-wider ${entry.enabled ? "text-emerald-700" : "text-[var(--color-text-tertiary)]"}`}>
+                {entry.enabled ? "on" : "off"}
+              </span>
+              <PrebuiltToggle
+                prebuiltId={entry.id}
+                enabled={entry.enabled}
+                action={togglePrebuiltAction}
+                labelOn={t("rules.prebuilt.disable", { title: entry.title })}
+                labelOff={t("rules.prebuilt.enable", { title: entry.title })}
+                copy={{ transportError: t("rules.prebuilt.transportError") }}
+              />
+            </div>
+          )}
         </div>
       </div>
+      {packCentric && <PackChips packs={packs} t={t} />}
       <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
         {entry.ir.trigger ? (
           <span>{t("policies.trigger")}: <Code>{entry.ir.trigger.event}</Code> · <Code>{entry.ir.trigger.matcher}</Code></span>
@@ -208,10 +233,12 @@ function PrebuiltCard({
 }
 
 function UserPolicyCard({
-  item, t,
+  item, t, packCentric = false, packs = [],
 }: {
   item: PolicyListItem
   t: TFunc
+  packCentric?: boolean
+  packs?: string[]
 }) {
   return (
     <Card className="flex flex-col gap-3">
@@ -229,18 +256,21 @@ function UserPolicyCard({
         </div>
         <div className="flex flex-col items-end gap-2">
           <EnforcementBadge kind={item.enforcement} />
-          <div className="flex items-center gap-2">
-            <span className={`text-[11px] font-medium uppercase tracking-wider ${item.enabled ? "text-emerald-700" : "text-[var(--color-text-tertiary)]"}`}>
-              {item.enabled ? "on" : "off"}
-            </span>
-            <PolicyToggle
-              policyId={item.id}
-              enabled={item.enabled}
-              action={togglePolicyAction}
-              labelOn={`${t("policies.disable")}. ${item.id}`}
-              labelOff={`${t("policies.enable")}. ${item.id}`}
-            />
-          </div>
+          {/* P4: read-only preview under pack-centric mode — no toggle. */}
+          {!packCentric && (
+            <div className="flex items-center gap-2">
+              <span className={`text-[11px] font-medium uppercase tracking-wider ${item.enabled ? "text-emerald-700" : "text-[var(--color-text-tertiary)]"}`}>
+                {item.enabled ? "on" : "off"}
+              </span>
+              <PolicyToggle
+                policyId={item.id}
+                enabled={item.enabled}
+                action={togglePolicyAction}
+                labelOn={`${t("policies.disable")}. ${item.id}`}
+                labelOff={`${t("policies.enable")}. ${item.id}`}
+              />
+            </div>
+          )}
         </div>
       </div>
       <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
@@ -249,6 +279,54 @@ function UserPolicyCard({
         ) : null}
         <span>{t("policies.source")}: <Code>{item.source}</Code></span>
       </div>
+      {packCentric && <PackChips packs={packs} t={t} />}
+    </Card>
+  )
+}
+
+/** P4: "which pack" chip list for a policy card. Renders one chip per
+ * pack the policy belongs to; an amber "orphan" chip when the policy is
+ * in no pack (it fires nowhere until an operator adds it to one). */
+function PackChips({ packs, t }: { packs: string[]; t: TFunc }) {
+  if (packs.length === 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--color-border-subtle)] pt-2">
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          {t("packs.whichPack")}
+        </span>
+        <Badge variant="review">{t("packs.orphan")}</Badge>
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--color-border-subtle)] pt-2">
+      <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        {t("packs.whichPack")}
+      </span>
+      {packs.map((name) => (
+        <Badge key={name} variant="info">{name}</Badge>
+      ))}
+    </div>
+  )
+}
+
+/** P4: banner explaining the pack-centric shift, linking to the packs
+ * tab. Shown at the top of the read-only Policies preview. */
+function PackCentricBanner({ t }: { t: TFunc }) {
+  return (
+    <Card tone="status" className="mb-4">
+      <p className="text-sm font-semibold text-[var(--color-text-primary)]">
+        {t("rules.packCentric.banner.title")}
+      </p>
+      <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+        {t("rules.packCentric.banner.body")}
+      </p>
+      <Link
+        href="/rules?tab=packs"
+        className="mt-2 inline-block text-xs font-medium text-[var(--color-accent-light)] hover:underline"
+      >
+        {t("rules.packCentric.banner.link")} →
+      </Link>
     </Card>
   )
 }

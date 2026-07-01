@@ -93,17 +93,23 @@ describe("rules page source invariants (D82a)", () => {
     expect(src).toMatch(/tab === "packs"[\s\S]{0,400}cloud\.listPacks/)
   })
 
-  it("rules/page.tsx fetches packs only on the packs tab", () => {
-    // The Policies tab should not pay the listPacks round-trip
-    // anymore. Source-grep pins that listPacks lives behind the
-    // tab === "packs" branch.
+  it("rules/page.tsx fetches packs on the Policies tab only under the pack-centric flag", () => {
+    // D82a invariant: the legacy Policies tab does not pay the listPacks
+    // round-trip. P4 refines this — under MAGI_CP_PACK_CENTRIC_RUNTIME
+    // the Policies tab fetches packs to render the read-only "which
+    // pack" chips, but ONLY inside a `packCentric` guard so the flag-OFF
+    // path stays free of the round-trip.
     const policiesBranch = src.indexOf('if (tab === "policies")')
     const packsBranch = src.indexOf('else if (tab === "packs")')
     expect(policiesBranch).toBeGreaterThan(-1)
     expect(packsBranch).toBeGreaterThan(policiesBranch)
-    // Find the chunk between the policies branch and packs branch.
     const policiesChunk = src.slice(policiesBranch, packsBranch)
-    expect(policiesChunk).not.toContain("listPacks")
+    // Any listPacks call in the policies branch must be guarded by the
+    // pack-centric flag (chips-only fetch). Pin that the guard precedes
+    // the fetch so the legacy flag-OFF path is unchanged.
+    if (policiesChunk.includes("listPacks")) {
+      expect(policiesChunk).toMatch(/if \(packCentric\)[\s\S]{0,200}listPacks/)
+    }
   })
 
   // ── Data plumbing ─────────────────────────────────────────────

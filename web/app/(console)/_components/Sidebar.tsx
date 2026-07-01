@@ -12,6 +12,7 @@ import { SidebarFooter } from "./SidebarFooter"
  * uses this list to decide which item wins the active highlight. */
 const NAV_HREFS = [
   "/rules",
+  "/sessions",
   "/policies",
   "/policies/new",
   "/presets",
@@ -64,6 +65,7 @@ export async function Sidebar() {
         <NavHrefsProvider hrefs={NAV_HREFS}>
           <NavGroup label={t("nav.group.authoring")}>
             <NavItem href="/rules" label={t("nav.rules")} icon="rules" />
+            <NavItem href="/sessions" label={t("nav.sessions")} icon="endpoints" />
           </NavGroup>
 
           <NavGroup label={t("nav.group.runtime")}>

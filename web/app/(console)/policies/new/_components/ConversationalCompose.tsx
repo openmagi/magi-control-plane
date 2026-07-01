@@ -757,6 +757,14 @@ export function ConversationalCompose({
         readyToSave={readyToSave}
         saveAction={saveAction}
         missingFields={missingFields}
+        // P4: feed the pack picker's extractor the operator's first
+        // message so a named work context ("리서치", "coding safety")
+        // pre-selects the matching pack.
+        suggestedPackText={
+          history.find((h) => h.role === "user")?.content
+          ?? initialUserMessage
+          ?? null
+        }
       />
     </div>
   )

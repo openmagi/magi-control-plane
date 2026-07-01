@@ -115,12 +115,37 @@ export default async function RulesPage({
   let emissionCounts: Record<string, number> = {}
   const SINCE_24H = 24 * 60 * 60
 
+  // P4 (pack-centric runtime): when MAGI_CP_PACK_CENTRIC_RUNTIME is on
+  // the Policies tab becomes a READ-ONLY preview — per-policy toggles
+  // are gone (activation lives in Claude Code via /magi:pack:*), and
+  // each policy card gains a "which pack" chip list. A banner at the top
+  // explains the shift and links to the packs tab. The legacy toggle
+  // path is preserved verbatim when the flag is off so a zero-downtime
+  // rollout keeps the existing enabled-policy behaviour intact.
+  const packCentric = _packCentricEnabled()
+
+  // policyId -> pack labels the policy belongs to. Built once from the
+  // pack list so each card can render its "which pack" chips without an
+  // extra per-card round-trip. Only populated on the Policies tab under
+  // pack-centric mode (the chips are the whole point of the read-only
+  // preview).
+  let policyPacks: Record<string, string[]> = {}
+
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
     try { prebuilt = await cloud.listPrebuiltPolicies() }
     catch (e: unknown) {
       console.error(`rules: listPrebuiltPolicies failed code=${codeForError(e)}`)
+    }
+    if (packCentric) {
+      try {
+        const packList = await cloud.listPacks(locale)
+        policyPacks = _buildPolicyPackIndex(packList)
+      } catch (e: unknown) {
+        // Chips degrade to absent; the read-only list still renders.
+        console.error(`rules: listPacks for chips failed code=${codeForError(e)}`)
+      }
     }
   } else if (tab === "packs") {
     // D82a: Packs got its own tab; the fetch moves with it so the
@@ -212,6 +237,8 @@ export default async function RulesPage({
           nfFormat={nf.format.bind(nf)}
           t={t}
           locale={locale}
+          packCentric={packCentric}
+          policyPacks={policyPacks}
         />
       )}
       {tab === "packs" && (
@@ -241,6 +268,31 @@ export default async function RulesPage({
 }
 
 type TFunc = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>) => string
+
+/** P4: read the pack-centric runtime flag. Truthy string values ("1",
+ * "true", "yes", "on") flip the Policies tab into read-only preview.
+ * Default OFF preserves the legacy per-policy toggle path (zero-downtime
+ * rollout — 47 policy ids stay live). */
+function _packCentricEnabled(): boolean {
+  const raw = (process.env.MAGI_CP_PACK_CENTRIC_RUNTIME || "").trim().toLowerCase()
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+}
+
+/** P4: fold the pack list into a `policyId -> [packName, ...]` index so
+ * each policy card can render its "which pack" chips. A policy can
+ * belong to multiple packs; every membership becomes a chip. */
+function _buildPolicyPackIndex(
+  packs: import("@/lib/cloud").PolicyPackEntry[],
+): Record<string, string[]> {
+  const index: Record<string, string[]> = {}
+  for (const pack of packs) {
+    for (const policyId of pack.policy_ids) {
+      if (!index[policyId]) index[policyId] = []
+      if (!index[policyId].includes(pack.name)) index[policyId].push(pack.name)
+    }
+  }
+  return index
+}
 
 // Sentinel used to splice the inline /ledger link into the translated
 // description. We pass the marker as the {ledger} var, then split on it.

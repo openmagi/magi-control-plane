@@ -2649,6 +2649,14 @@ class PutPolicyReq(BaseModel):
     policy: dict
     source: str = Field(..., pattern=_SOURCE_REGEX)
     enabled: bool = True
+    # P4 (pack-centric authoring): 0..n user-pack ids the saved policy
+    # should join. On save the cloud appends the policy id to each named
+    # pack's member list in the SAME critical section as the policy
+    # write. Empty / omitted = orphan (no pack membership) — a legitimate
+    # "author now, wire up later" state. Built-in ``pack/…`` ids are
+    # rejected (immutable membership); the floor pack (a ``user-pack/…``
+    # row) is accepted so an operator can pin a policy to "always-on".
+    pack_ids: list[str] | None = None
 
 
 class PatchEnabledReq(BaseModel):
@@ -3419,7 +3427,12 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 row.policy_ids, enabled,
                 store_policy_ids=store_ids,
             )
-            out.append(dict(pack))
+            entry = dict(pack)
+            # P4: surface the floor bit so the dashboard can render the
+            # floor pack first with an "ALWAYS-ON" badge and no
+            # activation controls.
+            entry["is_floor"] = bool(getattr(row, "is_floor", False))
+            out.append(entry)
             del locale  # locale doesn't affect user-pack copy
         return out
 
@@ -4364,9 +4377,60 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 enforcement=resolved_enforcement,
             ))
             store.save(existing)
+        # P4: pack membership at authoring time. After the policy write
+        # commits, add its id to each selected user-pack's member list.
+        # Kept OUTSIDE the policy_lock but INSIDE pack_store_lock so pack
+        # membership mutations serialise with the enable/disable cascade
+        # + user-pack CRUD handlers that share that lock. Built-in packs
+        # are immutable → 400; an unknown id → 404. Idempotent: a policy
+        # already in a pack is a no-op for that pack.
+        joined_packs: list[str] = []
+        requested = body.pack_ids or []
+        if requested:
+            if pack_store is None or pack_store_lock is None:
+                raise HTTPException(500, "pack store not configured")
+            # Dedupe request while preserving order so a caller that
+            # names the same pack twice does not double-append.
+            seen_req: set[str] = set()
+            ordered_req: list[str] = []
+            for pid in requested:
+                if not isinstance(pid, str) or not pid:
+                    raise HTTPException(422, "pack_ids entries must be strings")
+                if pid.startswith("pack/"):
+                    raise HTTPException(
+                        400,
+                        f"pack {pid!r} has immutable built-in membership; "
+                        "select a user pack (or the floor pack) instead",
+                    )
+                if not pid.startswith("user-pack/"):
+                    raise HTTPException(404, f"pack {pid!r} not found")
+                if pid in seen_req:
+                    continue
+                seen_req.add(pid)
+                ordered_req.append(pid)
+            async with pack_store_lock:
+                rows = pack_store.load()
+                index = {r.id: i for i, r in enumerate(rows)}
+                for pid in ordered_req:
+                    idx = index.get(pid)
+                    if idx is None:
+                        raise HTTPException(404, f"pack {pid!r} not found")
+                    cur = rows[idx]
+                    members = list(cur.policy_ids)
+                    if policy.id not in members:
+                        members.append(policy.id)
+                    # Preserve is_floor so pinning a policy to the floor
+                    # pack does not silently demote it to a normal pack.
+                    rows[idx] = UserPackRow(
+                        id=cur.id, name=cur.name, description=cur.description,
+                        policy_ids=members, is_floor=cur.is_floor,
+                    )
+                    joined_packs.append(pid)
+                pack_store.save(rows)
         return {"id": policy.id, "source": body.source, "enabled": body.enabled,
                 "enforcement": resolved_enforcement,
-                "type": getattr(policy, "type", "evidence")}
+                "type": getattr(policy, "type", "evidence"),
+                "pack_ids": joined_packs}
 
     @app.patch("/policies/{policy_id:path}/enabled",
                dependencies=[Depends(require_admin_key)])
@@ -4896,6 +4960,56 @@ def _attach_session_pack_routes(
             "floor_pack_id": floor_pack_id,
             "pack_centric_enabled": flag_on,
             "policies_by_hook": policies_by_hook,
+        }
+
+    # ── P4 dashboard feeder: recent sessions + their active packs ─────
+    @app.get(
+        "/admin/sessions",
+        dependencies=[Depends(require_admin_key)],
+    )
+    async def admin_list_sessions(
+        request: Request, limit: int = 100,
+    ) -> dict:
+        """P4 ``/sessions`` dashboard tab feeder.
+
+        Return the tenant's recent CC sessions with their currently-
+        active pack ids so the operator can see "who left which pack on"
+        and force-deactivate from the dashboard. Admin-key gated (same
+        surface every other dashboard read uses).
+
+        Tenant scoping (decision 8 — single-tenant beta): the admin key
+        is not tenant-bound, so the caller selects the tenant via an
+        optional ``?tenant_id=`` query, defaulting to the synthetic
+        ``default`` tenant that a single-machine docker-compose install
+        writes its session rows under. Phase 5's per-tenant admin auth
+        will replace the query param with a bound tenant.
+
+        The floor pack id is resolved read-only (no lazy seed write on a
+        GET) so this route is not a hidden DB-write surface. Each row's
+        ``active_packs`` carries only the session-activated packs; the
+        floor pack is surfaced once at the envelope level for the
+        "ALWAYS-ON" chip.
+        """
+        tenant_id = request.query_params.get("tenant_id") or "default"
+        floor_pack_id = _read_only_floor_pack_id()
+        repo = SessionActivePacksRepo(engine)
+        rows = repo.list_by_tenant(tenant_id, limit=limit)
+        items = [
+            {
+                "session_id": r.session_id,
+                "tenant_id": r.tenant_id,
+                "active_packs": list(r.pack_ids or []),
+                "activated_at": r.activated_at,
+                "last_seen_at": r.last_seen_at,
+                "expires_at": r.expires_at,
+                "floor_pack_id": floor_pack_id,
+            }
+            for r in rows
+        ]
+        return {
+            "items": items,
+            "tenant_id": tenant_id,
+            "floor_pack_id": floor_pack_id,
         }
 
 

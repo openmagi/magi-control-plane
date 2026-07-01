@@ -1224,6 +1224,36 @@ class SessionActivePacksRepo:
         return s.scalar(stmt)
 
     # ── read paths ────────────────────────────────────────────────
+    def list_by_tenant(
+        self, tenant_id: str, *, limit: int = 100,
+    ) -> list[SessionActivePacks]:
+        """Return the tenant's recent session rows, most-recently-seen
+        first. Powers the P4 ``GET /admin/sessions`` dashboard surface.
+
+        Read-only: rows are expunged so callers may render them outside
+        the Session scope. ``pack_ids`` is funnelled through
+        ``_dedupe_pack_ids`` on the way out so a corrupt legacy row can
+        never surface a doubled pack in the sessions table; the heal is
+        NOT written back here (this is a pure read path — the next
+        activate/deactivate/touch persists the deduped list).
+
+        ``limit`` is clamped to a sane ceiling so a tenant with a large
+        GC backlog cannot force an unbounded scan into the browser.
+        """
+        capped = max(1, min(500, int(limit)))
+        with Session(self.engine) as s:
+            stmt = (
+                select(SessionActivePacks)
+                .where(SessionActivePacks.tenant_id == tenant_id)
+                .order_by(SessionActivePacks.last_seen_at.desc())
+                .limit(capped)
+            )
+            rows = list(s.scalars(stmt).all())
+            for row in rows:
+                row.pack_ids = _dedupe_pack_ids(row.pack_ids)
+                s.expunge(row)
+            return rows
+
     def get(self, session_id: str, tenant_id: str) -> SessionActivePacks | None:
         with Session(self.engine) as s:
             row = self._select_row(s, session_id, tenant_id, for_update=False)

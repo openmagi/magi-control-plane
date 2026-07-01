@@ -31,6 +31,7 @@
 import { Button } from "@/components/ui/Button"
 import { getDisplayLabel } from "@/lib/payload-schemas"
 import { DryRunPanel } from "../../_components/DryRunPanel"
+import { PackMultiSelect } from "./PackMultiSelect"
 
 // i18n helper signature matches the rest of the policies/* tree.
 type T = (
@@ -63,6 +64,11 @@ export interface IrDraftPaneProps {
    *  Optional so existing callers (handoff seed mounts that have not
    *  yet round-tripped) still render the legacy placeholder copy. */
   missingFields?: readonly string[]
+  /** P4: freeform text (the operator's first message) fed to the pack
+   *  picker's extractor so a named work context ("리서치", "coding
+   *  safety") pre-selects the matching pack. Optional; when absent the
+   *  picker still renders with no suggestion. */
+  suggestedPackText?: string | null
   /** Optional test id for the root container. */
   testId?: string
 }
@@ -438,7 +444,8 @@ function actionLabel(
 /* ── component ─────────────────────────────────────────────────────── */
 
 export function IrDraftPane({
-  t, locale, draft, readyToSave, saveAction, missingFields, testId,
+  t, locale, draft, readyToSave, saveAction, missingFields,
+  suggestedPackText, testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
@@ -642,11 +649,27 @@ export function IrDraftPane({
       {readyToSave && draft && (
         <form
           action={saveAction}
-          className="mt-1 flex items-center gap-2"
+          className="mt-1 flex flex-col gap-2"
           data-testid="ir-draft-save-form"
         >
           <input type="hidden" name="ir_json" value={irJson} />
           <input type="hidden" name="source" value="org" />
+          {/* P4: pack-membership picker — writes the hidden `pack_ids`
+           *  field the saveCompiled server action reads. */}
+          <PackMultiSelect
+            locale={locale}
+            suggestedPackText={suggestedPackText ?? null}
+            labels={{
+              heading: t("packs.picker.heading"),
+              hint: t("packs.picker.hint"),
+              search: t("packs.picker.search"),
+              alwaysOn: t("packs.alwaysOn"),
+              orphan: t("packs.orphan"),
+              loading: t("packs.picker.loading"),
+              empty: t("packs.picker.empty"),
+              suggested: t("packs.picker.suggested"),
+            }}
+          />
           {/* Q102: Save CTA prominence on the ready transition. size=lg
            *  + extra padding/text bumps it above the surrounding chrome,
            *  and `motion-safe:animate-pulse` adds a subtle pulse the

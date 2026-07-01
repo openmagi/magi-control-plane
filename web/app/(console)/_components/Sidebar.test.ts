@@ -29,14 +29,21 @@ describe("Sidebar IA invariants", () => {
     ])
   })
 
-  it("contains exactly 11 NavItem entries (1+2+4+3+1)", () => {
+  it("contains exactly 12 NavItem entries (2+2+4+3+1)", () => {
     // D63: setup group adds /scripts alongside /setup so run_command
     // policies have a management surface.
     // run-share: audit group adds /shared (manage + revoke share links).
     // D78: help group adds /docs.
     // Q97b: setup group adds /settings for self-host LLM-key management.
+    // P4: authoring group adds /sessions (pack-centric runtime — see
+    // which CC sessions activated which packs) next to /rules.
     const items = src.match(/<NavItem\b/g) ?? []
-    expect(items).toHaveLength(11)
+    expect(items).toHaveLength(12)
+  })
+
+  it("authoring group surfaces the P4 /sessions entry next to /rules", () => {
+    expect(src).toMatch(/href="\/sessions"/)
+    expect(src).toMatch(/label=\{t\("nav\.sessions"\)\}/)
   })
 
   it("setup group surfaces the Q97b /settings entry", () => {

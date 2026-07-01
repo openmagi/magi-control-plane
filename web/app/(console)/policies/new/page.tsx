@@ -16,6 +16,7 @@ import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
+import { PackMultiSelect } from "./_components/PackMultiSelect"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
 import Step4ActionAdvanced from "./_components/Step4ActionAdvanced"
 import { previousLiveStep, buildBackHrefFromSearchParams } from "./wizard-nav"
@@ -1337,6 +1338,12 @@ async function persistDraft(
     | InputRewriteDraft
     | RunCommandDraftPersist,
   source: string,
+  /** P4 (pack-centric authoring): 0..n user-pack ids the saved policy
+   *  should join. Threaded from the PackMultiSelect hidden input on each
+   *  authoring surface. Empty / undefined = orphan (no pack membership).
+   *  The cloud appends the policy id to each named pack in the same
+   *  transaction as the policy write. */
+  packIds?: string[],
 ): Promise<void> {
   // D57f-1 / D57f-2: validateDraft only knows the evidence shape; skip
   // it for the sibling archetypes (the cloud's per-type validate() is
@@ -1371,7 +1378,13 @@ async function persistDraft(
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
         cache: "no-store",
-        body: JSON.stringify({ policy: draft, source, enabled: true }),
+        body: JSON.stringify({
+          policy: draft, source, enabled: true,
+          // Only include pack_ids when the operator selected at least
+          // one pack; omitting the field keeps the orphan (no-pack)
+          // path byte-identical to the pre-P4 request shape.
+          ...(packIds && packIds.length > 0 ? { pack_ids: packIds } : {}),
+        }),
         signal: AbortSignal.timeout(8000),
       },
     )
@@ -1415,13 +1428,29 @@ function lintDraftShaclTargets(draft: PolicyDraft): string[] {
   return issues
 }
 
+/** P4: parse the PackMultiSelect hidden input (`pack_ids` = JSON array
+ * of user-pack ids) shared by all three authoring surfaces. Defensive:
+ * a missing / malformed value degrades to "no packs" (orphan) so a
+ * broken picker never blocks a save. */
+function _parsePackIds(formData: FormData): string[] {
+  const raw = formData.get("pack_ids")
+  if (typeof raw !== "string" || !raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((x): x is string => typeof x === "string" && !!x)
+  } catch {
+    return []
+  }
+}
+
 async function saveCompiled(formData: FormData): Promise<void> {
   "use server"
   let draft: PolicyDraft
   try { draft = JSON.parse(String(formData.get("ir_json") ?? "{}")) }
   catch { redirect("/policies/new?err=invalid_input"); return }
   const source = String(formData.get("source") ?? "org")
-  await persistDraft(draft, source)
+  await persistDraft(draft, source, _parsePackIds(formData))
 }
 
 async function saveAdvanced(formData: FormData): Promise<void> {
@@ -1453,7 +1482,7 @@ async function saveAdvanced(formData: FormData): Promise<void> {
     redirect(`/policies/new?${params.toString()}`)
     return
   }
-  await persistDraft(draft, source)
+  await persistDraft(draft, source, _parsePackIds(formData))
 }
 
 /** Advance the wizard one step. Ferries all known fields via URL params
@@ -1865,7 +1894,7 @@ async function saveWizard(formData: FormData): Promise<void> {
       template,
     }
     const sourceInj = String(formData.get("source") ?? "org")
-    await persistDraft(ctxDraft, sourceInj)
+    await persistDraft(ctxDraft, sourceInj, _parsePackIds(formData))
     return
   }
 
@@ -1974,7 +2003,7 @@ async function saveWizard(formData: FormData): Promise<void> {
       },
     }
     const sourceIr = String(formData.get("source") ?? "org")
-    await persistDraft(draftIr, sourceIr)
+    await persistDraft(draftIr, sourceIr, _parsePackIds(formData))
     return
   }
 
@@ -2061,7 +2090,7 @@ async function saveWizard(formData: FormData): Promise<void> {
       fail_closed: failClosedRc,
     }
     const sourceRc = String(formData.get("source") ?? "org")
-    await persistDraft(draftRc, sourceRc)
+    await persistDraft(draftRc, sourceRc, _parsePackIds(formData))
     return
   }
 
@@ -2225,7 +2254,7 @@ async function saveWizard(formData: FormData): Promise<void> {
       return
     }
   }
-  await persistDraft(draft, source)
+  await persistDraft(draft, source, _parsePackIds(formData))
 }
 
 /** D62 follow-up: defense-in-depth at the save seam. Operators who
@@ -6268,6 +6297,25 @@ function Step6Review({
       </Card>
       <form action={action} data-testid="wizard-save-form">
         <HiddenState state={state} />
+        {/* P4: pack-membership picker on the guided wizard's final
+            step — writes the hidden `pack_ids` input saveWizard reads
+            via `_parsePackIds(formData)`. Same component the raw editor
+            and conversational compose reuse. */}
+        <div className="mb-3">
+          <PackMultiSelect
+            locale={locale}
+            labels={{
+              heading: t("packs.picker.heading"),
+              hint: t("packs.picker.hint"),
+              search: t("packs.picker.search"),
+              alwaysOn: t("packs.alwaysOn"),
+              orphan: t("packs.orphan"),
+              loading: t("packs.picker.loading"),
+              empty: t("packs.picker.empty"),
+              suggested: t("packs.picker.suggested"),
+            }}
+          />
+        </div>
         {/* D74a follow-up: stable testid on the Step 6 save button so
             the e2e harness can target the real save form instead of
             silently picking the InlineSubConfigPanel's inline-edit

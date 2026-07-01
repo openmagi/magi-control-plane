@@ -381,11 +381,44 @@ export type PolicyPackEntry = {
    * the operator can see why the pack pins at `partial`. Empty on
    * built-in packs. Optional for forward-compat. */
   stale_members?: string[]
+  /** P4 (pack-centric runtime): true for the tenant's always-on floor
+   * pack (a `user-pack/…` row with the floor bit set). The dashboard
+   * renders the floor pack first with an "ALWAYS-ON" badge and no
+   * activation controls (activation lives in Claude Code; the floor is
+   * server-locked). Absent / false on every other pack. */
+  is_floor?: boolean
 }
 
 /** D75: GET /policy-packs/{id} envelope with member-resolved state. */
 export type PolicyPackDetail = PolicyPackEntry & {
   members: Array<{ id: string; enabled: boolean }>
+}
+
+/** P4 (pack-centric runtime): a row from GET /admin/sessions.
+ *
+ * One recent CC session for the tenant plus the packs it currently has
+ * activated. Powers the /sessions dashboard tab. `active_packs` carries
+ * only session-activated packs; `floor_pack_id` is surfaced once at the
+ * row level so the table can render the "ALWAYS-ON" chip without a
+ * second lookup.
+ *
+ *   session_id   : CC session uuid (rendered truncated in the table).
+ *   active_packs : ordered pack ids the session activated (floor NOT
+ *                  included — it is always-on and separate).
+ *   last_seen_at : unix seconds; last time the gate touched this row.
+ *   activated_at : unix seconds; first activate in this session.
+ *   expires_at   : unix seconds; GC horizon (NOT an activation TTL).
+ *   floor_pack_id: the tenant's always-on floor pack id (or null when
+ *                  the pack store has not seeded one yet).
+ */
+export type AdminSessionEntry = {
+  session_id: string
+  tenant_id: string
+  active_packs: string[]
+  activated_at: number
+  last_seen_at: number
+  expires_at: number
+  floor_pack_id: string | null
 }
 
 /** D75: POST /policy-packs/{id}/(enable|disable|enable-missing) result.
@@ -743,6 +776,43 @@ export const cloud = {
       method: "GET", keyType: "admin",
       headers: locale ? { "Accept-Language": locale } : undefined,
     }).then(d => d.items),
+
+  /** P4: recent CC sessions + their active packs for the /sessions
+   * dashboard tab. Admin-key gated (same surface every other dashboard
+   * read uses). `tenantId` selects the tenant in the single-tenant beta
+   * (defaults to the synthetic "default" tenant the docker-compose
+   * install writes session rows under). */
+  listAdminSessions: (
+    tenantId?: string, limit?: number,
+  ): Promise<{ items: AdminSessionEntry[]; tenant_id: string;
+               floor_pack_id: string | null }> => {
+    const params = new URLSearchParams()
+    if (tenantId) params.set("tenant_id", tenantId)
+    if (limit) params.set("limit", String(Math.max(1, Math.floor(limit))))
+    const qs = params.toString()
+    return _fetch(`/admin/sessions${qs ? `?${qs}` : ""}`, {
+      method: "GET", keyType: "admin",
+    })
+  },
+
+  /** P4: force-deactivate one pack for a CC session. Used by the
+   * /sessions tab's "force deactivate all" row action, which calls this
+   * once per active pack. Tenant-auth path (X-Api-Key) — the cloud
+   * `POST /session/{id}/packs/deactivate` route is tenant-scoped, and in
+   * the single-tenant beta the dashboard's legacy MAGI_CP_API_KEY maps
+   * to the same "default" tenant the gate writes under. The floor pack
+   * cannot be deactivated (cloud returns 400); callers must skip it. */
+  deactivateSessionPack: (
+    sessionId: string, packId: string,
+  ): Promise<{ session_id: string; active_packs: string[];
+               floor_pack_id: string | null }> =>
+    _fetch(
+      `/session/${_encId(sessionId)}/packs/deactivate`,
+      {
+        method: "POST", keyType: "api",
+        body: JSON.stringify({ pack_id: packId }),
+      },
+    ),
 
   /** D75: single pack with member-resolved state. The members array
    * carries `{id, enabled}` per member so the dashboard expander can

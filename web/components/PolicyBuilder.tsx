@@ -30,6 +30,11 @@ type Props = {
     draft: PolicyDraft
     isValid: boolean
   }) => React.ReactNode
+  /** P4: optional pack-membership slot rendered inside the form so its
+   *  hidden `pack_ids` input is captured by `new FormData(form)` on
+   *  submit. The Raw authoring surface wires this to PackMultiSelect;
+   *  other consumers leave it unset (orphan = no pack membership). */
+  packSlot?: React.ReactNode
   /** D57g hotfix: read-only observer of the live draft state. The
    * advanced-mode "Continue in conversation" link uses this to
    * capture the in-memory draft at click time (the raw editor does
@@ -65,7 +70,7 @@ type Props = {
 
 export default function PolicyBuilder({
   submitAction, initial, wiredSteps = [], vendorSteps = [], labels,
-  dryRunSlot, onDraftChange,
+  dryRunSlot, onDraftChange, packSlot,
 }: Props) {
   const [draft, setDraft] = useState<PolicyDraft>(initial ?? DEFAULT_DRAFT)
   const [submitted, setSubmitted] = useState(false)
@@ -354,6 +359,11 @@ export default function PolicyBuilder({
             disable its button when the draft would 422 on save
             (which would 422 on dry-run too). */}
         {dryRunSlot && dryRunSlot({ draft, isValid: errors.length === 0 })}
+
+        {/* P4: pack-membership picker. Rendered inside the form so its
+            hidden `pack_ids` input rides the same `new FormData(form)`
+            the submit handler builds. */}
+        {packSlot}
       </Card>
 
       <Card>
