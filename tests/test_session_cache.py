@@ -7,6 +7,12 @@ Covered here (per implementation brief "Tests" bullet):
 
   * Cache invalidation test: touch the invalidation file, next
     resolution triggers a refetch.
+  * Per-session sentinel isolation: a touch on session-A does NOT
+    invalidate the cache row for session-B.
+  * Round-trip race: a touch that lands DURING the fetcher round-trip
+    still invalidates the very next lookup.
+  * ``touch_invalidation_file`` returns True on success / False on
+    OSError (and logs a WARN).
   * Subagent inheritance test: SubagentStart hook with parent having
     packs [A, B] results in POST activate A + activate B on child
     session (order preserved, floor pack skipped).
@@ -19,6 +25,7 @@ contract that the implementation-brief spec requires.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 
@@ -37,6 +44,12 @@ from magi_cp.local.session_cache import (
     sticky_packs_file_path,
     touch_invalidation_file,
 )
+
+
+# Test coordinates used throughout — the sentinel is per-(session, tenant)
+# so tests scope by these unless they need cross-session behaviour.
+_S = "sess-1"
+_T = "tenant-1"
 
 
 # ── autouse: isolate every test into its own state dirs ──────────────
@@ -60,40 +73,102 @@ def _isolated_dirs(tmp_path, monkeypatch):
 
 # ── path resolution ──────────────────────────────────────────────────
 def test_invalidation_file_path_lives_under_state_dir(tmp_path):
-    path = invalidation_file_path()
-    assert path.endswith("cache-invalidation")
+    path = invalidation_file_path(_S, _T)
+    # Path shape: {state}/cache-invalidation/{tenant}/{session}
+    assert path.endswith(f"{_T}/{_S}") or path.endswith(f"{_T}\\{_S}")
     # Bubbles under the env-var-scoped state dir set by the autouse fixture.
-    assert "/state/" in path
+    assert "/state/" in path or "\\state\\" in path
+    assert "cache-invalidation" in path
+
+
+def test_invalidation_file_path_is_per_session_and_tenant():
+    """Two distinct coordinates → two distinct paths (per-session
+    isolation lens: one session's invalidation cannot flush another's).
+    """
+    p_a = invalidation_file_path("A", "tenant")
+    p_b = invalidation_file_path("B", "tenant")
+    p_x = invalidation_file_path("A", "other-tenant")
+    assert p_a != p_b
+    assert p_a != p_x
+    assert p_b != p_x
+
+
+def test_invalidation_file_path_rejects_traversal():
+    """A ``..`` in session_id or tenant_id must not escape the state
+    dir. The safe-component helper collapses separators + strips
+    leading dots so nothing lands outside the coordinate subtree.
+    """
+    path = invalidation_file_path("../evil", "tenant")
+    # Whatever normalization we do, the result must remain rooted at the
+    # state dir + include a cache-invalidation segment. Traversal to a
+    # parent dir would land the path OUTSIDE the state root.
+    assert "cache-invalidation" in path
+    # The evil component was stripped of its leading dots.
+    assert path.rsplit(os.sep, 1)[-1] not in ("..", ".", "")
 
 
 def test_current_invalidation_mtime_missing_returns_zero():
     # Autouse fixture left the state dir empty; no file yet.
-    assert current_invalidation_mtime() == 0.0
+    assert current_invalidation_mtime(_S, _T) == 0.0
 
 
-def test_touch_invalidation_file_creates_it():
-    touch_invalidation_file()
-    assert os.path.exists(invalidation_file_path())
-    mtime = current_invalidation_mtime()
+def test_touch_invalidation_file_creates_it_and_returns_true():
+    ok = touch_invalidation_file(_S, _T)
+    assert ok is True
+    assert os.path.exists(invalidation_file_path(_S, _T))
+    mtime = current_invalidation_mtime(_S, _T)
     assert mtime > 0.0
 
 
 def test_touch_invalidation_file_bumps_mtime():
-    touch_invalidation_file()
-    first = current_invalidation_mtime()
+    assert touch_invalidation_file(_S, _T) is True
+    first = current_invalidation_mtime(_S, _T)
     # >=1s is needed for a portable filesystem mtime bump. Filesystems
     # vary in sub-second resolution; sleep past a second so we do not
     # flake on ext4 / APFS defaults.
     time.sleep(1.05)
-    touch_invalidation_file()
-    second = current_invalidation_mtime()
+    assert touch_invalidation_file(_S, _T) is True
+    second = current_invalidation_mtime(_S, _T)
     assert second > first
 
 
+def test_touch_invalidation_file_returns_false_on_oserror(caplog):
+    """When the state dir is a file (or otherwise unwritable) the touch
+    must return False AND log a WARN with the path + errno so the CLI
+    can surface a "cache may be stale" warning instead of silently
+    reporting OK to the operator.
+    """
+    # Point the state dir at a REGULAR FILE so os.makedirs on any
+    # sub-path raises OSError (FileExistsError / NotADirectoryError).
+    import tempfile
+    fd, blocker = tempfile.mkstemp()
+    os.close(fd)
+    try:
+        os.environ["MAGI_CP_STATE_DIR"] = blocker
+        with caplog.at_level(logging.WARNING,
+                             logger="magi_cp.local.session_cache"):
+            ok = touch_invalidation_file(_S, _T)
+        assert ok is False, "touch must signal failure on OSError"
+        # A WARN record was emitted with the coordinates + path.
+        assert any(
+            "touch_invalidation_file failed" in rec.message
+            and _S in rec.message
+            and _T in rec.message
+            for rec in caplog.records
+        ), caplog.records
+    finally:
+        os.environ.pop("MAGI_CP_STATE_DIR", None)
+        try:
+            os.unlink(blocker)
+        except OSError:
+            pass
+
+
 # ── cache freshness ──────────────────────────────────────────────────
-def _entry(active=(), floor=None, by_hook=None, mtime=None):
+def _entry(session_id=_S, tenant_id=_T, active=(), floor=None,
+           by_hook=None, mtime=None):
     if mtime is None:
-        mtime = current_invalidation_mtime()
+        mtime = current_invalidation_mtime(session_id, tenant_id)
     return SessionCacheEntry(
         active_packs=list(active),
         floor_pack_id=floor,
@@ -106,15 +181,16 @@ def _entry(active=(), floor=None, by_hook=None, mtime=None):
 def test_cache_hit_returns_stored_entry():
     cache = SessionCache()
     entry = _entry(active=["pack/a"], floor="user-pack/floor")
-    cache.put("s", "t", entry)
-    got = cache.get("s", "t")
+    cache.put(_S, _T, entry)
+    got = cache.get(_S, _T)
     assert got is not None
     assert got.active_packs == ["pack/a"]
 
 
 def test_cache_hit_scoped_by_session_and_tenant():
     cache = SessionCache()
-    cache.put("s1", "t1", _entry(active=["pack/a"]))
+    cache.put("s1", "t1", _entry(session_id="s1", tenant_id="t1",
+                                  active=["pack/a"]))
     assert cache.get("s2", "t1") is None
     assert cache.get("s1", "t2") is None
 
@@ -125,21 +201,50 @@ def test_cache_invalidation_via_mtime_bump():
     None).
     """
     cache = SessionCache()
-    touch_invalidation_file()   # give the row a real mtime to snapshot
+    touch_invalidation_file(_S, _T)   # give the row a real mtime to snapshot
     entry = _entry(active=["pack/a"])
-    cache.put("s", "t", entry)
-    assert cache.get("s", "t") is not None
+    cache.put(_S, _T, entry)
+    assert cache.get(_S, _T) is not None
     # Simulate the CLI ran /magi:pack:* between hook calls.
     time.sleep(1.05)
-    touch_invalidation_file()
-    assert cache.get("s", "t") is None
+    touch_invalidation_file(_S, _T)
+    assert cache.get(_S, _T) is None
+
+
+def test_cache_invalidation_is_per_session_isolated():
+    """P1 fix regression: an invalidation on session-A must NOT flush
+    the cache row for session-B on the same tenant.
+
+    Without per-session sentinels, one CLI touch triggered by
+    /magi:pack:activate on session-A drops every cached row for every
+    concurrent session on the same tenant.
+    """
+    cache = SessionCache()
+    # Seed both sessions with fresh mtimes.
+    touch_invalidation_file("sess-A", _T)
+    touch_invalidation_file("sess-B", _T)
+    cache.put("sess-A", _T, _entry(session_id="sess-A", active=["a"]))
+    cache.put("sess-B", _T, _entry(session_id="sess-B", active=["b"]))
+    assert cache.get("sess-A", _T) is not None
+    assert cache.get("sess-B", _T) is not None
+    # Operator activates a pack on session-A only.
+    time.sleep(1.05)
+    touch_invalidation_file("sess-A", _T)
+    # Session-A drops (as expected); session-B MUST stay hot.
+    assert cache.get("sess-A", _T) is None
+    got_b = cache.get("sess-B", _T)
+    assert got_b is not None, (
+        "cross-session flush regressed: touching sess-A's sentinel "
+        "invalidated sess-B's cache row"
+    )
+    assert got_b.active_packs == ["b"]
 
 
 def test_cache_drop_is_explicit_lane():
     cache = SessionCache()
-    cache.put("s", "t", _entry(active=["pack/a"]))
-    cache.drop("s", "t")
-    assert cache.get("s", "t") is None
+    cache.put(_S, _T, _entry(active=["pack/a"]))
+    cache.drop(_S, _T)
+    assert cache.get(_S, _T) is None
 
 
 # ── build_entry_from_state ───────────────────────────────────────────
@@ -170,6 +275,16 @@ def test_build_entry_from_state_defaults_are_safe():
     assert entry.active_packs == []
     assert entry.floor_pack_id is None
     assert entry.policies_by_hook == {}
+
+
+def test_build_entry_from_state_requires_invalidation_mtime():
+    """P1 fix: ``invalidation_mtime`` is mandatory. A caller that
+    forgets to snapshot pre-round-trip cannot silently fall through to
+    ``current_invalidation_mtime()`` and open the round-trip race.
+    """
+    with pytest.raises(TypeError):
+        # No invalidation_mtime kwarg — must raise, not default.
+        build_entry_from_state({})  # type: ignore[call-arg]
 
 
 def test_build_entry_from_state_drops_malformed_rows():
@@ -211,24 +326,24 @@ def test_resolve_via_cache_miss_populates_via_fetcher():
                 {"event": "PreToolUse", "matcher": "Bash",
                  "policies": [{"id": "a"}]},
             ],
-        })
+        }, invalidation_mtime=0.0)
 
     out = resolve_via_cache(
-        session_id="s", tenant_id="t",
+        session_id=_S, tenant_id=_T,
         event="PreToolUse", matcher="Bash",
         cache=cache, fetcher=fetch,
     )
     assert out == [{"id": "a"}]
-    assert fetched == [("s", "t")]
+    assert fetched == [(_S, _T)]
 
     # Second call is a cache hit — fetcher not invoked again.
     out2 = resolve_via_cache(
-        session_id="s", tenant_id="t",
+        session_id=_S, tenant_id=_T,
         event="PreToolUse", matcher="Bash",
         cache=cache, fetcher=fetch,
     )
     assert out2 == [{"id": "a"}]
-    assert fetched == [("s", "t")]   # unchanged
+    assert fetched == [(_S, _T)]   # unchanged
 
 
 def test_resolve_via_cache_refetches_after_invalidation():
@@ -245,23 +360,84 @@ def test_resolve_via_cache_refetches_after_invalidation():
                 {"event": "E", "matcher": "M",
                  "policies": [{"id": f"iter-{fetches['n']}"}]},
             ],
-        })
+        }, invalidation_mtime=0.0)
 
     r1 = resolve_via_cache(
-        session_id="s", tenant_id="t", event="E", matcher="M",
+        session_id=_S, tenant_id=_T, event="E", matcher="M",
         cache=cache, fetcher=fetch,
     )
     assert r1 == [{"id": "iter-1"}]
 
     time.sleep(1.05)
-    touch_invalidation_file()
+    touch_invalidation_file(_S, _T)
 
     r2 = resolve_via_cache(
-        session_id="s", tenant_id="t", event="E", matcher="M",
+        session_id=_S, tenant_id=_T, event="E", matcher="M",
         cache=cache, fetcher=fetch,
     )
     assert r2 == [{"id": "iter-2"}]
     assert fetches["n"] == 2
+
+
+def test_resolve_via_cache_closes_mid_fetch_touch_race():
+    """P1 fix regression: a CLI touch that lands DURING the fetcher
+    round-trip must still invalidate the very next lookup.
+
+    Timeline of the race we are guarding:
+      1. cache.get() → miss (empty cache).
+      2. fetcher() begins its "cloud round-trip" (simulated by a
+         fake fetcher that TOUCHES the sentinel before returning).
+      3. Under the pre-fix behaviour the fetcher's returned
+         SessionCacheEntry stamped invalidation_mtime = post-fetch
+         mtime, i.e. the same mtime the sentinel now shows → cache
+         hit on the next lookup, stale data served forever.
+      4. Under the fix ``resolve_via_cache`` snapshots the pre-fetch
+         mtime and stamps THAT onto the entry, so the post-fetch
+         sentinel mtime is strictly higher and the next .get() drops
+         the row.
+    """
+    cache = SessionCache()
+    fetch_calls = {"n": 0}
+
+    def fetch(session_id, tenant_id):
+        fetch_calls["n"] += 1
+        # Simulate the CLI activating a pack while the round-trip is
+        # in flight — the sentinel gets touched during the fetcher.
+        time.sleep(1.05)
+        touch_invalidation_file(session_id, tenant_id)
+        # Return an entry with the CURRENT mtime (as an unaware fetcher
+        # would). The cache module must overwrite this with its
+        # pre-fetch snapshot.
+        return build_entry_from_state({
+            "policies_by_hook": [
+                {"event": "PreToolUse", "matcher": "Bash",
+                 "policies": [{"id": f"iter-{fetch_calls['n']}"}]},
+            ],
+        }, invalidation_mtime=current_invalidation_mtime(
+            session_id, tenant_id,
+        ))
+
+    r1 = resolve_via_cache(
+        session_id=_S, tenant_id=_T,
+        event="PreToolUse", matcher="Bash",
+        cache=cache, fetcher=fetch,
+    )
+    assert r1 == [{"id": "iter-1"}]
+
+    # The mid-fetch touch means the cache row's stamped mtime is
+    # STRICTLY LESS than the sentinel's current mtime → next lookup
+    # must miss and re-invoke the fetcher.
+    r2 = resolve_via_cache(
+        session_id=_S, tenant_id=_T,
+        event="PreToolUse", matcher="Bash",
+        cache=cache, fetcher=fetch,
+    )
+    assert r2 == [{"id": "iter-2"}], (
+        "mid-fetch invalidation race regressed: stale policies would "
+        "have fired indefinitely because the cached row swallowed the "
+        "post-round-trip mtime"
+    )
+    assert fetch_calls["n"] == 2
 
 
 def test_resolve_via_cache_returns_empty_for_unknown_hook():
@@ -273,10 +449,10 @@ def test_resolve_via_cache_returns_empty_for_unknown_hook():
                 {"event": "PreToolUse", "matcher": "Bash",
                  "policies": [{"id": "a"}]},
             ],
-        })
+        }, invalidation_mtime=0.0)
 
     out = resolve_via_cache(
-        session_id="s", tenant_id="t",
+        session_id=_S, tenant_id=_T,
         event="Stop", matcher=None,
         cache=cache, fetcher=fetch,
     )
@@ -344,8 +520,8 @@ def test_inherit_packs_skips_falsy_ids():
 
 
 def test_inherit_packs_propagates_activate_failure():
-    """A partial inherit is worse than a visible error — the helper
-    lets exceptions bubble so the subagent-start hook can retry.
+    """Fail-fast: activate_fn exceptions bubble on the first failure so
+    the subagent-start hook can retry (idempotent server-side).
     """
     def activate(*a, **kw):
         raise RuntimeError("cloud unreachable")
@@ -358,6 +534,34 @@ def test_inherit_packs_propagates_activate_failure():
             tenant_id="t",
             activate_fn=activate,
         )
+
+
+def test_inherit_packs_partial_inherit_survives_on_second_failure():
+    """Failure semantics regression: if activate_fn succeeds for pack A
+    and raises for pack B, the child is left with pack A active AND
+    the exception bubbles. Caller retries the whole hook; idempotent
+    server-side activate converges the child to [A, B] on the next
+    attempt. The docstring documents this reality — previous wording
+    misleadingly implied atomicity.
+    """
+    activated: list[str] = []
+
+    def activate(child_id, tenant_id, pack_id):
+        if pack_id == "pack/B":
+            raise RuntimeError("cloud transient")
+        activated.append(pack_id)
+
+    with pytest.raises(RuntimeError, match="cloud transient"):
+        inherit_packs_on_subagent(
+            parent_active_packs=["pack/A", "pack/B"],
+            floor_pack_id=None,
+            child_session_id="c",
+            tenant_id="t",
+            activate_fn=activate,
+        )
+    # Partial inherit: pack/A landed before pack/B raised. The caller
+    # must retry to converge.
+    assert activated == ["pack/A"]
 
 
 # ── sticky-pack loader + bootstrap ───────────────────────────────────

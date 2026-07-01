@@ -78,7 +78,9 @@ def pack_centric_enabled(cloud_setting: bool | None = None) -> bool:
     return False
 
 
-def _extract_event_matcher(policy: AnyPolicy) -> tuple[str | None, str | None]:
+def extract_event_matcher(
+    policy: AnyPolicy,
+) -> tuple[str | None, str | None]:
     """Return ``(event, matcher)`` for any policy archetype, or
     ``(None, None)`` when the policy is not event-scoped.
 
@@ -89,6 +91,15 @@ def _extract_event_matcher(policy: AnyPolicy) -> tuple[str | None, str | None]:
     * ``SubagentPolicy`` / ``McpGatingPolicy`` — not event-scoped;
       compile straight to managed-settings and do not participate in
       the hook-resolution predicate.
+
+    Public since D80 P2 follow-up: the cloud's ``/session/{id}/resolved``
+    handler needs the same extraction rule this module's resolver uses
+    to fold policies_by_hook. Keeping two copies (a private one here +
+    a hand-rolled one in ``cloud/app.py``) creates a slow-drift risk
+    when a future policy archetype gains an event field — the resolver
+    starts firing on the new event while the cloud endpoint still
+    walks the old shape and drops the policy from its envelope. One
+    exported helper closes that gap.
     """
     trig = getattr(policy, "trigger", None)
     if trig is not None:
@@ -102,6 +113,13 @@ def _extract_event_matcher(policy: AnyPolicy) -> tuple[str | None, str | None]:
         matcher = getattr(policy, "matcher", None)
         return event, matcher
     return None, None
+
+
+# Backwards-compatible alias for the pre-D80-P2-follow-up name. Kept
+# because internal call sites and tests may import the leading-
+# underscore name; the public alias above is what external callers
+# (cloud/app.py) should use.
+_extract_event_matcher = extract_event_matcher
 
 
 def _matches_hook(
@@ -264,6 +282,7 @@ def resolve_policies_for_hook(
 
 __all__ = [
     "PackMemberLookup",
+    "extract_event_matcher",
     "legacy_resolve_policies_for_hook",
     "pack_centric_enabled",
     "resolve_policies_for_hook",

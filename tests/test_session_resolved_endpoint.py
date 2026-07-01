@@ -116,10 +116,55 @@ def test_resolved_envelope_shape_on_empty_state(cloud):
     assert body["session_id"] == "s1"
     assert body["tenant_id"] == "tenant-a"
     assert body["active_packs"] == []
-    # Floor is lazily seeded by GET, matching /session/{id}/packs.
-    assert body["floor_pack_id"] == FLOOR_PACK_ID
+    # Under flag-OFF the endpoint MUST NOT trigger a lazy floor-pack
+    # seed write (see P2 flag-neutrality fix). A first-time tenant
+    # therefore sees ``floor_pack_id=None`` on this URL until either
+    # the flag flips ON or another (write-legit) endpoint seeds it.
+    assert body["floor_pack_id"] is None
     assert body["pack_centric_enabled"] is False
     assert body["policies_by_hook"] == []
+
+
+def test_resolved_flag_off_does_not_seed_floor_or_touch_session_row(cloud):
+    """P2 flag-neutrality regression: hitting this URL under flag-OFF
+    must NOT write to ``session_active_packs`` and must NOT seed a
+    floor pack row.
+
+    Prior behaviour ran ``_resolve_floor(tenant_id)`` (which lazily
+    seeds a floor pack row via ``ensure_floor_pack_async``) and
+    ``SessionActivePacksRepo(engine).touch(session_id, tenant_id)``
+    unconditionally, so a smoke probe against flag-OFF drifted the DB
+    away from the "byte-identical drop-in" contract stamped on the
+    commit message.
+    """
+    from magi_cp.cloud.db import SessionActivePacks
+    from sqlalchemy.orm import Session
+    from sqlalchemy import select
+
+    # Sanity: no pack rows before the request.
+    assert cloud["pack_store"].load() == []
+
+    r = cloud["client"].get(
+        "/session/probe-1/resolved",
+        headers={"X-Api-Key": cloud["key"]},
+    )
+    assert r.status_code == 200, r.text
+
+    # No floor pack seeded.
+    assert cloud["pack_store"].load() == [], (
+        "flag-OFF URL should not seed a floor pack row"
+    )
+    # No session_active_packs row created for the probed session.
+    engine = cloud["app"].state.engine
+    with Session(engine) as s:
+        row = s.scalar(
+            select(SessionActivePacks).where(
+                SessionActivePacks.session_id == "probe-1",
+            )
+        )
+        assert row is None, (
+            "flag-OFF URL should not touch session_active_packs"
+        )
 
 
 # ── flag-OFF path (legacy parity) ────────────────────────────────────

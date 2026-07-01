@@ -3,29 +3,65 @@
 Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
 (§ "Gate binary cache", decisions 2 + 3).
 
-The gate binary runs as a subprocess CC spawns per hook call. On a
-tight loop (agent takes 40 tool actions in 5 seconds), we cannot afford
-a cloud round-trip per invocation. The cache lives in-process, keyed on
-``(session_id, tenant_id)``, and holds:
+Process model
+=============
+The primary consumer today is the gate binary CC spawns per hook call.
+A cold-start subprocess means an in-process ``SessionCache`` cannot
+carry policies across hooks by itself. Two follow-ups are already
+planned in the design doc:
+
+  * On-disk cache persistence (``~/.magi-cp/state/cache/{tenant_id}/
+    {session_id}.json``, atomic rename, mtime as freshness proof).
+  * A long-lived gate daemon (systemd unit / launchd agent) CC hooks
+    talk to over a UNIX socket.
+
+Neither has landed yet. The cache class in this module IS still useful
+even under subprocess-per-hook because it defines the freshness /
+invalidation contract every persistence strategy has to honour, and
+because an in-process embedder (e.g. MCP server, python test harness)
+can reuse it directly. When P3 wires either persistence option, the
+new lane MUST reuse ``SessionCacheEntry`` shape + the mtime comparison
+so cross-route mutations remain observable.
+
+Cache contents (per ``(session_id, tenant_id)`` row):
 
   * The session's active pack list (as seen by the cloud).
   * The floor pack id (for the ALWAYS-ON chip / audit).
   * A pre-resolved ``policies_by_hook`` map so hook dispatch is a
     dict lookup, not another linear scan.
   * A timestamp for the cache row.
-  * The mtime of the cache-invalidation sentinel file at the moment the
-    row was loaded, used by the invalidation check.
+  * The mtime of the cache-invalidation sentinel file at the moment
+    the row was loaded, used by the invalidation check.
 
 Cache lifetime is intentionally NOT wall-clock TTL. Decision 5 (locked
 in the design doc) makes activation persist "until the session ends OR
 the operator runs `/magi:pack:*`". Practical implementation:
 
-  * The CLI (P3) touches ``~/.magi-cp/state/cache-invalidation`` on
-    every ``/magi:pack:*`` invocation.
+  * The CLI (P3) touches the ``(session_id, tenant_id)``-scoped
+    invalidation sentinel on every ``/magi:pack:*`` invocation.
   * The gate polls the mtime of that file on every hook call. Cheap
-    (microsecond stat). When the mtime shifts, every cached row is
-    dropped and refetched lazily on next resolution. Steady-state
-    tool-call loops therefore see one file stat and one dict lookup.
+    (microsecond stat). When the mtime shifts, the row is dropped and
+    refetched lazily on next resolution. Steady-state tool-call loops
+    therefore see one file stat and one dict lookup.
+
+Per-session isolation
+=====================
+The sentinel is a per-``(session_id, tenant_id)`` file:
+``~/.magi-cp/state/cache-invalidation/{tenant_id}/{session_id}``.
+An earlier iteration used a single global sentinel; that caused a
+cross-session flush (a CLI ``/magi:pack:activate`` on session-A dropped
+the cache row for every other concurrent session, stampeding the
+cloud). Per-session sentinels keep invalidation surgical.
+
+Round-trip race
+===============
+``resolve_via_cache`` snapshots ``current_invalidation_mtime`` BEFORE
+calling the fetcher and stamps the returned entry with that
+pre-fetch mtime. A CLI ``touch`` that lands DURING the fetch therefore
+still bumps the sentinel past the entry's mtime, so the very next hook
+call observes the invalidation. The alternative (fetcher-supplied
+post-round-trip mtime) opened a window where a mid-fetch touch could
+be masked forever.
 
 Subagent inheritance (decision 2)
 =================================
@@ -51,10 +87,14 @@ no cache hit" so a corrupt file cannot brick the gate.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ── Path resolution helpers ───────────────────────────────────────────
@@ -80,14 +120,42 @@ def _state_dir() -> str:
     )
 
 
-def invalidation_file_path() -> str:
-    """Full path to the mtime-signal file the CLI touches.
+def _safe_component(name: str) -> str:
+    """Return ``name`` collapsed to a filesystem-safe component.
+
+    Session ids come from CC (uuidv4) and tenant ids are typed but the
+    invalidation path is a security-adjacent surface: a caller that
+    manages to pass ``../foo`` should not escape the state dir. We
+    replace any path separator with ``_`` and strip leading dots so a
+    ``..`` cannot travel up the tree. Empty input becomes ``__anon__``
+    so we never join an empty component (which would collapse the path
+    to the state dir root and let a stat racy-collide across
+    coordinates).
+    """
+    if not isinstance(name, str) or not name:
+        return "__anon__"
+    cleaned = name.replace(os.sep, "_").replace("/", "_").replace("\\", "_")
+    cleaned = cleaned.lstrip(".")
+    return cleaned or "__anon__"
+
+
+def invalidation_file_path(session_id: str, tenant_id: str) -> str:
+    """Full path to the mtime-signal file the CLI touches for the given
+    ``(session_id, tenant_id)`` coordinates.
 
     A missing file is treated as "invalidation mtime = 0.0" (see
     :func:`current_invalidation_mtime`), which keeps a fresh install
     from stampeding the cache before any slash-command has fired.
+
+    The path is per-coordinate so a CLI touch on session-A does NOT
+    invalidate the cache row for session-B (see P1 fix note above).
     """
-    return os.path.join(_state_dir(), "cache-invalidation")
+    return os.path.join(
+        _state_dir(),
+        "cache-invalidation",
+        _safe_component(tenant_id),
+        _safe_component(session_id),
+    )
 
 
 def sticky_packs_file_path() -> str:
@@ -101,9 +169,9 @@ def sticky_packs_file_path() -> str:
     )
 
 
-def current_invalidation_mtime() -> float:
-    """Return the mtime of the invalidation sentinel, or ``0.0`` when
-    the file is missing.
+def current_invalidation_mtime(session_id: str, tenant_id: str) -> float:
+    """Return the mtime of the ``(session_id, tenant_id)`` sentinel, or
+    ``0.0`` when the file is missing.
 
     Any OSError (permission, dir doesn't exist, ELOOP on a symlink
     swap) is coerced to ``0.0`` so a hostile-neighbour scenario
@@ -113,20 +181,34 @@ def current_invalidation_mtime() -> float:
     stat.
     """
     try:
-        return os.stat(invalidation_file_path()).st_mtime
+        return os.stat(invalidation_file_path(session_id, tenant_id)).st_mtime
     except (FileNotFoundError, OSError):
         return 0.0
 
 
-def touch_invalidation_file() -> None:
-    """Bump the invalidation sentinel's mtime.
+def touch_invalidation_file(session_id: str, tenant_id: str) -> bool:
+    """Bump the ``(session_id, tenant_id)`` invalidation sentinel's mtime.
 
     Used by the CLI (``magi-cp session pack activate/...``) to force
-    every gate in the process tree to refetch on the next hook. Silent
-    on any OSError — a stale cache is a lesser evil than a raised
-    exception on the CLI's happy path.
+    the gate serving THIS session to refetch on the next hook.
+
+    Returns ``True`` when the touch was observed on disk (path
+    writable, mtime advanced), ``False`` otherwise. A ``False`` return
+    is a real operator-facing failure — the cache will keep serving
+    the stale row until the sentinel is writable again or the process
+    exits. The CLI wrapper (P3) surfaces the ``False`` case as a
+    warning to the operator so ``/magi:pack:activate`` does not report
+    OK when the gate never observed the bump.
+
+    We do NOT re-raise the OSError here. Callers that fail to observe
+    a bump today (e.g. the tests' happy path) would spuriously start
+    seeing exceptions from unrelated cleanup lanes, and the CLI's own
+    happy path prefers a boolean it can render as a warning over an
+    uncaught exception. A structured WARN log is emitted at the failure
+    site so ops has a breadcrumb regardless of the caller's error
+    treatment.
     """
-    path = invalidation_file_path()
+    path = invalidation_file_path(session_id, tenant_id)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         # Open + close truncates existing content but that is fine;
@@ -135,8 +217,15 @@ def touch_invalidation_file() -> None:
         with open(path, "a", encoding="utf-8"):
             pass
         os.utime(path, None)
-    except OSError:
-        pass
+        return True
+    except OSError as exc:
+        _LOGGER.warning(
+            "touch_invalidation_file failed: session=%r tenant=%r "
+            "errno=%s path=%s reason=%s",
+            session_id, tenant_id,
+            getattr(exc, "errno", None), path, exc,
+        )
+        return False
 
 
 # ── Sticky-pack loader ────────────────────────────────────────────────
@@ -222,16 +311,22 @@ class SessionCache:
         """Return the cached row for ``(session_id, tenant_id)`` iff it
         is still fresh, or ``None`` when a refetch is required.
 
-        Freshness is decided by mtime comparison against the on-disk
-        invalidation sentinel. When the sentinel's mtime differs from
-        the row's snapshot we DROP the row so a caller that ignores
-        the ``None`` and re-populates does not race a second reader.
+        Freshness is decided by mtime comparison against the
+        ``(session_id, tenant_id)``-scoped on-disk invalidation
+        sentinel. When the sentinel's mtime differs from the row's
+        snapshot we DROP the row so a caller that ignores the ``None``
+        and re-populates does not race a second reader.
+
+        Per-session sentinel means an invalidation on session-A does
+        NOT flush session-B — see module docstring.
         """
         key = (session_id, tenant_id)
         entry = self._entries.get(key)
         if entry is None:
             return None
-        if entry.invalidation_mtime != current_invalidation_mtime():
+        if entry.invalidation_mtime != current_invalidation_mtime(
+            session_id, tenant_id,
+        ):
             # Drop stale row so the next read forces a refetch.
             self._entries.pop(key, None)
             return None
@@ -243,8 +338,13 @@ class SessionCache:
     ) -> None:
         """Store a fresh row. The caller is expected to have populated
         ``entry.invalidation_mtime`` via
-        :func:`current_invalidation_mtime` so freshness comparisons
-        against later mtime bumps work.
+        :func:`current_invalidation_mtime` (with the SAME
+        ``(session_id, tenant_id)`` coordinates the row is keyed on) so
+        freshness comparisons against later mtime bumps work.
+
+        ``resolve_via_cache`` handles this stamping automatically by
+        snapshotting the mtime BEFORE the fetcher round-trip; direct
+        callers must do the same.
         """
         self._entries[(session_id, tenant_id)] = entry
 
@@ -267,13 +367,14 @@ class SessionCache:
 FetchStateFn = Callable[[str, str], "SessionCacheEntry"]
 """Signature the caller supplies to :func:`resolve_via_cache` so we do
 not hard-wire the HTTP transport into this module. The function must
-return a fully-populated ``SessionCacheEntry`` (invalidation_mtime
-included) or raise so the caller can decide the failure lane.
+return a fully-populated ``SessionCacheEntry``; the caller
+(``resolve_via_cache``) overwrites ``invalidation_mtime`` with a
+pre-fetch snapshot so a mid-round-trip CLI touch is not masked.
 """
 
 
 def build_entry_from_state(
-    state: dict, *, invalidation_mtime: float | None = None,
+    state: dict, *, invalidation_mtime: float,
 ) -> SessionCacheEntry:
     """Materialise a ``SessionCacheEntry`` from the cloud's reply dict.
 
@@ -293,11 +394,15 @@ def build_entry_from_state(
     tuple key because JSON has no tuple keys. This helper folds the
     list into the in-memory tuple-keyed dict the cache stores.
 
-    ``invalidation_mtime=None`` (default) reads the current mtime; a
-    caller mocking time can pass a fixed value.
+    ``invalidation_mtime`` is REQUIRED. A fetcher that reads the
+    current mtime AFTER its round-trip opens a race window where a
+    CLI touch landing during the fetch is masked forever (see module
+    docstring §"Round-trip race"). ``resolve_via_cache`` snapshots the
+    correct pre-fetch mtime and passes it back in through the entry it
+    receives from the fetcher — the fetcher itself can pass ``0.0`` or
+    any sentinel, ``resolve_via_cache`` overwrites the field on the
+    entry with the pre-fetch snapshot before ``cache.put``.
     """
-    if invalidation_mtime is None:
-        invalidation_mtime = current_invalidation_mtime()
     active = state.get("active_packs") or []
     if not isinstance(active, list):
         active = []
@@ -345,8 +450,12 @@ def resolve_via_cache(
       1. Cache lookup (mtime-checked). Hit → return the
          ``policies_by_hook`` slice for ``(event, matcher)`` (empty
          list when the pack set covers no policies on this hook).
-      2. Miss → invoke ``fetcher(session_id, tenant_id)`` to load
-         fresh state, store, and return the slice.
+      2. Miss → snapshot ``current_invalidation_mtime`` BEFORE calling
+         the fetcher (closes the "CLI touches sentinel mid-fetch" race
+         — see module docstring §"Round-trip race"), invoke
+         ``fetcher(session_id, tenant_id)``, overwrite
+         ``entry.invalidation_mtime`` with the pre-fetch snapshot,
+         store, and return the slice.
 
     ``fetcher`` is the ONE injection point that talks to the cloud.
     The gate's real fetcher POSTs to ``/session/{id}/resolved`` (see
@@ -360,7 +469,18 @@ def resolve_via_cache(
     """
     entry = cache.get(session_id, tenant_id)
     if entry is None:
+        # SNAPSHOT the mtime BEFORE the fetch begins. A CLI touch that
+        # lands between this line and cache.put must still shift the
+        # stored mtime past our snapshot so the very next .get() drops
+        # the row. Deferring the mtime read until after the fetcher
+        # returns (the pre-fix behaviour) would let the fetcher's
+        # post-round-trip mtime mask the touch permanently.
+        mtime_snapshot = current_invalidation_mtime(session_id, tenant_id)
         entry = fetcher(session_id, tenant_id)
+        # Overwrite whatever mtime the fetcher stamped with our
+        # pre-fetch snapshot. The fetcher is not required to know the
+        # snapshot timing rule — this module owns it.
+        entry.invalidation_mtime = mtime_snapshot
         cache.put(session_id, tenant_id, entry)
     return list(entry.policies_by_hook.get((event, matcher), []))
 
@@ -390,10 +510,25 @@ def inherit_packs_on_subagent(
     pack would 400 with ``floor_pack_locked`` anyway).
 
     Returns the list of pack ids that were requested (in order) so the
-    caller can log / audit. Errors from ``activate_fn`` propagate on
-    the FIRST failure — we do not swallow because a partial inherit is
-    worse than a visible error (the operator can retry the subagent
-    start).
+    caller can log / audit.
+
+    Failure semantics
+    ~~~~~~~~~~~~~~~~~
+    We do NOT wrap ``activate_fn`` in a try/except. If it succeeds for
+    pack A and raises for pack B, the caller sees the raised exception
+    AND the child session is left with pack A activated and pack B
+    not. The caller must retry the subagent-start hook to converge —
+    which is safe because ``/session/{id}/packs/activate`` is
+    idempotent server-side (a re-activated pack returns changed=False
+    without side-effects, per the P1 endpoint contract).
+
+    An earlier docstring claimed this helper delivered atomicity ("we
+    do not swallow because a partial inherit is worse than a visible
+    error"). That was a misread: the behaviour is fail-fast, not
+    atomic. Fail-fast is fine because idempotent retry converges; if a
+    future caller needs true atomicity, wrap this in a rollback loop
+    that ``/deactivate`` on the successfully-activated ids before
+    re-raising.
     """
     to_activate: list[str] = []
     for pid in parent_active_packs:

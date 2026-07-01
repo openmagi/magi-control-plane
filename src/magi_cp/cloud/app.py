@@ -23,7 +23,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FPath
@@ -4684,48 +4684,56 @@ def _attach_session_pack_routes(
         return envelope
 
     # ── P2 gate-cache feeder: fold pack membership → policies_by_hook ──
-    def _pack_members(pack_id: str) -> list[str]:
-        """Return the ordered member policy ids of ``pack_id``.
+    def _build_pack_member_lookup() -> Callable[[str], list[str]]:
+        """Return a ``pack_id -> [policy_id, ...]`` lookup closure that
+        loads ``pack_store`` at most ONCE per request.
 
-        Built-ins expand through ``_builtin_member_ids`` so inline IRs
-        + prebuilt refs land in the same list; user packs read straight
-        from the pack store. Unknown pack ids return ``[]`` so the
-        resolver can silently skip them (see resolver docstring on
-        "missing pieces, silent").
+        Cost note: the closure is called per pack in the assembled
+        active list, per hook coordinate. Under the pre-hoist shape
+        ``_pack_members`` re-invoked ``pack_store.load()`` on every
+        call, so a moderate-size install (50 policies × 10 packs ×
+        N coords) paid a full store load per (coord, pack) pair. Hoisting
+        the load into a dict lookup keeps the total store work at
+        O(1) per request and the resolution at O(coords × packs) with
+        a dict-lookup constant.
         """
         from ..policy.pack import (
             _builtin_member_ids, builtin_pack_spec_by_id,
         )
-        if not isinstance(pack_id, str) or not pack_id:
-            return []
-        spec = builtin_pack_spec_by_id(pack_id)
-        if spec is not None:
-            return _builtin_member_ids(spec)
-        if pack_id.startswith("user-pack/") and pack_store is not None:
+        # Load user packs ONCE per request. Empty index when the store
+        # is not wired (self-host misconfig) — matches the pre-hoist
+        # "return []" branch.
+        user_pack_index: dict[str, list[str]] = {}
+        if pack_store is not None:
             for row in pack_store.load():
-                if row.id == pack_id:
-                    return list(row.policy_ids)
-        return []
+                user_pack_index[row.id] = list(row.policy_ids)
 
-    def _hook_key_of(policy: "AnyPolicy") -> tuple[str | None, str | None]:
-        """Return ``(event, matcher)`` for a policy, or ``(None, None)``
-        when the archetype does not participate in hook dispatch.
+        def _lookup(pack_id: str) -> list[str]:
+            if not isinstance(pack_id, str) or not pack_id:
+                return []
+            spec = builtin_pack_spec_by_id(pack_id)
+            if spec is not None:
+                return _builtin_member_ids(spec)
+            if pack_id.startswith("user-pack/"):
+                return list(user_pack_index.get(pack_id, ()))
+            return []
 
-        Mirrors ``resolver._extract_event_matcher`` but kept local so
-        this route can call it without importing the resolver's whole
-        surface (the resolver stays a pure library the runtime shim
-        talks to; the cloud only needs the extract for the fold below).
+        return _lookup
+
+    def _read_only_floor_pack_id() -> str | None:
+        """Read the floor pack id WITHOUT triggering a lazy seed write.
+
+        Used by the flag-OFF branch of ``/session/{id}/resolved`` so
+        that URL is not a reachable DB write surface under
+        pack-centric-runtime=OFF. Returns None when no floor row is
+        already present.
         """
-        trig = getattr(policy, "trigger", None)
-        if trig is not None:
-            return (
-                getattr(trig, "event", None),
-                getattr(trig, "matcher", None),
-            )
-        event = getattr(policy, "event", None)
-        if event is not None:
-            return event, getattr(policy, "matcher", None)
-        return None, None
+        if pack_store is None:
+            return None
+        for row in pack_store.load():
+            if getattr(row, "is_floor", False):
+                return row.id
+        return None
 
     @app.get(
         "/session/{session_id}/resolved",
@@ -4772,19 +4780,36 @@ def _attach_session_pack_routes(
         the same hook.
         """
         from ..policy.resolver import (
+            extract_event_matcher,
             legacy_resolve_policies_for_hook,
             pack_centric_enabled,
             resolve_policies_for_hook,
         )
         tenant_id = request.state.tenant_id
-        # Ensure the floor exists so the envelope always carries an id
-        # under pack-centric semantics (mirrors GET /session/{id}/packs).
-        floor_pack_id = await _resolve_floor(tenant_id)
-        repo = SessionActivePacksRepo(engine)
-        row = repo.touch(session_id, tenant_id)
-        active_packs = list(row.pack_ids) if row is not None else []
-        overrides = policy_store.load() if policy_store is not None else []
         flag_on = pack_centric_enabled()
+        # Flag-neutrality: this endpoint is REGISTERED under both flag
+        # settings so smoke probes + dashboards can render envelope
+        # shape without a mode flip. But side-effects (floor-pack seed
+        # writes, session_active_packs row touches) MUST NOT happen
+        # under flag-OFF, otherwise "flag-OFF is byte-identical" only
+        # holds on the response body while the DB drifts. Split the
+        # code into two branches for read-vs-write clarity.
+        if flag_on:
+            # Ensure the floor exists so the envelope always carries an
+            # id under pack-centric semantics (mirrors GET
+            # /session/{id}/packs).
+            floor_pack_id = await _resolve_floor(tenant_id)
+            repo = SessionActivePacksRepo(engine)
+            row = repo.touch(session_id, tenant_id)
+            active_packs = list(row.pack_ids) if row is not None else []
+        else:
+            # Read-only lookup: no lazy seed, no repo.touch. If the
+            # floor row already exists we surface its id (helpful for
+            # dashboard preview). Otherwise None — the flag-ON branch
+            # will materialise it on the first real pack-centric read.
+            floor_pack_id = _read_only_floor_pack_id()
+            active_packs = []
+        overrides = policy_store.load() if policy_store is not None else []
 
         # Collect the hook coordinates we need to answer for. Two
         # sources:
@@ -4797,13 +4822,19 @@ def _attach_session_pack_routes(
         coord_seen: set[tuple[str, str | None]] = set()
         coord_order: list[tuple[str, str | None]] = []
         for ov in overrides:
-            coord = _hook_key_of(ov.policy)
+            coord = extract_event_matcher(ov.policy)
             if coord[0] is None:
                 continue
             if coord in coord_seen:
                 continue
             coord_seen.add(coord)
             coord_order.append(coord)  # type: ignore[arg-type]
+
+        # Hoist the pack-member lookup so pack_store is read at most
+        # once per request. See ``_build_pack_member_lookup`` docstring.
+        pack_member_lookup = (
+            _build_pack_member_lookup() if flag_on else (lambda _pid: [])
+        )
 
         policies_by_hook: list[dict] = []
         for event, matcher in coord_order:
@@ -4814,7 +4845,7 @@ def _attach_session_pack_routes(
                     overrides=overrides,
                     active_packs=active_packs,
                     floor_pack_id=floor_pack_id,
-                    pack_member_lookup=_pack_members,
+                    pack_member_lookup=pack_member_lookup,
                 )
             else:
                 matched = legacy_resolve_policies_for_hook(
