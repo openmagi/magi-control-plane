@@ -42,4 +42,20 @@ describe("Settings page", () => {
   it("never imports the admin key directly (cloud client handles it)", () => {
     expect(src).not.toMatch(/MAGI_CP_ADMIN_API_KEY/)
   })
+
+  // P4 (Codex runtime adapter): the runtime picker.
+  it("fetches the runtime picker state via cloud.getTenantRuntime at SSR", () => {
+    expect(src).toMatch(/cloud\.getTenantRuntime\("default"\)/)
+  })
+
+  it("renders the RuntimePicker with the fetched state + locale", () => {
+    expect(src).toMatch(/RuntimePicker/)
+    expect(src).toMatch(/initial=\{runtime\}/)
+    expect(src).toMatch(/locale=\{locale\}/)
+  })
+
+  it("keeps the picker independent of the LLM-keys cloud error path", () => {
+    // A keys error must not hide the runtime picker (separate try/catch).
+    expect(src).toMatch(/\{runtime &&/)
+  })
 })

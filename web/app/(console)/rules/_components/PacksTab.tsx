@@ -1,4 +1,4 @@
-import type { PolicyPackEntry } from "@/lib/cloud"
+import type { PackCoverage, PolicyPackEntry } from "@/lib/cloud"
 import type { Locale } from "@/lib/i18n/dict"
 import { ErrorState } from "@/components/ui"
 import { PackSection } from "./PackSection"
@@ -27,6 +27,7 @@ type TFunc = (
  */
 export function PacksTab({
   items, err, t, locale, packCentric = false,
+  codexEnabled = false, packCoverage = {},
 }: {
   items: PolicyPackEntry[]
   err: string | null
@@ -36,6 +37,11 @@ export function PacksTab({
    *  floor pack render as a server-locked ALWAYS-ON pack (no toggle).
    *  With the flag off it renders like any other pack. */
   packCentric?: boolean
+  /** P4 (Codex runtime adapter): tenant has Codex enabled → per-pack
+   *  coverage rollups. */
+  codexEnabled?: boolean
+  /** P4: packId -> Codex coverage rollup. */
+  packCoverage?: Record<string, PackCoverage>
 }) {
   return (
     <section>
@@ -52,7 +58,13 @@ export function PacksTab({
           body={t("common.seeServerLogs")}
         />
       )}
-      <PackSection items={items} t={t} packCentric={packCentric} />
+      <PackSection
+        items={items}
+        t={t}
+        packCentric={packCentric}
+        codexEnabled={codexEnabled}
+        packCoverage={packCoverage}
+      />
     </section>
   )
 }

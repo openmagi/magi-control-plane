@@ -1,7 +1,8 @@
 import Link from "next/link"
-import type { PolicyPackEntry } from "@/lib/cloud"
+import type { PackCoverage, PolicyPackEntry } from "@/lib/cloud"
 import { Card, Code } from "@/components/ui"
 import { PackToggle } from "./PackToggle"
+import { PackCoverageRollup } from "../../_components/CoverageStrip"
 import { togglePackAction } from "../actions"
 
 type TFunc = (
@@ -27,6 +28,7 @@ type TFunc = (
  */
 export function PackSection({
   items, t, packCentric = false,
+  codexEnabled = false, packCoverage = {},
 }: {
   items: PolicyPackEntry[]
   t: TFunc
@@ -36,6 +38,12 @@ export function PackSection({
    *  reads the per-policy enabled bit, so the floor pack renders like
    *  any other pack: normal status badge + PackToggle. */
   packCentric?: boolean
+  /** P4 (Codex runtime adapter): the tenant has Codex enabled, so each
+   *  pack card renders a Codex coverage rollup. */
+  codexEnabled?: boolean
+  /** P4: packId -> Codex coverage rollup. Only populated when
+   *  `codexEnabled`. */
+  packCoverage?: Record<string, PackCoverage>
 }) {
   const hasItems = items.length > 0
   // D75 follow-up: list_policy_packs always returns 5 built-ins + any
@@ -77,7 +85,14 @@ export function PackSection({
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
             {ordered.map((pack) => (
-              <PackCard key={pack.id} pack={pack} t={t} packCentric={packCentric} />
+              <PackCard
+                key={pack.id}
+                pack={pack}
+                t={t}
+                packCentric={packCentric}
+                codexEnabled={codexEnabled}
+                coverage={packCoverage[pack.id] ?? null}
+              />
             ))}
           </div>
           {userPackCount === 0 && (
@@ -102,11 +117,13 @@ export function PackSection({
 }
 
 function PackCard({
-  pack, t, packCentric = false,
+  pack, t, packCentric = false, codexEnabled = false, coverage = null,
 }: {
   pack: PolicyPackEntry
   t: TFunc
   packCentric?: boolean
+  codexEnabled?: boolean
+  coverage?: PackCoverage | null
 }) {
   const borderTone =
     pack.status === "all"
@@ -195,6 +212,7 @@ function PackCard({
         />
         )}
       </div>
+      {codexEnabled && <PackCoverageRollup t={t} coverage={coverage} />}
       <details className="mt-1">
         <summary className="cursor-pointer text-[11px] font-medium text-[var(--color-accent-light)] hover:underline">
           {t("rules.pack.expand.toggle")}

@@ -35,6 +35,15 @@ describe("PoliciesTab source invariants (D74a)", () => {
     expect(src.startsWith('"use client"')).toBe(false)
   })
 
+  // P4 (Codex runtime adapter): the per-policy coverage strip.
+  it("renders a CoverageStrip on both prebuilt + user policy cards", () => {
+    expect(src).toContain("CoverageStrip")
+    expect(src).toContain("codexEnabled={codexEnabled}")
+    // Fed by a per-policy codex coverage map keyed on the policy id.
+    expect(src).toContain("codexCoverage")
+    expect(src).toContain("codexCell={codexCoverage[")
+  })
+
   it("guards every trigger access with a presence check", () => {
     // The crash class is `item.trigger.event` evaluated when trigger is
     // undefined. Pin the rendered ternary so a future copy-paste of a

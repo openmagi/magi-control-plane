@@ -179,6 +179,41 @@ class TenantRepo:
                 t.expires_at = expires_at
             s.commit()
 
+    # ── Codex runtime adapter (P4) ─────────────────────────────────
+    def get_runtime(self, tenant_id: str) -> str:
+        """Return the tenant's ``runtime_id``.
+
+        Falls back to ``"claude-code"`` when the tenant has no DB row —
+        the single-tenant beta's synthetic ``default`` tenant (env-key
+        auth path) never materializes a row until the operator flips the
+        runtime picker, so its default runtime is CC.
+        """
+        with Session(self.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                return "claude-code"
+            return t.runtime_id or "claude-code"
+
+    def set_runtime(self, tenant_id: str, *, runtime_id: str) -> None:
+        """Persist the tenant's ``runtime_id`` (upsert).
+
+        Upserts because the synthetic ``default`` tenant carries no row
+        until the dashboard runtime picker writes one; auth stays on the
+        env-key path (``authenticate_request``) so materializing a row
+        here does not change the auth surface.
+        """
+        with Session(self.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                t = Tenant(
+                    id=tenant_id, status="active", plan="free",
+                    created_at=int(time.time()), runtime_id=runtime_id,
+                )
+                s.add(t)
+            else:
+                t.runtime_id = runtime_id
+            s.commit()
+
 
 class ApiKeyRepo:
     def __init__(self, engine: Engine) -> None:

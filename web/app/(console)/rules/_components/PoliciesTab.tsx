@@ -1,6 +1,9 @@
 import Link from "next/link"
-import type { PolicyListItem, PrebuiltPolicyEntry } from "@/lib/cloud"
+import type {
+  CoverageCell, PolicyListItem, PrebuiltPolicyEntry,
+} from "@/lib/cloud"
 import type { Locale } from "@/lib/i18n/dict"
+import { CoverageStrip } from "../../_components/CoverageStrip"
 import {
   Badge,
   Button,
@@ -43,6 +46,7 @@ type TFunc = (
 export function PoliciesTab({
   items, err, prebuilt, nfFormat, t, locale,
   packCentric = false, policyPacks = {},
+  codexEnabled = false, codexCoverage = {},
 }: {
   items: PolicyListItem[]
   err: string | null
@@ -57,6 +61,12 @@ export function PoliciesTab({
   /** P4: policyId -> pack labels the policy belongs to. Only populated
    *  under `packCentric`. */
   policyPacks?: Record<string, string[]>
+  /** P4 (Codex runtime adapter): the tenant has Codex enabled, so each
+   *  card's coverage strip renders both runtimes. */
+  codexEnabled?: boolean
+  /** P4: policyId -> Codex coverage cell. Only populated when
+   *  `codexEnabled`. */
+  codexCoverage?: Record<string, CoverageCell>
 }) {
   // D60 follow-up: GET /policies returns every row including the
   // materialized prebuilt rows (POST /policies/prebuilt/{id}/enable
@@ -122,6 +132,8 @@ export function PoliciesTab({
                 t={t}
                 packCentric={packCentric}
                 packs={policyPacks[entry.id] ?? []}
+                codexEnabled={codexEnabled}
+                codexCell={codexCoverage[entry.id]}
               />
             ))}
             {userPolicies.map((item) => (
@@ -131,6 +143,8 @@ export function PoliciesTab({
                 t={t}
                 packCentric={packCentric}
                 packs={policyPacks[item.id] ?? []}
+                codexEnabled={codexEnabled}
+                codexCell={codexCoverage[item.id]}
               />
             ))}
           </div>
@@ -146,6 +160,7 @@ export function PoliciesTab({
  *  enabling" otherwise). */
 function PrebuiltCard({
   entry, draftHref, locale, t, packCentric = false, packs = [],
+  codexEnabled = false, codexCell,
 }: {
   entry: PrebuiltPolicyEntry
   draftHref: string
@@ -153,6 +168,8 @@ function PrebuiltCard({
   t: TFunc
   packCentric?: boolean
   packs?: string[]
+  codexEnabled?: boolean
+  codexCell?: CoverageCell
 }) {
   const inferredEnforcement = entry.ir.action === "block"
     ? "enforcing"
@@ -196,6 +213,7 @@ function PrebuiltCard({
         </div>
       </div>
       {packCentric && <PackChips packs={packs} t={t} />}
+      <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
       <div className="text-xs text-[var(--color-text-tertiary)] flex flex-wrap gap-x-3 gap-y-1">
         {entry.ir.trigger ? (
           <span>{t("policies.trigger")}: <Code>{entry.ir.trigger.event}</Code> · <Code>{entry.ir.trigger.matcher}</Code></span>
@@ -234,11 +252,14 @@ function PrebuiltCard({
 
 function UserPolicyCard({
   item, t, packCentric = false, packs = [],
+  codexEnabled = false, codexCell,
 }: {
   item: PolicyListItem
   t: TFunc
   packCentric?: boolean
   packs?: string[]
+  codexEnabled?: boolean
+  codexCell?: CoverageCell
 }) {
   return (
     <Card className="flex flex-col gap-3">
@@ -279,6 +300,7 @@ function UserPolicyCard({
         ) : null}
         <span>{t("policies.source")}: <Code>{item.source}</Code></span>
       </div>
+      <CoverageStrip t={t} codexEnabled={codexEnabled} codexCell={codexCell} />
       {packCentric && <PackChips packs={packs} t={t} />}
     </Card>
   )

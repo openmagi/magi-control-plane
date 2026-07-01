@@ -3,7 +3,9 @@ import { redirect } from "next/navigation"
 import {
   cloud,
   type CheckEntry,
+  type CoverageCell,
   type EvidenceRecordType,
+  type PackCoverage,
   type PolicyListItem,
   type PolicyPackEntry,
   type PrebuiltPolicyEntry,
@@ -131,6 +133,27 @@ export default async function RulesPage({
   // preview).
   let policyPacks: Record<string, string[]> = {}
 
+  // P4 (Codex runtime adapter): whether THIS tenant has the Codex
+  // runtime enabled, plus per-policy / per-pack coverage cells for the
+  // dashboard strips. Only fetched when the tab needs it AND the build
+  // has codex on (MAGI_CP_CODEX_RUNTIME_ENABLED) — a CC-only tenant
+  // never pays the per-card coverage round-trips, and the strips render
+  // CC-only. Tenant id is the single-tenant-beta "default".
+  let codexEnabled = false
+  let codexCoverage: Record<string, CoverageCell> = {}
+  let packCoverage: Record<string, PackCoverage> = {}
+
+  async function _resolveCodexEnabled(): Promise<boolean> {
+    try {
+      const rt = await cloud.getTenantRuntime("default")
+      return rt.codex_enabled === true
+    } catch (e: unknown) {
+      // Coverage strips degrade to CC-only; the tab still renders.
+      console.error(`rules: getTenantRuntime failed code=${codeForError(e)}`)
+      return false
+    }
+  }
+
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
@@ -147,11 +170,38 @@ export default async function RulesPage({
         console.error(`rules: listPacks for chips failed code=${codeForError(e)}`)
       }
     }
+    codexEnabled = await _resolveCodexEnabled()
+    if (codexEnabled) {
+      const ids = [
+        ...prebuilt.map((p) => p.id),
+        ...policies.map((p) => p.id),
+      ]
+      const cells = await Promise.all(ids.map(async (id) => {
+        try {
+          const c = await cloud.getPolicyCoverage(id, "codex")
+          return [id, c.coverage] as const
+        } catch { return null }
+      }))
+      codexCoverage = Object.fromEntries(
+        cells.filter((c): c is readonly [string, CoverageCell] => c !== null),
+      )
+    }
   } else if (tab === "packs") {
     // D82a: Packs got its own tab; the fetch moves with it so the
     // Policies tab does not pay for unused pack data.
     try { packs = await cloud.listPacks(locale) }
     catch (e: unknown) { packsErr = codeForError(e) }
+    codexEnabled = await _resolveCodexEnabled()
+    if (codexEnabled) {
+      const rollups = await Promise.all(packs.map(async (pk) => {
+        try {
+          return [pk.id, await cloud.getPackCoverage(pk.id, "codex")] as const
+        } catch { return null }
+      }))
+      packCoverage = Object.fromEntries(
+        rollups.filter((r): r is readonly [string, PackCoverage] => r !== null),
+      )
+    }
   } else if (tab === "checks") {
     try {
       checks = await cloud.listChecks()
@@ -239,6 +289,8 @@ export default async function RulesPage({
           locale={locale}
           packCentric={packCentric}
           policyPacks={policyPacks}
+          codexEnabled={codexEnabled}
+          codexCoverage={codexCoverage}
         />
       )}
       {tab === "packs" && (
@@ -248,6 +300,8 @@ export default async function RulesPage({
           t={t}
           locale={locale}
           packCentric={packCentric}
+          codexEnabled={codexEnabled}
+          packCoverage={packCoverage}
         />
       )}
       {tab === "checks" && (

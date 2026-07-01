@@ -41,6 +41,12 @@ describe("sessions page source invariants (P4)", () => {
   it("renders the ALWAYS-ON chip for the floor pack column", () => {
     expect(src).toContain('t("packs.alwaysOn")')
   })
+
+  // P4 (Codex runtime adapter): the Runtime column.
+  it("renders a Runtime column with a human-readable runtime name", () => {
+    expect(src).toContain('t("sessions.col.runtime")')
+    expect(src).toContain("runtimeNameKey(item.runtime_id)")
+  })
 })
 
 describe("cloud lib session helpers (P4)", () => {

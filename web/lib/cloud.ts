@@ -414,6 +414,9 @@ export type PolicyPackDetail = PolicyPackEntry & {
 export type AdminSessionEntry = {
   session_id: string
   tenant_id: string
+  /** P4 (Codex runtime adapter): which runtime the session belongs to.
+   * "claude-code" on every pre-adapter row. */
+  runtime_id: string
   active_packs: string[]
   activated_at: number
   last_seen_at: number
@@ -1288,6 +1291,104 @@ export const cloud = {
       body: JSON.stringify(provider ? { provider } : {}),
       timeoutMs: 30_000,
     }),
+
+  /** P4 (Codex runtime adapter): per-policy coverage for one runtime.
+   * Reuses HookRuntime.coverage_report on the cloud. `coverage` is the
+   * normalized dashboard cell (enforced / downgraded / unsupported /
+   * not_applicable). The policy id is `:path`-encoded so ids with a
+   * slash ("prebuilt/…") resolve. */
+  getPolicyCoverage: (
+    policyId: string, runtimeId: string,
+  ): Promise<PolicyCoverage> =>
+    _fetch<PolicyCoverage>(
+      `/policies/${_encId(policyId)}/coverage/${_encId(runtimeId)}`,
+      { method: "GET", keyType: "admin" },
+    ),
+
+  /** P4: per-pack coverage rollup for one runtime. Aggregates the
+   * per-policy reports into mutually-exclusive counts that sum to
+   * `total`. */
+  getPackCoverage: (
+    packId: string, runtimeId: string,
+  ): Promise<PackCoverage> =>
+    _fetch<PackCoverage>(
+      `/packs/${_encId(packId)}/coverage/${_encId(runtimeId)}`,
+      { method: "GET", keyType: "admin" },
+    ),
+
+  /** P4: picker state for a tenant — current runtime, whether the codex
+   * runtime is enabled on this build (MAGI_CP_CODEX_RUNTIME_ENABLED),
+   * and a whole-catalog coverage rollup per known runtime. */
+  getTenantRuntime: (tenantId: string): Promise<TenantRuntimeState> =>
+    _fetch<TenantRuntimeState>(
+      `/tenants/${_encId(tenantId)}/runtime`,
+      { method: "GET", keyType: "admin" },
+    ),
+
+  /** P4: switch a tenant's runtime. The cloud refuses "codex" unless
+   * MAGI_CP_CODEX_RUNTIME_ENABLED is set (403). Persists
+   * tenants.runtime_id. */
+  setTenantRuntime: (
+    tenantId: string, runtimeId: string,
+  ): Promise<{ tenant_id: string; runtime_id: string }> =>
+    _fetch(
+      `/tenants/${_encId(tenantId)}/runtime`,
+      {
+        method: "POST", keyType: "admin",
+        body: JSON.stringify({ runtime_id: runtimeId }),
+      },
+    ),
+}
+
+/** P4: a dashboard coverage cell. See src/magi_cp/runtime/trait.py
+ * `coverage_cell`. */
+export type CoverageCell =
+  | "enforced" | "downgraded" | "unsupported" | "not_applicable"
+
+/** P4: GET /policies/{id}/coverage/{runtime}. */
+export type PolicyCoverage = {
+  policy_id: string
+  runtime_id: string
+  status: string
+  downgrade: string | null
+  coverage: CoverageCell
+}
+
+/** P4: GET /packs/{id}/coverage/{runtime}. Counts are mutually
+ * exclusive and sum to `total`. */
+export type PackCoverage = {
+  pack_id: string
+  runtime_id: string
+  enforced: number
+  downgraded: number
+  unsupported: number
+  not_applicable: number
+  total: number
+  policies: Array<{
+    policy_id: string
+    status: string
+    downgrade: string | null
+    coverage: CoverageCell
+  }>
+}
+
+/** P4: whole-catalog coverage rollup for one runtime (no per-policy
+ * list — the picker only needs the counts). */
+export type RuntimeCoverage = {
+  id: string
+  enforced: number
+  downgraded: number
+  unsupported: number
+  not_applicable: number
+  total: number
+}
+
+/** P4: GET /tenants/{id}/runtime — runtime picker state. */
+export type TenantRuntimeState = {
+  tenant_id: string
+  runtime_id: string
+  codex_enabled: boolean
+  runtimes: RuntimeCoverage[]
 }
 
 /** Q97 — response shape from GET/PUT /admin/llm-keys. Each provider

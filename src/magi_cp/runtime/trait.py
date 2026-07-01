@@ -145,6 +145,70 @@ class CoverageReport:
         return sum(1 for p in self.policies if p.downgrade is not None)
 
 
+# ── dashboard cell normalization (P4) ────────────────────────────────
+# The per-policy coverage strip + per-pack rollup render one of four
+# mutually-exclusive cells per (policy, runtime). This is the single
+# source of truth mapping the driver's raw ``status`` / ``downgrade``
+# onto the dashboard vocabulary the design doc Section 7.2 pins:
+#
+#   "enforced"       green  — the runtime enforces the policy natively.
+#   "downgraded"     amber  — enforced through a compat fallback
+#                             (post-hoc audit / systemMessage / deferred).
+#   "unsupported"    red    — a gap marker with no fallback path
+#                             (Codex native-config-pending archetypes).
+#   "not_applicable" gray   — the policy is not applicable to this runtime.
+#
+# Unlike ``CoverageReport.enforced_count`` / ``downgraded_count`` (which
+# overlap — a status="enforced" policy can still carry a Shim-B
+# ``system_message`` downgrade), the cells are mutually exclusive so a
+# rollup's four counts always sum to the policy total.
+COVERAGE_CELLS = ("enforced", "downgraded", "unsupported", "not_applicable")
+
+
+def coverage_cell(status: str, downgrade: str | None) -> str:
+    """Normalize a driver's ``(status, downgrade)`` into one dashboard
+    cell. See ``COVERAGE_CELLS``."""
+    if status == "not_applicable":
+        return "not_applicable"
+    if downgrade is not None:
+        # A named compat fallback always renders amber, even when the
+        # underlying status is still "enforced" (Shim B's system_message
+        # downgrade on a natively-enforced ContextInjection).
+        return "downgraded"
+    if status == "enforced":
+        return "enforced"
+    # A gap marker with no fallback path (codex_native_config_pending):
+    # the runtime cannot enforce it today and there is no compat shim.
+    return "unsupported"
+
+
+def rollup_cells(report: CoverageReport) -> dict:
+    """Aggregate a ``CoverageReport`` into the per-pack / per-runtime
+    rollup shape the dashboard reads: mutually-exclusive counts plus the
+    per-policy cell list. Counts always sum to ``total``."""
+    policies = [
+        {
+            "policy_id": p.policy_id,
+            "status": p.status,
+            "downgrade": p.downgrade,
+            "coverage": coverage_cell(p.status, p.downgrade),
+        }
+        for p in report.policies
+    ]
+    counts = {cell: 0 for cell in COVERAGE_CELLS}
+    for p in policies:
+        counts[p["coverage"]] += 1
+    return {
+        "runtime_id": report.runtime_id,
+        "enforced": counts["enforced"],
+        "downgraded": counts["downgraded"],
+        "unsupported": counts["unsupported"],
+        "not_applicable": counts["not_applicable"],
+        "total": len(policies),
+        "policies": policies,
+    }
+
+
 # ── Managed-config bundle ────────────────────────────────────────────
 @dataclass(frozen=True)
 class ManagedConfigBundle:
@@ -213,6 +277,9 @@ __all__ = [
     "merge_verdict_side_channels",
     "CoveragePolicyStatus",
     "CoverageReport",
+    "COVERAGE_CELLS",
+    "coverage_cell",
+    "rollup_cells",
     "ManagedConfigBundle",
     "InstallPaths",
 ]

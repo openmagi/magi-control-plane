@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from .detect import detect_runtime
 from .trait import (
+    COVERAGE_CELLS,
     CoveragePolicyStatus,
     CoverageReport,
     HookEvent,
@@ -19,6 +20,8 @@ from .trait import (
     InstallPaths,
     ManagedConfigBundle,
     Verdict,
+    coverage_cell,
+    rollup_cells,
 )
 
 
@@ -46,6 +49,9 @@ __all__ = [
     "Verdict",
     "CoveragePolicyStatus",
     "CoverageReport",
+    "COVERAGE_CELLS",
+    "coverage_cell",
+    "rollup_cells",
     "ManagedConfigBundle",
     "InstallPaths",
     "detect_runtime",

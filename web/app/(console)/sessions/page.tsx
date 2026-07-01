@@ -4,6 +4,7 @@ import { cloud, type AdminSessionEntry } from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
 import { getT } from "@/lib/i18n/server"
 import { isPackCentricEnabled } from "@/lib/pack-centric"
+import { runtimeNameKey } from "@/lib/runtime-name"
 import {
   Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
@@ -130,6 +131,7 @@ export default async function SessionsPage() {
               <thead>
                 <tr>
                   <th className="text-left p-3">{t("sessions.col.session")}</th>
+                  <th className="text-left p-3">{t("sessions.col.runtime")}</th>
                   <th className="text-left p-3">{t("sessions.col.activePacks")}</th>
                   <th className="text-left p-3">{t("sessions.col.lastActivity")}</th>
                   <th className="text-left p-3">{t("sessions.col.floorPack")}</th>
@@ -164,6 +166,11 @@ function SessionRow({
     <tr className="border-t border-[var(--color-border)] align-top">
       <td className="p-3">
         <Code>{truncSession(item.session_id)}</Code>
+      </td>
+      <td className="p-3">
+        <Badge variant="muted">
+          {t(runtimeNameKey(item.runtime_id))}
+        </Badge>
       </td>
       <td className="p-3">
         {hasActive ? (

@@ -32,6 +32,13 @@ describe("PackSection source invariants (D75)", () => {
     expect(sectionSrc).toContain("togglePackAction")
   })
 
+  // P4 (Codex runtime adapter): the per-pack coverage rollup.
+  it("renders a PackCoverageRollup on each pack card when codex is enabled", () => {
+    expect(sectionSrc).toContain("PackCoverageRollup")
+    expect(sectionSrc).toContain("codexEnabled && <PackCoverageRollup")
+    expect(sectionSrc).toContain("packCoverage")
+  })
+
   it("uses the rules.pack.section.title i18n key", () => {
     expect(sectionSrc).toContain('"rules.pack.section.title"')
   })

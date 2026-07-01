@@ -108,6 +108,34 @@ export async function saveLlmKeysAction(formData: FormData): Promise<SaveResult>
  * singletons (uses the just-saved keys via the in-place rebuild).
  * Returns a per-provider result so the form can render two pills.
  */
+/**
+ * P4 (Codex runtime adapter): switch the tenant's runtime.
+ *
+ * The cloud refuses "codex" unless MAGI_CP_CODEX_RUNTIME_ENABLED is set
+ * (403 → surfaced as an inline error), and persists tenants.runtime_id
+ * otherwise. Single-tenant-beta tenant id is "default" (the same synthetic
+ * tenant the rest of the self-host dashboard reads). The admin key stays
+ * server-side — the client component only sees the result envelope.
+ */
+export type RuntimeSwitchResult =
+  | { ok: true; runtimeId: string }
+  | { ok: false; error: string }
+
+export async function setRuntimeAction(
+  runtimeId: string,
+): Promise<RuntimeSwitchResult> {
+  if (runtimeId !== "claude-code" && runtimeId !== "codex") {
+    return { ok: false, error: "unknown runtime" }
+  }
+  try {
+    const r = await cloud.setTenantRuntime("default", runtimeId)
+    revalidatePath("/settings")
+    return { ok: true, runtimeId: r.runtime_id }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export async function testConnectionAction(): Promise<TestResult> {
   try {
     const r = await cloud.testLlmKeys()
