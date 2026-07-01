@@ -242,7 +242,7 @@ export default async function RulesPage({
         />
       )}
       {tab === "packs" && (
-        <PacksTab items={packs} err={packsErr} t={t} />
+        <PacksTab items={packs} err={packsErr} t={t} packCentric={packCentric} />
       )}
       {tab === "checks" && (
         <ChecksTab

@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache"
 import { cloud, type AdminSessionEntry } from "@/lib/cloud"
 import { fmtUtc } from "@/lib/format"
 import { getT } from "@/lib/i18n/server"
+import { isPackCentricEnabled } from "@/lib/pack-centric"
 import {
   Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
@@ -63,6 +64,27 @@ type TFunc = (
 
 export default async function SessionsPage() {
   const { t } = await getT()
+
+  // P4 legacy-guard: pack-centric gate resolution is itself flag-gated
+  // (the runtime only reads session_active_packs when
+  // MAGI_CP_PACK_CENTRIC_RUNTIME is on). With the flag OFF this whole
+  // governance model is not in effect, so render an explicit "not yet
+  // enabled" state instead of a table that promises a session-scoped
+  // runtime doing nothing. Keeps the legacy per-policy path honest.
+  if (!isPackCentricEnabled()) {
+    return (
+      <div className="space-y-4">
+        <PageHeader
+          title={t("sessions.title")}
+          description={t("sessions.description")}
+        />
+        <EmptyState
+          title={t("sessions.disabled.title")}
+          body={t("sessions.disabled.body")}
+        />
+      </div>
+    )
+  }
 
   let data: {
     items: AdminSessionEntry[]
@@ -166,7 +188,9 @@ function SessionRow({
             <Badge variant="ok">{t("packs.alwaysOn")}</Badge>
           </div>
         ) : (
-          <span className="text-[var(--color-text-tertiary)]">—</span>
+          <span className="text-[var(--color-text-tertiary)]">
+            {t("sessions.noFloorPack")}
+          </span>
         )}
       </td>
       <td className="p-3 text-right">
@@ -178,7 +202,14 @@ function SessionRow({
               name="activePacks"
               value={item.active_packs.join(",")}
             />
-            <Button type="submit" variant="ghost" size="sm">
+            <Button
+              type="submit"
+              variant="ghost"
+              size="sm"
+              aria-label={t("sessions.forceDeactivateFor", {
+                id: truncSession(item.session_id),
+              })}
+            >
               {t("sessions.forceDeactivate")}
             </Button>
           </form>

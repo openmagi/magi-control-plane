@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { getT } from "@/lib/i18n/server"
+import { isPackCentricEnabled } from "@/lib/pack-centric"
 import { Logo } from "@/components/ui/Logo"
 import { getWorkspaceData } from "../_data/workspace"
 import { NavGroup } from "./NavGroup"
@@ -43,6 +44,12 @@ const CLOUD_HOST = process.env.MAGI_CP_PUBLIC_CLOUD_URL
 export async function Sidebar() {
   const { t } = await getT()
   const { tenant, healthOk, hitlPending } = await getWorkspaceData()
+  // P4 legacy-guard: the /sessions tab exposes the session-scoped
+  // pack-centric runtime, which is itself gated behind
+  // MAGI_CP_PACK_CENTRIC_RUNTIME. Hide the nav entry until the flag is
+  // on so operators are not offered a governance surface that does
+  // nothing yet.
+  const packCentric = isPackCentricEnabled()
 
   return (
     <div className="flex flex-col h-full p-5">
@@ -65,7 +72,9 @@ export async function Sidebar() {
         <NavHrefsProvider hrefs={NAV_HREFS}>
           <NavGroup label={t("nav.group.authoring")}>
             <NavItem href="/rules" label={t("nav.rules")} icon="rules" />
-            <NavItem href="/sessions" label={t("nav.sessions")} icon="endpoints" />
+            {packCentric && (
+              <NavItem href="/sessions" label={t("nav.sessions")} icon="endpoints" />
+            )}
           </NavGroup>
 
           <NavGroup label={t("nav.group.runtime")}>

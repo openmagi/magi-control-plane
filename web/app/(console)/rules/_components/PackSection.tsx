@@ -26,10 +26,16 @@ type TFunc = (
  *   status=none    → neutral border + "Off" badge
  */
 export function PackSection({
-  items, t,
+  items, t, packCentric = false,
 }: {
   items: PolicyPackEntry[]
   t: TFunc
+  /** P4 legacy-guard: the floor pack only becomes a server-locked
+   *  ALWAYS-ON pack (badge replaces status, toggle suppressed) once the
+   *  pack-centric runtime is enabled. With the flag off the gate still
+   *  reads the per-policy enabled bit, so the floor pack renders like
+   *  any other pack: normal status badge + PackToggle. */
+  packCentric?: boolean
 }) {
   const hasItems = items.length > 0
   // D75 follow-up: list_policy_packs always returns 5 built-ins + any
@@ -71,7 +77,7 @@ export function PackSection({
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
             {ordered.map((pack) => (
-              <PackCard key={pack.id} pack={pack} t={t} />
+              <PackCard key={pack.id} pack={pack} t={t} packCentric={packCentric} />
             ))}
           </div>
           {userPackCount === 0 && (
@@ -96,10 +102,11 @@ export function PackSection({
 }
 
 function PackCard({
-  pack, t,
+  pack, t, packCentric = false,
 }: {
   pack: PolicyPackEntry
   t: TFunc
+  packCentric?: boolean
 }) {
   const borderTone =
     pack.status === "all"
@@ -110,7 +117,10 @@ function PackCard({
   // D75 follow-up: stale + setup_required surfacing.
   const staleMembers = pack.stale_members ?? []
   const setupRequiredMembers = pack.setup_required_members ?? []
-  const isFloor = pack.is_floor === true
+  // P4 legacy-guard: the always-on / no-toggle specialization only holds
+  // under the pack-centric runtime. With the flag off the floor pack has
+  // no always-on semantics, so treat it as a normal pack.
+  const isFloor = pack.is_floor === true && packCentric
   return (
     <Card key={pack.id} className={`flex flex-col gap-2 ${borderTone}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">

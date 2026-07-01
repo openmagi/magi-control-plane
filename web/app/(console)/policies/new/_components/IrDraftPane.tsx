@@ -69,6 +69,11 @@ export interface IrDraftPaneProps {
    *  safety") pre-selects the matching pack. Optional; when absent the
    *  picker still renders with no suggestion. */
   suggestedPackText?: string | null
+  /** P4 legacy-guard: only render the pack-membership picker when the
+   *  pack-centric runtime is on. With the flag off the gate fires
+   *  enabled policies regardless of pack membership, so the picker's
+   *  "an unpacked policy fires in no session" hint would mislead. */
+  packCentric?: boolean
   /** Optional test id for the root container. */
   testId?: string
 }
@@ -445,7 +450,7 @@ function actionLabel(
 
 export function IrDraftPane({
   t, locale, draft, readyToSave, saveAction, missingFields,
-  suggestedPackText, testId,
+  suggestedPackText, packCentric = false, testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
@@ -655,21 +660,25 @@ export function IrDraftPane({
           <input type="hidden" name="ir_json" value={irJson} />
           <input type="hidden" name="source" value="org" />
           {/* P4: pack-membership picker — writes the hidden `pack_ids`
-           *  field the saveCompiled server action reads. */}
-          <PackMultiSelect
-            locale={locale}
-            suggestedPackText={suggestedPackText ?? null}
-            labels={{
-              heading: t("packs.picker.heading"),
-              hint: t("packs.picker.hint"),
-              search: t("packs.picker.search"),
-              alwaysOn: t("packs.alwaysOn"),
-              orphan: t("packs.orphan"),
-              loading: t("packs.picker.loading"),
-              empty: t("packs.picker.empty"),
-              suggested: t("packs.picker.suggested"),
-            }}
-          />
+           *  field the saveCompiled server action reads. Legacy-guard:
+           *  only rendered under the pack-centric runtime; with the flag
+           *  off the save flows through the legacy enabled path. */}
+          {packCentric && (
+            <PackMultiSelect
+              locale={locale}
+              suggestedPackText={suggestedPackText ?? null}
+              labels={{
+                heading: t("packs.picker.heading"),
+                hint: t("packs.picker.hint"),
+                search: t("packs.picker.search"),
+                alwaysOn: t("packs.alwaysOn"),
+                orphan: t("packs.orphan"),
+                loading: t("packs.picker.loading"),
+                empty: t("packs.picker.empty"),
+                suggested: t("packs.picker.suggested"),
+              }}
+            />
+          )}
           {/* Q102: Save CTA prominence on the ready transition. size=lg
            *  + extra padding/text bumps it above the surrounding chrome,
            *  and `motion-safe:animate-pulse` adds a subtle pulse the

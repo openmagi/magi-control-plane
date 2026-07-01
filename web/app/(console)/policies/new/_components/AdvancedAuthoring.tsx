@@ -48,6 +48,11 @@ export interface AdvancedAuthoringProps {
   vendorSteps: string[]
   /** Labels object the PolicyBuilder owns. We forward through. */
   labels: React.ComponentProps<typeof PolicyBuilder>["labels"]
+  /** P4 legacy-guard: only render the pack-membership picker when the
+   *  pack-centric runtime is on. With the flag off the gate fires
+   *  enabled policies regardless of pack membership, so the picker's
+   *  "an unpacked policy fires in no session" hint would mislead. */
+  packCentric?: boolean
 }
 
 /** Coerce the typed PolicyDraft into the loose record shape the
@@ -75,6 +80,7 @@ function draftToSeedShape(d: PolicyDraft): Record<string, unknown> | null {
 
 export default function AdvancedAuthoring({
   locale, saveAction, initial, wiredSteps, vendorSteps, labels,
+  packCentric = false,
 }: AdvancedAuthoringProps) {
   const draftRef = useRef<PolicyDraft | null>(initial ?? null)
 
@@ -137,19 +143,21 @@ export default function AdvancedAuthoring({
         dryRunSlot={dryRunSlot}
         onDraftChange={handleDraftChange}
         packSlot={
-          <PackMultiSelect
-            locale={locale}
-            labels={{
-              heading: translate(locale, "packs.picker.heading"),
-              hint: translate(locale, "packs.picker.hint"),
-              search: translate(locale, "packs.picker.search"),
-              alwaysOn: translate(locale, "packs.alwaysOn"),
-              orphan: translate(locale, "packs.orphan"),
-              loading: translate(locale, "packs.picker.loading"),
-              empty: translate(locale, "packs.picker.empty"),
-              suggested: translate(locale, "packs.picker.suggested"),
-            }}
-          />
+          packCentric ? (
+            <PackMultiSelect
+              locale={locale}
+              labels={{
+                heading: translate(locale, "packs.picker.heading"),
+                hint: translate(locale, "packs.picker.hint"),
+                search: translate(locale, "packs.picker.search"),
+                alwaysOn: translate(locale, "packs.alwaysOn"),
+                orphan: translate(locale, "packs.orphan"),
+                loading: translate(locale, "packs.picker.loading"),
+                empty: translate(locale, "packs.picker.empty"),
+                suggested: translate(locale, "packs.picker.suggested"),
+              }}
+            />
+          ) : undefined
         }
       />
     </div>

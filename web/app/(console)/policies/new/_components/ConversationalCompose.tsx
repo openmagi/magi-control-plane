@@ -116,6 +116,10 @@ export interface ConversationalComposeProps {
    *  /api/policies/handoff-context on mount and render the response as
    *  the first assistant turn instead of the canned intro. */
   initialSeed?: string
+  /** P4 legacy-guard: forwarded to IrDraftPane so the pack-membership
+   *  picker only renders under the pack-centric runtime. Default off
+   *  keeps the legacy per-policy enabled path unambiguous. */
+  packCentric?: boolean
 }
 
 /**
@@ -138,7 +142,7 @@ export interface ConversationalComposeProps {
  */
 
 export function ConversationalCompose({
-  locale, saveAction, initialUserMessage, initialSeed,
+  locale, saveAction, initialUserMessage, initialSeed, packCentric = false,
 }: ConversationalComposeProps) {
   const t: T = useMemo(
     () => (key, vars) => translate(locale, key, vars),
@@ -757,6 +761,7 @@ export function ConversationalCompose({
         readyToSave={readyToSave}
         saveAction={saveAction}
         missingFields={missingFields}
+        packCentric={packCentric}
         // P4: feed the pack picker's extractor the operator's first
         // message so a named work context ("리서치", "coding safety")
         // pre-selects the matching pack.

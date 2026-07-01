@@ -24,11 +24,15 @@ type TFunc = (
  * cloud-error banner. Same content, different home.
  */
 export function PacksTab({
-  items, err, t,
+  items, err, t, packCentric = false,
 }: {
   items: PolicyPackEntry[]
   err: string | null
   t: TFunc
+  /** P4 legacy-guard: only under the pack-centric runtime does the
+   *  floor pack render as a server-locked ALWAYS-ON pack (no toggle).
+   *  With the flag off it renders like any other pack. */
+  packCentric?: boolean
 }) {
   return (
     <section>
@@ -41,7 +45,7 @@ export function PacksTab({
           body={t("common.seeServerLogs")}
         />
       )}
-      <PackSection items={items} t={t} />
+      <PackSection items={items} t={t} packCentric={packCentric} />
     </section>
   )
 }

@@ -17,6 +17,7 @@ import ConversationalCompose from "./_components/ConversationalCompose"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import { PackMultiSelect } from "./_components/PackMultiSelect"
+import { isPackCentricEnabled } from "@/lib/pack-centric"
 import Step4bRunCommandFields from "./_components/Step4bRunCommandFields"
 import Step4ActionAdvanced from "./_components/Step4ActionAdvanced"
 import { previousLiveStep, buildBackHrefFromSearchParams } from "./wizard-nav"
@@ -2688,6 +2689,7 @@ export default async function NewPolicyPage({
               initial={initialDraft}
               wiredSteps={wiredSteps.map((w) => w.step)}
               vendorSteps={vendorSteps}
+              packCentric={isPackCentricEnabled()}
               labels={{
                 irFields: "IR fields",
                 compiledPreview: "Compiled preview",
@@ -2745,6 +2747,7 @@ export default async function NewPolicyPage({
             saveAction={saveCompiled}
             initialUserMessage={searchParams.nl ?? ""}
             initialSeed={searchParams.seed ?? ""}
+            packCentric={isPackCentricEnabled()}
           />
         </AuthoringShell>
       )}
@@ -6300,22 +6303,30 @@ function Step6Review({
         {/* P4: pack-membership picker on the guided wizard's final
             step — writes the hidden `pack_ids` input saveWizard reads
             via `_parsePackIds(formData)`. Same component the raw editor
-            and conversational compose reuse. */}
-        <div className="mb-3">
-          <PackMultiSelect
-            locale={locale}
-            labels={{
-              heading: t("packs.picker.heading"),
-              hint: t("packs.picker.hint"),
-              search: t("packs.picker.search"),
-              alwaysOn: t("packs.alwaysOn"),
-              orphan: t("packs.orphan"),
-              loading: t("packs.picker.loading"),
-              empty: t("packs.picker.empty"),
-              suggested: t("packs.picker.suggested"),
-            }}
-          />
-        </div>
+            and conversational compose reuse.
+
+            Legacy-guard: gated behind the pack-centric runtime flag.
+            With the flag off the gate fires enabled policies regardless
+            of pack membership, so the picker's "an unpacked policy fires
+            in no session" hint would mislead the operator, so hide it
+            and let saves flow through the legacy enabled path. */}
+        {isPackCentricEnabled() && (
+          <div className="mb-3">
+            <PackMultiSelect
+              locale={locale}
+              labels={{
+                heading: t("packs.picker.heading"),
+                hint: t("packs.picker.hint"),
+                search: t("packs.picker.search"),
+                alwaysOn: t("packs.alwaysOn"),
+                orphan: t("packs.orphan"),
+                loading: t("packs.picker.loading"),
+                empty: t("packs.picker.empty"),
+                suggested: t("packs.picker.suggested"),
+              }}
+            />
+          </div>
+        )}
         {/* D74a follow-up: stable testid on the Step 6 save button so
             the e2e harness can target the real save form instead of
             silently picking the InlineSubConfigPanel's inline-edit
