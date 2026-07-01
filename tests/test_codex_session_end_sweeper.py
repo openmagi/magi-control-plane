@@ -24,6 +24,7 @@ class _Row:
     tenant_id: str
     last_seen_at: int
     pack_ids: list
+    last_synthetic_session_end_at: int | None = None
 
 
 _NOW = 1_000_000
@@ -47,6 +48,58 @@ def test_stale_codex_session_fires_synthetic_session_end():
     assert out[0].tenant_id == "t1"
     assert out[0].runtime_id == "codex"
     assert fired == out  # the sink saw exactly the fired events
+
+
+def test_sweep_is_idempotent_over_repeated_passes():
+    # A still-stale row must not re-emit on the next sweep pass: the first
+    # pass records the synthesis high-water mark, the second excludes it.
+    row = _Row("codex", "s1", "t1", _NOW - 1860, ["pack/x"])
+    first = []
+    out1 = sweep_synthetic_session_end(
+        [row], now=_NOW, emit_fanout=first.append,
+        pack_requires_session_end=_requires_all,
+    )
+    assert len(out1) == 1
+    # Second pass over the SAME still-stale row -> no re-emit.
+    second = []
+    out2 = sweep_synthetic_session_end(
+        [row], now=_NOW + 300, emit_fanout=second.append,
+        pack_requires_session_end=_requires_all,
+    )
+    assert out2 == []
+    assert second == []
+
+
+def test_sweep_re_arms_after_new_activity():
+    # Once synthesized, fresh activity (last_seen_at advancing past the
+    # synthesis mark) re-arms the row for a later stale window.
+    row = _Row("codex", "s1", "t1", _NOW - 1860, ["pack/x"])
+    sweep_synthetic_session_end(
+        [row], now=_NOW, emit_fanout=lambda _e: None,
+        pack_requires_session_end=_requires_all,
+    )
+    # New activity: advance last_seen past the synthesis mark, then go
+    # stale again relative to a later clock.
+    row.last_seen_at = _NOW + 10
+    later = _NOW + 10 + _TTL
+    out = sweep_synthetic_session_end(
+        [row], now=later, emit_fanout=lambda _e: None,
+        pack_requires_session_end=_requires_all,
+    )
+    assert len(out) == 1
+
+
+def test_sweep_uses_injected_mark_synthesized():
+    # Production wiring supplies a persisting mark_synthesized; the sweep
+    # calls it once per fired row with (row, now).
+    row = _Row("codex", "s1", "t1", _NOW - 1860, ["pack/x"])
+    marks = []
+    sweep_synthetic_session_end(
+        [row], now=_NOW, emit_fanout=lambda _e: None,
+        pack_requires_session_end=_requires_all,
+        mark_synthesized=lambda r, ts: marks.append((r.session_id, ts)),
+    )
+    assert marks == [("s1", _NOW)]
 
 
 def test_fresh_codex_session_does_not_fire():

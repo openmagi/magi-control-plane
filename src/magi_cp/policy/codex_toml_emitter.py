@@ -141,7 +141,7 @@ def _emitter_event_matcher(p: AnyPolicy) -> tuple[str | None, str | None]:
 
 def _add_gap_shim_fallbacks(
     policies: list[AnyPolicy], events: dict[str, set[str]],
-) -> None:
+) -> bool:
     """Fold Shim A + Shim D fallback hook entries into ``events``.
 
     Shim A (Section 4.1): a PreToolUse policy on a silent-skip tool gets
@@ -152,6 +152,16 @@ def _add_gap_shim_fallbacks(
     ``events`` is a set-valued map, so a fallback that coincides with an
     existing primary hook (or another policy's fallback) dedupes for
     free and the caller's sort keeps the output byte-stable.
+
+    Returns ``True`` when at least one Shim D ``spawn_agent`` mirror hook
+    was added. ``spawn_agent`` (and therefore any PreToolUse/PostToolUse
+    hook bound to it) is gated on ``features.multi_agent = true`` (design
+    doc Section 2.5). A subagent-LIFECYCLE policy (Evidence / RunCommand /
+    InputRewrite triggered on SubagentStart/SubagentStop) authored WITHOUT
+    an accompanying ``SubagentPolicy`` would otherwise leave the mirror
+    hooks bound to a tool Codex never enables — silently inert. The caller
+    ORs this flag into ``has_subagent`` so the feature toggle is emitted
+    whenever a mirror hook exists.
     """
     # Lazy import: the silent-skip tool list is canonical in the runtime
     # driver (per the P2 brief). Importing at call time (not module load)
@@ -161,6 +171,7 @@ def _add_gap_shim_fallbacks(
     def _add(event: str, matcher: str) -> None:
         events.setdefault(event, set()).add(matcher)
 
+    added_subagent_mirror = False
     for p in policies:
         event, matcher = _emitter_event_matcher(p)
         if event is None:
@@ -174,6 +185,8 @@ def _add_gap_shim_fallbacks(
         if event in _SUBAGENT_LIFECYCLE_EVENTS:
             _add("PreToolUse", _SUBAGENT_SPAWN_TOOL)
             _add("PostToolUse", _SUBAGENT_SPAWN_TOOL)
+            added_subagent_mirror = True
+    return added_subagent_mirror
 
 
 def _toml_str(value: str) -> str:
@@ -210,8 +223,13 @@ def compile_to_codex_requirements(
 
     events, context_templates, has_subagent = _hook_pairs(policies)
     # P2 Shim A + Shim D: fold the gap-shim fallback hooks in before the
-    # deterministic sort so they share the byte-stability guarantee.
-    _add_gap_shim_fallbacks(policies, events)
+    # deterministic sort so they share the byte-stability guarantee. A
+    # Shim D mirror binds to ``spawn_agent``, which Codex only enables
+    # under ``features.multi_agent = true`` — so a lifecycle-triggered
+    # policy without an accompanying SubagentPolicy still forces the
+    # feature toggle on, otherwise the mirror hooks would be inert.
+    added_subagent_mirror = _add_gap_shim_fallbacks(policies, events)
+    has_subagent = has_subagent or added_subagent_mirror
 
     # ── requirements.toml ────────────────────────────────────────────
     lines: list[str] = []

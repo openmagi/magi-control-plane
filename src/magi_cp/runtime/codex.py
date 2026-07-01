@@ -68,8 +68,27 @@ from .trait import (
 # Codex-native aliases are kept in the set for forward-compat with any
 # future Codex-native authoring path; they simply never appear on a
 # policy today.
+# NOTE on ``Task``: CC's single-subagent-spawn tool maps onto Codex's
+# ``spawn_agent``, which IS a covered PreToolUse tool (design doc 4.4 —
+# Shim D is premised on "parent-side PreToolUse hook on spawn_agent (which
+# IS covered)"). The silent-skip enumeration (4.1) only lists the BATCH
+# spawn (``spawn_agents_on_csv``), never the single spawn, so ``Task`` is
+# deliberately NOT in this set: a PreToolUse policy matching ``Task`` fires
+# on Codex and must not be shimmed (that would over-fire the fallback and
+# contradict Shim D).
+#
 # TODO(live-test D3): confirm the exact silent-skip tool set against a
 # real Codex install / issue #20204 PoC before dropping any fallback.
+# TODO(live-test D3, matcher translation): the emitted managed-config
+# matchers are RAW CC tool names (``Read``, ``spawn_agent``, ...), but
+# Codex's own tool names differ (``list_dir``, ...). A ``matcher = "Read"``
+# entry in a Codex requirements.toml never matches a Codex tool, so BOTH
+# the primary hook AND the Shim A fallbacks would be non-matching — the
+# "false sense of coverage" failure mode 4.1 warns about. Closing that
+# requires an explicit CC-name -> Codex-tool-name translation for emitted
+# matchers (identity where the names coincide, e.g. ``spawn_agent``;
+# mapped otherwise). Not built yet; the deny-list below is expressed in CC
+# names on the assumption the translation lands before the flag flips ON.
 CODEX_SILENT_SKIP_TOOLS: tuple[str, ...] = (
     # CC tool matchers that map onto Codex silent-skip tools.
     "AskUser",
@@ -80,7 +99,6 @@ CODEX_SILENT_SKIP_TOOLS: tuple[str, ...] = (
     "KillBash",
     "NotebookRead",
     "Read",
-    "Task",
     "TodoWrite",
     "WebFetch",
     "WebSearch",
@@ -222,6 +240,14 @@ def _coverage_status_for(p: AnyPolicy) -> tuple[str, str | None]:
     # input, so authoring-time coverage reports the turn-scope default.
     # TODO(live-test D2): a session-scope injection downgrades to
     # "deferred_to_prompt" at emit time instead.
+    # TODO(live-test/P2, missing producer): this reports ``enforced`` with
+    # a ``system_message`` downgrade, but the downgrade is NOT yet
+    # exercised at verdict time. ``local.gate.decide`` never emits a
+    # ContextInjection ``additional_context`` verdict on either runtime, so
+    # ``_apply_context_shim``'s PreToolUse rewrite only runs for
+    # directly-constructed Verdicts in the shim tests — there is no
+    # production producer feeding it. The status is aspirational until a
+    # verdict-time ContextInjection producer is wired into ``decide()``.
     if event == "PreToolUse" and isinstance(p, ContextInjectionPolicy):
         return ("enforced", "system_message")
     return ("enforced", None)
@@ -369,31 +395,75 @@ class CodexDriver:
     @staticmethod
     def _queue_pending_context(session_id: str, context: str) -> None:
         """Append a session-scope context to the per-session queue file.
+
+        Hardened to the repo's uniform trust-file bar (mirrors
+        ``local.session_cache`` / ``gate`` / ``keys``): the per-session dir
+        is created at mode 0o700 and the queue is opened
+        ``O_CREAT|O_APPEND|O_NOFOLLOW`` at 0o600, so the injected-context
+        payload is never group/world readable on a shared host and a
+        pre-planted symlink under a misconfigured ``MAGI_CP_STATE_DIR``
+        cannot redirect the append. The whole JSON line is written in a
+        single ``os.write`` under ``O_APPEND`` so concurrent writers append
+        atomically (no interleaved partial lines) rather than through a
+        buffered writer that could split the record.
+
         Best-effort: a queue write failure must not crash the gate."""
         try:
-            os.makedirs(_state_dir(session_id), exist_ok=True)
-            with open(
-                _pending_context_path(session_id), "a", encoding="utf-8",
-            ) as f:
-                f.write(
-                    json.dumps({"context": context}, ensure_ascii=False)
-                    + "\n"
-                )
+            os.makedirs(_state_dir(session_id), mode=0o700, exist_ok=True)
+            payload = (
+                json.dumps({"context": context}, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            fd = os.open(
+                _pending_context_path(session_id),
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
         except OSError:
             pass
 
     @staticmethod
     def _drain_pending_context(session_id: str) -> list[str]:
-        """Read + delete this session's deferred-context queue. Returns
-        the queued context strings oldest-first; ``[]`` when empty or
-        unreadable. Deleting the file makes the drain single-shot so the
-        same context is never re-injected on a later prompt."""
+        """Atomically claim + drain this session's deferred-context queue.
+
+        Returns the queued context strings oldest-first; ``[]`` when empty
+        or unreadable.
+
+        The claim is an ``os.rename`` of the live queue to a unique private
+        name BEFORE reading, which closes two races the old read-then-remove
+        had: (1) a concurrent ``_queue_pending_context`` append landing
+        between a plain read and a separate ``os.remove`` was silently lost;
+        (2) two concurrent drains both reading the same lines re-injected
+        the same context twice. Rename is atomic, so exactly one caller wins
+        the claim (the loser's rename gets ``ENOENT`` -> ``[]``), any append
+        after the claim lands on a fresh queue file and is drained next time,
+        and the drain stays single-shot. The claimed file is opened
+        ``O_NOFOLLOW`` for symlink parity with the writer."""
         path = _pending_context_path(session_id)
+        claim = f"{path}.drain-{os.getpid()}-{os.urandom(8).hex()}"
         try:
-            with open(path, encoding="utf-8") as f:
-                lines = f.readlines()
+            os.rename(path, claim)
         except OSError:
+            # Nothing queued, or another drain already claimed it.
             return []
+        try:
+            fd = os.open(claim, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                with os.fdopen(fd, encoding="utf-8") as f:
+                    lines = f.readlines()
+            except OSError:
+                os.close(fd)
+                lines = []
+        except OSError:
+            lines = []
+        finally:
+            try:
+                os.remove(claim)
+            except OSError:
+                pass
         out: list[str] = []
         for line in lines:
             line = line.strip()
@@ -406,10 +476,6 @@ class CodexDriver:
             ctx = rec.get("context")
             if isinstance(ctx, str) and ctx:
                 out.append(ctx)
-        try:
-            os.remove(path)
-        except OSError:
-            pass
         return out
 
     def _verdict_obj(self, verdict: Verdict) -> dict | None:

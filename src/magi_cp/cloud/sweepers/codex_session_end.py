@@ -52,13 +52,19 @@ class SyntheticSessionEnd:
 class _SessionRow(Protocol):
     """Structural view of the ``session_active_packs`` row the sweep
     reads. The ORM model (``cloud.db.SessionActivePacks``) satisfies it;
-    tests pass a lightweight stand-in."""
+    tests pass a lightweight stand-in.
+
+    ``last_synthetic_session_end_at`` is optional (absent -> never
+    synthesized): the idempotency high-water mark bumped by
+    ``mark_synthesized`` after a fanout fires. A row is re-armed only when
+    fresh activity advances ``last_seen_at`` past it."""
 
     runtime_id: str
     session_id: str
     tenant_id: str
     last_seen_at: int
     pack_ids: list
+    last_synthetic_session_end_at: int | None
 
 
 def resolve_ttl_seconds(meta: dict | None) -> int:
@@ -88,14 +94,27 @@ def find_synthetic_session_end_targets(
     A row qualifies iff ALL hold (Section 4.3):
       1. ``runtime_id == 'codex'`` — CC sessions have a real SessionEnd.
       2. it is stale — ``now - last_seen_at >= ttl_seconds``.
-      3. at least one active pack requires a session-end fanout, per the
+      3. it has NOT already been synthesized for this stale window — i.e.
+         ``last_synthetic_session_end_at`` is unset OR strictly older than
+         ``last_seen_at`` (fresh activity re-arms it). This makes the sweep
+         idempotent: a periodic pass (every 5 min against a 30 min TTL)
+         re-selecting the same still-stale row a second time returns it
+         only until ``mark_synthesized`` records the synthesis, after which
+         it is excluded until the session sees new activity.
+      4. at least one active pack requires a session-end fanout, per the
          injected ``pack_requires_session_end`` predicate.
     """
     targets: list[_SessionRow] = []
     for row in rows:
         if getattr(row, "runtime_id", "claude-code") != _CODEX_RUNTIME_ID:
             continue
-        if now - int(row.last_seen_at) < ttl_seconds:
+        last_seen = int(row.last_seen_at)
+        if now - last_seen < ttl_seconds:
+            continue
+        synth = getattr(row, "last_synthetic_session_end_at", None)
+        if synth is not None and int(synth) >= last_seen:
+            # Already synthesized for this stale window; no new activity
+            # has re-armed it.
             continue
         pack_ids = list(getattr(row, "pack_ids", None) or [])
         if any(pack_requires_session_end(pid) for pid in pack_ids):
@@ -110,11 +129,21 @@ def sweep_synthetic_session_end(
     emit_fanout: Callable[[SyntheticSessionEnd], None],
     pack_requires_session_end: Callable[[str], bool],
     ttl_seconds: int = CODEX_SYNTHETIC_SESSION_END_TTL_SECONDS,
+    mark_synthesized: Callable[[_SessionRow, int], None] | None = None,
 ) -> list[SyntheticSessionEnd]:
     """Fire a synthetic ``SessionEnd`` for every stale Codex session with
     a session-end-requiring pack. Returns the fanout events dispatched
     (empty when nothing is stale). ``emit_fanout`` is the sink that POSTs
-    each event to the evidence-emit path."""
+    each event to the evidence-emit path.
+
+    Idempotency: after firing, each row's synthesis high-water mark is
+    recorded via ``mark_synthesized(row, now)`` so a later sweep pass over
+    the same still-stale row does NOT re-emit (dedup by ``session_id`` +
+    ``last_synthetic_session_end_at``, per ``find_synthetic_session_end_targets``
+    condition 3). The production wiring passes a ``mark_synthesized`` that
+    persists the timestamp to ``session_active_packs``. When omitted, the
+    default bumps the in-memory attribute best-effort, which is enough to
+    make a repeated sweep over the same row objects a no-op."""
     fired: list[SyntheticSessionEnd] = []
     for row in find_synthetic_session_end_targets(
         rows, now=now, ttl_seconds=ttl_seconds,
@@ -124,8 +153,23 @@ def sweep_synthetic_session_end(
             session_id=row.session_id, tenant_id=row.tenant_id,
         )
         emit_fanout(event)
+        if mark_synthesized is not None:
+            mark_synthesized(row, now)
+        else:
+            _default_mark_synthesized(row, now)
         fired.append(event)
     return fired
+
+
+def _default_mark_synthesized(row: _SessionRow, now: int) -> None:
+    """Best-effort in-memory dedup marker: stamp the row's synthesis
+    high-water mark so a repeat sweep over the same object excludes it.
+    Silently no-ops if the row rejects the attribute (frozen / slots),
+    in which case the caller must supply a persisting ``mark_synthesized``."""
+    try:
+        setattr(row, "last_synthetic_session_end_at", now)
+    except (AttributeError, TypeError):
+        pass
 
 
 __all__ = [
