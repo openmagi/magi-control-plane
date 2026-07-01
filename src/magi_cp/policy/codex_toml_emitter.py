@@ -13,10 +13,22 @@ Guarantees mirror ``compile_to_managed_settings``:
     sorted). The TOML is hand-emitted (no ``tomli_w`` dependency) so the
     byte layout is fully under our control.
 
-P1 scope: every hook-producing policy maps to a Codex hook entry
-pointing at the shared gate binary. The four gap shims (Section 4) land
-in P2; this emitter does NOT yet add the ``PermissionRequest`` /
-``PostToolUse`` fallbacks — it is the straight-through translation.
+P1 scope was the straight-through translation. P2 (this file) adds two
+of the four gap shims that manifest as extra managed-config hook entries:
+
+  - Shim A (Section 4.1): a PreToolUse policy targeting a Codex
+    silent-skip tool ALSO emits a ``PermissionRequest`` hook + a
+    ``PostToolUse`` audit hook on the same tool, so the gate still sees
+    the tool post-hoc.
+  - Shim D (Section 4.4): a subagent-lifecycle policy (SubagentStart /
+    SubagentStop) ALSO emits belt-and-suspenders ``spawn_agent``
+    PreToolUse + PostToolUse mirror hooks (``spawn_agent`` IS covered),
+    so the user-triggered fan-out path is captured even when Codex's
+    internal reviewers do not fire the lifecycle hook.
+
+Shims B (additionalContext downgrade) and C (SessionEnd synthesis) live
+in the runtime driver (``runtime/codex.py``), not here, because they are
+verdict-time / parse-time transforms with no managed-config surface.
 """
 from __future__ import annotations
 
@@ -36,6 +48,16 @@ from .ir import (
 # case only the env var is set. Matches design doc Section 6.2.
 CODEX_GATE_COMMAND = "/usr/local/bin/magi-cp gate --runtime codex"
 CODEX_HOOK_TIMEOUT_MS = 5000
+
+# Shim D (Section 4.4): the subagent lifecycle events whose fanout may
+# miss Codex internal reviewers. A policy on one of these gets the
+# parent-side ``spawn_agent`` mirror hooks below. Kept local to the
+# emitter (no runtime import) to stay a pure policy-layer module.
+_SUBAGENT_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
+    "SubagentStart", "SubagentStop",
+})
+# Shim D: the covered tool the belt-and-suspenders mirror hooks bind to.
+_SUBAGENT_SPAWN_TOOL = "spawn_agent"
 
 
 @dataclass(frozen=True)
@@ -104,6 +126,56 @@ def _hook_pairs(policies: list[AnyPolicy]) -> tuple[
     return events, context_templates, has_subagent
 
 
+def _emitter_event_matcher(p: AnyPolicy) -> tuple[str | None, str | None]:
+    """(event, matcher) for a hook-producing policy, or ``(None, None)``
+    for a native-surface archetype (Permission / Mcp / Subagent) that has
+    no trigger. Mirrors ``runtime.codex._policy_event_matcher`` without
+    importing the runtime layer."""
+    if isinstance(p, ContextInjectionPolicy):
+        return (p.event, p.matcher)
+    trig = getattr(p, "trigger", None)
+    if trig is not None:
+        return (trig.event, trig.matcher)
+    return (None, None)
+
+
+def _add_gap_shim_fallbacks(
+    policies: list[AnyPolicy], events: dict[str, set[str]],
+) -> None:
+    """Fold Shim A + Shim D fallback hook entries into ``events``.
+
+    Shim A (Section 4.1): a PreToolUse policy on a silent-skip tool gets
+    a ``PermissionRequest`` + ``PostToolUse`` audit hook on the same
+    tool. Shim D (Section 4.4): a subagent-lifecycle policy gets
+    parent-side ``spawn_agent`` PreToolUse + PostToolUse mirror hooks.
+
+    ``events`` is a set-valued map, so a fallback that coincides with an
+    existing primary hook (or another policy's fallback) dedupes for
+    free and the caller's sort keeps the output byte-stable.
+    """
+    # Lazy import: the silent-skip tool list is canonical in the runtime
+    # driver (per the P2 brief). Importing at call time (not module load)
+    # keeps this pure policy-layer module free of a runtime import cycle.
+    from ..runtime.codex import CODEX_SILENT_SKIP_TOOLS
+
+    def _add(event: str, matcher: str) -> None:
+        events.setdefault(event, set()).add(matcher)
+
+    for p in policies:
+        event, matcher = _emitter_event_matcher(p)
+        if event is None:
+            continue
+        # Shim A: PreToolUse silent-skip tool -> PermissionRequest +
+        # PostToolUse audit fallback on the same tool.
+        if event == "PreToolUse" and matcher in CODEX_SILENT_SKIP_TOOLS:
+            _add("PermissionRequest", matcher)
+            _add("PostToolUse", matcher)
+        # Shim D: subagent lifecycle -> parent-side spawn_agent mirror.
+        if event in _SUBAGENT_LIFECYCLE_EVENTS:
+            _add("PreToolUse", _SUBAGENT_SPAWN_TOOL)
+            _add("PostToolUse", _SUBAGENT_SPAWN_TOOL)
+
+
 def _toml_str(value: str) -> str:
     """Emit a TOML basic string literal for ``value``.
 
@@ -137,6 +209,9 @@ def compile_to_codex_requirements(
         seen_ids.add(p.id)
 
     events, context_templates, has_subagent = _hook_pairs(policies)
+    # P2 Shim A + Shim D: fold the gap-shim fallback hooks in before the
+    # deterministic sort so they share the byte-stability guarantee.
+    _add_gap_shim_fallbacks(policies, events)
 
     # ── requirements.toml ────────────────────────────────────────────
     lines: list[str] = []

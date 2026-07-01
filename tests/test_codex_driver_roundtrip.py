@@ -59,11 +59,15 @@ def _user_prompt_submit() -> dict:
 
 
 def _stop() -> dict:
+    # stop_hook_active is False here so these two P1 tests keep exercising
+    # the plain turn-end Stop path. Shim C (P2) maps a Stop with a truthy
+    # stop_hook_active onto a synthetic SessionEnd; that branch is covered
+    # in tests/test_codex_shims.py.
     return {
         "session_id": "66666666-6666-4666-8666-666666666666",
         "turn_id": "77777777-7777-4777-8777-777777777777",
         "hook_event_name": "Stop",
-        "stop_hook_active": True,
+        "stop_hook_active": False,
         "matcher_aliases": [],
     }
 

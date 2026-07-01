@@ -70,6 +70,15 @@ class Verdict:
     additional_context: str | None = None
     system_message: str | None = None
     continue_: bool | None = None
+    # Codex Shim B (P2) side inputs. ``context_scope`` tags an
+    # ``additional_context`` payload as ``"turn"`` (downgrade to
+    # ``systemMessage`` on the same event) or ``"session"`` (defer to the
+    # next ``UserPromptSubmit`` via the per-session queue). ``session_id``
+    # scopes the deferred-context queue file. Both default to "" so the CC
+    # driver (which never reads them) stays byte-equivalent — the fields
+    # are inert on every current ``decide()`` path.
+    context_scope: str = ""
+    session_id: str = ""
 
 
 def merge_verdict_side_channels(

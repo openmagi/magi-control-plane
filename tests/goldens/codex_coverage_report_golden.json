@@ -1,0 +1,47 @@
+{
+  "runtime_id": "codex",
+  "enforced_count": 2,
+  "downgraded_count": 4,
+  "policies": [
+    {
+      "policy_id": "ev/bash-enforced",
+      "status": "enforced",
+      "downgrade": null
+    },
+    {
+      "policy_id": "ev/read-silent-skip",
+      "status": "codex_silent_skip",
+      "downgrade": "PermissionRequest+PostToolUse audit"
+    },
+    {
+      "policy_id": "ctx/pretool-downgrade",
+      "status": "enforced",
+      "downgrade": "system_message"
+    },
+    {
+      "policy_id": "ev/session-end",
+      "status": "codex_no_session_end",
+      "downgrade": "Stop stop_hook_active + cloud sweeper"
+    },
+    {
+      "policy_id": "ev/subagent-stop",
+      "status": "codex_internal_subagent_gap",
+      "downgrade": "spawn_agent PreToolUse+PostToolUse mirror"
+    },
+    {
+      "policy_id": "perm/deny-rm",
+      "status": "codex_native_config_pending",
+      "downgrade": null
+    },
+    {
+      "policy_id": "mcp/deny-github",
+      "status": "codex_native_config_pending",
+      "downgrade": null
+    },
+    {
+      "policy_id": "sub/disable-researcher",
+      "status": "codex_native_config_pending",
+      "downgrade": null
+    }
+  ]
+}
