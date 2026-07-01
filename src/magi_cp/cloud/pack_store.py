@@ -36,6 +36,11 @@ class UserPackRow:
     name: str
     description: str
     policy_ids: list[str]
+    # P1 pack-centric runtime: the tenant's floor pack is the "always-on"
+    # bundle every session inherits regardless of activation. Exactly one
+    # row may carry `is_floor=True`; PackStore.save enforces the
+    # invariant. Default False so pre-P1 rows load unchanged.
+    is_floor: bool = False
 
 
 class PackStore:
@@ -56,6 +61,7 @@ class PackStore:
         if not isinstance(raw, list):
             raise ValueError(f"malformed pack store: expected list, got {type(raw)!r}")
         out: list[UserPackRow] = []
+        floor_seen = False
         for i, item in enumerate(raw):
             if not isinstance(item, dict):
                 raise ValueError(f"pack store item {i}: not an object")
@@ -74,15 +80,40 @@ class PackStore:
                 raise ValueError(
                     f"pack store item {i}: policy_ids must be a list"
                 )
+            raw_is_floor = item.get("is_floor", False)
+            if not isinstance(raw_is_floor, bool):
+                raise ValueError(
+                    f"pack store item {i}: is_floor must be a bool"
+                )
+            if raw_is_floor:
+                if floor_seen:
+                    # A corrupt on-disk file with two is_floor rows must
+                    # fail loudly — the gate uses the floor pack to
+                    # decide what always fires, so two floors would
+                    # silently confuse the resolution.
+                    raise ValueError(
+                        f"pack store item {i}: duplicate is_floor row"
+                    )
+                floor_seen = True
             out.append(UserPackRow(
                 id=pid,
                 name=str(name),
                 description=str(description),
                 policy_ids=[str(x) for x in policy_ids],
+                is_floor=raw_is_floor,
             ))
         return out
 
     def save(self, rows: list[UserPackRow]) -> None:
+        # Invariant: at most one row per store may carry is_floor=True.
+        # Callers get a hard ValueError so mutation code paths cannot
+        # silently persist two floors.
+        floor_rows = [r for r in rows if getattr(r, "is_floor", False)]
+        if len(floor_rows) > 1:
+            raise ValueError(
+                "pack store may hold at most one is_floor row; "
+                f"found {len(floor_rows)}: {[r.id for r in floor_rows]!r}"
+            )
         rows_sorted = sorted(rows, key=lambda r: r.id)
         body = [
             {
@@ -90,6 +121,7 @@ class PackStore:
                 "name": r.name,
                 "description": r.description,
                 "policy_ids": list(r.policy_ids),
+                "is_floor": bool(getattr(r, "is_floor", False)),
             }
             for r in rows_sorted
         ]

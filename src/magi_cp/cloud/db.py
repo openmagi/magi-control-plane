@@ -161,6 +161,53 @@ class CompiledPolicySnapshot(Base):
     policy_ids: Mapped[list] = mapped_column(JsonCol, nullable=False)
 
 
+class SessionActivePacks(Base):
+    """P1 pack-centric runtime: per-session active pack list.
+
+    Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+    (§ "Session-state store").
+
+    One row per CC session per tenant. ``pack_ids`` carries the packs
+    the operator has activated for THIS session, ordered by activation
+    time (oldest first). The tenant's floor pack is NOT stored here —
+    Phase 2's gate resolution unions the floor in at read time so a
+    schema-level edit to which pack is the floor is picked up without
+    rewriting every row.
+
+    Timestamps
+    ~~~~~~~~~~
+    ``activated_at`` — first successful activate in this session; not
+    refreshed on subsequent activates.
+    ``last_seen_at`` — refreshed on every read + write. The GC sweep
+    (Phase 5, not built in P1) uses this + ``expires_at`` to prune
+    dead sessions.
+    ``expires_at`` — extended to ``now + 30d`` on every activate. This
+    is a GC TTL, NOT the activation lifetime (per decision 5: activation
+    persists until session end or explicit `/magi:pack:deactivate`).
+
+    Concurrency: writes serialize via the API-layer lock; SQLite's WAL
+    + short transaction gives us safe reads. Postgres pushes concurrent
+    activates through the standard row lock.
+    """
+    __tablename__ = "session_active_packs"
+    session_id: Mapped[str] = mapped_column(
+        String(128), primary_key=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True,
+    )
+    pack_ids: Mapped[list] = mapped_column(JsonCol, nullable=False)
+    activated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    __table_args__ = (
+        Index(
+            "ix_session_active_packs_tenant_expires",
+            "tenant_id", "expires_at",
+        ),
+    )
+
+
 class HitlStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
@@ -1035,3 +1082,144 @@ class CompiledPolicySnapshotRepo:
                 .where(CompiledPolicySnapshot.tenant_id == tenant_id)
             ))
             return set(rows)
+
+
+# ── P1 pack-centric runtime: session-state store ──────────────────────
+# Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+#
+# 30-day TTL for the GC sweep (decision 5 — activation lifetime is NOT
+# TTL-driven; this bound is only how long an orphaned session sits in
+# the store before the sweep can prune it).
+SESSION_ACTIVE_PACK_TTL_SECONDS = 30 * 24 * 3600
+
+
+class SessionActivePacksRepo:
+    """CRUD for the per-session active-pack list.
+
+    Exposes:
+
+      - ``get(session_id, tenant_id)`` — read only; does NOT refresh
+        ``last_seen_at``. Use ``touch()`` when the caller wants the row
+        surfaced through a read-tracked codepath.
+      - ``touch(session_id, tenant_id)`` — refresh ``last_seen_at`` on
+        an existing row, no-op when the row is missing. Cheap idempotent
+        read used by the GET endpoint.
+      - ``activate(session_id, tenant_id, pack_id)`` — append the pack
+        id if not already active. Extends ``expires_at`` by
+        ``SESSION_ACTIVE_PACK_TTL_SECONDS``. Returns
+        ``(row, changed)``: ``changed=False`` on idempotent no-op.
+      - ``deactivate(session_id, tenant_id, pack_id)`` — remove the
+        pack id if present. Returns ``(row, changed)`` — ``row=None``
+        when the session row is missing (still idempotent).
+
+    Concurrency: the API layer holds a per-request asyncio.Lock around
+    activate + deactivate so two concurrent slash-commands cannot
+    interleave a read + write on the same session_id. Rows are keyed
+    by ``(session_id, tenant_id)`` so cross-tenant leakage is
+    impossible even under a lock miss.
+    """
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+    def get(self, session_id: str, tenant_id: str) -> SessionActivePacks | None:
+        with Session(self.engine) as s:
+            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            if row is None:
+                return None
+            s.expunge(row)
+            return row
+
+    def touch(self, session_id: str, tenant_id: str) -> SessionActivePacks | None:
+        """Refresh ``last_seen_at`` on an existing row. No-op when the
+        row is missing (never creates a phantom row on a read). Returns
+        the refreshed row so callers can render without a second query.
+        """
+        now = int(time.time())
+        with Session(self.engine) as s:
+            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            if row is None:
+                return None
+            row.last_seen_at = now
+            s.commit()
+            s.refresh(row)
+            s.expunge(row)
+            return row
+
+    def activate(
+        self, session_id: str, tenant_id: str, pack_id: str,
+    ) -> tuple[SessionActivePacks, bool]:
+        """Append ``pack_id`` to the session's active list.
+
+        Idempotent: an already-active pack returns ``changed=False``
+        and does NOT extend ``expires_at`` (extending on a no-op would
+        let a chatty gate keep sessions alive forever). A real activate
+        (new pack) does extend.
+
+        On first activate for the session, seeds ``activated_at``
+        alongside ``last_seen_at`` / ``expires_at``.
+        """
+        now = int(time.time())
+        with Session(self.engine) as s:
+            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            if row is None:
+                row = SessionActivePacks(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    pack_ids=[pack_id],
+                    activated_at=now,
+                    last_seen_at=now,
+                    expires_at=now + SESSION_ACTIVE_PACK_TTL_SECONDS,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                s.expunge(row)
+                return row, True
+            current = list(row.pack_ids or [])
+            if pack_id in current:
+                # Idempotent no-op. Refresh last_seen_at only — see
+                # docstring: TTL extension is reserved for real changes.
+                row.last_seen_at = now
+                s.commit()
+                s.refresh(row)
+                s.expunge(row)
+                return row, False
+            current.append(pack_id)
+            row.pack_ids = current
+            row.last_seen_at = now
+            row.expires_at = now + SESSION_ACTIVE_PACK_TTL_SECONDS
+            s.commit()
+            s.refresh(row)
+            s.expunge(row)
+            return row, True
+
+    def deactivate(
+        self, session_id: str, tenant_id: str, pack_id: str,
+    ) -> tuple[SessionActivePacks | None, bool]:
+        """Remove ``pack_id`` from the session's active list. Idempotent
+        for absent ids (returns ``changed=False``).
+
+        Row retention: even when the active list becomes empty we KEEP
+        the row so ``last_seen_at`` records that the session was here.
+        Phase 5's GC sweep is the authoritative pruner.
+        """
+        now = int(time.time())
+        with Session(self.engine) as s:
+            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            if row is None:
+                return None, False
+            current = list(row.pack_ids or [])
+            if pack_id not in current:
+                row.last_seen_at = now
+                s.commit()
+                s.refresh(row)
+                s.expunge(row)
+                return row, False
+            current.remove(pack_id)
+            row.pack_ids = current
+            row.last_seen_at = now
+            s.commit()
+            s.refresh(row)
+            s.expunge(row)
+            return row, True

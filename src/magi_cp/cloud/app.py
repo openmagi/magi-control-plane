@@ -2353,6 +2353,15 @@ def create_app(
         policy_store=policy_store,
     )
 
+    # ── /session/{session_id}/packs — P1 pack-centric runtime ─────────
+    # Session-scoped activation surface. See
+    # docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md.
+    _attach_session_pack_routes(
+        app, engine,
+        pack_store=pack_store,
+        pack_store_lock=pack_store_lock,
+    )
+
     return app
 
 
@@ -4461,6 +4470,185 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                 raise HTTPException(404, f"policy {policy_id!r} not found")
             store.save(new_list)
         return {"id": policy_id, "enabled": body.enabled}
+
+
+def _attach_session_pack_routes(
+    app: FastAPI, engine,
+    *,
+    pack_store: "PackStore | None",
+    pack_store_lock: asyncio.Lock | None,
+) -> None:
+    """P1 pack-centric runtime — session-scoped activation surface.
+
+    Endpoints:
+      - POST /session/{session_id}/packs/activate   {pack_id}
+      - POST /session/{session_id}/packs/deactivate {pack_id}
+      - GET  /session/{session_id}/packs
+
+    Each endpoint requires tenant auth (X-Api-Key) so the session row
+    is keyed on (session_id, tenant_id) — one tenant cannot see or
+    mutate another tenant's active-pack list even if they collide on
+    the CC session uuid.
+
+    Semantics locked by
+    docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md:
+
+      - Activation is one-shot; persists until session end or explicit
+        deactivate (decision 5). Endpoints only refresh ``last_seen_at``
+        + extend ``expires_at`` (30d GC TTL, NOT activation TTL).
+      - The floor pack cannot be deactivated (decision 7).
+      - Idempotent activate returns 200 with the current list unchanged.
+      - GET creates the floor pack lazily so a fresh session with no
+        activations still gets a coherent ``floor_pack_id`` field.
+
+    Phase 2 will read this state from the gate binary; Phase 1 only
+    writes it. No hook resolution changes here.
+    """
+    from ..policy.floor_pack import ensure_floor_pack_async
+    from .db import SessionActivePacksRepo
+
+    # Serialize activate/deactivate on the same (session_id, tenant_id)
+    # to keep the read-then-write path atomic under uvicorn's async
+    # dispatch. A single asyncio.Lock is fine because the critical
+    # section is ~two millisecond DB round-trips.
+    session_lock = asyncio.Lock()
+
+    def _pack_exists_for_tenant(pack_id: str) -> bool:
+        """Return True iff ``pack_id`` names a pack the caller can
+        activate. Built-in ids ("pack/…") live in the immutable catalog;
+        user ids ("user-pack/…") live in the pack store. Anything else
+        is a 404.
+
+        Kept in-process so a client cannot activate a random string and
+        strand the gate with an id it will never resolve.
+        """
+        from ..policy.pack import builtin_pack_spec_by_id
+        if not isinstance(pack_id, str) or not pack_id:
+            return False
+        if pack_id.startswith("pack/"):
+            return builtin_pack_spec_by_id(pack_id) is not None
+        if pack_id.startswith("user-pack/"):
+            if pack_store is None:
+                return False
+            for row in pack_store.load():
+                if row.id == pack_id:
+                    return True
+            return False
+        return False
+
+    def _floor_pack_id(rows: list) -> str | None:
+        for r in rows:
+            if getattr(r, "is_floor", False):
+                return r.id
+        return None
+
+    async def _resolve_floor(tenant_id: str) -> str | None:
+        """Return the floor pack id, seeding one lazily. Returns None
+        only when the pack store is not wired (self-host misconfig).
+        """
+        if pack_store is None:
+            return None
+        return await ensure_floor_pack_async(
+            tenant_id, pack_store, pack_store_lock,
+        )
+
+    def _envelope(row, floor_pack_id: str | None) -> dict:
+        """Wire envelope for GET + write responses. Always returns the
+        floor pack id alongside the caller-scoped active list so the
+        client can render the "always-on" chip without a second call.
+        """
+        if row is None:
+            return {
+                "active_packs": [],
+                "floor_pack_id": floor_pack_id,
+                "activated_at": None,
+                "last_seen_at": None,
+            }
+        return {
+            "active_packs": list(row.pack_ids or []),
+            "floor_pack_id": floor_pack_id,
+            "activated_at": row.activated_at,
+            "last_seen_at": row.last_seen_at,
+        }
+
+    @app.post(
+        "/session/{session_id}/packs/activate",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    async def session_pack_activate(
+        session_id: str, request: Request,
+        body: dict = Body(...),
+    ) -> dict:
+        tenant_id = request.state.tenant_id
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        pack_id = body.get("pack_id")
+        if not isinstance(pack_id, str) or not pack_id:
+            raise HTTPException(422, "pack_id is required")
+        if not _pack_exists_for_tenant(pack_id):
+            raise HTTPException(404, f"pack {pack_id!r} not found")
+        repo = SessionActivePacksRepo(engine)
+        async with session_lock:
+            row, _changed = repo.activate(session_id, tenant_id, pack_id)
+        floor_pack_id = await _resolve_floor(tenant_id)
+        envelope = _envelope(row, floor_pack_id)
+        envelope["session_id"] = session_id
+        return envelope
+
+    @app.post(
+        "/session/{session_id}/packs/deactivate",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    async def session_pack_deactivate(
+        session_id: str, request: Request,
+        body: dict = Body(...),
+    ) -> dict:
+        tenant_id = request.state.tenant_id
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        pack_id = body.get("pack_id")
+        if not isinstance(pack_id, str) or not pack_id:
+            raise HTTPException(422, "pack_id is required")
+        # Decision 7: floor pack cannot be deactivated. Resolve BEFORE
+        # touching the session row so a stray attempt is a clean 400 and
+        # leaves ``last_seen_at`` untouched.
+        floor_pack_id = await _resolve_floor(tenant_id)
+        if floor_pack_id is not None and pack_id == floor_pack_id:
+            raise HTTPException(
+                400,
+                {
+                    "error": "floor_pack_locked",
+                    "message": (
+                        "The tenant's floor pack cannot be deactivated. "
+                        "The floor pack's membership is editable "
+                        "through the pack detail endpoint but the "
+                        "always-on bit is server-locked."
+                    ),
+                    "floor_pack_id": floor_pack_id,
+                },
+            )
+        repo = SessionActivePacksRepo(engine)
+        async with session_lock:
+            row, _changed = repo.deactivate(session_id, tenant_id, pack_id)
+        envelope = _envelope(row, floor_pack_id)
+        envelope["session_id"] = session_id
+        return envelope
+
+    @app.get(
+        "/session/{session_id}/packs",
+        dependencies=[Depends(require_tenant_auth)],
+    )
+    async def session_pack_get(session_id: str, request: Request) -> dict:
+        tenant_id = request.state.tenant_id
+        # Lazily seed the floor pack on any read so a fresh tenant sees
+        # a coherent envelope on the first GET (per decision 6 the pack
+        # ships empty; ``ensure_floor_pack_async`` is idempotent).
+        floor_pack_id = await _resolve_floor(tenant_id)
+        repo = SessionActivePacksRepo(engine)
+        row = repo.touch(session_id, tenant_id)
+        envelope = _envelope(row, floor_pack_id)
+        envelope["session_id"] = session_id
+        return envelope
 
 
 def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
