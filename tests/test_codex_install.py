@@ -253,6 +253,72 @@ def test_force_remove_codex_leaves_skills_and_prompts(monkeypatch, tmp_path):
     assert (home / ".codex" / "prompts" / "magi:pack:activate.md").is_file()
 
 
+# ── managed_config.toml cloud_url escaping ─────────────────────────────
+def test_managed_config_escapes_cloud_url(monkeypatch, tmp_path):
+    """An operator-controlled cloud_url with TOML-significant bytes must be
+    escaped so managed_config.toml stays a valid TOML basic string (never
+    silently bricks the MAGI_CP_RUNTIME=codex passthrough)."""
+    import tomllib
+
+    _, etc = _wire(monkeypatch, tmp_path)
+    weird = 'http://ex"ample\\path'
+    rc = codex_install.cli(["--runtime", "codex", "--cloud-url", weird])
+    assert rc == 0
+
+    text = (etc / "managed_config.toml").read_text("utf-8")
+    # The raw quote/backslash are escaped, not emitted literally.
+    assert 'MAGI_CP_CLOUD_URL = "http://ex\\"ample\\\\path"' in text
+    # And the whole file round-trips through a real TOML parser.
+    parsed = tomllib.loads(text)
+    assert parsed["env"]["MAGI_CP_CLOUD_URL"] == weird
+    assert parsed["env"]["MAGI_CP_RUNTIME"] == "codex"
+
+
+# ── preflight: hard-fail instead of partial (enforce-nothing) install ──
+def test_codex_preflight_failure_hard_fails_without_partial_install(
+    monkeypatch, tmp_path, capsys
+):
+    home, etc = _wire(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        codex_install, "_managed_dir_writable",
+        lambda p: (False, "managed dir is not writable"),
+    )
+    rc = codex_install.cli(["--runtime", "codex"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Codex enforcement not installed" in err
+    assert "sudo" in err
+    # No user surface + no managed files => never enforce-nothing-but-looks-
+    # installed.
+    assert not (home / ".codex" / "skills" / "magi").exists()
+    assert not (home / ".codex" / "prompts").exists()
+    assert not (etc / "requirements.toml").exists()
+
+
+def test_codex_enforcement_written_before_user_surface(monkeypatch, tmp_path):
+    """requirements.toml (enforcement) lands whenever the pack skills do,
+    so a visible pack surface always has its policy layer behind it."""
+    home, etc = _wire(monkeypatch, tmp_path)
+    assert codex_install.cli(["--runtime", "codex"]) == 0
+    assert (etc / "requirements.toml").is_file()
+    assert (home / ".codex" / "skills" / "magi" / "pack-activate.md").is_file()
+
+
+# ── root-owned trust-boundary warning is operator-visible ──────────────
+def test_managed_files_warn_when_not_root_owned(monkeypatch, tmp_path, capsys):
+    import os as _os
+
+    import pytest
+
+    if not hasattr(_os, "geteuid") or _os.geteuid() == 0:
+        pytest.skip("requires a non-root euid to observe the weak boundary")
+    _wire(monkeypatch, tmp_path)
+    assert codex_install.cli(["--runtime", "codex"]) == 0
+    err = capsys.readouterr().err
+    assert "NOT root-owned" in err
+    assert "trust boundary" in err
+
+
 # ── dispatch through the top-level `magi-cp install` CLI ───────────────
 def test_top_level_magi_cp_install_dispatch(monkeypatch, tmp_path):
     from magi_cp.cli.__main__ import main as cli_main
