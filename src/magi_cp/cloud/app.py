@@ -4614,6 +4614,32 @@ def _attach_session_pack_routes(
         pack_id = body.get("pack_id")
         if not isinstance(pack_id, str) or not pack_id:
             raise HTTPException(422, "pack_id is required")
+        # Decision 7: the floor pack is always-on and server-locked. It
+        # is never a session-activatable id. Reject activation
+        # symmetrically with the deactivate lock (which returns 400
+        # ``floor_pack_locked``) so activate and deactivate present a
+        # consistent contract. Without this guard the floor id passes
+        # ``_pack_exists`` (it is a real ``user-pack/…`` row), gets
+        # appended to ``pack_ids``, and can then never be removed because
+        # deactivate rejects it — a one-way door that strands the id in
+        # the active list. Resolve the floor BEFORE the lock, matching
+        # ``session_pack_deactivate``, so a stray attempt is a clean 400
+        # that never touches the session row.
+        floor_pack_id = await _resolve_floor(tenant_id)
+        if floor_pack_id is not None and pack_id == floor_pack_id:
+            raise HTTPException(
+                400,
+                {
+                    "error": "floor_pack_always_on",
+                    "message": (
+                        "The tenant's floor pack is always active and "
+                        "cannot be session-activated. Its policies fire "
+                        "on every session regardless; edit its membership "
+                        "through the pack detail endpoint instead."
+                    ),
+                    "floor_pack_id": floor_pack_id,
+                },
+            )
         repo = SessionActivePacksRepo(engine)
         # TOCTOU: the pack-exists check MUST happen inside the same
         # critical section as ``repo.activate`` so a pack deleted
@@ -4623,7 +4649,6 @@ def _attach_session_pack_routes(
             if not _pack_exists(pack_id):
                 raise HTTPException(404, f"pack {pack_id!r} not found")
             row, _changed = repo.activate(session_id, tenant_id, pack_id)
-        floor_pack_id = await _resolve_floor(tenant_id)
         envelope = _envelope(row, floor_pack_id)
         envelope["session_id"] = session_id
         return envelope

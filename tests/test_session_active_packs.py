@@ -241,6 +241,33 @@ def test_deactivate_refuses_floor_pack(cloud):
         assert "floor" in str(detail).lower()
 
 
+def test_activate_refuses_floor_pack(cloud):
+    # Symmetric with test_deactivate_refuses_floor_pack: activate must
+    # reject the always-on floor pack instead of appending it to
+    # pack_ids (where deactivate would then refuse to remove it, leaving
+    # a one-way-door stranded id). See decision 7.
+    hdr = {"X-Api-Key": cloud["key_a"]}
+    # Seed the floor pack first so ensure_floor_pack has run.
+    cloud["client"].get("/session/sess_1/packs", headers=hdr)
+    r = cloud["client"].post(
+        "/session/sess_1/packs/activate",
+        headers=hdr, json={"pack_id": FLOOR_PACK_ID},
+    )
+    assert r.status_code == 400, r.text
+    detail = r.json().get("detail", r.json())
+    if isinstance(detail, dict):
+        assert detail.get("error") == "floor_pack_always_on"
+        assert detail.get("floor_pack_id") == FLOOR_PACK_ID
+    else:  # pragma: no cover — string fallback
+        assert "floor" in str(detail).lower()
+    # The floor id must NOT have been appended to the active list.
+    body = cloud["client"].get(
+        "/session/sess_1/packs", headers=hdr,
+    ).json()
+    assert FLOOR_PACK_ID not in body["active_packs"]
+    assert body["active_packs"] == []
+
+
 # ── tenant scoping ────────────────────────────────────────────────────
 
 
