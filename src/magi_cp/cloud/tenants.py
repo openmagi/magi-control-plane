@@ -47,6 +47,17 @@ class Tenant(Base):
     pack_centric_migrated_at: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True,
     )
+    # Codex runtime adapter: which coding-agent runtime this tenant's
+    # gate speaks. Defaults to ``claude-code`` so every existing tenant
+    # is unaffected; the dashboard runtime picker (P4) flips it per
+    # tenant, gated globally by MAGI_CP_CODEX_RUNTIME_ENABLED. Additive +
+    # non-null with a server default so a pre-adapter DB reads unchanged
+    # after the init_schema DDL upgrade.
+    # Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+    runtime_id: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="claude-code",
+        server_default="claude-code",
+    )
 
 
 class ApiKey(Base):

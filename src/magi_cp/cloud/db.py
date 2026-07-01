@@ -217,6 +217,17 @@ class SessionActivePacks(Base):
     tenant_id: Mapped[str] = mapped_column(
         String(64), primary_key=True,
     )
+    # Codex runtime adapter: the runtime a session belongs to. CC and
+    # Codex session ids are both uuidv4 and do not collide in practice,
+    # but the runtime prefix makes the (tenant, runtime, session)
+    # identity explicit and audit-legible. Defaults to ``claude-code``
+    # so every pre-adapter row + every writer that omits it (the P1-P5
+    # repo constructs rows without it) stays on the CC layer. Part of the
+    # primary key per design doc Section 8.1.
+    runtime_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, nullable=False,
+        default="claude-code", server_default="claude-code",
+    )
     pack_ids: Mapped[list] = mapped_column(JsonCol, nullable=False)
     activated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     last_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -490,6 +501,13 @@ def _apply_migrations(engine: Engine) -> None:
                 conn.execute(text(
                     "ALTER TABLE tenants ADD COLUMN pack_centric_migrated_at BIGINT"
                 ))
+    # Codex runtime adapter: additive runtime_id columns on `tenants` +
+    # `session_active_packs`, plus the session-packs PK rebuild to include
+    # runtime_id. Idempotent + guarded internally; a fresh create_all DB
+    # already has the columns so this is a no-op there. Design brief:
+    # docs/plans/2026-06-30-codex-runtime-adapter-design.md (Section 9).
+    from .codex_runtime_migration import upgrade as _codex_runtime_upgrade
+    _codex_runtime_upgrade(engine)
     if "hitl_item" not in insp.get_table_names():
         # Fresh DB — create_all just built the table from the PR4-shape
         # ORM declaration, nothing to migrate.

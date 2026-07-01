@@ -50,6 +50,39 @@ def pack_centric_runtime_enabled() -> bool:
     return raw.strip().lower() not in _FALSY
 
 
+# ── Rollout gate for the Codex CLI runtime adapter.
+# Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+#
+# Default OFF (opposite of the pack-centric flag). With this unset or
+# falsy, the runtime dispatcher (``magi_cp.runtime.detect.detect_runtime``)
+# returns ``"cc"`` unconditionally, so the entire Codex path is dead code
+# and the Claude Code path is byte-identical to the pre-adapter gate.
+#
+# Operators opt a build into the Codex adapter by setting
+# ``MAGI_CP_CODEX_RUNTIME_ENABLED`` to a truthy token (``1`` / ``true`` /
+# ``yes`` / ``on``, case-insensitive). Per-tenant selection then flows
+# through ``tenants.runtime_id`` (see the design doc's Section 9.3
+# feature-flag ladder). This env var is the global kill switch.
+_CODEX_RUNTIME_ENV = "MAGI_CP_CODEX_RUNTIME_ENABLED"
+
+
+def codex_runtime_enabled() -> bool:
+    """Return True only when MAGI_CP_CODEX_RUNTIME_ENABLED is set to an
+    explicit truthy value.
+
+    Default OFF: unset (or any non-truthy value) returns False. Only the
+    canonical truthy tokens ``1`` / ``true`` / ``yes`` / ``on``
+    (case-insensitive) enable the Codex runtime adapter. This is the
+    global kill switch from the design doc's feature-flag ladder; the
+    dispatcher treats a False here as "CC only".
+    """
+    raw = os.environ.get(_CODEX_RUNTIME_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _TRUTHY
+
+
 __all__ = [
     "pack_centric_runtime_enabled",
+    "codex_runtime_enabled",
 ]

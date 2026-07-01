@@ -333,27 +333,29 @@ def _find_signed_token(wal: Wal, pub: Ed25519PublicKey, *,
     return None
 
 
-def evaluate(payload: dict) -> None:
-    """Decide allow/deny from a hook payload.
+def decide(payload: dict):
+    """Decide allow/deny from a hook payload, returning a canonical
+    ``Verdict`` (does NOT exit).
 
-    D82d follow-up: reads `hook_event_name` from the inbound payload so
-    `_deny` can emit the CC-canonical shape per event. PostToolUse /
-    PostToolUseFailure / PostToolBatch emit top-level `decision`+`reason`
-    (CC surfaces the reason to the model as retry-feedback); every
-    other event keeps the historical PreToolUse `hookSpecificOutput`
-    shape.
+    Factored out of ``evaluate`` for the P1 Codex adapter (design doc
+    Section 3.4): both the CC dispatch path (``evaluate``) and the Codex
+    dispatch path (``runtime.codex.run_codex_gate``) share this one
+    decision engine so a sentinel that denies on CC denies identically on
+    Codex — one engine, two surfaces.
 
-    Exits the process directly (CC reads stdout + exit code).
+    Side effect preserved from the legacy ``evaluate``: the session id CC
+    handed us is persisted first (before the sentinel short-circuit) so
+    the ``magi-cp session pack …`` CLI's tier-4 fallback has a producer.
+    Best-effort; never affects the returned verdict.
     """
+    from ..runtime.trait import Verdict
+
     # Persist the session id CC handed us on this hook so the
     # ``magi-cp session pack …`` CLI's tier-4 fallback
     # (``MAGI_CP_SESSION_FILE``) has a real producer. The gate is the
-    # writer; the CLI only reads. Best-effort — a failed write just
-    # means the CLI falls back to erroring on "no session id" as it did
-    # before this producer existed, so we never let it affect the
-    # allow/deny decision below. Runs before the sentinel short-circuit
-    # so EVERY observed hook (not just sentinel-bearing commands)
-    # refreshes the last-seen id.
+    # writer; the CLI only reads. Best-effort. Runs before the sentinel
+    # short-circuit so EVERY observed hook (not just sentinel-bearing
+    # commands) refreshes the last-seen id.
     from . import session_cache as _session_cache
     _session_cache.persist_session_id(payload.get("session_id") or "")
 
@@ -361,16 +363,22 @@ def evaluate(payload: dict) -> None:
     cmd = payload.get("tool_input", {}).get("command", "")
     matches = list(SENTINEL_RE.finditer(cmd))
     if not matches:
-        _allow()   # not a sentinel; CC continues
+        return Verdict(decision="allow", hook_event_name=hook_event_name)
     cloud = _cloud_url()
     if not cloud.startswith(("http://", "https://")):
-        _deny("invalid MAGI_CP_CLOUD_URL scheme",
-              hook_event_name=hook_event_name)
+        return Verdict(
+            decision="deny",
+            reason="invalid MAGI_CP_CLOUD_URL scheme",
+            hook_event_name=hook_event_name,
+        )
     try:
         pub = _load_pubkey()
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
-        _deny(f"cloud unreachable ({type(e).__name__})",
-              hook_event_name=hook_event_name)
+        return Verdict(
+            decision="deny",
+            reason=f"cloud unreachable ({type(e).__name__})",
+            hook_event_name=hook_event_name,
+        )
 
     wal = Wal(path=os.path.join(_local_dir(), "wal.jsonl"))
     # Every sentinel must individually validate. Multi-statement commands like
@@ -386,12 +394,29 @@ def evaluate(payload: dict) -> None:
         body = _find_signed_token(wal, pub, subject=subject,
                                   payload_hash=payload_hash)
         if body is None:
-            _deny(
-                f"no signed citation_verify=pass for subject={subject} "
-                f"payload_hash={payload_hash}",
+            return Verdict(
+                decision="deny",
+                reason=(
+                    f"no signed citation_verify=pass for subject={subject} "
+                    f"payload_hash={payload_hash}"
+                ),
                 hook_event_name=hook_event_name,
             )
-    _allow()
+    return Verdict(decision="allow", hook_event_name=hook_event_name)
+
+
+def evaluate(payload: dict) -> None:
+    """Decide allow/deny from a hook payload and emit the CC-canonical
+    stdout envelope, exiting the process directly.
+
+    Thin wrapper over ``decide``: an ``allow`` verdict exits silently
+    (``_allow``) and a ``deny`` verdict prints the per-event canonical
+    shape (``_deny``). Byte-identical to the pre-adapter ``evaluate``.
+    """
+    verdict = decide(payload)
+    if verdict.decision == "allow":
+        _allow()   # silent exit 0; CC continues
+    _deny(verdict.reason, hook_event_name=verdict.hook_event_name)
 
 
 def _managed_settings_path() -> str:
@@ -568,17 +593,41 @@ def post_heartbeat(*, api_key: str | None = None,
         return None
 
 
-def cli() -> int:  # pragma: no cover (CLI entry)
-    raw = sys.stdin.read().strip()
-    if not raw:
-        # Started outside a hook context; pass through
+def main() -> int:
+    """Gate entry point: detect the runtime, dispatch to its driver.
+
+    Design doc Section 3.4. With ``MAGI_CP_CODEX_RUNTIME_ENABLED`` unset
+    (default), ``detect_runtime`` always returns ``"cc"`` and this is
+    byte-identical to the pre-adapter ``cli`` contract: blank stdin →
+    silent allow, malformed JSON → deny, otherwise run the policy path.
+    The Codex branch is dead code with the flag off.
+    """
+    raw_stripped = sys.stdin.read().strip()
+    # Lazy import so the runtime package (and its Codex module) never
+    # loads on a plain CC invocation unless the dispatcher needs it.
+    from ..runtime import detect_runtime
+    runtime = detect_runtime(raw_stripped.encode("utf-8"), env=os.environ)
+    if runtime == "codex":
+        from ..runtime.codex import run_codex_gate
+        return run_codex_gate(raw_stripped)
+
+    # ── Claude Code path (byte-identical to the legacy cli). ──────────
+    if not raw_stripped:
+        # Started outside a hook context; pass through.
         _allow()
+    from ..runtime.cc import CCDriver
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+        payload = CCDriver().parse_hook_payload(
+            raw_stripped.encode("utf-8"),
+        ).raw
+    except (json.JSONDecodeError, ValueError):
         _deny("malformed hook payload (json)")
     evaluate(payload)
     return 0   # unreachable; evaluate exits
+
+
+def cli() -> int:  # pragma: no cover (CLI entry)
+    return main()
 
 
 def _context_templates_dir() -> str:
