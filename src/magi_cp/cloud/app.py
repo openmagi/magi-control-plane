@@ -4509,11 +4509,14 @@ def _attach_session_pack_routes(
 
     # Serialize activate/deactivate on the same (session_id, tenant_id)
     # to keep the read-then-write path atomic under uvicorn's async
-    # dispatch. A single asyncio.Lock is fine because the critical
-    # section is ~two millisecond DB round-trips.
+    # dispatch inside ONE worker. This lock is process-scoped only —
+    # cross-worker safety is delivered by ``SessionActivePacksRepo``
+    # itself (``SELECT ... FOR UPDATE`` on Postgres + IntegrityError
+    # retry), NOT by this lock. See the ``SessionActivePacks`` docstring
+    # in ``db.py`` for the full concurrency contract.
     session_lock = asyncio.Lock()
 
-    def _pack_exists_for_tenant(pack_id: str) -> bool:
+    def _pack_exists(pack_id: str) -> bool:
         """Return True iff ``pack_id`` names a pack the caller can
         activate. Built-in ids ("pack/…") live in the immutable catalog;
         user ids ("user-pack/…") live in the pack store. Anything else
@@ -4521,6 +4524,21 @@ def _attach_session_pack_routes(
 
         Kept in-process so a client cannot activate a random string and
         strand the gate with an id it will never resolve.
+
+        Tenant scoping note (decision 8 — single-tenant beta):
+        ``pack_store`` is currently process-wide, so no ``tenant_id``
+        argument is threaded through. When Phase 5 introduces
+        per-tenant pack stores, this helper MUST accept ``tenant_id``
+        and scope both the builtin visibility check and the store
+        lookup accordingly, otherwise tenant A could activate a
+        user-pack owned by tenant B by guessing the id.
+
+        TOCTOU: this helper is intentionally called from inside the
+        ``session_lock`` critical section in ``session_pack_activate``
+        so a pack deleted between the existence check and the repo
+        write cannot strand an orphaned id in
+        ``session_active_packs.pack_ids``. External callers must
+        preserve that invariant.
         """
         from ..policy.pack import builtin_pack_spec_by_id
         if not isinstance(pack_id, str) or not pack_id:
@@ -4585,10 +4603,14 @@ def _attach_session_pack_routes(
         pack_id = body.get("pack_id")
         if not isinstance(pack_id, str) or not pack_id:
             raise HTTPException(422, "pack_id is required")
-        if not _pack_exists_for_tenant(pack_id):
-            raise HTTPException(404, f"pack {pack_id!r} not found")
         repo = SessionActivePacksRepo(engine)
+        # TOCTOU: the pack-exists check MUST happen inside the same
+        # critical section as ``repo.activate`` so a pack deleted
+        # between the check and the write cannot strand an orphaned id
+        # in ``session_active_packs.pack_ids``. See ``_pack_exists``.
         async with session_lock:
+            if not _pack_exists(pack_id):
+                raise HTTPException(404, f"pack {pack_id!r} not found")
             row, _changed = repo.activate(session_id, tenant_id, pack_id)
         floor_pack_id = await _resolve_floor(tenant_id)
         envelope = _envelope(row, floor_pack_id)

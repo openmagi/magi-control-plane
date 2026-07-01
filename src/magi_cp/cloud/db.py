@@ -169,7 +169,7 @@ class SessionActivePacks(Base):
 
     One row per CC session per tenant. ``pack_ids`` carries the packs
     the operator has activated for THIS session, ordered by activation
-    time (oldest first). The tenant's floor pack is NOT stored here —
+    time (oldest first). The tenant's floor pack is NOT stored here.
     Phase 2's gate resolution unions the floor in at read time so a
     schema-level edit to which pack is the floor is picked up without
     rewriting every row.
@@ -185,9 +185,30 @@ class SessionActivePacks(Base):
     is a GC TTL, NOT the activation lifetime (per decision 5: activation
     persists until session end or explicit `/magi:pack:deactivate`).
 
-    Concurrency: writes serialize via the API-layer lock; SQLite's WAL
-    + short transaction gives us safe reads. Postgres pushes concurrent
-    activates through the standard row lock.
+    Concurrency
+    ~~~~~~~~~~~
+    Two overlapping layers protect the read-modify-write cycle:
+
+      1. In-process serialisation: the API layer holds a single
+         ``asyncio.Lock`` (see ``_attach_session_pack_routes`` in
+         ``app.py``). That lock is process-wide, so it only serialises
+         requests handled by the same uvicorn worker.
+      2. Cross-worker safety at the DB level: ``SessionActivePacksRepo``
+         uses ``SELECT ... FOR UPDATE`` (Postgres) plus an
+         ``IntegrityError``-retry loop to guarantee that concurrent
+         ``activate`` calls from different uvicorn workers or K8s
+         replicas never lose an update or 500 on a fresh-session race.
+         On SQLite the WAL + short-transaction discipline plus the same
+         retry loop delivers equivalent single-node safety.
+
+    Membership invariant
+    ~~~~~~~~~~~~~~~~~~~~
+    ``pack_ids`` is a JSON list treated as a set with insertion order.
+    Duplicate entries are meaningless (Phase 2's gate resolution would
+    merge the same pack twice) and are stripped defensively by every
+    read + write path in ``SessionActivePacksRepo``. Any future writer
+    (backfill script, admin mutation, migration) MUST preserve that
+    invariant.
     """
     __tablename__ = "session_active_packs"
     session_id: Mapped[str] = mapped_column(
@@ -201,9 +222,17 @@ class SessionActivePacks(Base):
     last_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     __table_args__ = (
+        # ``expires_at`` leads so the Phase-5 GC sweep
+        # (``DELETE ... WHERE expires_at < now()``) can hit the index
+        # regardless of tenant. ``tenant_id`` trails so per-tenant
+        # sweeps still get prefix locality inside the same ``expires_at``
+        # bucket. Swapping the column order was the P1 fix on top of
+        # a8a78139: the original ``(tenant_id, expires_at)`` shape
+        # forced a Seq Scan on global sweeps because ``tenant_id`` was
+        # never in the WHERE clause.
         Index(
-            "ix_session_active_packs_tenant_expires",
-            "tenant_id", "expires_at",
+            "ix_session_active_packs_expires_tenant",
+            "expires_at", "tenant_id",
         ),
     )
 
@@ -1092,6 +1121,36 @@ class CompiledPolicySnapshotRepo:
 # the store before the sweep can prune it).
 SESSION_ACTIVE_PACK_TTL_SECONDS = 30 * 24 * 3600
 
+# Retry budget for the read-modify-write loops in
+# ``SessionActivePacksRepo.activate`` / ``deactivate``. Concurrent
+# activates on a fresh (session_id, tenant_id) can both take the
+# insert branch and one loses on the PK collision; a small ceiling on
+# retries is enough because each losing writer converges to the
+# update branch on the next attempt.
+_SESSION_ACTIVE_PACK_MAX_RETRIES = 5
+
+
+def _dedupe_pack_ids(pack_ids: list | None) -> list[str]:
+    """Return ``pack_ids`` with duplicates stripped, order preserved.
+
+    Every read + write path funnels ``row.pack_ids`` through this
+    helper so a corrupt row imported from an external source is
+    healed on first touch instead of stranding Phase-2 gate resolution
+    with a merged-twice pack.
+    """
+    if not pack_ids:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in pack_ids:
+        if not isinstance(p, str) or not p:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
 
 class SessionActivePacksRepo:
     """CRUD for the per-session active-pack list.
@@ -1112,21 +1171,72 @@ class SessionActivePacksRepo:
         pack id if present. Returns ``(row, changed)`` — ``row=None``
         when the session row is missing (still idempotent).
 
-    Concurrency: the API layer holds a per-request asyncio.Lock around
-    activate + deactivate so two concurrent slash-commands cannot
-    interleave a read + write on the same session_id. Rows are keyed
-    by ``(session_id, tenant_id)`` so cross-tenant leakage is
-    impossible even under a lock miss.
+    Concurrency
+    ~~~~~~~~~~~
+    The API layer holds a single process-wide ``asyncio.Lock`` around
+    activate + deactivate so two concurrent slash-commands inside the
+    same uvicorn worker cannot interleave a read + write on the same
+    ``(session_id, tenant_id)``. That lock is process-scoped, so a
+    second uvicorn worker (or a K8s replica) sees no serialisation
+    from it.
+
+    Cross-worker safety is delivered by the DB itself, following the
+    same pattern ``LedgerRepo.append`` uses:
+
+      * The row-existence SELECT switches to
+        ``SELECT ... FOR UPDATE`` on Postgres so a second worker
+        blocks on the first worker's transaction commit and observes
+        the updated ``pack_ids`` on retry. Under SQLite the statement
+        is downgraded to a plain SELECT (SQLite's WRITE lock at commit
+        time gives equivalent single-node safety, and
+        ``with_for_update`` on SQLite either no-ops or raises depending
+        on the version so we skip it explicitly).
+      * The fresh-session insert path catches ``IntegrityError`` on
+        the composite PK and retries the loop; the losing writer
+        converges to the update branch on the next attempt instead of
+        propagating a 500.
+      * Rows are keyed by ``(session_id, tenant_id)`` so cross-tenant
+        leakage is impossible even under a lock miss.
+
+    Read-side duplicates in ``pack_ids`` are stripped via
+    ``_dedupe_pack_ids`` on every codepath so a corrupt legacy row
+    never leaks a merged-twice pack into Phase-2 gate resolution.
     """
 
     def __init__(self, engine: Engine):
         self.engine = engine
 
+    # ── internal helpers ──────────────────────────────────────────
+    def _uses_row_locks(self) -> bool:
+        """Only Postgres supports the ``FOR UPDATE`` clause we lean on
+        for cross-worker safety. Kept as a method so tests can monkeypatch.
+        """
+        return self.engine.dialect.name == "postgresql"
+
+    def _select_row(self, s: Session, session_id: str, tenant_id: str,
+                    *, for_update: bool):
+        stmt = select(SessionActivePacks).where(
+            SessionActivePacks.session_id == session_id,
+            SessionActivePacks.tenant_id == tenant_id,
+        )
+        if for_update and self._uses_row_locks():
+            stmt = stmt.with_for_update()
+        return s.scalar(stmt)
+
+    # ── read paths ────────────────────────────────────────────────
     def get(self, session_id: str, tenant_id: str) -> SessionActivePacks | None:
         with Session(self.engine) as s:
-            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            row = self._select_row(s, session_id, tenant_id, for_update=False)
             if row is None:
                 return None
+            # Heal any duplicate that slipped past a prior writer so
+            # callers never observe a merged-twice pack in the wire
+            # envelope. The write is idempotent under _dedupe_pack_ids.
+            deduped = _dedupe_pack_ids(row.pack_ids)
+            if deduped != list(row.pack_ids or []):
+                row.pack_ids = deduped
+                s.commit()
+                s.refresh(row)
             s.expunge(row)
             return row
 
@@ -1137,15 +1247,17 @@ class SessionActivePacksRepo:
         """
         now = int(time.time())
         with Session(self.engine) as s:
-            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            row = self._select_row(s, session_id, tenant_id, for_update=False)
             if row is None:
                 return None
             row.last_seen_at = now
+            row.pack_ids = _dedupe_pack_ids(row.pack_ids)
             s.commit()
             s.refresh(row)
             s.expunge(row)
             return row
 
+    # ── write paths ───────────────────────────────────────────────
     def activate(
         self, session_id: str, tenant_id: str, pack_id: str,
     ) -> tuple[SessionActivePacks, bool]:
@@ -1158,41 +1270,70 @@ class SessionActivePacksRepo:
 
         On first activate for the session, seeds ``activated_at``
         alongside ``last_seen_at`` / ``expires_at``.
+
+        Cross-worker safety: this method uses ``SELECT ... FOR UPDATE``
+        on Postgres so a second worker blocks on the first commit and
+        observes the updated ``pack_ids`` on retry. On the fresh-session
+        path we catch ``IntegrityError`` from a racing insert and
+        converge to the update branch on the next attempt instead of
+        propagating a 500. See the class docstring for the full
+        concurrency contract.
         """
+        from sqlalchemy.exc import IntegrityError
+
         now = int(time.time())
-        with Session(self.engine) as s:
-            row = s.get(SessionActivePacks, (session_id, tenant_id))
-            if row is None:
-                row = SessionActivePacks(
-                    session_id=session_id,
-                    tenant_id=tenant_id,
-                    pack_ids=[pack_id],
-                    activated_at=now,
-                    last_seen_at=now,
-                    expires_at=now + SESSION_ACTIVE_PACK_TTL_SECONDS,
+        for attempt in range(_SESSION_ACTIVE_PACK_MAX_RETRIES):
+            with Session(self.engine) as s:
+                row = self._select_row(
+                    s, session_id, tenant_id, for_update=True,
                 )
-                s.add(row)
+                if row is None:
+                    row = SessionActivePacks(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        pack_ids=[pack_id],
+                        activated_at=now,
+                        last_seen_at=now,
+                        expires_at=now + SESSION_ACTIVE_PACK_TTL_SECONDS,
+                    )
+                    s.add(row)
+                    try:
+                        s.commit()
+                    except IntegrityError:
+                        # A second worker won the fresh-insert race.
+                        # Rollback + retry — the next iteration takes
+                        # the update branch against the newly-visible
+                        # row.
+                        s.rollback()
+                        if attempt == _SESSION_ACTIVE_PACK_MAX_RETRIES - 1:
+                            raise
+                        continue
+                    s.refresh(row)
+                    s.expunge(row)
+                    return row, True
+
+                current = _dedupe_pack_ids(row.pack_ids)
+                if pack_id in current:
+                    # Idempotent no-op. Refresh last_seen_at + heal any
+                    # stray duplicate. TTL extension is reserved for
+                    # real changes (see docstring).
+                    row.pack_ids = current
+                    row.last_seen_at = now
+                    s.commit()
+                    s.refresh(row)
+                    s.expunge(row)
+                    return row, False
+                current.append(pack_id)
+                row.pack_ids = current
+                row.last_seen_at = now
+                row.expires_at = now + SESSION_ACTIVE_PACK_TTL_SECONDS
                 s.commit()
                 s.refresh(row)
                 s.expunge(row)
                 return row, True
-            current = list(row.pack_ids or [])
-            if pack_id in current:
-                # Idempotent no-op. Refresh last_seen_at only — see
-                # docstring: TTL extension is reserved for real changes.
-                row.last_seen_at = now
-                s.commit()
-                s.refresh(row)
-                s.expunge(row)
-                return row, False
-            current.append(pack_id)
-            row.pack_ids = current
-            row.last_seen_at = now
-            row.expires_at = now + SESSION_ACTIVE_PACK_TTL_SECONDS
-            s.commit()
-            s.refresh(row)
-            s.expunge(row)
-            return row, True
+        raise RuntimeError(
+            "session_active_packs activate exhausted retries (unreachable)"
+        )
 
     def deactivate(
         self, session_id: str, tenant_id: str, pack_id: str,
@@ -1203,14 +1344,23 @@ class SessionActivePacksRepo:
         Row retention: even when the active list becomes empty we KEEP
         the row so ``last_seen_at`` records that the session was here.
         Phase 5's GC sweep is the authoritative pruner.
+
+        Cross-worker safety mirrors ``activate``: the row read is
+        ``SELECT ... FOR UPDATE`` on Postgres so a second worker's
+        deactivate serialises behind the first commit. A missing row
+        never inserts a phantom, so there is no IntegrityError branch
+        to retry.
         """
         now = int(time.time())
         with Session(self.engine) as s:
-            row = s.get(SessionActivePacks, (session_id, tenant_id))
+            row = self._select_row(
+                s, session_id, tenant_id, for_update=True,
+            )
             if row is None:
                 return None, False
-            current = list(row.pack_ids or [])
+            current = _dedupe_pack_ids(row.pack_ids)
             if pack_id not in current:
+                row.pack_ids = current
                 row.last_seen_at = now
                 s.commit()
                 s.refresh(row)

@@ -311,3 +311,146 @@ def test_get_missing_row_still_returns_envelope(cloud):
     assert body["active_packs"] == []
     assert body["floor_pack_id"] == FLOOR_PACK_ID
     assert body["session_id"] == "fresh"
+
+
+# ── P0 fix: concurrent activate race safety ───────────────────────────
+#
+# a8a78139's repo used plain Session.get + Session.commit with no row
+# lock. Two concurrent activates on the same (session_id, tenant_id):
+#   1. UPDATE branch: both read pack_ids=['A'], one writes ['A','B'],
+#      the other writes ['A','C'] and the first write is silently lost.
+#   2. INSERT branch: both take the row-is-None path and one 500s on
+#      the composite PK.
+# The fix wraps activate in a retry loop that catches IntegrityError
+# and switches to SELECT FOR UPDATE on Postgres. These tests exercise
+# the InsertError retry (portable) and the JSON-list dedup invariant.
+
+
+def test_activate_survives_concurrent_fresh_insert_race(cloud):
+    """Concurrent fresh-session activate must not raise IntegrityError.
+
+    Simulate the race by hiding the freshly-committed row from the repo's
+    SELECT on attempt 0 (pretending our SELECT snapshot missed a
+    just-committed row from another worker), then letting the repo's
+    INSERT collide with the row that another worker actually landed. The
+    retry loop must catch ``IntegrityError``, roll back, and converge to
+    the UPDATE branch on attempt 1 instead of propagating a 500.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import Session as _Session
+
+    from magi_cp.cloud.db import SessionActivePacks
+
+    # Land the "other worker" row up front.
+    with _Session(cloud["engine"]) as other:
+        other.add(SessionActivePacks(
+            session_id="sess_race",
+            tenant_id="tenant-a",
+            pack_ids=["pack/research-mode"],
+            activated_at=int(time.time()),
+            last_seen_at=int(time.time()),
+            expires_at=int(time.time()) + 60,
+        ))
+        other.commit()
+
+    repo = SessionActivePacksRepo(cloud["engine"])
+    original_select_row = repo._select_row
+    attempts = {"n": 0}
+
+    def _hiding_select(s, session_id, tenant_id, *, for_update):
+        # On attempt 0 pretend the row is absent so the repo takes the
+        # INSERT branch; the actual DB then rejects the INSERT because
+        # the other-worker row is already there. On attempt 1 fall
+        # through to the real read so the UPDATE branch wins.
+        if attempts["n"] == 0:
+            attempts["n"] += 1
+            return None
+        return original_select_row(
+            s, session_id, tenant_id, for_update=for_update,
+        )
+
+    repo._select_row = _hiding_select  # type: ignore[assignment]
+    row, changed = repo.activate("sess_race", "tenant-a", "pack/coding-safety")
+    assert changed is True
+    assert row.pack_ids == ["pack/research-mode", "pack/coding-safety"]
+    # Confirm exactly one row landed.
+    with _Session(cloud["engine"]) as s:
+        rows = list(s.scalars(
+            _select(SessionActivePacks)
+            .where(SessionActivePacks.session_id == "sess_race")
+        ))
+        assert len(rows) == 1
+
+
+def test_activate_dedupes_legacy_duplicate_pack_ids(cloud):
+    """A corrupt row with a duplicate id must be healed on next write."""
+    from sqlalchemy.orm import Session as _Session
+
+    from magi_cp.cloud.db import SessionActivePacks
+
+    # Seed a legacy row with a duplicate by bypassing the repo.
+    with _Session(cloud["engine"]) as s:
+        s.add(SessionActivePacks(
+            session_id="sess_dup",
+            tenant_id="tenant-a",
+            pack_ids=["pack/research-mode", "pack/research-mode"],
+            activated_at=1,
+            last_seen_at=1,
+            expires_at=1 + 60,
+        ))
+        s.commit()
+
+    repo = SessionActivePacksRepo(cloud["engine"])
+    row, changed = repo.activate("sess_dup", "tenant-a", "pack/research-mode")
+    # Idempotent no-op semantically, but the duplicate is stripped.
+    assert changed is False
+    assert row.pack_ids == ["pack/research-mode"]
+
+
+def test_get_heals_legacy_duplicate_pack_ids(cloud):
+    """Read paths dedupe defensively so the wire envelope stays clean."""
+    from sqlalchemy.orm import Session as _Session
+
+    from magi_cp.cloud.db import SessionActivePacks
+
+    with _Session(cloud["engine"]) as s:
+        s.add(SessionActivePacks(
+            session_id="sess_dup2",
+            tenant_id="tenant-a",
+            pack_ids=[
+                "pack/research-mode",
+                "pack/research-mode",
+                "pack/coding-safety",
+            ],
+            activated_at=1,
+            last_seen_at=1,
+            expires_at=1 + 60,
+        ))
+        s.commit()
+
+    repo = SessionActivePacksRepo(cloud["engine"])
+    row = repo.get("sess_dup2", "tenant-a")
+    assert row is not None
+    assert row.pack_ids == ["pack/research-mode", "pack/coding-safety"]
+
+
+def test_activate_unknown_pack_still_404_after_toctou_move(cloud):
+    """The 404 gate moved inside session_lock — regression guard."""
+    r = cloud["client"].post(
+        "/session/sess_toctou/packs/activate",
+        headers={"X-Api-Key": cloud["key_a"]},
+        json={"pack_id": "pack/does-not-exist"},
+    )
+    assert r.status_code == 404
+
+
+def test_session_active_packs_index_leads_with_expires_at():
+    """Phase-5 GC sweep predicate is on ``expires_at`` alone, so the
+    supporting index MUST lead with that column or Postgres falls back
+    to a Seq Scan. P1 fix on top of a8a78139.
+    """
+    from magi_cp.cloud.db import SessionActivePacks
+    idx = next(iter(SessionActivePacks.__table_args__))
+    cols = [c.name for c in idx.columns]
+    assert cols[0] == "expires_at", cols
+    assert "tenant_id" in cols, cols
