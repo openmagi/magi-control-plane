@@ -211,3 +211,21 @@ Rollback:
 - Schema migrations (`scripts/migrate_*.py`): document migrations are
   one-way. Helm rollback alone is not sufficient; restore the DB from
   the backup taken before the migration ran.
+
+## Dashboard exposure
+
+The dashboard is designed for **operator localhost use**. Its server process
+holds ambient credentials (`MAGI_CP_API_KEY`, `MAGI_CP_ADMIN_API_KEY`,
+`MAGI_CP_ADMIN_HMAC_SECRET`) that the BFF injects into backend calls, so a
+reachable dashboard is effectively an admin console.
+
+- **Localhost (default):** loopback requests are trusted; no sign-in needed.
+- **Exposed over a network:** any non-loopback console request must present a
+  signed session cookie. Set `MAGI_CP_DASHBOARD_SESSION_SECRET` (falls back to
+  `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server and sign in at `/login`
+  with a tenant API key. With no secret configured the console **fails closed**
+  and denies every non-loopback request.
+- **Behind a reverse proxy:** the `Host` header is set by the proxy and can be
+  spoofed to look like loopback. Set `MAGI_CP_TRUST_LOOPBACK_HEADER=0` so a
+  session is required for **every** console request, and enforce authentication
+  at the proxy as well. Do not rely on the loopback exception behind a proxy.

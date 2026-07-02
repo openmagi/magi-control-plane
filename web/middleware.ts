@@ -1,60 +1,84 @@
 import { NextResponse, type NextRequest } from "next/server"
+import {
+  isLoopbackHost,
+  verifySession,
+  trustLoopbackHeader,
+  CONSOLE_COOKIE,
+} from "@/lib/dashboard-auth"
 
 /**
- * Marketing-only deploy gate.
+ * Two responsibilities, both keyed off the request path:
  *
- * The same Next.js codebase ships both the marketing surface (welcome,
- * install guide, install.sh, compose.yml) AND the dashboard console
- * (rules, policies, hitl, ledger, presets, setup). In the official
- * docker image they run together at the user's localhost.
+ * 1. Marketing-only deploy gate (MAGI_CP_MARKETING_ONLY=1, e.g. the public
+ *    cp.openmagi.ai Vercel deploy): there is no hosted control plane, so
+ *    redirect every non-marketing route to /install.
  *
- * The Vercel deploy at cp.openmagi.ai is marketing-ONLY though — there
- * is no hosted control plane, so it would be misleading to let visitors
- * walk into /policies/new on cp.openmagi.ai and start authoring against
- * "nothing." Set MAGI_CP_MARKETING_ONLY=1 in that environment and the
- * middleware below redirects every non-marketing route to /install.
- *
- * Locally and in the user's self-hosted dashboard the env is unset, so
- * this middleware is a no-op and the console renders normally.
+ * 2. Self-host console backstop (WEB-1): when NOT marketing-only, the console
+ *    holds ambient admin credentials. Loopback requests are trusted (single
+ *    operator localhost default); any non-loopback console request must carry
+ *    a signed session cookie (see lib/dashboard-auth). Fails closed when no
+ *    signing secret is set. Behind a reverse proxy set
+ *    MAGI_CP_TRUST_LOOPBACK_HEADER=0 to require a session for every request.
  */
 const MARKETING_ONLY = process.env.MAGI_CP_MARKETING_ONLY === "1"
 
-// Path prefixes that always stay public on marketing-only deploys.
+// Prefixes that stay public in BOTH modes.
 const MARKETING_PUBLIC: readonly string[] = [
   "/welcome",
-  "/install",          // /install + /install.sh
-  "/docs",             // /docs + /docs/<slug>
-  "/r",                // /r/<token> public run-share links
+  "/install",
+  "/docs",
+  "/r",
   "/legal",
-  "/self-host",        // /self-host/docker-compose.yml
+  "/self-host",
   "/api/install-config",
   "/api/downloads",
   "/robots.txt",
   "/sitemap.xml",
 ]
 
-export function middleware(req: NextRequest): NextResponse {
-  if (!MARKETING_ONLY) return NextResponse.next()
+// Console-guard public set = marketing-public + the login page itself.
+const CONSOLE_PUBLIC: readonly string[] = [...MARKETING_PUBLIC, "/login"]
+
+function matchesPrefix(path: string, prefixes: readonly string[]): boolean {
+  return prefixes.some(
+    (p) => path === p || path.startsWith(p + "/") || path === p + ".sh",
+  )
+}
+
+export async function middleware(req: NextRequest): Promise<NextResponse> {
   const path = req.nextUrl.pathname
-  if (path === "/") {
+
+  // (1) Marketing-only deploy.
+  if (MARKETING_ONLY) {
+    if (path === "/") {
+      const url = req.nextUrl.clone()
+      url.pathname = "/welcome"
+      return NextResponse.redirect(url)
+    }
+    if (matchesPrefix(path, MARKETING_PUBLIC)) return NextResponse.next()
     const url = req.nextUrl.clone()
-    url.pathname = "/welcome"
+    url.pathname = "/install"
+    url.searchParams.set("from", path)
     return NextResponse.redirect(url)
   }
-  if (MARKETING_PUBLIC.some((p) => path === p || path.startsWith(p + "/") || path === p + ".sh")) {
+
+  // (2) Self-host console backstop.
+  if (path === "/") return NextResponse.next()
+  if (matchesPrefix(path, CONSOLE_PUBLIC)) return NextResponse.next()
+
+  if (trustLoopbackHeader() && isLoopbackHost(req.headers.get("host"))) {
     return NextResponse.next()
   }
-  // Console routes on a marketing-only deploy: redirect to install.
-  // Visitors who land here typed the URL directly or followed an old
-  // link; the install page is the right next step.
+  if (await verifySession(req.cookies.get(CONSOLE_COOKIE)?.value)) {
+    return NextResponse.next()
+  }
   const url = req.nextUrl.clone()
-  url.pathname = "/install"
+  url.pathname = "/login"
   url.searchParams.set("from", path)
   return NextResponse.redirect(url)
 }
 
 export const config = {
-  // Skip framework internals + the static assets dir; everything else
-  // routes through the middleware.
+  // Skip framework internals + static assets; everything else routes through.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.png$|.*\\.svg$).*)"],
 }
