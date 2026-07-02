@@ -909,17 +909,54 @@ design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
    CC-only run-share path. When a transcript-consuming feature is built for
    Codex it MUST use a Codex-rollout-JSONL reader, not the CC reader
    (recorded at the codex.py breadcrumb + F7).
-5. DONE (docs). `codex exec` documented as a gate-bypass surface unless
-   enforcement rides the managed requirements layer (F2/F6); the managed
-   installer is exactly that layer, so a correctly-installed tenant is not
-   bypassable via `codex exec`.
+5. DONE (docs). `codex exec` documented as a gate-bypass surface for USER
+   config.toml hooks (F2, proven). Enforcement is installed to the managed
+   `/etc/codex/requirements.toml` layer instead (F5/F6), which the installer
+   already targets root-owned. IMPORTANT HONESTY CAVEAT: F2 proved only that
+   USER config.toml hooks do not fire under `codex exec`. It did NOT prove
+   that MANAGED `requirements.toml [[hooks]]` DO fire under `codex exec`
+   (that needs a rooted `/etc/codex` install to test, which the live run did
+   not do). So "a correctly-installed tenant is enforced under `codex exec`"
+   is the DESIGN intent, not an empirically verified fact yet. It is a
+   pending live-test (call it D9). Two consequences flow from this:
+   - The strongest MDM-enforced Codex surface is deny/prompt PERMISSION
+     rules (F5), and the `PermissionPolicy`/`McpGatingPolicy` ->
+     requirements lowering is NOT built (`_coverage_status_for` returns
+     `codex_native_config_pending`; `TODO(live-test P2)`). Until it lands,
+     the Codex managed config emits only command-hook tables (firing
+     unverified under headless exec) and NO native deny rules. This is the
+     highest-priority follow-up for real Codex enforcement.
+   - Per the no-default-OFF policy the adapter still ships default-ON so
+     this gap is visible rather than hidden; it is NOT presented as a
+     proven-enforcement guarantee.
 
-Net: the live test found ONE real bug (F4, fixed) and otherwise CONFIRMED
-the existing architecture (managed requirements = enforced surface). The
-deny-only constraint (F5) is a forward-constraint on the not-yet-built
-PermissionPolicy->requirements lowering (`TODO(live-test P2)` in codex.py),
-recorded at the emitter docstring. D1/D2/D3/D4/D6/D7/D8 remain unrun (need
-interactive TUI or an MDM harness).
+Follow-ups surfaced by the multi-angle review (all P2, non-blocking, on the
+now-default-ON flag):
+- Alternation matcher hole: FIXED. A translatable CC tool inside an
+  alternation (`Edit|Write`) is now translated per-token in
+  `translate_matcher_cc_to_codex` (split on `|`, translate, dedupe, sort);
+  a matcher of only read-family tokens still reports the read-family
+  downgrade, not "enforced".
+- `detect_runtime` CC byte-identity is now heuristic (payload-sniff) rather
+  than a hard pre-flip short-circuit. Safe today (CC payloads carry no
+  `turn_id`/`matcher_aliases`); a hardening option is to require an explicit
+  positive runtime selection for the Codex dispatch rather than a bare
+  payload sniff.
+- Shell coverage: `Bash -> exec_command` is the confirmed mapping; Codex's
+  `write_stdin` (stdin into an already-gated `exec_command` session) is not
+  separately mapped. Lower risk (the parent command was already gated), but
+  a full shell-family confirmation is a follow-up.
+- Non-root `curl | bash` installs land the managed files user-owned and only
+  warn (pre-existing); consider a hard-fail for the codex/both runtimes.
+
+Net: the live test found ONE real bug (F4 matcher translation, fixed;
+alternation form also fixed post-review) and otherwise CONFIRMED the
+existing architecture (managed requirements = the enforced surface, though
+its firing under headless `codex exec` is still pending live verification,
+D9). The deny-only constraint (F5) is a forward-constraint on the
+not-yet-built PermissionPolicy->requirements lowering (`TODO(live-test P2)`).
+D1/D2/D3/D4/D6/D7/D8/D9 remain unrun (need interactive TUI, a rooted install,
+or an MDM harness).
 
 ## 12. Live test checklist (pointer)
 

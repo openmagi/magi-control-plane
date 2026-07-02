@@ -71,7 +71,7 @@ def test_shim_a_coverage_marks_silent_skip_tool():
     report = driver.coverage_report([_evidence("p", matcher="Read")])
     entry = report.policies[0]
     assert entry.status == "codex_silent_skip"
-    assert entry.downgrade == "PermissionRequest+PostToolUse audit"
+    assert entry.downgrade == "PermissionRequest+PostToolUse audit fallback (inert: no 1:1 Codex tool name)"
 
 
 def test_shim_a_emitter_adds_permission_and_posttooluse_fallbacks():

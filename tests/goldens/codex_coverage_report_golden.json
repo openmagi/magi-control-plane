@@ -11,7 +11,7 @@
     {
       "policy_id": "ev/read-silent-skip",
       "status": "codex_silent_skip",
-      "downgrade": "PermissionRequest+PostToolUse audit"
+      "downgrade": "PermissionRequest+PostToolUse audit fallback (inert: no 1:1 Codex tool name)"
     },
     {
       "policy_id": "ctx/pretool-downgrade",

@@ -128,18 +128,47 @@ def test_file_mutation_tools_dedupe_to_single_apply_patch_table():
         assert cc not in bundle.requirements_toml
 
 
-def test_read_family_and_regex_matchers_pass_through_unchanged():
-    # Read-family CC tools have no 1:1 Codex tool, and regex/alternation
-    # matchers are not translated: both pass through verbatim.
+def test_read_family_and_mcp_matchers_pass_through_unchanged():
+    # Read-family CC tools have no 1:1 Codex tool, and an MCP tool name is
+    # identical on both runtimes: both pass through verbatim.
     policies = [
         _evidence("r", event="PostToolUse", matcher="Read"),
         _evidence("g", event="PreToolUse", matcher="Grep"),
-        _evidence("x", event="PreToolUse", matcher="Edit|Write"),
+        _evidence("m", event="PreToolUse", matcher="mcp__github__create_issue"),
     ]
     toml = compile_to_codex_requirements(policies).requirements_toml
     assert 'matcher = "Read"' in toml
     assert 'matcher = "Grep"' in toml
-    assert 'matcher = "Edit|Write"' in toml
+    assert 'matcher = "mcp__github__create_issue"' in toml
+
+
+def test_alternation_of_tool_names_translates_and_dedupes():
+    # A simple alternation of bare tool names is translated per-token, so a
+    # translatable CC tool inside an alternation still binds to its Codex
+    # tool instead of firing zero times (the alternation form of the F4
+    # false-coverage hole). Tokens are deduped + sorted for byte-stability.
+    #   Edit|Write   -> apply_patch (both map to apply_patch, deduped)
+    #   Bash|Read    -> Read|exec_command (Bash translated, Read passes; sorted)
+    a = compile_to_codex_requirements(
+        [_evidence("a", event="PreToolUse", matcher="Edit|Write")]
+    ).requirements_toml
+    assert 'matcher = "apply_patch"' in a
+    assert '"Edit|Write"' not in a
+
+    b = compile_to_codex_requirements(
+        [_evidence("b", event="PreToolUse", matcher="Bash|Read")]
+    ).requirements_toml
+    assert 'matcher = "Read|exec_command"' in b
+    assert '"Bash|Read"' not in b
+
+    # Order-invariant: Write|Edit and Edit|Write emit identical output.
+    fwd = compile_to_codex_requirements(
+        [_evidence("x", event="PreToolUse", matcher="Edit|Write")]
+    ).requirements_toml
+    rev = compile_to_codex_requirements(
+        [_evidence("x", event="PreToolUse", matcher="Write|Edit")]
+    ).requirements_toml
+    assert fwd == rev
 
 
 def test_task_matcher_translates_to_spawn_agent():
