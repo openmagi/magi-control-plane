@@ -243,7 +243,11 @@ def _req_key(r):
     if r.kind == "step":
         return ("step", r.step, r.verdict)
     if r.kind == "regex":
-        return ("regex", r.pattern)
+        # DETERMINISM-1: field_path scopes WHICH field the pattern matches, so
+        # two regex requirements with the same pattern but different field_path
+        # are DISTINCT checks. Omitting field_path from the key collapsed them
+        # in the merge dedup, silently dropping one field's check.
+        return ("regex", r.pattern, getattr(r, "field_path", "") or "")
     if r.kind == "llm_critic":
         return ("llm_critic", r.criterion)
     if r.kind == "shacl":
