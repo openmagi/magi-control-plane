@@ -16,6 +16,25 @@ if ! command -v magi-cp-gate >/dev/null 2>&1; then
   pip install -e "$HERE" >/dev/null
 fi
 
+# Resolve the gate binary's ABSOLUTE path now so we can bake it into the
+# installed shim (PLUGIN-1). Baking a literal absolute path stops a
+# PATH-shadowing `magi-cp-gate` from hijacking the hook at runtime.
+GATE_BIN="$(command -v magi-cp-gate)"
+
+# _bake_gate_path <installed-shim-path>: replace the @MAGI_CP_GATE_BIN@ sentinel
+# in the installed shim with the resolved absolute gate path. Portable
+# substitution via python3 (avoids GNU vs BSD `sed -i` differences).
+_bake_gate_path() {
+  python3 - "$1" "$GATE_BIN" <<'PY'
+import sys
+path, gate = sys.argv[1], sys.argv[2]
+# Replace ONLY the first sentinel (the GATE='...' assignment). The second
+# occurrence is the "was I substituted?" comparison and must stay intact.
+s = open(path).read().replace("@MAGI_CP_GATE_BIN@", gate, 1)
+open(path, "w").write(s)
+PY
+}
+
 # 2) Copy plugin bundle.
 echo "→ Installing plugin bundle"
 mkdir -p "$USER_PLUGIN_DIR"
@@ -33,14 +52,17 @@ fi
 # 4) Install gate shim where managed-settings references it.
 if [ "${MAGI_CP_MANAGED:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
   install -m 0755 -o root "$HERE/scripts/magi-gate.sh" /usr/local/bin/magi-gate.sh
+  _bake_gate_path /usr/local/bin/magi-gate.sh
   echo "   /usr/local/bin/magi-gate.sh  (root:0755)"
 elif [ -w /usr/local/bin ]; then
   install -m 0755 "$HERE/scripts/magi-gate.sh" /usr/local/bin/magi-gate.sh
+  _bake_gate_path /usr/local/bin/magi-gate.sh
   echo "   /usr/local/bin/magi-gate.sh"
 else
   # User-mode fallback: install under ~/.local/bin and rewrite managed-settings.
   mkdir -p "$HOME/.local/bin"
   install -m 0755 "$HERE/scripts/magi-gate.sh" "$HOME/.local/bin/magi-gate.sh"
+  _bake_gate_path "$HOME/.local/bin/magi-gate.sh"
   python3 - "$USER_PLUGIN_DIR/managed-settings.json" "$HOME/.local/bin/magi-gate.sh" <<'PY'
 import json, sys
 p = sys.argv[1]

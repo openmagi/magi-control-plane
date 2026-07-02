@@ -133,6 +133,12 @@ def cli(argv: list[str]) -> int:
         action="store_true",
         help="build + redact the view and print it; do not upload",
     )
+    p.add_argument(
+        "--allow-plain-http",
+        action="store_true",
+        help="permit plain http:// to a non-loopback --cloud-url "
+             "(the tenant key + transcript would travel in cleartext)",
+    )
     args = p.parse_args(argv)
 
     try:
@@ -149,8 +155,22 @@ def cli(argv: list[str]) -> int:
         print("error: --api-key or MAGI_CP_API_KEY required", file=sys.stderr)
         return 2
 
-    if urllib.parse.urlsplit(args.cloud_url).scheme not in ("http", "https"):
+    parsed = urllib.parse.urlsplit(args.cloud_url)
+    if parsed.scheme not in ("http", "https"):
         print(f"error: --cloud-url must be http(s), got {args.cloud_url!r}", file=sys.stderr)
+        return 2
+    # TRANSIT-1: the upload carries the tenant API key + the redacted
+    # transcript. Refuse plain http:// to a non-loopback host so those do not
+    # travel in cleartext; loopback (the default dev cloud) stays allowed, and
+    # --allow-plain-http is the explicit override.
+    _loopback = (parsed.hostname or "") in ("127.0.0.1", "localhost", "::1")
+    if parsed.scheme == "http" and not _loopback and not args.allow_plain_http:
+        print(
+            "error: refusing plain http:// to a non-loopback host "
+            f"({args.cloud_url!r}); the tenant key would be sent in cleartext. "
+            "Use https, or pass --allow-plain-http to override.",
+            file=sys.stderr,
+        )
         return 2
 
     try:

