@@ -115,6 +115,12 @@ _KEY_PREFIX = "mcp_"
 _KEY_ENTROPY_BYTES = 15   # base32-encoded → 24 chars
 _PREFIX_DISPLAY_LEN = 8
 
+# How stale `last_used_at` may get before we write it again. Auth happens on
+# every request; committing the timestamp each time takes the SQLite single
+# writer lock per request (a real bottleneck under load). Writing at most once
+# per interval keeps the field approximately fresh at a fraction of the writes.
+_LAST_USED_WRITE_INTERVAL_S = 60
+
 
 def _hash_key(cleartext: str) -> str:
     return hashlib.sha256(cleartext.encode("utf-8")).hexdigest()
@@ -293,12 +299,17 @@ class ApiKeyRepo:
                 return None
             if tenant.status != "active":
                 return None
-            # Update last_used_at best-effort; never block auth on this write.
-            try:
-                key.last_used_at = int(time.time())
-                s.commit()
-            except Exception:
-                pass
+            # Update last_used_at best-effort, but throttled: only write when
+            # the stored value is older than the interval, so a burst of
+            # authenticated requests does not serialise on a per-request commit
+            # (SQLite single writer). Never block auth on this write.
+            now = int(time.time())
+            if now - (key.last_used_at or 0) >= _LAST_USED_WRITE_INTERVAL_S:
+                try:
+                    key.last_used_at = now
+                    s.commit()
+                except Exception:
+                    pass
             return AuthOk(tenant_id=tenant.id, status=tenant.status,
                           api_key_id=key.id)
 
