@@ -25,13 +25,18 @@ async function verifyKey(formData: FormData): Promise<void> {
     }
     redirect("/setup?err=cloud")
   }
-  const { cookies } = await import("next/headers")
+  const { cookies, headers } = await import("next/headers")
+  // WEB-3: mark the tenant-key cookie Secure when served over https so it is
+  // not sent in cleartext on a networked deployment. Left off on plain-http
+  // localhost dev (where Secure cookies would be dropped by the browser).
+  const isHttps = (headers().get("x-forwarded-proto") ?? "").includes("https")
   cookies().set({
     name: SETUP_COOKIE,
     value: key,
     path: "/setup",
     httpOnly: true,
     sameSite: "lax",
+    secure: isHttps,
     maxAge: 60 * 60 * 24,
   })
   revalidatePath("/setup")

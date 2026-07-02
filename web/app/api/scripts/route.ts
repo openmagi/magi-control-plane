@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server"
 import { cloud, CloudConfigError, type ScriptRuntime } from "@/lib/cloud"
+import { isSameOrigin } from "@/lib/same-origin"
 
 /**
  * D63 — same-origin proxy for script uploads.
@@ -40,6 +41,12 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   const form = await req.formData().catch(() => null)
   if (form == null) {
     return Response.json(
@@ -109,6 +116,12 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   const u = new URL(req.url)
   const id = u.searchParams.get("id")?.trim() ?? ""
   if (!id) {

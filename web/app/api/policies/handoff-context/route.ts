@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server"
+import { isSameOrigin } from "@/lib/same-origin"
 
 /**
  * D57g: same-origin proxy for "Continue in conversation" handoff.
@@ -66,6 +67,12 @@ function utf8Bytes(x: unknown): number {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   let body: unknown
   try {
     body = await req.json()

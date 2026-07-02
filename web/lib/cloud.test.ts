@@ -443,7 +443,7 @@ describe("cloud client", () => {
   })
 
   // ── v2.2: tenant provisioning (signup queue retired) ─────────────────
-  it("createTenant signs body with HMAC and sends x-magi-signature", async () => {
+  it("createTenant signs method+path+timestamp+body and sends x-magi-signature", async () => {
     process.env.MAGI_CP_ADMIN_HMAC_SECRET = "shared-secret-xxxx"
     let captured: any
     global.fetch = vi.fn(async (url: any, init: any) => {
@@ -459,9 +459,12 @@ describe("cloud client", () => {
     expect(body.tenant_id).toBe("acme-co-abcd")
     expect(body.plan).toBe("alpha")
     expect(body.expires_at).toBeNull()
+    // AUTH-2: signature binds method + path + timestamp + body.
+    const ts = captured.init.headers["x-magi-timestamp"]
+    expect(ts).toBeTruthy()
     const crypto = await import("node:crypto")
     const expected = crypto.createHmac("sha256", "shared-secret-xxxx")
-      .update(captured.init.body).digest("hex")
+      .update(`POST\n/admin/tenants\n${ts}\n${captured.init.body}`).digest("hex")
     expect(captured.init.headers["x-magi-signature"]).toBe(expected)
     expect(out.id).toBe("acme-co-abcd")
   })
