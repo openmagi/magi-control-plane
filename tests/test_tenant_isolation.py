@@ -52,10 +52,17 @@ def _client_with_registry():
 def _hmac_post(c: TestClient, path: str, payload: dict):
     import hashlib
     import hmac as _hmac
+    import time as _time
     body = json.dumps(payload).encode("utf-8")
-    sig = _hmac.new(b"test-hmac", body, hashlib.sha256).hexdigest()
+    ts = str(int(_time.time()))
+    signing = (
+        b"POST\n" + path.encode("utf-8") + b"\n"
+        + ts.encode("utf-8") + b"\n" + body
+    )
+    sig = _hmac.new(b"test-hmac", signing, hashlib.sha256).hexdigest()
     return c.post(path, headers={
-        "X-Magi-Signature": sig, "Content-Type": "application/json",
+        "X-Magi-Signature": sig, "X-Magi-Timestamp": ts,
+        "Content-Type": "application/json",
     }, content=body)
 
 

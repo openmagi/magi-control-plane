@@ -24,6 +24,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# Module-level so FastAPI's get_type_hints() can resolve the `request: Request`
+# annotation on metrics_endpoint (a locally-imported name is invisible to it,
+# and the route would then treat `request` as a required query param -> 422).
+# fastapi is a base dependency, so this import is always available.
+from fastapi import Request
+
 
 # ── structlog setup ────────────────────────────────────────────────
 _STRUCTLOG_CONFIGURED = False
@@ -132,13 +138,20 @@ def get_metric(name: str):
 
 
 def attach_metrics(app) -> None:
-    """Add a public-but-operator-only `/metrics` endpoint.
+    """Add an operator-facing `/metrics` endpoint.
 
-    No authentication: Prometheus scrapers (kube-prometheus, Grafana Cloud, …)
-    don't carry custom auth headers; the safer pattern is a private listener
-    or a network policy that limits access. K8s NetworkPolicy + ingress rules
-    in the helm chart restrict /metrics to the monitoring namespace.
+    The counters carry a `tenant_id` label, so on an exposed instance an
+    unauthenticated scraper could enumerate tenants + their activity (OBS-1).
+    Two defenses, both opt-in:
+      - MAGI_CP_METRICS_TOKEN: when set, require `Authorization: Bearer <token>`
+        (constant-time compare). Unset keeps the legacy no-auth behavior for
+        deployments that rely on network isolation instead.
+      - charts/magi-cp NetworkPolicy (networkPolicy.enabled): restrict ingress
+        to the monitoring namespace. The chart now ships that template rather
+        than only claiming it in a docstring.
     """
+    import os
+
     metrics = _ensure_metrics()
     if metrics is None:
         return   # extra not installed; skip
@@ -149,7 +162,15 @@ def attach_metrics(app) -> None:
         return
 
     @app.get("/metrics", include_in_schema=False)
-    def metrics_endpoint() -> Response:
+    def metrics_endpoint(request: Request) -> Response:
+        token = os.environ.get("MAGI_CP_METRICS_TOKEN")
+        if token:
+            import hmac as _hmac
+            presented = (
+                request.headers.get("authorization") or ""
+            ).removeprefix("Bearer ").strip()
+            if not presented or not _hmac.compare_digest(presented, token):
+                return Response("unauthorized", status_code=401)
         return Response(
             generate_latest(_METRICS_REGISTRY),
             media_type=CONTENT_TYPE_LATEST,

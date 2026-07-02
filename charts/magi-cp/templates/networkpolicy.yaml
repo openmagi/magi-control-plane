@@ -1,0 +1,35 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-cloud
+  labels:
+    app.kubernetes.io/name: magi-cp
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: magi-cp
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Same namespace can always reach the pod (dashboard sidecar, etc).
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8787
+          protocol: TCP
+    {{- with .Values.networkPolicy.allowNamespaceSelectors }}
+    # Operator-listed namespaces (ingress controller, monitoring/scrapers).
+    - from:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+      ports:
+        - port: 8787
+          protocol: TCP
+    {{- end }}
+{{- end }}

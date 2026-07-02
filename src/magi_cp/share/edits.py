@@ -147,6 +147,12 @@ def apply_share_edits(view: Mapping[str, object], edits: object) -> dict:
         summary = view.get("summary")
         if isinstance(summary, Mapping):
             out["summary"] = _redact_deep(summary, terms)
+        # Also cover the top-level trace + results free text: without this an
+        # owner-supplied redaction term still appeared in the public response's
+        # trace/results, defeating the hide the owner asked for (SHARE-2).
+        for extra_key in ("trace", "results"):
+            if extra_key in out:
+                out[extra_key] = _redact_deep(out.get(extra_key), terms)
 
     out["transcript"] = kept
     out["governance"] = governance

@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server"
+import { isSameOrigin } from "@/lib/same-origin"
 
 /**
  * D55b: same-origin proxy for the Conversational compose UI.
@@ -61,6 +62,12 @@ function j(body: unknown, status: number): Response {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   let body: unknown
   try {
     body = await req.json()

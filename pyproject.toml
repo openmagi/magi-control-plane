@@ -8,12 +8,15 @@ version = "0.0.1"
 description = "magi-control-plane — agent-governance control plane (alpha)"
 requires-python = ">=3.11"
 dependencies = [
-  "cryptography>=42",
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.27",
-  "pydantic>=2",
-  "sqlalchemy>=2",
-  "httpx>=0.27",
+  # Upper bounds block a surprise next-major landing at build time (SUPPLY-1).
+  # The exact resolved versions are pinned by uv.lock; these ceilings are the
+  # human-facing "known-compatible" range. Bump deliberately with a lock update.
+  "cryptography>=42,<50",
+  "fastapi>=0.110,<1",
+  "uvicorn[standard]>=0.27,<1",
+  "pydantic>=2,<3",
+  "sqlalchemy>=2,<3",
+  "httpx>=0.27,<1",
 ]
 
 [project.optional-dependencies]

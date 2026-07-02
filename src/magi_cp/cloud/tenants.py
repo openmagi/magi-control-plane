@@ -242,6 +242,23 @@ class ApiKeyRepo:
             k.revoked_at = int(time.time())
             s.commit()
 
+    def revoke_for_tenant(self, key_id: int, tenant_id: str) -> bool:
+        """Revoke a key only if it belongs to ``tenant_id``.
+
+        Returns False on a missing key OR a tenant mismatch, so the admin
+        route cannot revoke another tenant's key by guessing its (sequential,
+        autoincrement) id. Idempotent: revoking an already-revoked key of the
+        same tenant returns True.
+        """
+        with Session(self.engine) as s:
+            k = s.get(ApiKey, key_id)
+            if k is None or k.tenant_id != tenant_id:
+                return False
+            if k.revoked_at is None:
+                k.revoked_at = int(time.time())
+                s.commit()
+            return True
+
     def list_for_tenant(self, tenant_id: str) -> list[ListedKey]:
         with Session(self.engine) as s:
             rows = s.execute(

@@ -563,14 +563,32 @@ class TokenBucketLimiter(BaseHTTPMiddleware):
         self.refill = refill_per_sec
         self._buckets: dict[str, tuple[float, float]] = {}   # key → (tokens, last_ts)
 
+    # Evict idle buckets once the map grows past this, so a flood of
+    # distinct keys cannot grow _buckets without bound (API-2 memory DoS).
+    _EVICT_WHEN_OVER = 10_000
+    _EVICT_IDLE_S = 3600
+
+    def _evict_stale(self, now: float) -> None:
+        if len(self._buckets) <= self._EVICT_WHEN_OVER:
+            return
+        cutoff = now - self._EVICT_IDLE_S
+        stale = [k for k, (_, last) in self._buckets.items() if last < cutoff]
+        for k in stale:
+            self._buckets.pop(k, None)
+
     async def dispatch(self, request: Request, call_next):
         # No throttling on health/pubkey (cheap, public)
         if request.url.path in ("/healthz", "/pubkey"):
             return await call_next(request)
-        key = (request.headers.get("x-api-key")
-               or request.headers.get("x-hitl-api-key")
-               or request.client.host if request.client else "anon")
+        # Key on the CONNECTION source, never a caller-supplied header.
+        # Keying on x-api-key let an attacker mint a fresh bucket per request
+        # (rate-limit bypass) and grow _buckets without bound (API-2). Behind
+        # a trusted reverse proxy every request shares the proxy IP's bucket;
+        # a future improvement is parsing X-Forwarded-For from a configured
+        # trusted proxy, but the safe default is the socket peer.
+        key = request.client.host if request.client else "anon"
         now = time.time()
+        self._evict_stale(now)
         tokens, last = self._buckets.get(key, (self.cap, now))
         tokens = min(self.cap, tokens + (now - last) * self.refill)
         if tokens < 1:
@@ -583,6 +601,31 @@ class TokenBucketLimiter(BaseHTTPMiddleware):
 def _json_response(status: int, payload: dict):
     from fastapi.responses import JSONResponse
     return JSONResponse(payload, status_code=status)
+
+
+async def _bounded_regex_search(
+    rx: "re.Pattern[str]", text: str, *, timeout: float = 2.0,
+) -> bool:
+    """Run ``rx.search(text)`` in a worker thread with a wall-clock cap.
+
+    A catastrophic-backtracking pattern from an authenticated caller would
+    otherwise wedge the event loop and stall every other tenant's request
+    (API-1). Running the search off the loop keeps the loop responsive; on
+    timeout we return False (deny) rather than block. The pattern is compiled
+    on the calling thread first, so a bad pattern still surfaces as a 422 and
+    only the (immutable, thread-safe) compiled object crosses into the thread.
+
+    Note: Python's ``re`` cannot be interrupted mid-scan, so a timed-out
+    search keeps running in its thread until it finishes; bounding the number
+    of concurrent inline regex evaluations is a follow-up. The loop itself is
+    never blocked.
+    """
+    def _run() -> bool:
+        return rx.search(text) is not None
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_run), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
 
 
 # ── auth deps (constant-time compare; fail-closed if env unset) ──────
@@ -785,7 +828,10 @@ def create_app(
     _SHARE_BASE_URL = os.environ.get(
         "MAGI_CP_SHARE_BASE_URL", "https://cloud.openmagi.ai"
     ).rstrip("/")
-    _SHARE_TTL_SECONDS = int(os.environ.get("MAGI_CP_SHARE_TTL_SECONDS", "0")) or None
+    # Default public run-share links to a 30-day TTL (SHARE-1). A leaked share
+    # URL is otherwise valid forever. Operators who want permanent links set
+    # MAGI_CP_SHARE_TTL_SECONDS=0 (explicit no-expiry opt-in).
+    _SHARE_TTL_SECONDS = int(os.environ.get("MAGI_CP_SHARE_TTL_SECONDS", "2592000")) or None
 
     @app.post("/v1/runs/share", dependencies=[Depends(require_tenant_auth)])
     async def runs_share(request: Request) -> dict:
@@ -809,6 +855,12 @@ def create_app(
             view=redacted,
             ttl_seconds=_SHARE_TTL_SECONDS,
         )
+        # Best-effort GC of revoked / expired rows so stored redacted views do
+        # not linger forever (SHARE-1). Never fail share creation on a GC error.
+        try:
+            share_repo.purge_expired()
+        except Exception:  # pragma: no cover - defensive
+            pass
         return {"token": token, "url": f"{_SHARE_BASE_URL}/r/{token}"}
 
     @app.get("/share/run/{token}")
@@ -1611,7 +1663,7 @@ def create_app(
                 else:
                     assert isinstance(resolved, str)
                     scoped_text = resolved
-                    if rx.search(scoped_text):
+                    if await _bounded_regex_search(rx, scoped_text):
                         verdict_status = "pass"
                         reasons = [
                             f"pattern matched on {req.field_path}: "
@@ -1627,7 +1679,7 @@ def create_app(
                 # replay scans the SAME text the runtime scanned.
                 payload_text = scoped_text
             else:
-                if rx.search(payload_text):
+                if await _bounded_regex_search(rx, payload_text):
                     verdict_status = "pass"
                     reasons = [f"pattern matched: {req.pattern[:80]}"]
                 else:
@@ -1927,7 +1979,10 @@ def create_app(
         # for general /ledger; here we include because the reviewer is gated.
         ctx_entries = []
         if subj is not None:
-            for e in ledger.list_by_subject(subj):
+            # Scope by the item's tenant: `subject` is a cross-tenant
+            # namespace, so an unscoped read would surface another tenant's
+            # ledger bodies here (TENANT-1).
+            for e in ledger.list_by_subject(subj, tenant_id=item.tenant_id):
                 ctx_entries.append({
                     "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
                     "body": e.body,
@@ -1971,6 +2026,7 @@ def create_app(
         async with chain_lock:
             return _issue_token(subj, phash, "pass",
                                 ledger=ledger, keystore=ks, kid=kid,
+                                tenant_id=item.tenant_id,
                                 extra={"hitl_id": item_id, "approver": body.approver})
 
     @app.post("/hitl/{item_id}/reject", dependencies=[Depends(require_hitl_key)])
@@ -1991,7 +2047,8 @@ def create_app(
                                 "payload_hash": phash,
                                 "hitl_id": item_id,
                                 "approver": body.approver},
-                          token="")
+                          token="",
+                          tenant_id=item.tenant_id)
         return {"verdict": "rejected", "token": None, "hitl_id": item_id}
 
     # D52c follow-up: cap the repeatable `verifier=` parameter so an
@@ -3947,19 +4004,13 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
           - matcher does not cover `tool_name`
           - rewriter is a no-op against the payload
 
-        Auth: optional. When the cloud has `MAGI_CP_API_KEY` set, the
-        request must carry a matching `X-Api-Key` header (the shim
-        forwards it from the same env). When unset (default dev loop),
-        the endpoint accepts anonymous calls so the local gate without
-        a tenant credential still works.
+        Auth: fail-closed. `MAGI_CP_API_KEY` unset -> 503 (not configured),
+        present + mismatch -> 401. The shipped image always sets the key
+        (compose `${VAR:?}`); the previous "only enforce if the env is set"
+        was a fail-OPEN default that surfaced the rewrite on a misconfigured
+        deployment (API-3). The shim forwards the same key from its env.
         """
-        import hmac as _hmac
-        expected_key = os.environ.get("MAGI_CP_API_KEY")
-        if expected_key:
-            if not x_api_key or not _hmac.compare_digest(
-                x_api_key, expected_key,
-            ):
-                raise HTTPException(401, "invalid or missing api key")
+        _check_key("MAGI_CP_API_KEY", x_api_key)
 
         target_id = req.policy_id
         match: AnyPolicy | None = None
@@ -4034,18 +4085,12 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
           - policy not found / disabled
           - policy is not a RunCommandPolicy
         """
-        import hmac as _hmac
-        expected_key = os.environ.get("MAGI_CP_API_KEY")
-        if expected_key:
-            if not x_api_key or not _hmac.compare_digest(
-                x_api_key, expected_key,
-            ):
-                raise HTTPException(401, "invalid or missing api key")
-        # When the env var is unset, the dev loop runs on loopback
-        # only. Refuse non-loopback callers explicitly so a misbound
-        # cloud port (0.0.0.0) does not surface specs to the public.
-        # The trust boundary on hosted is the MAGI_CP_API_KEY check
-        # above + the MAGI_CP_ALLOW_RUN_COMMAND=0 gate below.
+        # Fail-closed, now matching the docstring: unset MAGI_CP_API_KEY -> 503,
+        # mismatch -> 401. The previous "only if env is set" was fail-OPEN, and
+        # the removed "refuse non-loopback callers" comment described a check
+        # that was never implemented (there is no request object here). The
+        # real trust boundary is this key check plus MAGI_CP_ALLOW_RUN_COMMAND=0.
+        _check_key("MAGI_CP_API_KEY", x_api_key)
         if not _run_command_allowed():
             return {"matched": False, "reason": "disabled"}
         target_id = req.policy_id
@@ -5246,13 +5291,17 @@ def _attach_runtime_routes(
 def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
     """HMAC-authenticated admin routes for tenant/key lifecycle.
 
-    Called by clawy's Stripe webhook (on subscription start/cancel/etc) and by
-    the clawy dashboard's "create API key" button (server action → HMAC POST).
-    Auth is HMAC-SHA256 over the raw request body — caller signs with the
+    Called by the billing Stripe webhook (on subscription start/cancel/etc)
+    and by the operator dashboard's "create API key" button (server action to
+    HMAC POST). Auth is HMAC-SHA256 over `method\\npath\\ntimestamp\\nbody`,
+    presented as `x-magi-signature` + `x-magi-timestamp`. Caller signs with the
     shared `MAGI_CP_ADMIN_HMAC_SECRET` env var.
 
-    No bearer token: webhooks fire from many IPs, HMAC over body is the safer
-    surface (replay-resistant + body-tamper-resistant in one check).
+    No bearer token: webhooks fire from many IPs, HMAC is the safer surface.
+    The signature binds method + path (so a capture cannot be replayed on a
+    different admin route) + a timestamp within a 300s window (so a capture
+    expires). The reference client signing string lives in the billing repo's
+    docs/clawy-integration.md and must match `require_hmac` below.
     """
     from .tenants import ApiKeyRepo, TenantRepo
 
@@ -5264,8 +5313,27 @@ def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
             raise HTTPException(503, "admin hmac not configured")
         body = await request.body()
         presented = request.headers.get("x-magi-signature") or ""
+        ts_raw = request.headers.get("x-magi-timestamp") or ""
+        # Bind the signature to method + path + timestamp + body. Body-only
+        # signing let a captured empty-body signature be replayed across the
+        # revoke / reactivate / issue-key routes (they all sign the constant
+        # HMAC(secret, b"")), and had no freshness. The timestamp window makes
+        # a captured signature expire; the method + path stop cross-route
+        # reuse. See docs/clawy-integration.md for the exact signing string.
+        try:
+            ts = int(ts_raw)
+        except ValueError:
+            raise HTTPException(401, "missing or invalid x-magi-timestamp")
+        if abs(int(time.time()) - ts) > 300:
+            raise HTTPException(401, "admin signature timestamp out of window")
+        signing = (
+            request.method.encode("utf-8") + b"\n"
+            + request.url.path.encode("utf-8") + b"\n"
+            + ts_raw.encode("utf-8") + b"\n"
+            + body
+        )
         expected = _hmac.new(
-            secret.encode("utf-8"), body, _hashlib.sha256,
+            secret.encode("utf-8"), signing, _hashlib.sha256,
         ).hexdigest()
         if not _hmac.compare_digest(presented, expected):
             raise HTTPException(401, "invalid admin signature")
@@ -5352,11 +5420,13 @@ def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
     async def admin_revoke_key(tenant_id: str, key_id: int,
                                 request: Request) -> dict:
         await require_hmac(request)
-        repo = ApiKeyRepo(engine)
-        try:
-            repo.revoke(key_id)
-        except KeyError:
-            raise HTTPException(404, f"key {key_id} not found")
+        # Scope the revoke to the tenant named in the path so a valid admin
+        # signature cannot revoke another tenant's key by guessing its
+        # (sequential) id. AUTH-2.
+        if not ApiKeyRepo(engine).revoke_for_tenant(key_id, tenant_id):
+            raise HTTPException(
+                404, f"key {key_id} not found for tenant {tenant_id!r}"
+            )
         return {"id": key_id, "revoked": True}
 
 
@@ -6245,7 +6315,7 @@ def _attach_endpoint_routes(app: FastAPI, engine, *,
         # are accepted unconditionally — the per-endpoint key (not
         # wired yet) is the real anti-replay anchor.
         if body.nonce:
-            prev = repo.get(endpoint_id)
+            prev = repo.get(endpoint_id, tenant_id)
             if prev is not None and prev.last_nonce == body.nonce:
                 raise HTTPException(409, "nonce reused")
         hb = repo.beat(

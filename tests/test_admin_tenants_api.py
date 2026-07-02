@@ -21,8 +21,14 @@ from fastapi.testclient import TestClient
 HMAC_SECRET = "test-hmac-secret-for-admin-api"
 
 
-def _sign(body: bytes) -> str:
-    mac = hmac.new(HMAC_SECRET.encode("utf-8"), body, hashlib.sha256)
+def _sign(method: str, path: str, ts: str, body: bytes) -> str:
+    signing = (
+        method.encode("utf-8") + b"\n"
+        + path.encode("utf-8") + b"\n"
+        + ts.encode("utf-8") + b"\n"
+        + body
+    )
+    mac = hmac.new(HMAC_SECRET.encode("utf-8"), signing, hashlib.sha256)
     return mac.hexdigest()
 
 
@@ -48,9 +54,12 @@ def _client():
 
 
 def _post(c: TestClient, path: str, payload: dict) -> "TestClient":
+    import time as _time
     body = json.dumps(payload).encode("utf-8")
+    ts = str(int(_time.time()))
     return c.post(path, headers={
-        "X-Magi-Signature": _sign(body),
+        "X-Magi-Signature": _sign("POST", path, ts, body),
+        "X-Magi-Timestamp": ts,
         "Content-Type": "application/json",
     }, content=body)
 

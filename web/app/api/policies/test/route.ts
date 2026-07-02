@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server"
 import { cloud, CloudConfigError } from "@/lib/cloud"
+import { isSameOrigin } from "@/lib/same-origin"
 
 /**
  * D77 — same-origin proxy for the synthetic CC hook payload simulator.
@@ -22,6 +23,12 @@ import { cloud, CloudConfigError } from "@/lib/cloud"
 export const dynamic = "force-dynamic"
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   let body: unknown
   try {
     body = await req.json()

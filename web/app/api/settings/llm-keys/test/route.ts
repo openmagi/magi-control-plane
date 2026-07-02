@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server"
 import { cloud, CloudConfigError } from "@/lib/cloud"
+import { isSameOrigin } from "@/lib/same-origin"
 
 /**
  * Q97b — same-origin proxy for the /settings page's "Test connection"
@@ -32,6 +33,12 @@ function cloudErrToStatus(e: unknown): number {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return Response.json(
+      { error: "cross-origin request rejected" },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    )
+  }
   let body: unknown = {}
   try {
     body = await req.json()

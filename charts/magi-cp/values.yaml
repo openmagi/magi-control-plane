@@ -93,3 +93,18 @@ serviceMonitor:
   enabled: false
   namespace: ""              # defaults to release namespace
   interval: 30s
+
+# NetworkPolicy (OBS-1). /metrics shares the 8787 API port, so it cannot be
+# network-isolated from the API by path; the real per-endpoint /metrics defense
+# is MAGI_CP_METRICS_TOKEN. This policy hardens pod ingress in general: when
+# enabled it default-denies ingress and allows only (a) the same namespace and
+# (b) any namespaces matching `allowNamespaceSelector`. Leave disabled unless
+# your CNI enforces NetworkPolicy, and verify the selectors match your ingress
+# controller namespace or you will black-hole API traffic.
+networkPolicy:
+  enabled: false
+  # Extra namespace label selectors allowed to reach 8787 (e.g. your ingress
+  # controller + monitoring). Each entry is a matchLabels map.
+  allowNamespaceSelectors: []
+    # - kubernetes.io/metadata.name: ingress-nginx
+    # - kubernetes.io/metadata.name: monitoring

@@ -200,12 +200,17 @@ export async function createTenantHmac(
 ): Promise<unknown> {
   const secret = _key("MAGI_CP_ADMIN_HMAC_SECRET")
   const raw = JSON.stringify({ tenant_id: tenantId, plan, expires_at: null })
-  const sig = createHmac("sha256", secret).update(raw).digest("hex")
-  const r = await fetch(`${CLOUD_URL}/admin/tenants`, {
+  const path = "/admin/tenants"
+  const ts = String(Math.floor(Date.now() / 1000))
+  const sig = createHmac("sha256", secret)
+    .update(`POST\n${path}\n${ts}\n${raw}`)
+    .digest("hex")
+  const r = await fetch(`${CLOUD_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-magi-signature": sig,
+      "x-magi-timestamp": ts,
     },
     body: raw,
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),

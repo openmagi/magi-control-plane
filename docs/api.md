@@ -11,10 +11,15 @@ mutating routes require auth via `X-Api-Key`, `X-Admin-Api-Key`, or
 | `X-Api-Key` | Tenant `mcp_...` key | Tenant-scoped reads / token emits. |
 | `X-Hitl-Api-Key` | HITL operator key | HITL queue read / approve / reject. |
 | `X-Admin-Api-Key` | Admin key | Policy CRUD, verifier registry inspect. |
-| `x-magi-signature` | HMAC-SHA256 over raw body | Admin endpoints called from automation. |
+| `x-magi-signature` + `x-magi-timestamp` | HMAC-SHA256 over `method\npath\ntimestamp\nbody` | Admin endpoints called from automation. |
 
-HMAC bodies must be signed over the exact bytes sent. Re-serializing
-JSON between sign and send changes the bytes and the request will 401.
+The admin HMAC signs `METHOD\nPATH\nTIMESTAMP\nBODY` (newline-joined), where
+`PATH` has no query string and `TIMESTAMP` is unix seconds. Present the hex
+digest in `x-magi-signature` and the same timestamp in `x-magi-timestamp`.
+Binding method + path stops a captured signature being replayed on a different
+admin route; the timestamp must be within 300 seconds of the server clock, so a
+capture expires. Sign over the exact body bytes sent (re-serializing JSON
+between sign and send changes the bytes and the request will 401).
 
 ## Health
 
@@ -158,7 +163,8 @@ sent in `x-magi-signature`.
 
 ```http
 POST /admin/tenants
-x-magi-signature: <hmac_sha256 hex>
+x-magi-signature: <hmac_sha256 hex over METHOD\nPATH\nTIMESTAMP\nBODY>
+x-magi-timestamp: <unix seconds>
 Content-Type: application/json
 
 {"tenant_id": "t-cus-NhP3oABC123", "plan": "default", "expires_at": 1769990400}
@@ -171,7 +177,8 @@ Idempotent on `tenant_id`. Re-POSTing returns the existing record.
 
 ```http
 POST /admin/tenants/{tenant_id}/keys
-x-magi-signature: <hmac_sha256 hex>
+x-magi-signature: <hmac_sha256 hex over METHOD\nPATH\nTIMESTAMP\nBODY>
+x-magi-timestamp: <unix seconds>
 
 {}
 
