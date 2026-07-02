@@ -240,17 +240,19 @@ def _evidence() -> EvidencePolicy:
     )
 
 
-def test_coverage_marks_permission_mcp_subagent_pending():
+def test_coverage_marks_permission_mcp_subagent_natively():
+    # Design 2026-07-01: PermissionPolicy is now lowered to a native Codex
+    # surface. Bash deny -> requirements.toml prefix_rule = enforced. MCP
+    # gating has no native profile expression (hook path). Subagent rides
+    # features.multi_agent + the spawn_agent hook.
     driver = CodexDriver()
     report = driver.coverage_report(
         [_evidence(), _permission(), _mcp(), _subagent()]
     )
     by_id = {p.policy_id: p.status for p in report.policies}
-    # Hook-producing archetype is truthfully enforced.
     assert by_id["ev1"] == "enforced"
-    # Native-surface archetypes have no Codex managed-config emitter yet.
-    assert by_id["perm1"] == "codex_native_config_pending"
-    assert by_id["mcp1"] == "codex_native_config_pending"
-    assert by_id["sub1"] == "codex_native_config_pending"
-    # And they are NOT counted as enforced in the rollup.
-    assert report.enforced_count == 1
+    assert by_id["perm1"] == "enforced"          # Bash(rm -rf /*) -> prefix_rule
+    assert by_id["mcp1"] == "codex_no_native_mcp_profile"
+    assert by_id["sub1"] == "codex_subagent_multi_agent"
+    # ev1 + perm1 are natively enforced.
+    assert report.enforced_count == 2

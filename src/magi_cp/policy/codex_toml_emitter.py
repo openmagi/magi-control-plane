@@ -89,6 +89,14 @@ class CodexRequirementsBundle:
     requirements_toml: str
     hooks_json_sidecar: str
     context_templates: dict[str, str] = field(default_factory=dict)
+    # PermissionPolicy native lowering (design 2026-07-01): the
+    # ``[permissions.<profile>]`` profile block that defines the Magi-owned
+    # enforcement profile (filesystem + network rules). Installed to the
+    # managed config layer (``/etc/codex/managed_config.toml``), separate
+    # from ``requirements.toml`` which carries the profile allowlist +
+    # command ``[rules].prefix_rules``. Empty string when no
+    # PermissionPolicy maps to a filesystem/network rule.
+    permissions_toml: str = ""
 
 
 def _context_template_hash(template: str) -> str:
@@ -237,6 +245,225 @@ def _toml_str(value: str) -> str:
     return f'"{escaped}"'
 
 
+# ── PermissionPolicy native lowering (design 2026-07-01) ─────────────
+# The Magi-owned managed enforcement profile. Its filesystem/network rules
+# live in ``managed_config.toml``; ``requirements.toml`` forces it via
+# ``default_permissions`` + ``[allowed_permission_profiles]`` and carries
+# command denies as ``[rules].prefix_rules``. All keys confirmed from
+# developers.openai.com/codex/permissions + /enterprise/managed-configuration.
+CODEX_PERMISSION_PROFILE = "magi-enforced"
+CODEX_PERMISSION_BASE = ":workspace"
+
+# CC tool -> Codex native surface (routing by the tool prefix of
+# ``PermissionPolicy.pattern`` = ``<Tool>(<args>)``).
+_FS_READ_TOOLS: frozenset[str] = frozenset({"Read", "Glob", "Grep"})
+_FS_WRITE_TOOLS: frozenset[str] = frozenset({"Write", "Edit", "MultiEdit",
+                                             "NotebookEdit"})
+_NET_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
+# Restrictiveness rank for most-restrictive-wins merge on a shared key.
+_FS_RANK = {"read": 0, "write": 1, "deny": 2}
+_NET_RANK = {"allow": 0, "deny": 1}
+
+
+@dataclass(frozen=True)
+class PermissionLowering:
+    """Structured result of lowering PermissionPolicy/McpGatingPolicy onto
+    Codex native surfaces. Everything sorted/merged for byte-stability."""
+    fs_rules: dict[str, str]           # glob -> read|write|deny
+    net_domains: dict[str, str]        # host -> allow|deny
+    command_rules: list[dict]          # {tokens: [...], decision, justification}
+    hook_residual_ids: list[str]       # policies with no native surface
+
+
+def _parse_permission_pattern(pattern: str) -> tuple[str, str]:
+    """Split a CC ``PermissionPolicy.pattern`` into (tool, args).
+
+    ``Bash(rm -rf *)`` -> ("Bash", "rm -rf *");
+    ``Read(/etc/**)`` -> ("Read", "/etc/**");
+    ``mcp__server__tool(x)`` -> ("mcp", "x"); bare ``Agent`` -> ("Agent", "").
+    The tool is the leading identifier before ``(`` or the first ``__``.
+    """
+    head = pattern
+    args = ""
+    if "(" in head:
+        head, _, rest = head.partition("(")
+        args = rest[:-1] if rest.endswith(")") else rest
+    tool = head.split("__", 1)[0]
+    return tool, args.strip()
+
+
+def _command_tokens(args: str) -> list[str]:
+    """Extract argv prefix tokens from a CC ``Bash(...)`` arg body.
+
+    CC uses a trailing ``:*`` or ``*`` to mean "prefix match"; Codex
+    ``prefix_rule`` is inherently a prefix, so the wildcard tail is dropped.
+    ``git push:*`` -> ["git", "push"]; ``rm -rf *`` -> ["rm", "-rf"].
+    An empty body (bare ``Bash``) -> [] (matches all commands).
+    """
+    a = args.strip()
+    if a.endswith(":*"):
+        a = a[:-2]
+    elif a.endswith("*"):
+        a = a[:-1]
+    return a.strip(": ").split()
+
+
+def _lower_permissions(policies: list[AnyPolicy]) -> PermissionLowering:
+    """Route PermissionPolicy/McpGatingPolicy onto Codex native surfaces.
+
+    Filesystem/network ``ask`` has no native prompt tier, and MCP gating is
+    not profile-expressible (per the permissions docs), so those fall to the
+    hook path and are reported as ``hook_residual_ids``. Command ``allow``
+    needs no rule (allow is the default absent a deny), so only ``deny`` ->
+    ``forbidden`` and ``ask`` -> ``prompt`` emit a ``prefix_rule``.
+    """
+    fs: dict[str, str] = {}
+    net: dict[str, str] = {}
+    commands: list[dict] = []
+    residual: list[str] = []
+
+    def _merge_fs(glob: str, tier: str) -> None:
+        cur = fs.get(glob)
+        if cur is None or _FS_RANK[tier] > _FS_RANK[cur]:
+            fs[glob] = tier
+
+    def _merge_net(host: str, val: str) -> None:
+        cur = net.get(host)
+        if cur is None or _NET_RANK[val] > _NET_RANK[cur]:
+            net[host] = val
+
+    for p in policies:
+        if isinstance(p, McpGatingPolicy):
+            # MCP tool gating is not expressible as a permission profile;
+            # it stays on the hook path (design 2.3).
+            residual.append(p.id)
+            continue
+        if not isinstance(p, PermissionPolicy):
+            continue
+        tool, args = _parse_permission_pattern(p.pattern)
+        decision = p.permission  # allow | deny | ask
+
+        if tool == "Bash":
+            if decision == "deny":
+                commands.append({"tokens": _command_tokens(args),
+                                 "decision": "forbidden", "id": p.id})
+            elif decision == "ask":
+                commands.append({"tokens": _command_tokens(args),
+                                 "decision": "prompt", "id": p.id})
+            # allow -> no rule (default). Nothing emitted.
+            continue
+
+        if tool in _FS_READ_TOOLS or tool in _FS_WRITE_TOOLS:
+            glob = args or "**"
+            if decision == "deny":
+                _merge_fs(glob, "deny")
+            elif decision == "allow":
+                _merge_fs(glob, "write" if tool in _FS_WRITE_TOOLS else "read")
+            else:  # ask: no filesystem prompt tier -> hook path
+                residual.append(p.id)
+            continue
+
+        if tool in _NET_TOOLS:
+            host = args
+            if host.startswith("domain:"):
+                host = host[len("domain:"):]
+            host = host or "*"
+            if decision == "deny":
+                _merge_net(host, "deny")
+            elif decision == "allow":
+                _merge_net(host, "allow")
+            else:  # ask: no network prompt tier -> hook path
+                residual.append(p.id)
+            continue
+
+        # Agent / Task / TodoWrite / anything else: no native permission
+        # surface (subagent handled via multi_agent + spawn_agent hook).
+        residual.append(p.id)
+
+    # Sort command rules deterministically (by tokens then decision).
+    commands.sort(key=lambda c: (c["tokens"], c["decision"], c["id"]))
+    return PermissionLowering(
+        fs_rules=fs, net_domains=net,
+        command_rules=commands, hook_residual_ids=sorted(residual),
+    )
+
+
+def permission_native_status(p: PermissionPolicy) -> tuple[str, str | None]:
+    """Codex coverage ``(status, downgrade)`` for a single PermissionPolicy.
+
+    Mirrors the routing in ``_lower_permissions`` so ``coverage_report`` can
+    tell the operator whether a permission policy lands on a real native
+    surface (``enforced``) or falls back to the hook path. Kept here so the
+    routing table lives in exactly one place.
+    """
+    # A genuinely native surface returns downgrade=None (renders GREEN /
+    # enforced). Only a hook fallback sets a downgrade note (renders amber).
+    tool, _args = _parse_permission_pattern(p.pattern)
+    if tool == "Bash":
+        # deny -> forbidden, ask -> prompt, allow -> default (all honored
+        # by the requirements.toml prefix_rule / profile default).
+        return ("enforced", None)
+    if tool in _FS_READ_TOOLS or tool in _FS_WRITE_TOOLS:
+        if p.permission == "ask":
+            return ("codex_no_prompt_tier",
+                    "hook PreToolUse fallback (fs has no prompt tier)")
+        return ("enforced", None)
+    if tool in _NET_TOOLS:
+        if p.permission == "ask":
+            return ("codex_no_prompt_tier",
+                    "hook PreToolUse fallback (network has no prompt tier)")
+        return ("enforced", None)
+    if tool == "mcp":
+        return ("codex_no_native_mcp_profile", "hook PreToolUse on the mcp tool")
+    # Agent / Task / TodoWrite / anything else: no native permission surface.
+    return ("codex_no_native_permission", "hook PreToolUse fallback")
+
+
+def _emit_prefix_rule(rule: dict) -> str:
+    """One inline TOML ``prefix_rule`` table for ``[rules].prefix_rules``."""
+    toks = ", ".join(f"{{ token = {_toml_str(t)} }}" for t in rule["tokens"])
+    return (
+        f"  {{ pattern = [{toks}], decision = {_toml_str(rule['decision'])}, "
+        f"justification = {_toml_str('Magi policy ' + rule['id'])} }},"
+    )
+
+
+def _emit_permissions_profile(low: PermissionLowering) -> str:
+    """The ``[permissions.<profile>]`` block for ``managed_config.toml``.
+
+    Empty string when there are no filesystem/network rules (the profile
+    would be a no-op envelope). Deterministic: globs/hosts sorted.
+    """
+    if not low.fs_rules and not low.net_domains:
+        return ""
+    lines: list[str] = []
+    lines.append(f"[permissions.{CODEX_PERMISSION_PROFILE}]")
+    lines.append(f'description = "Magi-managed enforcement profile"')
+    lines.append(f"extends = {_toml_str(CODEX_PERMISSION_BASE)}")
+    lines.append("")
+    if low.fs_rules:
+        lines.append(
+            f'[permissions.{CODEX_PERMISSION_PROFILE}.filesystem.'
+            f'":workspace_roots"]'
+        )
+        for glob in sorted(low.fs_rules):
+            lines.append(f"{_toml_str(glob)} = {_toml_str(low.fs_rules[glob])}")
+        lines.append("")
+    if low.net_domains:
+        lines.append(f"[permissions.{CODEX_PERMISSION_PROFILE}.network]")
+        lines.append("enabled = true")
+        lines.append("")
+        lines.append(
+            f"[permissions.{CODEX_PERMISSION_PROFILE}.network.domains]"
+        )
+        for host in sorted(low.net_domains):
+            lines.append(
+                f"{_toml_str(host)} = {_toml_str(low.net_domains[host])}"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def compile_to_codex_requirements(
     policies: list[AnyPolicy],
 ) -> CodexRequirementsBundle:
@@ -263,8 +490,20 @@ def compile_to_codex_requirements(
     added_subagent_mirror = _add_gap_shim_fallbacks(policies, events)
     has_subagent = has_subagent or added_subagent_mirror
 
+    # PermissionPolicy native lowering (design 2026-07-01).
+    low = _lower_permissions(policies)
+    permissions_toml = _emit_permissions_profile(low)
+    has_profile = bool(permissions_toml)
+
     # ── requirements.toml ────────────────────────────────────────────
     lines: list[str] = []
+    # Top-level scalars must precede every table (TOML). ``default_permissions``
+    # forces the Magi-owned profile when it carries filesystem/network rules.
+    if has_profile:
+        lines.append(
+            f"default_permissions = {_toml_str(CODEX_PERMISSION_PROFILE)}"
+        )
+        lines.append("")
     lines.append("[features]")
     lines.append("hooks = true")
     if has_subagent:
@@ -272,6 +511,22 @@ def compile_to_codex_requirements(
         # (design doc Section 6.2).
         lines.append("multi_agent = true")
     lines.append("")
+
+    # Profile allowlist: only the Magi profile is selectable, so the user
+    # cannot fall back to a weaker one (the MDM enforcement).
+    if has_profile:
+        lines.append("[allowed_permission_profiles]")
+        lines.append(f"{_toml_str(CODEX_PERMISSION_PROFILE)} = true")
+        lines.append("")
+
+    # Command denies/asks as inline prefix_rules (deny-only: prompt/forbidden).
+    if low.command_rules:
+        lines.append("[rules]")
+        lines.append("prefix_rules = [")
+        for rule in low.command_rules:
+            lines.append(_emit_prefix_rule(rule))
+        lines.append("]")
+        lines.append("")
 
     for event in sorted(events):
         for matcher in _emit_matchers(events[event]):
@@ -311,12 +566,15 @@ def compile_to_codex_requirements(
         requirements_toml=requirements_toml,
         hooks_json_sidecar=hooks_json_sidecar,
         context_templates=context_templates,
+        permissions_toml=permissions_toml,
     )
 
 
 __all__ = [
     "CodexRequirementsBundle",
     "compile_to_codex_requirements",
+    "PermissionLowering",
+    "CODEX_PERMISSION_PROFILE",
     "CODEX_GATE_COMMAND",
     "CODEX_HOOK_TIMEOUT_MS",
 ]

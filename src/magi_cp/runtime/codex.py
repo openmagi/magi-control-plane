@@ -287,16 +287,24 @@ def _policy_event_matcher(p: AnyPolicy) -> tuple[str, str]:
 def _coverage_status_for(p: AnyPolicy) -> tuple[str, str | None]:
     """Per-policy Codex coverage ``(status, downgrade)``.
 
-    Native-surface archetypes CC compiles to ``permissions`` /
-    ``allowedMcpServers`` / ``Agent(<name>)`` deny (Permission / Mcp /
-    Subagent) have NO Codex managed-config emitter yet, so they report
-    ``codex_native_config_pending`` rather than a false ``enforced``.
-    The gap-shim markers key off the policy's (event, matcher).
+    Native-surface archetypes are now lowered (design 2026-07-01):
+    ``PermissionPolicy`` routes to a Codex permission profile (filesystem /
+    network) or a ``requirements.toml`` ``prefix_rule`` (command), so it
+    reports a real status via ``permission_native_status``. ``McpGatingPolicy``
+    has no native profile expression (per the permissions docs) and stays on
+    the hook path. ``SubagentPolicy`` rides ``features.multi_agent`` + the
+    ``spawn_agent`` mirror hook. The gap-shim markers key off (event, matcher).
     """
-    # TODO(live-test P2): land the Codex permission/mcp/subagent-disable
-    # config emitter, then flip these back to "enforced".
-    if isinstance(p, (PermissionPolicy, McpGatingPolicy, SubagentPolicy)):
-        return ("codex_native_config_pending", None)
+    if isinstance(p, PermissionPolicy):
+        from ..policy.codex_toml_emitter import permission_native_status
+        return permission_native_status(p)
+    if isinstance(p, McpGatingPolicy):
+        # MCP tool gating is not expressible as a permission profile; it
+        # stays on the hook path (design 2.3).
+        return ("codex_no_native_mcp_profile", "hook PreToolUse on the mcp tool")
+    if isinstance(p, SubagentPolicy):
+        return ("codex_subagent_multi_agent",
+                "features.multi_agent + spawn_agent PreToolUse hook")
     event, matcher = _policy_event_matcher(p)
     # Shim D: subagent lifecycle fanout may miss Codex internal reviewers.
     if event in _SUBAGENT_LIFECYCLE_EVENTS:
@@ -642,9 +650,13 @@ class CodexDriver:
             downgrade (Shim B) when a ContextInjection on PreToolUse loses
             its ``additionalContext`` channel.
 
-        Native-surface archetypes (Permission / Mcp / Subagent) report
-        ``codex_native_config_pending`` because the Codex managed-config
-        emitter for them does not exist yet. See ``_coverage_status_for``.
+        Native-surface archetypes now lower (design 2026-07-01):
+        ``PermissionPolicy`` reports a real status via
+        ``permission_native_status`` (``enforced`` for command/file/network
+        rules; a hook downgrade for fs/net ``ask``). ``McpGatingPolicy`` has
+        no native profile expression (hook path). ``SubagentPolicy`` rides
+        ``features.multi_agent`` + the ``spawn_agent`` hook. See
+        ``_coverage_status_for``.
         """
         policies: list[CoveragePolicyStatus] = []
         for p in ir:

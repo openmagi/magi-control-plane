@@ -239,6 +239,42 @@ def test_managed_requirements_compiles_context_template(monkeypatch, tmp_path):
     assert _mode(templates[0]) == 0o644
 
 
+def test_permission_policy_writes_profile_and_rules(monkeypatch, tmp_path):
+    # Design 2026-07-01: a PermissionPolicy lowers to the managed permission
+    # surface. The command deny lands as a requirements.toml prefix_rule +
+    # profile allowlist; the filesystem deny lands as the profile block in
+    # managed_config.toml. Both files stay valid TOML.
+    import tomllib
+
+    _, etc = _wire(monkeypatch, tmp_path)
+    policies = tmp_path / "policies.json"
+    policies.write_text(
+        '[{"type": "permission", "id": "p1", '
+        '"trigger": {"host": "claude-code", "event": "PreToolUse", '
+        '"matcher": "Bash"}, "permission": "deny", '
+        '"pattern": "Bash(rm -rf *)"},'
+        '{"type": "permission", "id": "p2", '
+        '"trigger": {"host": "claude-code", "event": "PreToolUse", '
+        '"matcher": "Read"}, "permission": "deny", '
+        '"pattern": "Read(**/*.env)"}]',
+        "utf-8",
+    )
+    rc = codex_install.cli(["--runtime", "codex", "--policies", str(policies)])
+    assert rc == 0
+
+    req = tomllib.loads((etc / "requirements.toml").read_text("utf-8"))
+    assert req["default_permissions"] == "magi-enforced"
+    assert req["allowed_permission_profiles"] == {"magi-enforced": True}
+    assert req["rules"]["prefix_rules"][0]["decision"] == "forbidden"
+
+    managed_text = (etc / "managed_config.toml").read_text("utf-8")
+    managed = tomllib.loads(managed_text)
+    fs = managed["permissions"]["magi-enforced"]["filesystem"][":workspace_roots"]
+    assert fs["**/*.env"] == "deny"
+    # The env passthrough is still present in the same file.
+    assert 'MAGI_CP_RUNTIME = "codex"' in managed_text
+
+
 # ── 4. --force-remove-codex ────────────────────────────────────────────
 def test_force_remove_codex_removes_managed_and_is_idempotent(
     monkeypatch, tmp_path

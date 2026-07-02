@@ -920,12 +920,16 @@ design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
    is the DESIGN intent, not an empirically verified fact yet. It is a
    pending live-test (call it D9). Two consequences flow from this:
    - The strongest MDM-enforced Codex surface is deny/prompt PERMISSION
-     rules (F5), and the `PermissionPolicy`/`McpGatingPolicy` ->
-     requirements lowering is NOT built (`_coverage_status_for` returns
-     `codex_native_config_pending`; `TODO(live-test P2)`). Until it lands,
-     the Codex managed config emits only command-hook tables (firing
-     unverified under headless exec) and NO native deny rules. This is the
-     highest-priority follow-up for real Codex enforcement.
+     rules (F5). The `PermissionPolicy` -> native lowering is now BUILT
+     (design `2026-07-01-codex-permission-native-lowering-design.md`): the
+     emitter produces a `[permissions.magi-enforced]` filesystem/network
+     profile (managed_config.toml) + `requirements.toml`
+     `[allowed_permission_profiles]` + `[rules].prefix_rules` for commands.
+     `_coverage_status_for` reports real statuses (`enforced` for
+     command/file/network; hook downgrade for fs/net `ask`).
+     `McpGatingPolicy` stays on the hook path (not profile-expressible, per
+     the docs). Whether the managed profile + rules actually fire under
+     headless `codex exec` is still the D9 probe.
    - Per the no-default-OFF policy the adapter still ships default-ON so
      this gap is visible rather than hidden; it is NOT presented as a
      proven-enforcement guarantee.
@@ -953,10 +957,12 @@ Net: the live test found ONE real bug (F4 matcher translation, fixed;
 alternation form also fixed post-review) and otherwise CONFIRMED the
 existing architecture (managed requirements = the enforced surface, though
 its firing under headless `codex exec` is still pending live verification,
-D9). The deny-only constraint (F5) is a forward-constraint on the
-not-yet-built PermissionPolicy->requirements lowering (`TODO(live-test P2)`).
-D1/D2/D3/D4/D6/D7/D8/D9 remain unrun (need interactive TUI, a rooted install,
-or an MDM harness).
+D9). The deny-only constraint (F5) is now satisfied by the built
+PermissionPolicy native lowering (requirements.toml `[rules].prefix_rules`
+emit only `prompt`/`forbidden`; design
+`2026-07-01-codex-permission-native-lowering-design.md`). D1/D2/D3/D4/D6/D7/
+D8/D9 remain unrun (need interactive TUI, a rooted install, or an MDM
+harness).
 
 ## 12. Live test checklist (pointer)
 
