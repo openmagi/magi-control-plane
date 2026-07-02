@@ -29,12 +29,17 @@ function secret(): string | null {
 
 /**
  * Whether to trust a loopback `host` header as proof of a local request.
- * Default true (localhost dev with no proxy). Behind a reverse proxy the
- * `host` header is attacker-influenceable, so operators set
- * MAGI_CP_TRUST_LOOPBACK_HEADER=0 to require a session for EVERY console route.
+ *
+ * FAIL-CLOSED by default (opt-IN). The `host` header is fully
+ * attacker-controlled on a direct TCP connection, so a request carrying
+ * `Host: localhost` to a console exposed on 0.0.0.0 would otherwise bypass
+ * the auth backstop entirely (the exact threat this backstop exists for).
+ * So the default is to require a session for EVERY console route; a
+ * localhost-only operator who wants the no-login convenience and KNOWS
+ * their bind is loopback-only opts in with MAGI_CP_TRUST_LOOPBACK_HEADER=1.
  */
 export function trustLoopbackHeader(): boolean {
-  return process.env.MAGI_CP_TRUST_LOOPBACK_HEADER !== "0"
+  return process.env.MAGI_CP_TRUST_LOOPBACK_HEADER === "1"
 }
 
 export function isLoopbackHost(host: string | null): boolean {

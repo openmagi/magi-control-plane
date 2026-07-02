@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { signSession, verifySession, isLoopbackHost } from "./dashboard-auth"
 
 /**
- * WEB-1: the self-host console auth backstop. Loopback stays open (single
- * operator default); non-loopback requires a signed session; no secret means
- * fail-closed (an exposed dashboard denies).
+ * WEB-1: the self-host console auth backstop. Fail-closed by default: every
+ * console route requires a signed session (the host header is spoofable, so
+ * the loopback exception is opt-in via MAGI_CP_TRUST_LOOPBACK_HEADER=1). No
+ * secret also means fail-closed (an exposed dashboard denies).
  */
 describe("isLoopbackHost", () => {
   it("recognizes loopback hosts (with or without port)", () => {
@@ -78,5 +79,25 @@ describe("signSession / verifySession", () => {
     const tok = await signSession("t-abc")
     process.env.MAGI_CP_DASHBOARD_SESSION_SECRET = "rotated-secret"
     expect(await verifySession(tok!)).toBe(false)
+  })
+})
+
+describe("trustLoopbackHeader (P0 regression: fail-closed default)", () => {
+  const orig = process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
+  afterEach(() => {
+    if (orig === undefined) delete process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
+    else process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = orig
+  })
+  it("is FALSE by default (host header is spoofable; require a session)", async () => {
+    delete process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
+    const { trustLoopbackHeader } = await import("./dashboard-auth")
+    expect(trustLoopbackHeader()).toBe(false)
+  })
+  it("opts in only on an explicit '1'", async () => {
+    process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = "1"
+    const { trustLoopbackHeader } = await import("./dashboard-auth")
+    expect(trustLoopbackHeader()).toBe(true)
+    process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = "0"
+    expect(trustLoopbackHeader()).toBe(false)
   })
 })
