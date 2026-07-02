@@ -828,7 +828,10 @@ def create_app(
     _SHARE_BASE_URL = os.environ.get(
         "MAGI_CP_SHARE_BASE_URL", "https://cloud.openmagi.ai"
     ).rstrip("/")
-    _SHARE_TTL_SECONDS = int(os.environ.get("MAGI_CP_SHARE_TTL_SECONDS", "0")) or None
+    # Default public run-share links to a 30-day TTL (SHARE-1). A leaked share
+    # URL is otherwise valid forever. Operators who want permanent links set
+    # MAGI_CP_SHARE_TTL_SECONDS=0 (explicit no-expiry opt-in).
+    _SHARE_TTL_SECONDS = int(os.environ.get("MAGI_CP_SHARE_TTL_SECONDS", "2592000")) or None
 
     @app.post("/v1/runs/share", dependencies=[Depends(require_tenant_auth)])
     async def runs_share(request: Request) -> dict:
@@ -852,6 +855,12 @@ def create_app(
             view=redacted,
             ttl_seconds=_SHARE_TTL_SECONDS,
         )
+        # Best-effort GC of revoked / expired rows so stored redacted views do
+        # not linger forever (SHARE-1). Never fail share creation on a GC error.
+        try:
+            share_repo.purge_expired()
+        except Exception:  # pragma: no cover - defensive
+            pass
         return {"token": token, "url": f"{_SHARE_BASE_URL}/r/{token}"}
 
     @app.get("/share/run/{token}")

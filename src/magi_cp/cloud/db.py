@@ -32,7 +32,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger, Index, Integer, JSON, Enum as SAEnum, Engine, String, Text,
-    UniqueConstraint, create_engine, event, select, text,
+    UniqueConstraint, and_, create_engine, delete, event, or_, select, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -363,6 +363,29 @@ class SharedRunRepo:
                 return None
             s.expunge(row)
             return row
+
+    def purge_expired(self, *, now: int | None = None) -> int:
+        """Physically delete revoked rows and rows whose TTL has elapsed.
+
+        get_active already hides these, but without a delete path the stored
+        redacted view (which may still carry a best-effort-redaction miss)
+        lingers in the DB forever (SHARE-1). Returns the number deleted.
+        """
+        now = now if now is not None else int(time.time())
+        with Session(self.engine) as s:
+            result = s.execute(
+                delete(SharedRun).where(
+                    or_(
+                        SharedRun.revoked_at.is_not(None),
+                        and_(
+                            SharedRun.expires_at.is_not(None),
+                            SharedRun.expires_at <= now,
+                        ),
+                    )
+                )
+            )
+            s.commit()
+            return int(result.rowcount or 0)
 
     def revoke(self, token: str) -> bool:
         with Session(self.engine) as s:
