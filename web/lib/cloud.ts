@@ -38,10 +38,20 @@ function _hmacSecret(): string { return _readKey("MAGI_CP_ADMIN_HMAC_SECRET") }
 async function _hmacPost<T>(path: string, body: Record<string, unknown>, timeoutMs?: number): Promise<T> {
   const crypto = await import("node:crypto")
   const raw = JSON.stringify(body)
-  const sig = crypto.createHmac("sha256", _hmacSecret()).update(raw).digest("hex")
+  // Sign method + path + timestamp + body (see docs/clawy-integration.md).
+  // `path` here carries no query string, matching the backend's
+  // request.url.path. The timestamp defends against replay; the path stops a
+  // captured signature being reused on a different admin route.
+  const ts = String(Math.floor(Date.now() / 1000))
+  const signing = `POST\n${path}\n${ts}\n${raw}`
+  const sig = crypto.createHmac("sha256", _hmacSecret()).update(signing).digest("hex")
   const r = await fetch(`${_cloudUrl()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-magi-signature": sig },
+    headers: {
+      "Content-Type": "application/json",
+      "x-magi-signature": sig,
+      "x-magi-timestamp": ts,
+    },
     body: raw,
     cache: "no-store",
     signal: AbortSignal.timeout(timeoutMs ?? FETCH_TIMEOUT_MS),

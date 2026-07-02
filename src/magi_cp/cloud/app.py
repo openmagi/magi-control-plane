@@ -5246,13 +5246,17 @@ def _attach_runtime_routes(
 def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
     """HMAC-authenticated admin routes for tenant/key lifecycle.
 
-    Called by clawy's Stripe webhook (on subscription start/cancel/etc) and by
-    the clawy dashboard's "create API key" button (server action → HMAC POST).
-    Auth is HMAC-SHA256 over the raw request body — caller signs with the
+    Called by the billing Stripe webhook (on subscription start/cancel/etc)
+    and by the operator dashboard's "create API key" button (server action to
+    HMAC POST). Auth is HMAC-SHA256 over `method\\npath\\ntimestamp\\nbody`,
+    presented as `x-magi-signature` + `x-magi-timestamp`. Caller signs with the
     shared `MAGI_CP_ADMIN_HMAC_SECRET` env var.
 
-    No bearer token: webhooks fire from many IPs, HMAC over body is the safer
-    surface (replay-resistant + body-tamper-resistant in one check).
+    No bearer token: webhooks fire from many IPs, HMAC is the safer surface.
+    The signature binds method + path (so a capture cannot be replayed on a
+    different admin route) + a timestamp within a 300s window (so a capture
+    expires). The reference client signing string lives in the billing repo's
+    docs/clawy-integration.md and must match `require_hmac` below.
     """
     from .tenants import ApiKeyRepo, TenantRepo
 
@@ -5264,8 +5268,27 @@ def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
             raise HTTPException(503, "admin hmac not configured")
         body = await request.body()
         presented = request.headers.get("x-magi-signature") or ""
+        ts_raw = request.headers.get("x-magi-timestamp") or ""
+        # Bind the signature to method + path + timestamp + body. Body-only
+        # signing let a captured empty-body signature be replayed across the
+        # revoke / reactivate / issue-key routes (they all sign the constant
+        # HMAC(secret, b"")), and had no freshness. The timestamp window makes
+        # a captured signature expire; the method + path stop cross-route
+        # reuse. See docs/clawy-integration.md for the exact signing string.
+        try:
+            ts = int(ts_raw)
+        except ValueError:
+            raise HTTPException(401, "missing or invalid x-magi-timestamp")
+        if abs(int(time.time()) - ts) > 300:
+            raise HTTPException(401, "admin signature timestamp out of window")
+        signing = (
+            request.method.encode("utf-8") + b"\n"
+            + request.url.path.encode("utf-8") + b"\n"
+            + ts_raw.encode("utf-8") + b"\n"
+            + body
+        )
         expected = _hmac.new(
-            secret.encode("utf-8"), body, _hashlib.sha256,
+            secret.encode("utf-8"), signing, _hashlib.sha256,
         ).hexdigest()
         if not _hmac.compare_digest(presented, expected):
             raise HTTPException(401, "invalid admin signature")
@@ -5352,11 +5375,13 @@ def _attach_admin_tenant_routes(app: FastAPI, engine) -> None:
     async def admin_revoke_key(tenant_id: str, key_id: int,
                                 request: Request) -> dict:
         await require_hmac(request)
-        repo = ApiKeyRepo(engine)
-        try:
-            repo.revoke(key_id)
-        except KeyError:
-            raise HTTPException(404, f"key {key_id} not found")
+        # Scope the revoke to the tenant named in the path so a valid admin
+        # signature cannot revoke another tenant's key by guessing its
+        # (sequential) id. AUTH-2.
+        if not ApiKeyRepo(engine).revoke_for_tenant(key_id, tenant_id):
+            raise HTTPException(
+                404, f"key {key_id} not found for tenant {tenant_id!r}"
+            )
         return {"id": key_id, "revoked": True}
 
 
