@@ -767,7 +767,7 @@ def test_input_rewrite_runtime_endpoint_returns_updated_input(client_with_regist
         # P1 follow-up: the autouse `_env` fixture sets MAGI_CP_API_KEY,
         # which now activates the optional auth on the endpoint. Pass
         # the same value as the shim would; the no-env path is covered
-        # by `test_input_rewrite_endpoint_open_when_api_key_env_unset`.
+        # by `test_input_rewrite_endpoint_fails_closed_when_api_key_env_unset`.
         headers={"X-Api-Key": API_KEY},
         json={
             "policy_id": pid,
@@ -910,11 +910,15 @@ def test_input_rewrite_endpoint_optional_auth_when_env_set(
     assert rr.json()["rewrote"] is True
 
 
-def test_input_rewrite_endpoint_open_when_api_key_env_unset(
+def test_input_rewrite_endpoint_fails_closed_when_api_key_env_unset(
     client_with_registry, monkeypatch,
 ):
-    """Defaults: env unset → endpoint accepts anonymous calls so the
-    local-gate loopback dev loop still works."""
+    """API-3: env unset -> the shim route fails closed (503), not anonymous.
+
+    Previously the route only enforced the key "if the env is set", so a
+    misconfigured deployment (Helm secretRef missing MAGI_CP_API_KEY) surfaced
+    the rewrite to anonymous callers. It now returns 503 when unconfigured.
+    """
     monkeypatch.delenv("MAGI_CP_API_KEY", raising=False)
     pid = "open-anon/v1"
     body = {
@@ -937,8 +941,7 @@ def test_input_rewrite_endpoint_open_when_api_key_env_unset(
             "tool_input": {"command": "sudo ls"},
         },
     )
-    assert rr.status_code == 200
-    assert rr.json()["rewrote"] is True
+    assert rr.status_code == 503
 
 
 def test_put_input_rewrite_rejects_post_tool_use(client_with_registry):

@@ -563,14 +563,32 @@ class TokenBucketLimiter(BaseHTTPMiddleware):
         self.refill = refill_per_sec
         self._buckets: dict[str, tuple[float, float]] = {}   # key → (tokens, last_ts)
 
+    # Evict idle buckets once the map grows past this, so a flood of
+    # distinct keys cannot grow _buckets without bound (API-2 memory DoS).
+    _EVICT_WHEN_OVER = 10_000
+    _EVICT_IDLE_S = 3600
+
+    def _evict_stale(self, now: float) -> None:
+        if len(self._buckets) <= self._EVICT_WHEN_OVER:
+            return
+        cutoff = now - self._EVICT_IDLE_S
+        stale = [k for k, (_, last) in self._buckets.items() if last < cutoff]
+        for k in stale:
+            self._buckets.pop(k, None)
+
     async def dispatch(self, request: Request, call_next):
         # No throttling on health/pubkey (cheap, public)
         if request.url.path in ("/healthz", "/pubkey"):
             return await call_next(request)
-        key = (request.headers.get("x-api-key")
-               or request.headers.get("x-hitl-api-key")
-               or request.client.host if request.client else "anon")
+        # Key on the CONNECTION source, never a caller-supplied header.
+        # Keying on x-api-key let an attacker mint a fresh bucket per request
+        # (rate-limit bypass) and grow _buckets without bound (API-2). Behind
+        # a trusted reverse proxy every request shares the proxy IP's bucket;
+        # a future improvement is parsing X-Forwarded-For from a configured
+        # trusted proxy, but the safe default is the socket peer.
+        key = request.client.host if request.client else "anon"
         now = time.time()
+        self._evict_stale(now)
         tokens, last = self._buckets.get(key, (self.cap, now))
         tokens = min(self.cap, tokens + (now - last) * self.refill)
         if tokens < 1:
@@ -583,6 +601,31 @@ class TokenBucketLimiter(BaseHTTPMiddleware):
 def _json_response(status: int, payload: dict):
     from fastapi.responses import JSONResponse
     return JSONResponse(payload, status_code=status)
+
+
+async def _bounded_regex_search(
+    rx: "re.Pattern[str]", text: str, *, timeout: float = 2.0,
+) -> bool:
+    """Run ``rx.search(text)`` in a worker thread with a wall-clock cap.
+
+    A catastrophic-backtracking pattern from an authenticated caller would
+    otherwise wedge the event loop and stall every other tenant's request
+    (API-1). Running the search off the loop keeps the loop responsive; on
+    timeout we return False (deny) rather than block. The pattern is compiled
+    on the calling thread first, so a bad pattern still surfaces as a 422 and
+    only the (immutable, thread-safe) compiled object crosses into the thread.
+
+    Note: Python's ``re`` cannot be interrupted mid-scan, so a timed-out
+    search keeps running in its thread until it finishes; bounding the number
+    of concurrent inline regex evaluations is a follow-up. The loop itself is
+    never blocked.
+    """
+    def _run() -> bool:
+        return rx.search(text) is not None
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_run), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
 
 
 # ── auth deps (constant-time compare; fail-closed if env unset) ──────
@@ -1611,7 +1654,7 @@ def create_app(
                 else:
                     assert isinstance(resolved, str)
                     scoped_text = resolved
-                    if rx.search(scoped_text):
+                    if await _bounded_regex_search(rx, scoped_text):
                         verdict_status = "pass"
                         reasons = [
                             f"pattern matched on {req.field_path}: "
@@ -1627,7 +1670,7 @@ def create_app(
                 # replay scans the SAME text the runtime scanned.
                 payload_text = scoped_text
             else:
-                if rx.search(payload_text):
+                if await _bounded_regex_search(rx, payload_text):
                     verdict_status = "pass"
                     reasons = [f"pattern matched: {req.pattern[:80]}"]
                 else:
@@ -3952,19 +3995,13 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
           - matcher does not cover `tool_name`
           - rewriter is a no-op against the payload
 
-        Auth: optional. When the cloud has `MAGI_CP_API_KEY` set, the
-        request must carry a matching `X-Api-Key` header (the shim
-        forwards it from the same env). When unset (default dev loop),
-        the endpoint accepts anonymous calls so the local gate without
-        a tenant credential still works.
+        Auth: fail-closed. `MAGI_CP_API_KEY` unset -> 503 (not configured),
+        present + mismatch -> 401. The shipped image always sets the key
+        (compose `${VAR:?}`); the previous "only enforce if the env is set"
+        was a fail-OPEN default that surfaced the rewrite on a misconfigured
+        deployment (API-3). The shim forwards the same key from its env.
         """
-        import hmac as _hmac
-        expected_key = os.environ.get("MAGI_CP_API_KEY")
-        if expected_key:
-            if not x_api_key or not _hmac.compare_digest(
-                x_api_key, expected_key,
-            ):
-                raise HTTPException(401, "invalid or missing api key")
+        _check_key("MAGI_CP_API_KEY", x_api_key)
 
         target_id = req.policy_id
         match: AnyPolicy | None = None
@@ -4039,18 +4076,12 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
           - policy not found / disabled
           - policy is not a RunCommandPolicy
         """
-        import hmac as _hmac
-        expected_key = os.environ.get("MAGI_CP_API_KEY")
-        if expected_key:
-            if not x_api_key or not _hmac.compare_digest(
-                x_api_key, expected_key,
-            ):
-                raise HTTPException(401, "invalid or missing api key")
-        # When the env var is unset, the dev loop runs on loopback
-        # only. Refuse non-loopback callers explicitly so a misbound
-        # cloud port (0.0.0.0) does not surface specs to the public.
-        # The trust boundary on hosted is the MAGI_CP_API_KEY check
-        # above + the MAGI_CP_ALLOW_RUN_COMMAND=0 gate below.
+        # Fail-closed, now matching the docstring: unset MAGI_CP_API_KEY -> 503,
+        # mismatch -> 401. The previous "only if env is set" was fail-OPEN, and
+        # the removed "refuse non-loopback callers" comment described a check
+        # that was never implemented (there is no request object here). The
+        # real trust boundary is this key check plus MAGI_CP_ALLOW_RUN_COMMAND=0.
+        _check_key("MAGI_CP_API_KEY", x_api_key)
         if not _run_command_allowed():
             return {"matched": False, "reason": "disabled"}
         target_id = req.policy_id
