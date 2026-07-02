@@ -6435,7 +6435,6 @@ def _migrate_enabled_policies_into_floor_pack(app: FastAPI) -> None:
     from pathlib import Path
     from .pack_store import PackStore
     from .policy_store import PolicyStore
-    from .pack_centric_migration import migrate_tenants_to_pack_centric
 
     engine = getattr(app.state, "engine", None)
     if engine is None:  # pragma: no cover (create_app always sets it)
@@ -6448,7 +6447,42 @@ def _migrate_enabled_policies_into_floor_pack(app: FastAPI) -> None:
         "MAGI_CP_PACK_STORE",
         str(Path.home() / ".magi-cp" / "packs.json"),
     ))
-    migrate_tenants_to_pack_centric(engine, policy_store, pack_store)
+    # Cross-replica safety: when two or more pods boot against the same
+    # Postgres they would otherwise run this migration concurrently and
+    # race on the shared tenants/packs state. Serialize with a Postgres
+    # advisory lock (a single named lock for the whole migration). SQLite
+    # is single-writer per file and cannot be shared across replicas (the
+    # helm chart's replicaGuard enforces that), so there is nothing to
+    # serialize there and we run directly.
+    _run_pack_centric_migration_locked(
+        engine, policy_store, pack_store,
+    )
+
+
+# Stable 64-bit advisory-lock key for the boot-time pack-centric migration.
+# Any constant works; keeping it named makes the intent legible in pg logs.
+_PACK_CENTRIC_MIGRATION_LOCK_KEY = 0x6D616769_5F706B63  # "magi_pkc"
+
+
+def _run_pack_centric_migration_locked(
+    engine, policy_store, pack_store,
+) -> None:
+    """Run migrate_tenants_to_pack_centric under a cross-process lock on
+    Postgres; run it directly on SQLite (single-writer, single-node)."""
+    from .pack_centric_migration import migrate_tenants_to_pack_centric
+
+    if engine.dialect.name != "postgresql":
+        migrate_tenants_to_pack_centric(engine, policy_store, pack_store)
+        return
+    from sqlalchemy import text
+    key = _PACK_CENTRIC_MIGRATION_LOCK_KEY
+    with engine.connect() as conn:
+        conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": key})
+        try:
+            migrate_tenants_to_pack_centric(engine, policy_store, pack_store)
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+            conn.commit()
 
 
 def _warn_on_saved_policy_lifecycle_drift(app: FastAPI) -> None:

@@ -1,3 +1,4 @@
+{{- include "magi-cp.replicaGuard" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,6 +19,8 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ default (printf "%s-cloud" .Release.Name) .Values.serviceAccount.name }}
+      # The backend never calls the Kubernetes API; do not mount its token.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -25,6 +28,11 @@ spec:
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         runAsUser: {{ .Values.securityContext.runAsUser }}
+        fsGroup: {{ .Values.securityContext.fsGroup | default .Values.securityContext.runAsUser }}
+        {{- with .Values.securityContext.seccompProfile }}
+        seccompProfile:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       containers:
         - name: cloud
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -40,6 +48,16 @@ spec:
               value: "/data/keys"
             - name: MAGI_CP_POLICY_STORE
               value: "/data/policies.json"
+            # Pack / custom-verifier / script stores default to ~/.magi-cp
+            # which is on the read-only root FS here; pin them onto the /data
+            # PVC so governance authoring actually persists (parity with
+            # docker-compose.yml's MAGI_CP_SCRIPT_STORE_DIR=/data).
+            - name: MAGI_CP_PACK_STORE
+              value: "/data/packs.json"
+            - name: MAGI_CP_CUSTOM_VERIFIER_STORE
+              value: "/data/custom_verifiers.json"
+            - name: MAGI_CP_SCRIPT_STORE_DIR
+              value: "/data"
             {{- with .Values.llm.compiler }}
             - name: MAGI_CP_LLM_COMPILER
               value: {{ . | quote }}

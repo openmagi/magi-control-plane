@@ -5,7 +5,8 @@ image:
   tag: ""                    # overrides Chart.appVersion
   pullPolicy: IfNotPresent
 
-replicaCount: 2              # multi-node: PG is required (see below)
+replicaCount: 1              # >1 requires postgres.dsn; the chart fails render otherwise
+                             # (SQLite on a single RWO PVC cannot be shared across replicas)
 
 # Service-account / image-pull secrets
 imagePullSecrets: []
@@ -74,8 +75,16 @@ resources:
 securityContext:
   runAsNonRoot: true
   runAsUser: 10001
+  # fsGroup owns the mounted PVC so a non-root runAsUser can write /data
+  # (keys, sqlite, policy/pack/verifier stores) on first boot. Without it a
+  # root:root RWO PVC yields EACCES. On very large volumes some CSI drivers
+  # do a recursive chown; set fsGroupChangePolicy: OnRootMismatch if that
+  # startup delay bites.
+  fsGroup: 10001
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
+  seccompProfile:
+    type: RuntimeDefault
   capabilities:
     drop: ["ALL"]
 
