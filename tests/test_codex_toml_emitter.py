@@ -310,13 +310,28 @@ def test_write_allow_is_write_tier_read_allow_is_read_tier():
     assert fs["docs/**"] == "read"
 
 
-def test_webfetch_deny_lowers_to_network_domain_and_strips_domain_prefix():
+def test_webfetch_allow_builds_a_default_deny_allowlist():
+    # Codex network is allowlist-only. An allow policy enables network and
+    # lists the host; a closing "*" = "deny" makes unlisted hosts fail closed
+    # (not fall through to the base default). domain: prefix is stripped.
     b = compile_to_codex_requirements([
-        _perm("p", "WebFetch(domain:tracking.example.com)", "deny"),
+        _perm("p", "WebFetch(domain:api.openai.com)", "allow"),
     ])
     net = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]["network"]
     assert net["enabled"] is True
-    assert net["domains"]["tracking.example.com"] == "deny"
+    assert net["domains"]["api.openai.com"] == "allow"
+    assert net["domains"]["*"] == "deny"  # strict allowlist tail
+
+
+def test_webfetch_deny_only_is_not_a_native_network_rule():
+    # A deny-only set must NOT flip network on (that would open everything
+    # else to the base default). The base :workspace already blocks all
+    # network, so no network table is emitted; the deny rides the hook path.
+    b = compile_to_codex_requirements([
+        _perm("p", "WebFetch(domain:tracking.example.com)", "deny"),
+    ])
+    assert b.permissions_toml == ""
+    assert "enabled = true" not in b.permissions_toml
 
 
 def test_filesystem_most_restrictive_wins_on_shared_glob():
@@ -361,3 +376,21 @@ def test_permission_lowering_is_order_invariant_and_valid_toml():
     # both artifacts are valid TOML
     tomllib.loads(fwd.requirements_toml)
     tomllib.loads(fwd.permissions_toml)
+
+
+def test_empty_command_prefix_is_not_emitted_as_ambiguous_rule():
+    # Bash(*) / bare Bash reduce to an empty prefix whose match-all
+    # semantics are unconfirmed; do NOT emit an ambiguous native rule.
+    b = compile_to_codex_requirements([_perm("p", "Bash(*)", "deny")])
+    assert "[rules]" not in b.requirements_toml
+
+
+def test_control_chars_in_pattern_stay_valid_toml():
+    # The IR grammar admits arg bytes like \r; the emitter must escape them
+    # so the managed file never becomes invalid TOML (fail-open risk).
+    b = compile_to_codex_requirements([_perm("p", "Read(a\rb/**)", "deny")])
+    # parses cleanly + no raw CR in the string
+    prof = tomllib.loads(b.permissions_toml)
+    assert "\r" not in b.permissions_toml
+    fs = prof["permissions"][CODEX_PERMISSION_PROFILE]["filesystem"][":workspace_roots"]
+    assert any(k for k in fs)  # a rule was emitted, file is valid

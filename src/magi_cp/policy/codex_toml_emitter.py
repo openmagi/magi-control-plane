@@ -242,6 +242,15 @@ def _toml_str(value: str) -> str:
         .replace("\n", "\\n")
         .replace("\t", "\\t")
     )
+    # Escape every remaining C0 control char (U+0000-U+001F) as \uXXXX. The
+    # IR permission grammar admits any arg byte except ``)`` and ``\n``
+    # (``[^)\n]``), so a bare ``\r`` / NUL would otherwise land raw in a TOML
+    # basic string and make the whole managed file INVALID -> Codex could
+    # reject it and fall back to defaults (fail-open, every deny drops).
+    escaped = "".join(
+        c if ord(c) >= 0x20 or c in "\\\"" else f"\\u{ord(c):04x}"
+        for c in escaped
+    )
     return f'"{escaped}"'
 
 
@@ -344,11 +353,19 @@ def _lower_permissions(policies: list[AnyPolicy]) -> PermissionLowering:
         decision = p.permission  # allow | deny | ask
 
         if tool == "Bash":
-            if decision == "deny":
-                commands.append({"tokens": _command_tokens(args),
+            toks = _command_tokens(args)
+            if not toks:
+                # A bare ``Bash`` / ``Bash(*)`` reduces to an empty prefix.
+                # An empty ``prefix_rule`` pattern has UNCONFIRMED match-all
+                # semantics (could match none = a silent no-op deny), so we
+                # do NOT emit an ambiguous native rule; the hook path handles
+                # a "deny all bash" intent instead (reported as a downgrade).
+                residual.append(p.id)
+            elif decision == "deny":
+                commands.append({"tokens": toks,
                                  "decision": "forbidden", "id": p.id})
             elif decision == "ask":
-                commands.append({"tokens": _command_tokens(args),
+                commands.append({"tokens": toks,
                                  "decision": "prompt", "id": p.id})
             # allow -> no rule (default). Nothing emitted.
             continue
@@ -398,8 +415,12 @@ def permission_native_status(p: PermissionPolicy) -> tuple[str, str | None]:
     """
     # A genuinely native surface returns downgrade=None (renders GREEN /
     # enforced). Only a hook fallback sets a downgrade note (renders amber).
-    tool, _args = _parse_permission_pattern(p.pattern)
+    tool, args = _parse_permission_pattern(p.pattern)
     if tool == "Bash":
+        if not _command_tokens(args):
+            # Empty prefix -> ambiguous match-all; not emitted natively.
+            return ("codex_command_matchall_unverified",
+                    "hook PreToolUse fallback (empty command prefix)")
         # deny -> forbidden, ask -> prompt, allow -> default (all honored
         # by the requirements.toml prefix_rule / profile default).
         return ("enforced", None)
@@ -412,7 +433,14 @@ def permission_native_status(p: PermissionPolicy) -> tuple[str, str | None]:
         if p.permission == "ask":
             return ("codex_no_prompt_tier",
                     "hook PreToolUse fallback (network has no prompt tier)")
-        return ("enforced", None)
+        if p.permission == "deny":
+            # Codex network is allowlist-only: a per-domain DENY while other
+            # traffic flows is not natively expressible (turning network on
+            # to deny one host would open the rest). The hook path enforces
+            # a specific-domain deny.
+            return ("codex_net_deny_hook",
+                    "hook PreToolUse fallback (Codex network is allowlist-only)")
+        return ("enforced", None)  # allow builds the default-deny allowlist
     if tool == "mcp":
         return ("codex_no_native_mcp_profile", "hook PreToolUse on the mcp tool")
     # Agent / Task / TodoWrite / anything else: no native permission surface.
@@ -434,11 +462,19 @@ def _emit_permissions_profile(low: PermissionLowering) -> str:
     Empty string when there are no filesystem/network rules (the profile
     would be a no-op envelope). Deterministic: globs/hosts sorted.
     """
-    if not low.fs_rules and not low.net_domains:
+    # Network is only emitted for an ALLOWLIST intent (>=1 allow domain).
+    # The base ``:workspace`` profile has network OFF, so a deny-only set is
+    # already fully blocked by the base and turning network ON to "just deny
+    # evil.com" would OPEN everything else to the base default. Fail-closed:
+    # deny-only -> no network table (base blocks all); allowlist -> enable +
+    # a closing ``"*" = "deny"`` so unlisted domains are denied, not defaulted.
+    net_allow = any(v == "allow" for v in low.net_domains.values())
+    emit_net = low.net_domains and net_allow
+    if not low.fs_rules and not emit_net:
         return ""
     lines: list[str] = []
     lines.append(f"[permissions.{CODEX_PERMISSION_PROFILE}]")
-    lines.append(f'description = "Magi-managed enforcement profile"')
+    lines.append('description = "Magi-managed enforcement profile"')
     lines.append(f"extends = {_toml_str(CODEX_PERMISSION_BASE)}")
     lines.append("")
     if low.fs_rules:
@@ -449,17 +485,17 @@ def _emit_permissions_profile(low: PermissionLowering) -> str:
         for glob in sorted(low.fs_rules):
             lines.append(f"{_toml_str(glob)} = {_toml_str(low.fs_rules[glob])}")
         lines.append("")
-    if low.net_domains:
+    if emit_net:
+        domains = dict(low.net_domains)
+        domains.setdefault("*", "deny")  # strict allowlist: default-deny tail
         lines.append(f"[permissions.{CODEX_PERMISSION_PROFILE}.network]")
         lines.append("enabled = true")
         lines.append("")
         lines.append(
             f"[permissions.{CODEX_PERMISSION_PROFILE}.network.domains]"
         )
-        for host in sorted(low.net_domains):
-            lines.append(
-                f"{_toml_str(host)} = {_toml_str(low.net_domains[host])}"
-            )
+        for host in sorted(domains):
+            lines.append(f"{_toml_str(host)} = {_toml_str(domains[host])}")
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
