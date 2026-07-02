@@ -118,10 +118,15 @@ class EndpointHeartbeat(Base):
     heartbeats as "claimed", not "confirmed".
     """
     __tablename__ = "endpoint_heartbeat"
-    endpoint_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Composite PK (tenant_id, endpoint_id): the endpoint_id is an opaque,
+    # operator-chosen string, so keying on it alone let one tenant overwrite
+    # or read another tenant's endpoint row by guessing the id (TENANT-2).
+    # Scoping the PK to the tenant closes that. tenant_id leads so the PK
+    # index also serves the per-tenant list.
     tenant_id: Mapped[str] = mapped_column(
-        String(64), index=True, nullable=False, default="default",
+        String(64), primary_key=True, nullable=False, default="default",
     )
+    endpoint_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     last_seen: Mapped[int] = mapped_column(BigInteger, nullable=False)
     active_policy_digest: Mapped[str | None] = mapped_column(String(64),
                                                               nullable=True)
@@ -151,10 +156,15 @@ class CompiledPolicySnapshot(Base):
     Append-only at the API surface; an operator cleaning up stale
     rows runs the dedicated `magi-cp-cloud snapshot prune` CLI."""
     __tablename__ = "compiled_policy_snapshot"
-    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Composite PK (tenant_id, digest): two tenants that compile the same
+    # policy set produce the same content-addressed digest. Keying on digest
+    # alone let one tenant's snapshot clobber the other's (record() no-ops on
+    # a digest hit) and the dashboard attestation join matched across tenants
+    # (TENANT-3). tenant_id leads so the PK index serves known_digests_for_tenant.
     tenant_id: Mapped[str] = mapped_column(
-        String(64), index=True, nullable=False, default="default",
+        String(64), primary_key=True, nullable=False, default="default",
     )
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # Compact JSON of the policy id set (not the bytes — reproducible
     # from `policies.json` and the deterministic compiler).
@@ -508,6 +518,11 @@ def _apply_migrations(engine: Engine) -> None:
     # docs/plans/2026-06-30-codex-runtime-adapter-design.md (Section 9).
     from .codex_runtime_migration import upgrade as _codex_runtime_upgrade
     _codex_runtime_upgrade(engine)
+    # TENANT-2/3: rebuild endpoint_heartbeat + compiled_policy_snapshot PKs to
+    # include tenant_id. Idempotent + guarded; a fresh create_all DB already
+    # has the composite PK so this is a no-op there.
+    from .tenant_pk_migration import upgrade as _tenant_pk_upgrade
+    _tenant_pk_upgrade(engine)
     if "hitl_item" not in insp.get_table_names():
         # Fresh DB — create_all just built the table from the PR4-shape
         # ORM declaration, nothing to migrate.
@@ -875,13 +890,26 @@ class LedgerRepo:
             )
         return stmt
 
-    def list_by_subject(self, subject: str) -> list[LedgerEntry]:
+    def list_by_subject(
+        self, subject: str, tenant_id: str | None = None,
+    ) -> list[LedgerEntry]:
         """PR4 canonical name. The underlying DB column is still `matter`
         (deeper rename deferred) — this method queries it under the
-        canonical wire vocabulary."""
+        canonical wire vocabulary.
+
+        ``subject`` is a caller-supplied, cross-tenant namespace (e.g.
+        "session_abc"), so callers that surface entry bodies MUST pass
+        ``tenant_id`` to scope the read. Without it a subject that collides
+        across tenants would return another tenant's ledger bodies (TENANT-1).
+        ``tenant_id=None`` keeps the legacy unscoped query for internal
+        chain-integrity callers that already operate on the global chain.
+        """
+        conds = [LedgerEntry.matter == subject]
+        if tenant_id is not None:
+            conds.append(LedgerEntry.tenant_id == tenant_id)
         with Session(self.engine) as s:
             rows = list(s.scalars(
-                select(LedgerEntry).where(LedgerEntry.matter == subject)
+                select(LedgerEntry).where(*conds)
                 .order_by(LedgerEntry.id)
             ))
             for r in rows:
@@ -1084,9 +1112,15 @@ class EndpointHeartbeatRepo:
                 s.expunge(r)
             return rows
 
-    def get(self, endpoint_id: str) -> EndpointHeartbeat | None:
+    def get(self, endpoint_id: str,
+            tenant_id: str = "default") -> EndpointHeartbeat | None:
         with Session(self.engine) as s:
-            row = s.get(EndpointHeartbeat, endpoint_id)
+            # Composite-PK lookup scoped to the tenant (TENANT-2). Dict form
+            # avoids depending on PK column ordering.
+            row = s.get(
+                EndpointHeartbeat,
+                {"tenant_id": tenant_id, "endpoint_id": endpoint_id},
+            )
             if row:
                 s.expunge(row)
             return row
@@ -1123,7 +1157,12 @@ class CompiledPolicySnapshotRepo:
     def record(self, *, digest: str, tenant_id: str,
                 policy_ids: list[str]) -> None:
         with Session(self.engine) as s:
-            existing = s.get(CompiledPolicySnapshot, digest)
+            # Composite-PK lookup scoped to the tenant (TENANT-3) so one
+            # tenant's snapshot does not suppress another's identical digest.
+            existing = s.get(
+                CompiledPolicySnapshot,
+                {"tenant_id": tenant_id, "digest": digest},
+            )
             if existing is not None:
                 # Idempotent — the same digest must always describe the
                 # same policy set (deterministic compile).

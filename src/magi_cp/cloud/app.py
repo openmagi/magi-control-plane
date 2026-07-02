@@ -1927,7 +1927,10 @@ def create_app(
         # for general /ledger; here we include because the reviewer is gated.
         ctx_entries = []
         if subj is not None:
-            for e in ledger.list_by_subject(subj):
+            # Scope by the item's tenant: `subject` is a cross-tenant
+            # namespace, so an unscoped read would surface another tenant's
+            # ledger bodies here (TENANT-1).
+            for e in ledger.list_by_subject(subj, tenant_id=item.tenant_id):
                 ctx_entries.append({
                     "id": e.id, "ts": e.ts, "h": e.h, "prev": e.prev,
                     "body": e.body,
@@ -1971,6 +1974,7 @@ def create_app(
         async with chain_lock:
             return _issue_token(subj, phash, "pass",
                                 ledger=ledger, keystore=ks, kid=kid,
+                                tenant_id=item.tenant_id,
                                 extra={"hitl_id": item_id, "approver": body.approver})
 
     @app.post("/hitl/{item_id}/reject", dependencies=[Depends(require_hitl_key)])
@@ -1991,7 +1995,8 @@ def create_app(
                                 "payload_hash": phash,
                                 "hitl_id": item_id,
                                 "approver": body.approver},
-                          token="")
+                          token="",
+                          tenant_id=item.tenant_id)
         return {"verdict": "rejected", "token": None, "hitl_id": item_id}
 
     # D52c follow-up: cap the repeatable `verifier=` parameter so an
@@ -6270,7 +6275,7 @@ def _attach_endpoint_routes(app: FastAPI, engine, *,
         # are accepted unconditionally — the per-endpoint key (not
         # wired yet) is the real anti-replay anchor.
         if body.nonce:
-            prev = repo.get(endpoint_id)
+            prev = repo.get(endpoint_id, tenant_id)
             if prev is not None and prev.last_nonce == body.nonce:
                 raise HTTPException(409, "nonce reused")
         hb = repo.beat(
