@@ -129,7 +129,12 @@ export function PackToggle({
   }
 
   return (
-    <div className="flex flex-col items-end gap-2">
+    // `relative` so the confirmation callout can float as an absolute
+    // overlay anchored to the toggle. Rendering it in-flow made the
+    // 320px-wide callout a flex child of the card header row, which
+    // squeezed the name/description column down to a one-word-per-line
+    // sliver on the narrow (3-column) grid.
+    <div className="relative flex flex-col items-end gap-2">
       <form ref={formRef} className="hidden">
         <input type="hidden" name="id" value={packId} />
         <input
@@ -163,7 +168,7 @@ export function PackToggle({
         <div
           role="alertdialog"
           aria-label={confirmCopy.setupRequiredTitle}
-          className="w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-sm"
+          className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-lg"
         >
           <p className="font-semibold mb-1">
             {confirmCopy.setupRequiredTitle}
@@ -203,7 +208,7 @@ export function PackToggle({
         <div
           role="alertdialog"
           aria-label={confirmCopy.partialReachTitle}
-          className="w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-sm"
+          className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-lg"
         >
           <p className="font-semibold mb-1">
             {confirmCopy.partialReachTitle}
