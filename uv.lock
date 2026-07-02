@@ -669,21 +669,21 @@ postgres = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptography", specifier = ">=42" },
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "cryptography", specifier = ">=42,<50" },
+    { name = "fastapi", specifier = ">=0.110,<1" },
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "prometheus-client", marker = "extra == 'observability'", specifier = ">=0.20" },
     { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9" },
-    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic", specifier = ">=2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "sqlalchemy", specifier = ">=2" },
+    { name = "sqlalchemy", specifier = ">=2,<3" },
     { name = "structlog", marker = "extra == 'observability'", specifier = ">=24" },
     { name = "torch", marker = "extra == 'nli'", specifier = ">=2.2" },
     { name = "transformers", marker = "extra == 'nli'", specifier = ">=4.40" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27,<1" },
 ]
 provides-extras = ["dev", "nli", "postgres", "observability"]
 

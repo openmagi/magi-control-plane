@@ -4,9 +4,18 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libffi-dev \
  && rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml /build/
+COPY pyproject.toml uv.lock /build/
 COPY src /build/src
-RUN pip install --no-cache-dir --prefix=/install -e .
+# Reproducible, hash-pinned install from the committed lock (SUPPLY-1). The old
+# `pip install -e .` re-resolved dependencies at build time from the unbounded
+# floors in pyproject, so image contents drifted build-to-build and a future
+# breaking/compromised transitive release could land silently. Export the
+# frozen lock to a hashed requirements file, install those exact versions with
+# --require-hashes, then install the project itself with --no-deps.
+RUN pip install --no-cache-dir uv \
+ && uv export --frozen --no-dev --no-emit-project -o /build/requirements.txt \
+ && pip install --no-cache-dir --prefix=/install --require-hashes -r /build/requirements.txt \
+ && pip install --no-cache-dir --prefix=/install --no-deps -e .
 
 # ── stage 2: runtime (minimal, non-root, read-only rootfs friendly) ──
 FROM python:3.12-slim
