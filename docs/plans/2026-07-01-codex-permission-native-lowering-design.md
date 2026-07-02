@@ -104,6 +104,25 @@ Routing keys off the CC tool prefix in `PermissionPolicy.pattern`
 | `WebFetch/WebSearch(<host>)` | profile network.domains     | deny        | allow        | hook        |
 | `mcp__<server>...`      | NONE (profiles cannot express)   | hook        | hook         | hook        |
 
+Security-review hardening (2026-07-02):
+- NETWORK is allowlist-only. A per-domain `deny` while other traffic flows
+  is NOT natively expressible (enabling network to deny one host would open
+  the rest to the base default), so a `deny` network policy reports a hook
+  downgrade (`codex_net_deny_hook`), not `enforced`. An `allow` policy builds
+  a strict allowlist: `enabled = true` + the allowed hosts + a closing
+  `"*" = "deny"` so unlisted hosts fail closed. A deny-only set emits NO
+  network table (the base `:workspace` already blocks all network).
+- A `Bash` policy whose arg reduces to an EMPTY prefix (`Bash(*)`, bare
+  `Bash`) is NOT emitted as a native rule (an empty `prefix_rule` pattern has
+  unconfirmed match-all semantics and could be a silent no-op); it reports
+  `codex_command_matchall_unverified` and rides the hook path.
+- `_toml_str` escapes all C0 control chars (U+0000-U+001F) so a grammar-legal
+  but control-char-bearing pattern can never make the managed file invalid
+  TOML (which Codex could reject, dropping every deny = fail-open).
+- Filesystem `allow` is honored (the path is granted) but does NOT by itself
+  deny the rest; only `deny` tightens filesystem (same as CC allow-rule
+  semantics). The base `extends = ":workspace"` sets the default posture.
+
 Notes:
 - Command decisions map 1:1 (allow/prompt/forbidden), the cleanest case.
 - Filesystem `allow` splits by tool intent: read tools -> `read`, mutation

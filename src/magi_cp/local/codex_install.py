@@ -355,9 +355,17 @@ def install_codex_managed(
     )
     written.append(str(req_path))
 
+    # managed_config.toml = env passthrough + the Magi-owned permission
+    # profile block (filesystem/network rules from PermissionPolicy native
+    # lowering, design 2026-07-01). requirements.toml forces + allowlists the
+    # profile and carries command prefix_rules; the profile DEFINITION lives
+    # here in the managed config layer.
+    managed_body = _managed_config_toml(url)
+    if bundle.permissions_toml:
+        managed_body = managed_body.rstrip("\n") + "\n\n" + bundle.permissions_toml
     managed_path = etc / "managed_config.toml"
     _write_file(
-        managed_path, _managed_config_toml(url),
+        managed_path, managed_body,
         preserve=False, root_owned=True,
     )
     written.append(str(managed_path))

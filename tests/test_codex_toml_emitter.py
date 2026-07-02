@@ -13,18 +13,31 @@ import json
 
 import pytest
 
+import tomllib
+
 from magi_cp.policy.codex_toml_emitter import (
     CODEX_GATE_COMMAND,
     CODEX_HOOK_TIMEOUT_MS,
+    CODEX_PERMISSION_PROFILE,
     compile_to_codex_requirements,
 )
 from magi_cp.policy.ir import (
     ContextInjectionPolicy,
     EvidencePolicy,
     EvidenceReq,
+    McpGatingPolicy,
+    PermissionPolicy,
     SubagentPolicy,
     Trigger,
 )
+
+
+def _perm(pid: str, pattern: str, permission: str) -> PermissionPolicy:
+    return PermissionPolicy(
+        id=pid, description="t",
+        trigger=Trigger(host="claude-code", event="PreToolUse", matcher="Bash"),
+        permission=permission, pattern=pattern,
+    )
 
 
 def _evidence(pid: str, *, event="PreToolUse", matcher="Bash") -> EvidencePolicy:
@@ -240,3 +253,144 @@ def test_empty_policy_list_emits_features_only():
     assert bundle.hooks_json_sidecar == json.dumps(
         {"hooks": {}}, ensure_ascii=False, sort_keys=True, indent=2,
     )
+
+
+# ── PermissionPolicy native lowering (design 2026-07-01) ─────────────
+def test_no_permission_policies_leave_requirements_byte_identical():
+    # Evidence-only compile must be unchanged (no default_permissions,
+    # no [allowed_permission_profiles], no [rules], empty permissions_toml).
+    b = compile_to_codex_requirements([_evidence("e")])
+    assert "default_permissions" not in b.requirements_toml
+    assert "[allowed_permission_profiles]" not in b.requirements_toml
+    assert "[rules]" not in b.requirements_toml
+    assert b.permissions_toml == ""
+
+
+def test_bash_deny_lowers_to_forbidden_prefix_rule():
+    b = compile_to_codex_requirements([_perm("p", "Bash(rm -rf *)", "deny")])
+    r = tomllib.loads(b.requirements_toml)
+    assert r["rules"]["prefix_rules"] == [{
+        "pattern": [{"token": "rm"}, {"token": "-rf"}],
+        "decision": "forbidden",
+        "justification": "Magi policy p",
+    }]
+
+
+def test_bash_ask_lowers_to_prompt_and_strips_colon_star():
+    b = compile_to_codex_requirements([_perm("p", "Bash(git push:*)", "ask")])
+    rule = tomllib.loads(b.requirements_toml)["rules"]["prefix_rules"][0]
+    assert rule["pattern"] == [{"token": "git"}, {"token": "push"}]
+    assert rule["decision"] == "prompt"
+
+
+def test_bash_allow_emits_no_rule():
+    # allow is the default absent a deny; no prefix_rule, no profile.
+    b = compile_to_codex_requirements([_perm("p", "Bash(ls *)", "allow")])
+    assert "[rules]" not in b.requirements_toml
+    assert b.permissions_toml == ""
+
+
+def test_read_deny_lowers_to_filesystem_deny():
+    b = compile_to_codex_requirements([_perm("p", "Read(**/*.env)", "deny")])
+    prof = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]
+    assert prof["filesystem"][":workspace_roots"]["**/*.env"] == "deny"
+    # profile is forced + allowlisted in requirements.toml.
+    r = tomllib.loads(b.requirements_toml)
+    assert r["default_permissions"] == CODEX_PERMISSION_PROFILE
+    assert r["allowed_permission_profiles"] == {CODEX_PERMISSION_PROFILE: True}
+
+
+def test_write_allow_is_write_tier_read_allow_is_read_tier():
+    b = compile_to_codex_requirements([
+        _perm("w", "Edit(src/**)", "allow"),
+        _perm("r", "Read(docs/**)", "allow"),
+    ])
+    fs = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]["filesystem"][":workspace_roots"]
+    assert fs["src/**"] == "write"
+    assert fs["docs/**"] == "read"
+
+
+def test_webfetch_allow_builds_a_default_deny_allowlist():
+    # Codex network is allowlist-only. An allow policy enables network and
+    # lists the host; a closing "*" = "deny" makes unlisted hosts fail closed
+    # (not fall through to the base default). domain: prefix is stripped.
+    b = compile_to_codex_requirements([
+        _perm("p", "WebFetch(domain:api.openai.com)", "allow"),
+    ])
+    net = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]["network"]
+    assert net["enabled"] is True
+    assert net["domains"]["api.openai.com"] == "allow"
+    assert net["domains"]["*"] == "deny"  # strict allowlist tail
+
+
+def test_webfetch_deny_only_is_not_a_native_network_rule():
+    # A deny-only set must NOT flip network on (that would open everything
+    # else to the base default). The base :workspace already blocks all
+    # network, so no network table is emitted; the deny rides the hook path.
+    b = compile_to_codex_requirements([
+        _perm("p", "WebFetch(domain:tracking.example.com)", "deny"),
+    ])
+    assert b.permissions_toml == ""
+    assert "enabled = true" not in b.permissions_toml
+
+
+def test_filesystem_most_restrictive_wins_on_shared_glob():
+    # allow (read) + deny on the same glob -> deny (most restrictive).
+    b = compile_to_codex_requirements([
+        _perm("a", "Read(secret/**)", "allow"),
+        _perm("d", "Edit(secret/**)", "deny"),
+    ])
+    fs = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]["filesystem"][":workspace_roots"]
+    assert fs["secret/**"] == "deny"
+
+
+def test_ask_on_file_or_host_is_hook_residual_not_native():
+    # fs/net have no prompt tier; ask falls to the hook path (no native rule).
+    b = compile_to_codex_requirements([
+        _perm("f", "Read(x/**)", "ask"),
+        _perm("h", "WebFetch(domain:x.com)", "ask"),
+    ])
+    assert b.permissions_toml == ""  # no fs/net rule emitted
+
+
+def test_mcp_gating_is_hook_residual_not_native():
+    b = compile_to_codex_requirements([
+        McpGatingPolicy(id="m", description="t", server="evil", action="deny"),
+    ])
+    # MCP is not profile-expressible -> no profile, no rule.
+    assert b.permissions_toml == ""
+    assert "[allowed_permission_profiles]" not in b.requirements_toml
+
+
+def test_permission_lowering_is_order_invariant_and_valid_toml():
+    pols = [
+        _perm("p1", "Bash(rm -rf *)", "deny"),
+        _perm("p2", "Read(**/*.env)", "deny"),
+        _perm("p3", "Edit(src/**)", "allow"),
+        _perm("p4", "WebFetch(domain:a.com)", "deny"),
+    ]
+    fwd = compile_to_codex_requirements(pols)
+    rev = compile_to_codex_requirements(list(reversed(pols)))
+    assert fwd.requirements_toml == rev.requirements_toml
+    assert fwd.permissions_toml == rev.permissions_toml
+    # both artifacts are valid TOML
+    tomllib.loads(fwd.requirements_toml)
+    tomllib.loads(fwd.permissions_toml)
+
+
+def test_empty_command_prefix_is_not_emitted_as_ambiguous_rule():
+    # Bash(*) / bare Bash reduce to an empty prefix whose match-all
+    # semantics are unconfirmed; do NOT emit an ambiguous native rule.
+    b = compile_to_codex_requirements([_perm("p", "Bash(*)", "deny")])
+    assert "[rules]" not in b.requirements_toml
+
+
+def test_control_chars_in_pattern_stay_valid_toml():
+    # The IR grammar admits arg bytes like \r; the emitter must escape them
+    # so the managed file never becomes invalid TOML (fail-open risk).
+    b = compile_to_codex_requirements([_perm("p", "Read(a\rb/**)", "deny")])
+    # parses cleanly + no raw CR in the string
+    prof = tomllib.loads(b.permissions_toml)
+    assert "\r" not in b.permissions_toml
+    fs = prof["permissions"][CODEX_PERMISSION_PROFILE]["filesystem"][":workspace_roots"]
+    assert any(k for k in fs)  # a rule was emitted, file is valid

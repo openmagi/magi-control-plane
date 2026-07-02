@@ -1,7 +1,7 @@
 {
   "runtime_id": "codex",
-  "enforced_count": 2,
-  "downgraded_count": 4,
+  "enforced_count": 3,
+  "downgraded_count": 6,
   "policies": [
     {
       "policy_id": "ev/bash-enforced",
@@ -30,18 +30,18 @@
     },
     {
       "policy_id": "perm/deny-rm",
-      "status": "codex_native_config_pending",
+      "status": "enforced",
       "downgrade": null
     },
     {
       "policy_id": "mcp/deny-github",
-      "status": "codex_native_config_pending",
-      "downgrade": null
+      "status": "codex_no_native_mcp_profile",
+      "downgrade": "hook PreToolUse on the mcp tool"
     },
     {
       "policy_id": "sub/disable-researcher",
-      "status": "codex_native_config_pending",
-      "downgrade": null
+      "status": "codex_subagent_multi_agent",
+      "downgrade": "features.multi_agent + spawn_agent PreToolUse hook"
     }
   ]
 }

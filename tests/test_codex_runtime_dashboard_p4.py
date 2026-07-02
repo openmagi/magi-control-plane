@@ -172,11 +172,12 @@ def test_pack_coverage_rollup_counts_sum_to_total(cloud):
     total = (body["enforced"] + body["downgraded"]
              + body["unsupported"] + body["not_applicable"])
     assert total == body["total"]
-    # ev/bash enforced, ev/read + ctx/cite downgraded, sub/researcher
-    # native-config-pending → unsupported.
+    # ev/bash enforced; ev/read + ctx/cite downgraded; sub/researcher now
+    # rides features.multi_agent + the spawn_agent hook (a compat fallback),
+    # so it renders downgraded rather than unsupported (design 2026-07-01).
     assert body["enforced"] == 1
-    assert body["downgraded"] == 2
-    assert body["unsupported"] == 1
+    assert body["downgraded"] == 3
+    assert body["unsupported"] == 0
 
 
 def test_pack_coverage_cc_all_enforced(cloud):
