@@ -463,11 +463,17 @@ def _emit_permissions_profile(low: PermissionLowering) -> str:
     would be a no-op envelope). Deterministic: globs/hosts sorted.
     """
     # Network is only emitted for an ALLOWLIST intent (>=1 allow domain).
-    # The base ``:workspace`` profile has network OFF, so a deny-only set is
-    # already fully blocked by the base and turning network ON to "just deny
-    # evil.com" would OPEN everything else to the base default. Fail-closed:
-    # deny-only -> no network table (base blocks all); allowlist -> enable +
-    # a closing ``"*" = "deny"`` so unlisted domains are denied, not defaulted.
+    # Codex network is default-deny when any allow entry exists ("If there
+    # are no allow entries, domain requests are blocked", per the permissions
+    # docs), so the listed allows ARE the allowlist and unlisted hosts are
+    # denied automatically. A deny-only set turning network ON would OPEN
+    # everything else, so fail-closed: deny-only -> no network table (the
+    # base :workspace already blocks all network); allowlist -> enable + the
+    # allow hosts. NOTE (live probe 2026-07-02): a bare ``"*"`` is a valid
+    # domain key only as an ALLOW (global wildcard); Codex REJECTS ``"*" =
+    # "deny"`` ("allowed exact hosts or scoped wildcards like *.example.com").
+    # So no explicit default-deny tail is emitted (it is both invalid and
+    # redundant with the default-deny-when-allowlisted semantics).
     net_allow = any(v == "allow" for v in low.net_domains.values())
     emit_net = low.net_domains and net_allow
     if not low.fs_rules and not emit_net:
@@ -486,16 +492,18 @@ def _emit_permissions_profile(low: PermissionLowering) -> str:
             lines.append(f"{_toml_str(glob)} = {_toml_str(low.fs_rules[glob])}")
         lines.append("")
     if emit_net:
-        domains = dict(low.net_domains)
-        domains.setdefault("*", "deny")  # strict allowlist: default-deny tail
+        # The allow hosts ARE the allowlist; unlisted hosts are denied by
+        # default. No bare "*"="deny" tail (invalid + redundant).
         lines.append(f"[permissions.{CODEX_PERMISSION_PROFILE}.network]")
         lines.append("enabled = true")
         lines.append("")
         lines.append(
             f"[permissions.{CODEX_PERMISSION_PROFILE}.network.domains]"
         )
-        for host in sorted(domains):
-            lines.append(f"{_toml_str(host)} = {_toml_str(domains[host])}")
+        for host in sorted(low.net_domains):
+            lines.append(
+                f"{_toml_str(host)} = {_toml_str(low.net_domains[host])}"
+            )
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 

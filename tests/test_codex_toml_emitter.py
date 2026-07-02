@@ -311,16 +311,19 @@ def test_write_allow_is_write_tier_read_allow_is_read_tier():
 
 
 def test_webfetch_allow_builds_a_default_deny_allowlist():
-    # Codex network is allowlist-only. An allow policy enables network and
-    # lists the host; a closing "*" = "deny" makes unlisted hosts fail closed
-    # (not fall through to the base default). domain: prefix is stripped.
+    # Codex network is default-deny once any allow entry exists, so the allow
+    # hosts ARE the allowlist and unlisted hosts are denied automatically.
+    # A bare "*" = "deny" is INVALID (live probe 2026-07-02: Codex rejects it;
+    # "*" is an allow-only global wildcard), so no default-deny tail is
+    # emitted. domain: prefix is stripped.
     b = compile_to_codex_requirements([
         _perm("p", "WebFetch(domain:api.openai.com)", "allow"),
     ])
     net = tomllib.loads(b.permissions_toml)["permissions"][CODEX_PERMISSION_PROFILE]["network"]
     assert net["enabled"] is True
-    assert net["domains"]["api.openai.com"] == "allow"
-    assert net["domains"]["*"] == "deny"  # strict allowlist tail
+    assert net["domains"] == {"api.openai.com": "allow"}
+    # Never emit a bare "*" deny (Codex rejects it -> invalid managed file).
+    assert '"*" = "deny"' not in b.permissions_toml
 
 
 def test_webfetch_deny_only_is_not_a_native_network_rule():

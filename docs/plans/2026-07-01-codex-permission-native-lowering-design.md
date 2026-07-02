@@ -201,9 +201,15 @@ CONFIRMED from /codex/enterprise/managed-configuration (no longer open):
 - Also available (out of scope for v1): `allowed_approval_policies`,
   `allowed_sandbox_modes`.
 
-REMAINING (does NOT block the build, additive on the default-ON flag):
-- Whether `codex exec` (headless) actually honors managed permission
-  profiles + `[rules].prefix_rules` (the D9 firing question, for the
-  PERMISSION surface). Needs a rooted `/etc/codex` install probe. The
-  lowering is emitted correctly regardless; this only affects the coverage
-  claim under headless exec.
+CONFIG ACCEPTANCE (live probe 2026-07-02): the emitter's output was loaded
+into a real Codex 0.137 parser (`CODEX_HOME=... codex debug models`). This
+caught a real bug tomllib could not: Codex REJECTS a bare `"*" = "deny"`
+network key ("allowed exact hosts or scoped wildcards like *.example.com").
+After removing the invalid default-deny tail, the full emitted profile
+(filesystem + network allowlist) + `[rules].prefix_rules` +
+`default_permissions` + `[allowed_permission_profiles]` is ACCEPTED by the
+Codex config parser. So the D9 question splits: config-level ACCEPTANCE is
+now confirmed; the remaining half is whether the managed profile + rules
+actually FIRE (enforce) during a headless `codex exec` turn, which needs a
+rooted `/etc/codex` install + a real turn to observe. The lowering is emitted
+correctly regardless.
