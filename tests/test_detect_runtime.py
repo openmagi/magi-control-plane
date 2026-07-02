@@ -26,15 +26,19 @@ def codex_on(monkeypatch):
     monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "1")
 
 
-# ── kill switch (flag OFF) ───────────────────────────────────────────
-def test_flag_off_always_returns_cc(monkeypatch):
-    """With the adapter disabled, even a Codex payload + explicit
-    ``MAGI_CP_RUNTIME=codex`` env resolves to CC. Dead-code guarantee."""
+# ── kill switch ──────────────────────────────────────────────────────
+def test_flag_default_unset_is_on(monkeypatch):
+    """Default-ON flip (2026-07-01): with the flag UNSET the adapter is
+    globally available, so an explicit ``MAGI_CP_RUNTIME=codex`` resolves
+    to Codex. The disabled path now requires an explicit falsy token
+    (see ``test_flag_explicit_falsy_returns_cc``)."""
     monkeypatch.delenv("MAGI_CP_CODEX_RUNTIME_ENABLED", raising=False)
-    assert detect_runtime(_CODEX_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}) == "cc"
+    assert detect_runtime(_CODEX_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}) == "codex"
 
 
 def test_flag_explicit_falsy_returns_cc(monkeypatch):
+    """Kill switch: an explicit falsy token forces the dispatcher to
+    "CC only", even with a Codex payload + explicit env."""
     monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "0")
     assert detect_runtime(_CODEX_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}) == "cc"
 

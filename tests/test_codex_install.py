@@ -92,6 +92,21 @@ def test_install_codex_does_not_touch_cc_commands(monkeypatch, tmp_path):
     assert not (home / ".claude" / "commands" / "magi").exists()
 
 
+def test_install_codex_enforces_via_managed_not_user_config(monkeypatch, tmp_path):
+    # §11.4 F2: user ``~/.codex/config.toml`` ``[[hooks]]`` do NOT fire under
+    # ``codex exec``. Enforcement therefore rides the MANAGED layer
+    # (``<etc>/requirements.toml``), and the installer must never write hook
+    # tables into the user config. Lock that: the compiled hooks land in the
+    # managed requirements file, and the user config.toml is left untouched.
+    home, etc = _wire(monkeypatch, tmp_path)
+    codex_install.cli(["--runtime", "codex"])
+
+    # Hooks are compiled into the managed requirements file.
+    assert (etc / "requirements.toml").read_text("utf-8").count("hooks") >= 1
+    # The user config.toml is never created or modified by the installer.
+    assert not (home / ".codex" / "config.toml").exists()
+
+
 def test_install_both_drops_cc_and_codex(monkeypatch, tmp_path):
     home, _ = _wire(monkeypatch, tmp_path)
     codex_install.cli(["--runtime", "both"])

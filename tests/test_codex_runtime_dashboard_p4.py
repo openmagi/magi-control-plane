@@ -43,7 +43,9 @@ def _env(monkeypatch):
     monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", ADMIN_KEY)
     monkeypatch.setenv("MAGI_CP_API_KEY", LEGACY_API_KEY)
     monkeypatch.setenv("MAGI_CP_HITL_API_KEY", "p4-runtime-hitl-key")
-    # Default OFF: every test that needs codex-on flips it explicitly.
+    # Default ON (2026-07-01): unset means the adapter is available, so
+    # tests here run codex-on unless they explicitly set the flag falsy.
+    # The two disabled-path tests below set MAGI_CP_CODEX_RUNTIME_ENABLED=0.
     monkeypatch.delenv("MAGI_CP_CODEX_RUNTIME_ENABLED", raising=False)
 
 
@@ -194,7 +196,10 @@ def test_pack_coverage_unknown_pack_404(cloud):
 
 
 # ── per-tenant runtime picker state ──────────────────────────────────
-def test_get_tenant_runtime_defaults_to_cc_flag_off(cloud):
+def test_get_tenant_runtime_reports_disabled_when_flag_off(cloud, monkeypatch):
+    # Default-ON flip (2026-07-01): the disabled path now requires an
+    # explicit falsy token; unset means the adapter is available.
+    monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "0")
     r = _admin(cloud["client"], "GET", "/tenants/default/runtime")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -250,7 +255,9 @@ def test_picker_rollup_counts_floor_pack_members_with_empty_store(tmp_path):
 
 
 # ── runtime switch (feature-flag ladder + persistence) ───────────────
-def test_switch_to_codex_refused_when_flag_off(cloud):
+def test_switch_to_codex_refused_when_flag_off(cloud, monkeypatch):
+    # Default-ON flip (2026-07-01): kill switch is an explicit falsy token.
+    monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "0")
     r = _admin(cloud["client"], "POST", "/tenants/default/runtime",
                json={"runtime_id": "codex"})
     assert r.status_code == 403

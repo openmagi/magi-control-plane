@@ -812,6 +812,152 @@ standalone `2026-06-30-codex-live-test-checklist.md`).
   one delegates to? Live test item #8. Affects the dashboard's
   "operator override" story more than the runtime itself.
 
+### 11.4 Live-test findings (2026-07-01, Codex 0.137.0, macOS, ChatGPT-auth)
+
+Ran the probe checklist against Kevin's real Codex install. Method: appended
+`[[hooks.*]]` blocks to `~/.codex/config.toml` pointing at a logging shell
+script, ran `codex exec ... --dangerously-bypass-hook-trust "Run bash: echo
+MAGIHOOKTEST"`, and grepped the session rollout + the hook log. Config was
+reverted from backup afterward (byte-identical diff confirmed).
+
+- **F1. `hooks` feature is stable/true in 0.137.** `multi_agent` stable,
+  `multi_agent_v2` under development, `plugin_hooks` REMOVED (folded into
+  `hooks`). Event set from the native binary: `PreToolUse`,
+  `PreToolUsePermissionRequest`, `PostToolUse`, `PreCompact`, `PostCompact`,
+  `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `Stop`.
+  No `Notification`/`SessionEnd`. This trims the emitter's event map.
+
+- **F2. CRITICAL: user `config.toml [[hooks.*]]` blocks do NOT fire under
+  `codex exec` (headless).** Proven: the rollout shows `function_call
+  exec_command {cmd:"echo MAGIHOOKTEST"}` ran to exit 0, while the hook log
+  stayed at 0 lines. Tested BOTH the nested CC-style TOML shape
+  (`[[hooks.X]]` + `[[hooks.X.hooks]]` with `type`/`command`) AND a flat
+  shape (`command` directly on `[[hooks.X]]`), with matcher-less
+  `SessionStart`/`Stop`/`UserPromptSubmit` included, even with
+  `--dangerously-bypass-hook-trust`. Zero fires in every case.
+  **This means the current `codex_toml_emitter` target (config.toml
+  `[[hooks]]`) is a dead surface for headless exec.** `codex exec` in CI is a
+  gate-bypass path. Do NOT rely on config-level hooks for enforcement.
+
+- **F3. The ONLY working hook registration on the machine is a PLUGIN
+  `hooks.json`.** Canonical shape (from the installed `superpowers` plugin,
+  `~/.codex/superpowers/hooks/hooks.json`) is the nested CC-style JSON:
+  `{"hooks": {"SessionStart": [{"matcher": "startup|clear|compact", "hooks":
+  [{"type": "command", "command": "...", "async": false}]}]}}`, referenced by
+  the plugin manifest (`"hooks": "./hooks.json"`). So the shape Magi should
+  emit is the nested JSON, delivered as a plugin sidecar, NOT inline TOML.
+
+- **F4. Codex's shell tool is named `exec_command`, not `Bash`.** The
+  `function_call.name` is `exec_command` with args `{cmd, workdir,
+  yield_time_ms}`. Magi's matcher-to-tool map must translate CC's `Bash`/etc.
+  to Codex tool names (`exec_command`, `apply_patch`, `shell`, MCP tool
+  names). A `matcher = "Bash"` block would never match even if hooks fired.
+  Resolves part of Shim A: the tool-name namespace differs.
+
+- **F5. `requirements.toml` is the enforced (managed/MDM) layer, and is
+  DENY-ONLY.** Binary error string: a rule with decision `allow` is "not
+  permitted in requirements.toml: Codex merges these rules with other config
+  and uses the most restrictive result (use 'prompt' or 'forbidden')".
+  Managed hook sources have precedence `mdm > system > project >
+  session_flags > plugin` (`ManagedHooksRequirements`, `cloud_requirements`,
+  `cloud_managed_config`, `legacy_managed_config_*`). **Enforcement that a
+  user cannot untrust or bypass must go through requirements.toml / the
+  managed layer, expressed as `forbidden`/`prompt` only, never `allow`.**
+  This is the true analog of CC's managed-settings.json. Confirms L6's target
+  but constrains the compiler: the Codex IR->requirements.toml lowering can
+  only express deny/prompt, so "allow" = absence of a deny rule.
+
+- **F6. Trust model confirmed.** `startup_hooks_review.rs` + persisted
+  `hooks.state`: hooks need interactive TUI trust ("Trust all and continue" /
+  "Continue without trusting (hooks won't run)"). Headless exec has no TUI to
+  grant trust; `--dangerously-bypass-hook-trust` is the automation escape but
+  did NOT make config-level hooks fire (see F2), consistent with config
+  `[[hooks]]` not being a live registration surface for exec.
+
+- **F7. D5 RESOLVED (NO). `transcript_path` is Codex's own rollout JSONL, NOT
+  CC's shape.** Records are `{timestamp, type, payload}` with
+  `type ∈ {session_meta, event_msg, response_item, turn_context}`; tool calls
+  appear as `response_item` `function_call`/`function_call_output`. Ship a
+  Codex-specific evidence reader in `runtime/codex.py`; do NOT share the CC
+  JSONL reader. Updates D5 from "pending" to "answered: separate reader".
+
+**Actions this creates (all on flag-off, dormant code).** After auditing
+the code the F2/F5 concerns turned out to be MOSTLY already-correct by
+design; only F4 was a real bug. Status after the 2026-07-01 follow-up:
+
+1. Registration surface: ALREADY CORRECT, no retarget needed. The
+   installer (`local/codex_install.py`) writes the compiled hooks to
+   `/etc/codex/requirements.toml` (the MANAGED enforcement layer, F5) and
+   NEVER touches user `~/.codex/config.toml`. F2's dead-surface finding was
+   about USER config.toml, which the product never used for enforcement, so
+   the enforced path was right all along. The emitter also generates a
+   `hooks_json_sidecar` (F3 nested plugin shape) that is currently spare
+   (not installed); an interactive-plugin install path can adopt it later.
+   Added a regression test locking "installer writes managed requirements,
+   not user config.toml."
+2. DONE. Matcher-name translation table (CC -> Codex: Bash->exec_command,
+   Edit/Write/MultiEdit->apply_patch, Task->spawn_agent; read-family +
+   regex pass through) (F4). This was the one genuine bug: without it every
+   emitted `matcher` named a nonexistent Codex tool and fired zero times.
+3. Event-map trim to the F1 set: the emitter emits only events that
+   actually appear on authored policies, so no stale events leak; the F1
+   set is recorded at the block-channel marker for when SessionEnd-hosted
+   logic is added. No code change required now.
+4. Codex-specific transcript reader (F7): DEFERRED (YAGNI). The gate does
+   NOT read transcripts for evidence today (`verifier/descriptors.py`: the
+   cloud never pulls `transcript_path`); the only transcript reader is the
+   CC-only run-share path. When a transcript-consuming feature is built for
+   Codex it MUST use a Codex-rollout-JSONL reader, not the CC reader
+   (recorded at the codex.py breadcrumb + F7).
+5. DONE (docs). `codex exec` documented as a gate-bypass surface for USER
+   config.toml hooks (F2, proven). Enforcement is installed to the managed
+   `/etc/codex/requirements.toml` layer instead (F5/F6), which the installer
+   already targets root-owned. IMPORTANT HONESTY CAVEAT: F2 proved only that
+   USER config.toml hooks do not fire under `codex exec`. It did NOT prove
+   that MANAGED `requirements.toml [[hooks]]` DO fire under `codex exec`
+   (that needs a rooted `/etc/codex` install to test, which the live run did
+   not do). So "a correctly-installed tenant is enforced under `codex exec`"
+   is the DESIGN intent, not an empirically verified fact yet. It is a
+   pending live-test (call it D9). Two consequences flow from this:
+   - The strongest MDM-enforced Codex surface is deny/prompt PERMISSION
+     rules (F5), and the `PermissionPolicy`/`McpGatingPolicy` ->
+     requirements lowering is NOT built (`_coverage_status_for` returns
+     `codex_native_config_pending`; `TODO(live-test P2)`). Until it lands,
+     the Codex managed config emits only command-hook tables (firing
+     unverified under headless exec) and NO native deny rules. This is the
+     highest-priority follow-up for real Codex enforcement.
+   - Per the no-default-OFF policy the adapter still ships default-ON so
+     this gap is visible rather than hidden; it is NOT presented as a
+     proven-enforcement guarantee.
+
+Follow-ups surfaced by the multi-angle review (all P2, non-blocking, on the
+now-default-ON flag):
+- Alternation matcher hole: FIXED. A translatable CC tool inside an
+  alternation (`Edit|Write`) is now translated per-token in
+  `translate_matcher_cc_to_codex` (split on `|`, translate, dedupe, sort);
+  a matcher of only read-family tokens still reports the read-family
+  downgrade, not "enforced".
+- `detect_runtime` CC byte-identity is now heuristic (payload-sniff) rather
+  than a hard pre-flip short-circuit. Safe today (CC payloads carry no
+  `turn_id`/`matcher_aliases`); a hardening option is to require an explicit
+  positive runtime selection for the Codex dispatch rather than a bare
+  payload sniff.
+- Shell coverage: `Bash -> exec_command` is the confirmed mapping; Codex's
+  `write_stdin` (stdin into an already-gated `exec_command` session) is not
+  separately mapped. Lower risk (the parent command was already gated), but
+  a full shell-family confirmation is a follow-up.
+- Non-root `curl | bash` installs land the managed files user-owned and only
+  warn (pre-existing); consider a hard-fail for the codex/both runtimes.
+
+Net: the live test found ONE real bug (F4 matcher translation, fixed;
+alternation form also fixed post-review) and otherwise CONFIRMED the
+existing architecture (managed requirements = the enforced surface, though
+its firing under headless `codex exec` is still pending live verification,
+D9). The deny-only constraint (F5) is a forward-constraint on the
+not-yet-built PermissionPolicy->requirements lowering (`TODO(live-test P2)`).
+D1/D2/D3/D4/D6/D7/D8/D9 remain unrun (need interactive TUI, a rooted install,
+or an MDM harness).
+
 ## 12. Live test checklist (pointer)
 
 See `docs/plans/2026-06-30-codex-live-test-checklist.md` for the

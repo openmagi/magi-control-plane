@@ -71,6 +71,19 @@ class CodexRequirementsBundle:
     Section 2.3); byte-stable JSON.
     ``context_templates`` — ``{sha256: template_bytes}`` sidecar map,
     identical shape to the CC compiler's sidecars.
+
+    LIVE-TEST NOTE (2026-07-01, §11.4 F2/F3/F5): user ``~/.codex/config.toml``
+    ``[[hooks.*]]`` blocks do NOT fire under ``codex exec`` (headless) even
+    with ``--dangerously-bypass-hook-trust``, proven empirically (tool ran,
+    zero hook fires). So the ENFORCED path is the MANAGED
+    ``/etc/codex/requirements.toml`` layer (``ManagedHooksRequirements``,
+    precedence mdm > system > project > session_flags > plugin), and the
+    working interactive registration shape is a PLUGIN ``hooks.json`` (nested
+    ``{"hooks": {Event: [{matcher, hooks:[{type,command}]}]}}``), which is
+    what ``hooks_json_sidecar`` already emits. Permission DECISIONS in
+    requirements.toml are deny-only (``forbidden``/``prompt``, never
+    ``allow``; most-restrictive merge). Do NOT ship enforcement via user
+    config.toml hooks; that surface is a ``codex exec`` gate-bypass.
     """
 
     requirements_toml: str
@@ -189,6 +202,25 @@ def _add_gap_shim_fallbacks(
     return added_subagent_mirror
 
 
+def _emit_matchers(matchers: set[str]) -> list[str]:
+    """Translate a set of CC tool-name matchers to Codex tool names and
+    return them sorted + deduped (§11.4 F4).
+
+    The internal ``events`` map is keyed on CC tool names (the IR grammar +
+    the Shim A/D deny-lists all reason in CC names); translation happens
+    ONLY here at the final emit boundary. Dedup is post-translation because
+    distinct CC tools can collapse to one Codex tool (``Edit`` + ``Write``
+    both -> ``apply_patch``); collapsing before the sort keeps the output
+    byte-stable and avoids emitting two identical hook tables.
+    """
+    # Lazy import mirrors the CODEX_SILENT_SKIP_TOOLS import below: the
+    # tool namespace is canonical in the runtime driver, kept out of this
+    # pure policy-layer module's import graph.
+    from ..runtime.codex import translate_matcher_cc_to_codex
+
+    return sorted({translate_matcher_cc_to_codex(m) for m in matchers})
+
+
 def _toml_str(value: str) -> str:
     """Emit a TOML basic string literal for ``value``.
 
@@ -242,7 +274,7 @@ def compile_to_codex_requirements(
     lines.append("")
 
     for event in sorted(events):
-        for matcher in sorted(events[event]):
+        for matcher in _emit_matchers(events[event]):
             lines.append(f"[[hooks.{event}]]")
             lines.append(f"matcher = {_toml_str(matcher)}")
             lines.append(f"[[hooks.{event}.hooks]]")
@@ -258,7 +290,7 @@ def compile_to_codex_requirements(
     hooks_obj: dict[str, list[dict]] = {}
     for event in sorted(events):
         entries: list[dict] = []
-        for matcher in sorted(events[event]):
+        for matcher in _emit_matchers(events[event]):
             entries.append({
                 "matcher": matcher,
                 "hooks": [{

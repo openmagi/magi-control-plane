@@ -40,6 +40,10 @@ def _evidence(pid: str, *, event="PreToolUse", matcher="Bash") -> EvidencePolicy
 
 
 # The fixed golden policy set: two hooks on distinct events/matchers.
+# The authored (CC) matchers are ``Bash`` + ``Read``; the emitter
+# translates CC tool names to Codex tool names (§11.4 F4), so the golden
+# output shows ``Bash`` -> ``exec_command`` and ``Read`` passing through
+# unchanged (read-family CC tools have no 1:1 Codex tool).
 _GOLDEN_POLICIES = [
     _evidence("p1", event="PreToolUse", matcher="Bash"),
     _evidence("p2", event="PostToolUse", matcher="Read"),
@@ -57,7 +61,7 @@ _GOLDEN_REQUIREMENTS_TOML = (
     "timeout = 5000\n"
     "\n"
     "[[hooks.PreToolUse]]\n"
-    'matcher = "Bash"\n'
+    'matcher = "exec_command"\n'
     "[[hooks.PreToolUse.hooks]]\n"
     'type = "command"\n'
     'command = "/usr/local/bin/magi-cp gate --runtime codex"\n'
@@ -75,7 +79,7 @@ def _expected_hooks_json() -> str:
     }
     obj = {"hooks": {
         "PostToolUse": [{**entry, "matcher": "Read"}],
-        "PreToolUse": [{**entry, "matcher": "Bash"}],
+        "PreToolUse": [{**entry, "matcher": "exec_command"}],
     }}
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2)
 
@@ -97,6 +101,85 @@ def test_every_hook_entry_uses_the_shared_gate_command():
         f'command = "{CODEX_GATE_COMMAND}"'
     ) == 2
     assert f"timeout = {CODEX_HOOK_TIMEOUT_MS}" in bundle.requirements_toml
+
+
+# ── CC -> Codex matcher translation (§11.4 F4) ───────────────────────
+def test_bash_matcher_translates_to_exec_command():
+    bundle = compile_to_codex_requirements([_evidence("p", matcher="Bash")])
+    assert 'matcher = "exec_command"' in bundle.requirements_toml
+    assert '"Bash"' not in bundle.requirements_toml
+    assert '"exec_command"' in bundle.hooks_json_sidecar
+
+
+def test_file_mutation_tools_dedupe_to_single_apply_patch_table():
+    # Every CC file-mutation tool (Edit/Write/MultiEdit/NotebookEdit)
+    # collapses to Codex's single ``apply_patch`` tool and must emit
+    # exactly one hook table, not four identical ones.
+    policies = [
+        _evidence("e", event="PreToolUse", matcher="Edit"),
+        _evidence("w", event="PreToolUse", matcher="Write"),
+        _evidence("m", event="PreToolUse", matcher="MultiEdit"),
+        _evidence("n", event="PreToolUse", matcher="NotebookEdit"),
+    ]
+    bundle = compile_to_codex_requirements(policies)
+    assert bundle.requirements_toml.count("[[hooks.PreToolUse]]") == 1
+    assert bundle.requirements_toml.count('matcher = "apply_patch"') == 1
+    for cc in ('"Edit"', '"Write"', '"MultiEdit"', '"NotebookEdit"'):
+        assert cc not in bundle.requirements_toml
+
+
+def test_read_family_and_mcp_matchers_pass_through_unchanged():
+    # Read-family CC tools have no 1:1 Codex tool, and an MCP tool name is
+    # identical on both runtimes: both pass through verbatim.
+    policies = [
+        _evidence("r", event="PostToolUse", matcher="Read"),
+        _evidence("g", event="PreToolUse", matcher="Grep"),
+        _evidence("m", event="PreToolUse", matcher="mcp__github__create_issue"),
+    ]
+    toml = compile_to_codex_requirements(policies).requirements_toml
+    assert 'matcher = "Read"' in toml
+    assert 'matcher = "Grep"' in toml
+    assert 'matcher = "mcp__github__create_issue"' in toml
+
+
+def test_alternation_of_tool_names_translates_and_dedupes():
+    # A simple alternation of bare tool names is translated per-token, so a
+    # translatable CC tool inside an alternation still binds to its Codex
+    # tool instead of firing zero times (the alternation form of the F4
+    # false-coverage hole). Tokens are deduped + sorted for byte-stability.
+    #   Edit|Write   -> apply_patch (both map to apply_patch, deduped)
+    #   Bash|Read    -> Read|exec_command (Bash translated, Read passes; sorted)
+    a = compile_to_codex_requirements(
+        [_evidence("a", event="PreToolUse", matcher="Edit|Write")]
+    ).requirements_toml
+    assert 'matcher = "apply_patch"' in a
+    assert '"Edit|Write"' not in a
+
+    b = compile_to_codex_requirements(
+        [_evidence("b", event="PreToolUse", matcher="Bash|Read")]
+    ).requirements_toml
+    assert 'matcher = "Read|exec_command"' in b
+    assert '"Bash|Read"' not in b
+
+    # Order-invariant: Write|Edit and Edit|Write emit identical output.
+    fwd = compile_to_codex_requirements(
+        [_evidence("x", event="PreToolUse", matcher="Edit|Write")]
+    ).requirements_toml
+    rev = compile_to_codex_requirements(
+        [_evidence("x", event="PreToolUse", matcher="Write|Edit")]
+    ).requirements_toml
+    assert fwd == rev
+
+
+def test_task_matcher_translates_to_spawn_agent():
+    # CC's single-subagent-spawn tool ``Task`` maps onto Codex's covered
+    # ``spawn_agent`` tool. (``spawn_agent`` itself is unauthorable via the
+    # IR grammar, so it only reaches the emitter through Shim D internally.)
+    bundle = compile_to_codex_requirements(
+        [_evidence("s", event="PreToolUse", matcher="Task")]
+    )
+    assert 'matcher = "spawn_agent"' in bundle.requirements_toml
+    assert '"Task"' not in bundle.requirements_toml
 
 
 # ── order invariance (sort of events + matchers) ─────────────────────

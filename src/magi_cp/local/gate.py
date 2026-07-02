@@ -620,11 +620,14 @@ def _apply_runtime_flag(argv: list[str]) -> None:
 def main() -> int:
     """Gate entry point: detect the runtime, dispatch to its driver.
 
-    Design doc Section 3.4. With ``MAGI_CP_CODEX_RUNTIME_ENABLED`` unset
-    (default), ``detect_runtime`` always returns ``"cc"`` and this is
-    byte-identical to the pre-adapter ``cli`` contract: blank stdin →
-    silent allow, malformed JSON → deny, otherwise run the policy path.
-    The Codex branch is dead code with the flag off.
+    Design doc Section 3.4. ``MAGI_CP_CODEX_RUNTIME_ENABLED`` is default-ON,
+    but ``detect_runtime`` still returns ``"cc"`` for a genuine Claude Code
+    invocation (no ``MAGI_CP_RUNTIME=codex``, no Codex payload markers), so
+    the CC path stays byte-identical to the pre-adapter ``cli`` contract:
+    blank stdin -> silent allow, malformed JSON -> deny, otherwise run the
+    policy path. An explicit falsy flag forces ``"cc"`` unconditionally (the
+    kill switch); the Codex branch is entered only on a positive Codex
+    runtime signal.
     """
     _apply_runtime_flag(sys.argv[1:])
     raw_stripped = sys.stdin.read().strip()

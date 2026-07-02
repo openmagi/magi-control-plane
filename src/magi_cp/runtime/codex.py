@@ -7,9 +7,9 @@ parse / emit / requirements.toml wrap. P2 (this file) adds the four gap
 shims:
 
   - Shim A (Section 4.1): PreToolUse tool-coverage silent-skip. Codex
-    only fires ``PreToolUse`` for ``Bash`` / ``unified_exec`` /
-    ``apply_patch`` / MCP; ``coverage_report`` marks any policy that
-    targets a silent-skip tool + the emitter adds
+    only fires ``PreToolUse`` for its shell tool ``exec_command`` (F4;
+    ``unified_exec`` alias), ``apply_patch``, and MCP; ``coverage_report``
+    marks any policy that targets a silent-skip tool + the emitter adds
     ``PermissionRequest`` + ``PostToolUse`` audit fallbacks.
   - Shim B (Section 4.2): PreToolUse ``additionalContext`` rejection.
     ``emit_verdict`` downgrades a turn-scope context to ``systemMessage``
@@ -22,9 +22,13 @@ shims:
     marks subagent-lifecycle policies + the emitter adds belt-and-suspenders
     ``spawn_agent`` PreToolUse + PostToolUse mirror hooks.
 
-Everything here is dead code with ``MAGI_CP_CODEX_RUNTIME_ENABLED`` unset
-(default): ``detect.detect_runtime`` never returns ``"codex"`` with the
-flag off, so ``run_codex_gate`` is unreachable on the CC path.
+``MAGI_CP_CODEX_RUNTIME_ENABLED`` is default-ON (2026-07-01 flip), so the
+Codex path is reachable by default when a runtime signal selects it
+(``MAGI_CP_RUNTIME=codex`` / payload sniff). A genuine Claude Code
+invocation carries no such signal, so ``detect.detect_runtime`` still
+returns ``"cc"`` and ``run_codex_gate`` is never entered on the CC path.
+Setting the flag to an explicit falsy value forces ``"cc"`` unconditionally
+(the kill switch).
 """
 from __future__ import annotations
 
@@ -63,7 +67,7 @@ from .trait import (
 # Codex-native matcher (``list_dir``) is unauthorable today. The deny-list
 # is therefore expressed primarily in CC tool names: the read / search /
 # planning / todo tools that map onto Codex's silent-skip surface (Codex
-# only fires PreToolUse for Bash / unified_exec / apply_patch / MCP, which
+# only fires PreToolUse for exec_command / apply_patch / MCP, which
 # CC's Bash / Edit / Write / NotebookEdit / mcp__* map onto). The
 # Codex-native aliases are kept in the set for forward-compat with any
 # future Codex-native authoring path; they simply never appear on a
@@ -79,16 +83,19 @@ from .trait import (
 #
 # TODO(live-test D3): confirm the exact silent-skip tool set against a
 # real Codex install / issue #20204 PoC before dropping any fallback.
-# TODO(live-test D3, matcher translation): the emitted managed-config
-# matchers are RAW CC tool names (``Read``, ``spawn_agent``, ...), but
-# Codex's own tool names differ (``list_dir``, ...). A ``matcher = "Read"``
-# entry in a Codex requirements.toml never matches a Codex tool, so BOTH
-# the primary hook AND the Shim A fallbacks would be non-matching — the
-# "false sense of coverage" failure mode 4.1 warns about. Closing that
-# requires an explicit CC-name -> Codex-tool-name translation for emitted
-# matchers (identity where the names coincide, e.g. ``spawn_agent``;
-# mapped otherwise). Not built yet; the deny-list below is expressed in CC
-# names on the assumption the translation lands before the flag flips ON.
+# matcher translation: the emitted managed-config matchers are authored as
+# CC tool names, so they need translating to Codex tool names or the hook
+# binds to nothing (the "false sense of coverage" failure mode 4.1 warns
+# about). This IS built: ``translate_matcher_cc_to_codex`` /
+# ``_CC_TO_CODEX_TOOL`` below, applied at both emit loops. The deny-list
+# below stays expressed in CC names because Shim A/D reason in CC names
+# BEFORE translation; only the final emitted matcher is translated.
+# Read-family CC tools still have no 1:1 Codex tool and pass through inert
+# (surfaced as a coverage downgrade, not silently claimed enforced).
+# CONFIRMED (2026-07-01 live, §11.4 F4): Codex's shell tool is named
+# ``exec_command`` (args ``{cmd, workdir, yield_time_ms}``), NOT ``Bash``.
+# So the CC->Codex map must include Bash/Shell -> ``exec_command`` and
+# apply_patch/MCP tool names; a ``matcher = "Bash"`` never fires on Codex.
 CODEX_SILENT_SKIP_TOOLS: tuple[str, ...] = (
     # CC tool matchers that map onto Codex silent-skip tools.
     "AskUser",
@@ -120,9 +127,72 @@ CODEX_SILENT_SKIP_TOOLS: tuple[str, ...] = (
 CODEX_PRETOOLUSE_COVERED_TOOLS: frozenset[str] = frozenset({
     # CC names.
     "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit",
-    # Codex-native names.
-    "unified_exec", "apply_patch",
+    # Codex-native names. ``exec_command`` is the CONFIRMED shell tool
+    # (§11.4 F4, 2855 rollout function_calls); ``unified_exec`` is kept as a
+    # documented alias in case a Codex build exposes it under that name.
+    "exec_command", "unified_exec", "apply_patch",
 })
+
+# CC tool-name -> Codex tool-name translation for EMITTED hook matchers
+# (§11.4 F4). A hook table's ``matcher`` must name a Codex tool or it fires
+# ZERO times, the "false sense of coverage" failure mode 4.1 warns about.
+# Only CONFIRMED mappings live here (identity for everything else):
+#   - CONFIRMED live 2026-07-01 from real rollout ``function_call`` names:
+#     ``exec_command`` (2855x, the shell tool), ``apply_patch`` (file
+#     mutation), ``spawn_agent`` (multi_agent), ``update_plan``,
+#     ``write_stdin``. Codex has NO discrete Read/Grep/Glob/Edit/Write
+#     tool: reads run as ``exec_command`` sub-actions and edits as
+#     ``apply_patch``.
+# So CC ``Bash`` -> ``exec_command`` and CC ``Edit``/``Write``/``MultiEdit``
+# -> ``apply_patch``. Read-family CC matchers (``Read``/``Grep``/``Glob``/
+# ...) have no 1:1 Codex tool and pass through unchanged; they stay inert
+# on Codex, which ``coverage_report`` already surfaces as a downgrade
+# (design doc §14 "Costs"). ``spawn_agent``/``apply_patch``/``exec_command``
+# and any already-Codex name are identity. Regex/alternation matchers
+# (``Edit|Write``) and the empty all-tools matcher pass through unchanged;
+# translating those is a documented follow-up.
+_CC_TO_CODEX_TOOL: dict[str, str] = {
+    "Bash": "exec_command",
+    # Every CC file-mutation tool lowers to Codex's single ``apply_patch``
+    # tool. NotebookEdit is included so it does not stay in
+    # CODEX_PRETOOLUSE_COVERED_TOOLS reporting "enforced" while emitting a
+    # ``matcher = "NotebookEdit"`` that fires zero times (Codex has no
+    # notebook tool; .ipynb edits ride apply_patch).
+    "Edit": "apply_patch",
+    "Write": "apply_patch",
+    "MultiEdit": "apply_patch",
+    "NotebookEdit": "apply_patch",
+    # CC's single-subagent-spawn tool ``Task`` maps onto Codex's
+    # ``spawn_agent`` (design doc 4.4, a covered PreToolUse tool). Without
+    # this, a ``matcher = "Task"`` table never fires on Codex (false
+    # coverage). ``spawn_agent`` itself is unauthorable via the IR (rejected
+    # by the CC matcher grammar); it reaches the emitter only through Shim
+    # D's internal mirror, where it translates identity.
+    "Task": "spawn_agent",
+}
+
+
+def translate_matcher_cc_to_codex(matcher: str) -> str:
+    """Map a Claude Code tool-name matcher to its confirmed Codex tool
+    name for hook emission. See ``_CC_TO_CODEX_TOOL``.
+
+    Also handles a SIMPLE ALTERNATION of bare tool names (``Edit|Write``):
+    each token is translated and the result deduped + sorted, so a
+    translatable CC tool inside an alternation still binds to its Codex
+    tool instead of firing zero times (the alternation form of the F4
+    "false coverage" hole). Only alternations whose every token is a bare
+    identifier are rewritten; a genuine regex (``mcp__.*``, ``Bash.*``,
+    ``.*``) or the empty all-tools matcher passes through unchanged, as do
+    already-Codex names and read-family CC tools with no 1:1 Codex tool.
+    """
+    if matcher in _CC_TO_CODEX_TOOL:
+        return _CC_TO_CODEX_TOOL[matcher]
+    if "|" in matcher:
+        tokens = matcher.split("|")
+        if all(t.isidentifier() for t in tokens):
+            translated = {_CC_TO_CODEX_TOOL.get(t, t) for t in tokens}
+            return "|".join(sorted(translated))
+    return matcher
 
 # Subagent lifecycle events whose hook fanout may not fire on Codex's
 # internal reviewers (design doc 4.4). A policy triggered on one of these
@@ -137,8 +207,14 @@ _SUBAGENT_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
 # "reason": ...}`` (retry-feedback), same split as CC's PostToolUse*
 # channel plus UserPromptSubmit (which Codex documents as accepting
 # ``decision: "block"``). See design doc Section 2.2.
-# TODO(live-test D5): confirm the exact block-channel event set against a
-# real Codex install; PostToolUse post-hoc block is documented.
+# TODO(block-channel event set): confirm the exact block-channel event set
+# against a real Codex install; PostToolUse post-hoc block is documented.
+# (This marker was mislabeled "D5", D5 is transcript_path, now RESOLVED:
+# §11.4 F7 = Codex rollout JSONL, separate reader.) Live event set (F1):
+# PreToolUse, PreToolUsePermissionRequest, PostToolUse, PreCompact,
+# PostCompact, SessionStart, UserPromptSubmit, SubagentStart, SubagentStop,
+# Stop, no Notification/SessionEnd, so SessionEnd-hosted logic below must
+# ride Stop.
 _BLOCK_CHANNEL_EVENTS: frozenset[str] = frozenset({
     "PostToolUse",
     "UserPromptSubmit",
@@ -231,9 +307,18 @@ def _coverage_status_for(p: AnyPolicy) -> tuple[str, str | None]:
     # Shim C: Codex has no SessionEnd event.
     if event == "SessionEnd":
         return ("codex_no_session_end", "Stop stop_hook_active + cloud sweeper")
-    # Shim A: PreToolUse silent-skip tools fire zero hooks on Codex.
+    # Shim A: PreToolUse silent-skip tools fire zero hooks on Codex. The
+    # PermissionRequest+PostToolUse audit fallbacks are emitted, but their
+    # matcher is a read-family CC tool name with no 1:1 Codex tool
+    # (§11.4 F4), so the fallback is itself INERT on Codex until that
+    # mapping is confirmed. Report the downgrade honestly rather than
+    # implying working audit coverage.
     if event == "PreToolUse" and matcher in CODEX_SILENT_SKIP_TOOLS:
-        return ("codex_silent_skip", "PermissionRequest+PostToolUse audit")
+        return (
+            "codex_silent_skip",
+            "PermissionRequest+PostToolUse audit fallback "
+            "(inert: no 1:1 Codex tool name)",
+        )
     # Shim B: additionalContext on PreToolUse is rejected; a
     # ContextInjection archetype compiles to the weaker systemMessage
     # channel. context_scope (turn vs session) is a runtime Verdict
@@ -586,9 +671,11 @@ def run_codex_gate(raw_stripped: str) -> int:
     """Codex runtime path for the gate dispatcher.
 
     Parses the Codex stdin envelope, runs the SAME policy decision the CC
-    path uses (``gate.decide`` — one engine, two surfaces), and emits the
-    Codex verdict envelope. Only reachable with
-    ``MAGI_CP_CODEX_RUNTIME_ENABLED`` on, so it is dead code by default.
+    path uses (``gate.decide``, one engine two surfaces), and emits the
+    Codex verdict envelope. Reachable when ``detect_runtime`` selects
+    ``"codex"`` (default-ON flag + a Codex runtime signal); an explicit
+    falsy ``MAGI_CP_CODEX_RUNTIME_ENABLED`` forces the CC path and makes
+    this unreachable.
     """
     driver = CodexDriver()
     if not raw_stripped:

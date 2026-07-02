@@ -71,7 +71,7 @@ def test_shim_a_coverage_marks_silent_skip_tool():
     report = driver.coverage_report([_evidence("p", matcher="Read")])
     entry = report.policies[0]
     assert entry.status == "codex_silent_skip"
-    assert entry.downgrade == "PermissionRequest+PostToolUse audit"
+    assert entry.downgrade == "PermissionRequest+PostToolUse audit fallback (inert: no 1:1 Codex tool name)"
 
 
 def test_shim_a_emitter_adds_permission_and_posttooluse_fallbacks():
@@ -88,9 +88,10 @@ def test_shim_a_covered_tool_gets_no_fallback():
     bundle = compile_to_codex_requirements([_evidence("p", matcher="Bash")])
     hooks = json.loads(bundle.hooks_json_sidecar)["hooks"]
     # Bash IS covered by Codex PreToolUse — only the primary hook, no
-    # PermissionRequest / PostToolUse fallback.
+    # PermissionRequest / PostToolUse fallback. The emitted matcher is the
+    # translated Codex tool name (§11.4 F4): Bash -> exec_command.
     assert list(hooks.keys()) == ["PreToolUse"]
-    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["Bash"]
+    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["exec_command"]
 
 
 # ── Shim B: additionalContext rejection ──────────────────────────────
@@ -289,4 +290,6 @@ def test_task_single_spawn_is_not_silent_skip_shimmed():
     bundle = compile_to_codex_requirements([_evidence("t", matcher="Task")])
     hooks = json.loads(bundle.hooks_json_sidecar)["hooks"]
     assert list(hooks.keys()) == ["PreToolUse"]
-    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["Task"]
+    # Emitted matcher is the translated Codex tool name (§11.4 F4):
+    # Task -> spawn_agent.
+    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["spawn_agent"]
