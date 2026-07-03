@@ -135,6 +135,13 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "Directory for policy files when POLICY_STORE=file.",
   },
   {
+    name: "MAGI_CP_POLICY_GROUP_STORE",
+    group: "cloud",
+    default: "~/.magi-cp/policy-groups.json",
+    ko: "정책 그룹(=1개 이상의 룰을 소유한 policy) 레코드를 저장할 파일.",
+    en: "File holding policy-group records (a policy that owns one or more rules).",
+  },
+  {
     name: "MAGI_CP_PACK_STORE",
     group: "cloud",
     default: "./_devdb/packs",

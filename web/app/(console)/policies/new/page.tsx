@@ -1445,12 +1445,76 @@ function _parsePackIds(formData: FormData): string[] {
   }
 }
 
+/** Persist a COMPOUND draft (e.g. type=evidence_gate) via
+ *  POST /policies/compound. The server expands it into its member IR
+ *  policies (audit + precondition + ledger-protection denies) and saves
+ *  the owning PolicyRecord + rules atomically. Mirrors persistDraft's
+ *  admin-key + error-flash handling, but the endpoint + redirect differ:
+ *  a compound has no single-rule detail page, so we land on the policies
+ *  list where the grouped policy renders. */
+async function persistCompoundDraft(
+  draft: { id?: string; type?: string; [k: string]: unknown },
+  source: string,
+  packIds?: string[],
+): Promise<void> {
+  const policyId = String(draft.id ?? "").trim()
+  try { validatePolicyId(policyId) }
+  catch { redirect("/policies/new?err=invalid_id"); return }
+  let adminKey: string
+  try {
+    if (!process.env.MAGI_CP_ADMIN_API_KEY) {
+      console.error("dashboard server: MAGI_CP_ADMIN_API_KEY not set")
+      throw new CloudConfigError()
+    }
+    adminKey = process.env.MAGI_CP_ADMIN_API_KEY
+  } catch (e) {
+    redirect(`/policies/new?err=${codeForError(e)}`); return
+  }
+  try {
+    const r = await fetch(
+      `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}/policies/compound`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
+        cache: "no-store",
+        body: JSON.stringify({
+          draft, source, enabled: true,
+          ...(packIds && packIds.length > 0 ? { pack_ids: packIds } : {}),
+        }),
+        signal: AbortSignal.timeout(8000),
+      },
+    )
+    if (!r.ok) {
+      console.error(`cloud ${r.status} POST /policies/compound: ${await r.text().catch(() => "")}`)
+      redirect(`/policies/new?err=${codeForError(new Error(`cloud ${r.status}`))}`); return
+    }
+  } catch (e) {
+    redirect(`/policies/new?err=${codeForError(e)}`); return
+  }
+  try {
+    const { cookies } = await import("next/headers")
+    cookies().delete("magi-cp-compile-result")
+  } catch { /* no-op */ }
+  revalidatePath("/policies")
+  redirect(`/policies?msg=saved`)
+}
+
 async function saveCompiled(formData: FormData): Promise<void> {
   "use server"
   let draft: PolicyDraft
   try { draft = JSON.parse(String(formData.get("ir_json") ?? "{}")) }
   catch { redirect("/policies/new?err=invalid_input"); return }
   const source = String(formData.get("source") ?? "org")
+  // Compound drafts (e.g. the conversational evidence-gate) save via
+  // POST /policies/compound so the server expands them into their member
+  // rules; single-policy drafts keep the PUT /policies path.
+  const draftType = (draft as { type?: string }).type
+  if (draftType === "evidence_gate") {
+    await persistCompoundDraft(
+      draft as { id?: string; type?: string }, source, _parsePackIds(formData),
+    )
+    return
+  }
   await persistDraft(draft, source, _parsePackIds(formData))
 }
 
