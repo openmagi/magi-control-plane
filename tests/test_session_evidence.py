@@ -226,3 +226,32 @@ def test_audit_out_of_scope_records_nothing(tmp_path):
                  "tool_response": {"content": "ok"}},
                 "--kind", "source_credibility", "--cwd-prefix", str(tmp_path / "proj"))
     assert rc == 0 and session_evidence.entries("sc3") == []
+
+
+def test_audit_bash_comment_smuggle_records_nothing():
+    # A URL hidden in a comment (fetch token inside `#`) must not mint evidence.
+    rc = _audit({"session_id": "cs1", "tool_name": "Bash",
+                 "tool_input": {"command": "echo done # curl https://sec.gov/x"},
+                 "tool_response": {"content": "done"}},
+                "--kind", "source_credibility")
+    assert rc == 0 and session_evidence.entries("cs1") == []
+
+
+def test_audit_real_curl_arg_records():
+    _audit({"session_id": "cs2", "tool_name": "Bash",
+            "tool_input": {"command": "curl -s https://www.sec.gov/x.htm"},
+            "tool_response": {"content": "ok"}},
+           "--kind", "source_credibility")
+    e = session_evidence.entries("cs2", kind="source_credibility")
+    assert len(e) == 1 and e[0]["verdict"] == "pass"
+
+
+def test_audit_url_after_shell_operator_not_attributed_to_curl():
+    # `curl x && echo https://sec.gov` -> the URL belongs to echo, not curl.
+    rc = _audit({"session_id": "cs3", "tool_name": "Bash",
+                 "tool_input": {"command": "curl -s http://localhost/ && echo https://sec.gov"},
+                 "tool_response": {"content": "ok"}},
+                "--kind", "source_credibility")
+    e = session_evidence.entries("cs3", kind="source_credibility")
+    # only localhost (the curl arg) is judged -> fail, not the sec.gov echo
+    assert all(x["verdict"] == "fail" for x in e)

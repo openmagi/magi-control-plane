@@ -1119,6 +1119,7 @@ class EvidenceAuditPolicy:
         self.validate()
 
     def validate(self) -> None:
+        _validate_id(self.id)
         _validate_project_scope(self.id, self.project_scope)
         if not (isinstance(self.kind, str) and _EVIDENCE_KIND_RE.match(self.kind)
                 and len(self.kind) <= _MAX_EVIDENCE_KIND_LEN):
@@ -1174,6 +1175,7 @@ class EvidencePreconditionPolicy:
         self.validate()
 
     def validate(self) -> None:
+        _validate_id(self.id)
         _validate_project_scope(self.id, self.project_scope)
         if not (isinstance(self.require_kind, str) and _EVIDENCE_KIND_RE.match(self.require_kind)
                 and len(self.require_kind) <= _MAX_EVIDENCE_KIND_LEN):

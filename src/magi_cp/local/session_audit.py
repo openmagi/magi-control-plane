@@ -33,23 +33,44 @@ _OFFICIAL_DOMAINS = (
     "sec.gov", "ir.tesla.com", "assets-ir.tesla.com",
     "europa.eu", "federalreserve.gov", "treasury.gov",
 )
-# Bash commands we treat as a real fetch (so `echo https://sec.gov` records
-# nothing). The subject still comes from the request, but a non-fetch command
-# cannot accidentally mint evidence.
-_FETCH_CMD_RE = re.compile(r"\b(curl|wget|https?_get|fetch)\b", re.I)
-
-
 def _first_url(text: str) -> str:
     m = _URL_RE.search(text or "")
     return m.group(0) if m else ""
+
+
+def _fetch_url_from_bash(cmd: str) -> str:
+    """The URL argument of a curl/wget invocation, or "" if the command is not a
+    fetch. Parses the argv (shlex) so a URL smuggled in a COMMENT or in a
+    non-fetch token cannot mint evidence: `echo done # curl https://sec.gov`
+    yields "" because the fetch token is inside a comment, and the URL must be an
+    actual argument of a curl/wget word, not just anywhere in the string.
+    """
+    import shlex
+    try:
+        argv = shlex.split(cmd, comments=True)
+    except ValueError:
+        return ""
+    # Find a fetch token, then the first URL-shaped arg AFTER it (before any
+    # shell operator that would start a new command).
+    stops = {"&&", "||", "|", ";", "&"}
+    for i, tok in enumerate(argv):
+        base = tok.rsplit("/", 1)[-1]
+        if base in ("curl", "wget"):
+            for arg in argv[i + 1:]:
+                if arg in stops:
+                    break
+                if _URL_RE.fullmatch(arg):
+                    return arg
+    return ""
 
 
 def extract_subject(how: str, tool_name: str, tool_input: dict) -> str:
     """Pull the URL to judge out of a tool call. ``how='url'`` for now.
 
     WebFetch is CC's own server-side fetch, so its url is used directly. For
-    Bash, only a recognized fetch command (curl/wget) yields a subject — a bare
-    `echo <url>` records nothing.
+    Bash, the URL must be an argument of a curl/wget word (comments stripped),
+    so neither a bare `echo <url>` nor a URL hidden in a `# comment` records
+    anything.
     """
     if how != "url" or not isinstance(tool_input, dict):
         return ""
@@ -57,8 +78,7 @@ def extract_subject(how: str, tool_name: str, tool_input: dict) -> str:
         u = tool_input.get("url")
         return u if isinstance(u, str) else ""
     if tool_name == "Bash":
-        cmd = str(tool_input.get("command", ""))
-        return _first_url(cmd) if _FETCH_CMD_RE.search(cmd) else ""
+        return _fetch_url_from_bash(str(tool_input.get("command", "")))
     return ""
 
 

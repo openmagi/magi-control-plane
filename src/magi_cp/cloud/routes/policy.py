@@ -22,6 +22,7 @@ from ...policy import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
     PolicyOverride, RunCommandPolicy, apply_rewriter, matcher_covers,
 )
+from ...policy.ir import _validate_id
 from ..policy_group_store import PolicyGroupStore, PolicyRecord
 from ..policy_store import PolicyStore
 from ..presets_catalog import vendor_catalog
@@ -1561,6 +1562,12 @@ def attach(app: FastAPI, store: PolicyStore,
         policy_id = str(draft.get("id") or "").strip()
         if not policy_id:
             raise HTTPException(400, "policy draft needs an id")
+        if any(policy_id.endswith(s) for s in _RESERVED_ID_SUFFIXES):
+            raise HTTPException(400, f"policy id must not end in {_RESERVED_ID_SUFFIXES}")
+        try:
+            _validate_id(policy_id)
+        except ValueError as e:
+            raise HTTPException(400, f"policy id: {e}")
         try:
             members_raw = _members_from_draft(draft)
         except ValueError as e:
@@ -1575,6 +1582,12 @@ def attach(app: FastAPI, store: PolicyStore,
             except (ValueError, KeyError) as e:
                 raise HTTPException(400, f"rule {rid!r}: {e}")
         new_rule_ids = [p.id for p in rules]
+        # P1-1: every member rule goes through the SAME authoring gates a PUT
+        # would enforce (run_command gating, script resolvability, verifier-step
+        # resolution + lifecycle endorsement). No validation bypass.
+        enforcement: dict[str, str] = {}
+        for p in rules:
+            enforcement[p.id] = await _validate_and_stamp(p)
 
         from ...policy.compound import is_compound_draft
         record = PolicyRecord(
@@ -1585,6 +1598,17 @@ def attach(app: FastAPI, store: PolicyStore,
             source=body.source, enabled=body.enabled,
         )
         async with policy_lock:
+            # P1-3: a member rule id must not already be owned by a DIFFERENT
+            # policy (else a re-save would silently steal it, and a cascade
+            # delete would strand the other record's rule_ids).
+            for other in policy_group_store.load():
+                if other.id == policy_id:
+                    continue
+                clash = set(new_rule_ids) & set(other.rule_ids)
+                if clash:
+                    raise HTTPException(
+                        409, f"rule id(s) {sorted(clash)} already owned by "
+                        f"policy {other.id!r}")
             prev = policy_group_store.get(policy_id)
             stale = set(prev.rule_ids) - set(new_rule_ids) if prev else set()
             keep = {p.id for p in rules}
@@ -1593,12 +1617,16 @@ def attach(app: FastAPI, store: PolicyStore,
             for p in rules:
                 existing.append(PolicyOverride(
                     policy=p, source=body.source,  # type: ignore[arg-type]
-                    enabled=body.enabled, enforcement=_enforcement_label(p),
+                    enabled=body.enabled, enforcement=enforcement[p.id],
                 ))
-            store.save(existing)
+            # P2-2: write the group record BEFORE the rules so a crash between
+            # the two file writes leaves "record without (some) rules" (a
+            # retryable re-save reconciles) rather than orphan rules with no
+            # owning record.
             groups = [r for r in policy_group_store.load() if r.id != policy_id]
             groups.append(record)
             policy_group_store.save(groups)
+            store.save(existing)
         return {"id": policy_id, "kind": record.kind, "rule_ids": new_rule_ids,
                 "types": [getattr(p, "type", "evidence") for p in rules],
                 "source": body.source, "enabled": body.enabled}
@@ -1610,18 +1638,31 @@ def attach(app: FastAPI, store: PolicyStore,
         if policy_group_store is None:
             return {"policies": []}
         groups = policy_group_store.load()
+        # Rule enabled-state is the source of truth (PATCH /enabled acts on
+        # rules); derive the policy's enabled from its members rather than
+        # trusting the write-once PolicyRecord.enabled, which would go stale.
+        rule_enabled = {ov.policy.id: ov.enabled for ov in store.load()}
         owned: set[str] = set()
         items = []
         for g in groups:
             owned.update(g.rule_ids)
+            present = [rid for rid in g.rule_ids if rid in rule_enabled]
+            # A policy is enabled iff every present member rule is enabled;
+            # "mixed" flags a compound half-toggled out from under the user.
+            states = {rule_enabled[rid] for rid in present}
+            enabled = bool(present) and states == {True}
             items.append({"id": g.id, "description": g.description, "kind": g.kind,
-                          "rule_ids": list(g.rule_ids), "enabled": g.enabled,
+                          "rule_ids": list(g.rule_ids), "enabled": enabled,
+                          "mixed": len(states) > 1,
+                          "missing_rules": [rid for rid in g.rule_ids if rid not in rule_enabled],
                           "source": g.source})
-        for ov in store.load():
-            if ov.policy.id not in owned:
-                items.append({"id": ov.policy.id, "description": ov.policy.description,
-                              "kind": "simple", "rule_ids": [ov.policy.id],
-                              "enabled": ov.enabled, "source": ov.source})
+        for rid, en in rule_enabled.items():
+            if rid not in owned:
+                ov = next(o for o in store.load() if o.policy.id == rid)
+                items.append({"id": rid, "description": ov.policy.description,
+                              "kind": "simple", "rule_ids": [rid],
+                              "enabled": en, "mixed": False, "missing_rules": [],
+                              "source": ov.source})
         return {"policies": items}
 
     @app.delete("/policies/groups/{policy_id:path}", dependencies=[Depends(require_admin_key)])
@@ -1658,6 +1699,46 @@ def attach(app: FastAPI, store: PolicyStore,
                 }
         raise HTTPException(404, f"policy {policy_id!r} not found")
 
+    async def _validate_and_stamp(policy: AnyPolicy) -> str:
+        """Run every authoring-time gate on a deserialized rule and return its
+        resolved enforcement label. Shared by PUT and the compound save path so
+        the two cannot diverge (a member rule saved via /policies/compound gets
+        the SAME gates as a rule PUT directly). Raises HTTPException on refusal."""
+        # D63: run_command disabled on hosted.
+        if isinstance(policy, RunCommandPolicy) and not _run_command_allowed():
+            raise HTTPException(
+                403,
+                "run_command policies are disabled on this deployment "
+                "(MAGI_CP_ALLOW_RUN_COMMAND=0).",
+            )
+        # D65 P2: script store-resolvability.
+        if (isinstance(policy, RunCommandPolicy) and policy.script_path
+                and script_store is not None):
+            if script_store_lock is not None:
+                async with script_store_lock:
+                    resolved = script_store.get(policy.script_path)
+            else:
+                resolved = script_store.get(policy.script_path)
+            if resolved is None:
+                raise HTTPException(
+                    422, f"script_path {policy.script_path!r} is not in the "
+                    "script store; upload it at /scripts first")
+        # P8 + D57e: verifier-step resolution + lifecycle endorsement.
+        from ...policy.step_enforcement import (
+            StepResolutionError, resolve_policy_enforcement,
+        )
+        if isinstance(policy, EvidencePolicy):
+            try:
+                enf = resolve_policy_enforcement(
+                    policy, registry=verifier_registry, vendor_catalog_fn=vendor_catalog)
+            except StepResolutionError as e:
+                raise HTTPException(422, str(e)) from e
+            _assert_policy_lifecycle_endorsed(policy)
+            if not any(r.kind == "step" for r in policy.requires):
+                enf = _enforcement_label(policy)
+            return enf
+        return _enforcement_label(policy)
+
     @app.put("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     async def put_policy(policy_id: str, body: PutPolicyReq) -> dict:
         # Issue #1 P0 (#12): the discriminated-union path. Body is
@@ -1680,75 +1761,7 @@ def attach(app: FastAPI, store: PolicyStore,
         # the multi-tenant fleet. The gate runs at the REST boundary
         # because matrix-coherence already passed by this point and
         # we want a clear 403, not a 400 about "policy save".
-        if isinstance(policy, RunCommandPolicy) and not _run_command_allowed():
-            raise HTTPException(
-                403,
-                "run_command policies are disabled on this deployment "
-                "(MAGI_CP_ALLOW_RUN_COMMAND=0). Self-host docker compose "
-                "ships with run_command enabled by default.",
-            )
-        # D65 P2 — store-resolvability for run_command/script_path. The
-        # IR validator only checks the 64-hex SHAPE of `script_path`;
-        # an operator (or a buggy client) can pre-fill a stale or
-        # never-existed id and the policy saves cleanly even though the
-        # runtime hook will fail with "script not found". Cross-check
-        # against the script store under the same lock the DELETE
-        # handler holds so a race (script removed mid-save) cannot
-        # silently land an unresolvable reference.
-        if (
-            isinstance(policy, RunCommandPolicy)
-            and policy.script_path
-            and script_store is not None
-        ):
-            # When the caller wired a lock through, use it for race
-            # safety with /scripts DELETE; otherwise read directly
-            # (back-compat for test rigs that pass `script_store` but
-            # no lock).
-            if script_store_lock is not None:
-                async with script_store_lock:
-                    resolved = script_store.get(policy.script_path)
-            else:
-                resolved = script_store.get(policy.script_path)
-            if resolved is None:
-                raise HTTPException(
-                    422,
-                    f"script_path {policy.script_path!r} is not in "
-                    "the script store; upload it at /scripts first",
-                )
-        # P8: fail-closed on unknown / inactive verifier steps. This is
-        # the primary authoring-time gate — the runtime gate cannot
-        # retroactively reject a policy that was already PUT, so an
-        # invalid step has to be caught here or it ships as "missing"
-        # and silently fails at gate time.
-        #
-        # Issue #1 P0 (#14): only EvidencePolicy has a `requires` list
-        # to resolve. Declarative archetypes always render as
-        # "enforcing" via _enforcement_label.
-        from ...policy.step_enforcement import (
-            StepResolutionError, resolve_policy_enforcement,
-        )
-        if isinstance(policy, EvidencePolicy):
-            try:
-                resolved_enforcement = resolve_policy_enforcement(
-                    policy,
-                    registry=verifier_registry,
-                    vendor_catalog_fn=vendor_catalog,
-                )
-            except StepResolutionError as e:
-                raise HTTPException(422, str(e)) from e
-            # D57e P1: also assert the descriptor surface endorses
-            # the (trigger.event, requires[].step) combination. The
-            # step_enforcement gate above only checks registry
-            # membership, not lifecycle endorsement.
-            _assert_policy_lifecycle_endorsed(policy)
-            # When every req is non-step (regex / llm_critic / shacl),
-            # the resolver short-circuits to "enforcing"; collapse to
-            # the legacy label for parity with list/get so the dashboard
-            # renders the same string everywhere.
-            if not any(r.kind == "step" for r in policy.requires):
-                resolved_enforcement = _enforcement_label(policy)
-        else:
-            resolved_enforcement = _enforcement_label(policy)
+        resolved_enforcement = await _validate_and_stamp(policy)
         async with policy_lock:
             existing = store.load()
             existing = [ov for ov in existing if ov.policy.id != policy_id]

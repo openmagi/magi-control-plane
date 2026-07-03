@@ -203,11 +203,14 @@ def create_app(
     # pack -> policy -> rule: the policy-tier store (groupings of rules a user
     # authored as one intent), alongside the rule store.
     from .policy_group_store import PolicyGroupStore
-    policy_group_store = PolicyGroupStore(
-        path=(policy_store_path.replace("policies.json", "policy-groups.json")
-              if policy_store_path else os.environ.get(
-                  "MAGI_CP_POLICY_GROUP_STORE",
-                  str(Path.home() / ".magi-cp" / "policy-groups.json"))))
+    # Derive a SIBLING file (dirname/policy-groups.json) so a custom
+    # policy_store_path filename can't collide the two stores onto one file.
+    _pg_path = (
+        str(Path(policy_store_path).parent / "policy-groups.json")
+        if policy_store_path
+        else os.environ.get("MAGI_CP_POLICY_GROUP_STORE",
+                            str(Path.home() / ".magi-cp" / "policy-groups.json")))
+    policy_group_store = PolicyGroupStore(path=_pg_path)
     # D75: user-pack registry. Default path lives alongside the policy
     # store; built-in packs are catalog-only (no on-disk row needed).
     pack_store = PackStore(path=pack_store_path or os.environ.get(
