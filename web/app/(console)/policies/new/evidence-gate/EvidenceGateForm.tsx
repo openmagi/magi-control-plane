@@ -11,7 +11,13 @@ import {
   validateEvidenceGateDraft,
   type EvidenceGateDraft,
 } from "@/lib/evidence-gate-builder"
-import { Button, Card, Input, Textarea } from "@/components/ui"
+// Sub-path imports ONLY (NOT from "@/components/ui"): the barrel re-exports
+// NavBarShell (server-only), which webpack refuses to pull into a client
+// bundle -> `next build` fails even though tsc/vitest pass. Same convention
+// as the sibling policies/new/_components/*.
+import { Button } from "@/components/ui/Button"
+import { Card } from "@/components/ui/Card"
+import { Input, Textarea } from "@/components/ui/Input"
 
 type Props = { action: (formData: FormData) => void }
 
