@@ -2100,7 +2100,7 @@ def test_q103_llm_premature_completion_claim_replaced_by_state_message():
 # can name the event in freeform text. One assertion per (phrase,
 # lifecycle) tuple; KO and EN tested independently.
 
-import pytest
+import pytest  # noqa: E402
 
 
 _Q101_LIFECYCLE_PHRASE_CASES: list[tuple[str, str]] = [

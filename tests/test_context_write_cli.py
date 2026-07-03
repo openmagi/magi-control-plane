@@ -14,7 +14,6 @@ so a missing emit for one event would silently fail-open.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 

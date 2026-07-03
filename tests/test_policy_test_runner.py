@@ -7,7 +7,6 @@ test; this file pins the pure-function semantics.
 """
 from __future__ import annotations
 
-import pytest
 
 from magi_cp.policy.ir import (
     ContextInjectionPolicy, EvidencePolicy, EvidenceReq,

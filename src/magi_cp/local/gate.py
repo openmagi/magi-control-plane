@@ -128,8 +128,7 @@ SENTINEL_RE = re.compile(r"\bFILE_COURT_([A-Za-z0-9]+)_([A-Za-z0-9]+)(?!_)\b")
 # `magi_cp.policy.cc_shapes` so the synthetic `test_runner` simulator
 # (D77 "Test this policy") and the runtime stay in lockstep on what
 # CC sees.
-from ..policy.cc_shapes import (
-    RETRY_FEEDBACK_EVENTS as _RETRY_FEEDBACK_EVENTS,
+from ..policy.cc_shapes import (  # noqa: E402  (intentional late import after the section note)
     emit_deny_payload as _emit_deny_payload,
 )
 
@@ -1463,11 +1462,6 @@ def execute_run_command(
 
     assert proc is not None
     # Read both streams on background threads with byte-bounded sinks.
-    stdout_thread = _th.Thread(
-        target=lambda: proc_stdout_buf.__iadd__(b"")  # placeholder
-        or None,
-    )
-    # The above thread starter is replaced by direct lambdas below.
     truncated_stdout_box = [False]
     truncated_stderr_box = [False]
 

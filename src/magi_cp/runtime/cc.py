@@ -19,7 +19,6 @@ import json
 import os
 
 from ..policy.cc_shapes import (
-    emit_allow_payload,
     emit_ask_payload,
     emit_deny_payload,
 )

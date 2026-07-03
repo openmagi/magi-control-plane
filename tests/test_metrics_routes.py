@@ -19,7 +19,7 @@ from magi_cp.cloud.db import (
 )
 from magi_cp.cloud.keys import KeyStore
 from magi_cp.cloud.metrics import (
-    MAX_BUCKETS, MIN_BUCKET_SECS, MAX_SINCE_SECS,
+    MIN_BUCKET_SECS, MAX_SINCE_SECS,
     ledger_aggregate, ledger_aggregate_to_dict, metrics_summary,
     metrics_summary_to_dict, normalize_aggregate_params,
 )
