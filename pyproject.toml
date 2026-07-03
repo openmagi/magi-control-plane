@@ -47,7 +47,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "src" for the package; "." so tests can import the repo-root `scripts/`
+# migration modules (test_cloud_db). Without "." these resolve only under
+# `python -m pytest` (which adds CWD), not the bare `pytest` CI runs.
+pythonpath = ["src", "."]
 norecursedirs = [
     "tests/e2e/node_modules",
     "tests/e2e/.report",

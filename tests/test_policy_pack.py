@@ -667,12 +667,13 @@ def test_builtin_pack_setup_required_members(client) -> None:
     `setup_required_members` so the dashboard's PackToggle can mirror
     PrebuiltToggle's setup-required confirmation gate.
 
-    `pack/research-mode` references two setup_required prebuilts
-    (citation-verify-at-final + source-allowlist-webfetch). The
-    envelope must list both when neither is yet enabled. Once an
-    operator enables the prebuilt directly (Enable Anyway path), the
-    setup-warning is dismissed and the id falls off this list — the
-    operator already saw the dialog through PrebuiltToggle.
+    `pack/research-mode` references one setup_required prebuilt
+    (source-allowlist-webfetch; citation-verify-at-final was taken off
+    setup-required in D82d). The envelope lists it while it is not yet
+    enabled. Once an operator enables the prebuilt directly (Enable
+    Anyway path), the setup-warning is dismissed and the id falls off
+    this list — the operator already saw the dialog through
+    PrebuiltToggle.
     """
     listed = client.get(
         "/policy-packs", headers=ADMIN_HEADERS,
@@ -680,25 +681,22 @@ def test_builtin_pack_setup_required_members(client) -> None:
     by_id = {p["id"]: p for p in listed if p["source"] == "builtin"}
     rm = by_id["pack/research-mode"]
     assert set(rm["setup_required_members"]) == {
-        "prebuilt/citation-verify-at-final",
         "prebuilt/source-allowlist-webfetch",
     }
-    # coding-safety references neither setup_required prebuilt.
+    # coding-safety references no setup_required prebuilt.
     cs = by_id["pack/coding-safety"]
     assert cs["setup_required_members"] == []
-    # After enabling one of the setup_required members directly, it
-    # falls off the list (operator has already seen the dialog).
+    # After enabling the setup_required member directly, it falls off
+    # the list (operator has already seen the dialog).
     client.post(
-        "/policies/prebuilt/citation-verify-at-final/enable",
+        "/policies/prebuilt/source-allowlist-webfetch/enable",
         headers=ADMIN_HEADERS,
     )
     listed2 = client.get(
         "/policy-packs", headers=ADMIN_HEADERS,
     ).json()["items"]
     by_id2 = {p["id"]: p for p in listed2 if p["source"] == "builtin"}
-    assert by_id2["pack/research-mode"]["setup_required_members"] == [
-        "prebuilt/source-allowlist-webfetch",
-    ]
+    assert by_id2["pack/research-mode"]["setup_required_members"] == []
 
 
 def test_concurrent_cascades_serialize_under_lock(client) -> None:
