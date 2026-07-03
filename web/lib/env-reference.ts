@@ -393,6 +393,20 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "File the gate writes the last-seen session id to. The CLI reads the session id from here.",
   },
   {
+    name: "MAGI_CP_SESSION_EVIDENCE_DIR",
+    group: "local",
+    default: "~/.magi-cp/session-evidence",
+    ko: "세션 스코프 evidence 원장(JSONL)이 저장되는 디렉터리. 의도적으로 에이전트 워크스페이스 밖에 둡니다(변조 방지 자세). 거버넌스 설정에서는 이 경로에 대한 permission deny 를 함께 배포합니다. 자세한 내용은 docs/session-evidence-threat-model.md 참고.",
+    en: "Directory holding the session-scoped evidence ledger (JSONL). Kept deliberately outside any agent workspace (tamper posture); a governed setup ships a companion permission deny on this path. See docs/session-evidence-threat-model.md.",
+  },
+  {
+    name: "MAGI_CP_AUTO_ACTIVATE_PACKS",
+    group: "local",
+    default: "(unset)",
+    ko: "새 세션이 시작될 때 자동으로 활성화할 팩 id 목록(쉼표 구분). SessionStart 훅이 각 팩을 /session/{id}/packs/activate 로 POST 합니다. 비어 있으면 아무 것도 하지 않는 순수 opt-in(floor 팩은 이와 무관하게 항상 켜져 있음). env 또는 ~/.config/magi-cp/env 에서 읽습니다.",
+    en: "Comma-separated pack ids to auto-activate when a new session starts. The SessionStart hook POSTs each to /session/{id}/packs/activate. Empty/unset is a pure no-op opt-in (the floor pack is always on regardless). Read from env or ~/.config/magi-cp/env.",
+  },
+  {
     name: "MAGI_CP_TENANT_ID",
     group: "local",
     default: "default",
