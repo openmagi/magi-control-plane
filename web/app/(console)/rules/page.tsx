@@ -6,6 +6,7 @@ import {
   type CoverageCell,
   type EvidenceRecordType,
   type PackCoverage,
+  type PolicyGroupItem,
   type PolicyListItem,
   type PolicyPackEntry,
   type PrebuiltPolicyEntry,
@@ -22,6 +23,7 @@ import {
 import { ChecksTab } from "./_components/ChecksTab"
 import { EvidenceTab } from "./_components/EvidenceTab"
 import { PoliciesTab } from "./_components/PoliciesTab"
+import { PolicyGroupSection } from "./_components/PolicyGroupSection"
 import { PacksTab } from "./_components/PacksTab"
 
 export const dynamic = "force-dynamic"
@@ -110,6 +112,7 @@ export default async function RulesPage({
   const showTemplates = searchParams.templates === "1"
 
   let policies: PolicyListItem[] = []
+  let policyGroups: PolicyGroupItem[] = []
   let policiesErr: string | null = null
   let prebuilt: PrebuiltPolicyEntry[] = []
   let packs: PolicyPackEntry[] = []
@@ -165,6 +168,11 @@ export default async function RulesPage({
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
+    // pack -> policy -> rule: authored policies (the multi-rule ones are shown
+    // grouped above the per-rule grid). Best-effort; a failure just hides the
+    // grouped section, the rule grid still renders.
+    try { policyGroups = await cloud.listPolicyGroups() }
+    catch { /* grouped section optional */ }
     // Prebuilt templates only when the operator opts in via ?templates=1.
     if (showTemplates) {
       try { prebuilt = await cloud.listPrebuiltPolicies() }
@@ -310,18 +318,21 @@ export default async function RulesPage({
       <SubTabNav tab={tab} t={t} />
 
       {tab === "policies" && (
-        <PoliciesTab
-          items={policies}
-          err={policiesErr}
-          prebuilt={prebuilt}
-          nfFormat={nf.format.bind(nf)}
-          t={t}
-          locale={locale}
-          packCentric={packCentric}
-          policyPacks={policyPacks}
-          codexEnabled={codexEnabled}
-          codexCoverage={codexCoverage}
-        />
+        <div className="space-y-4">
+          <PolicyGroupSection groups={policyGroups} />
+          <PoliciesTab
+            items={policies}
+            err={policiesErr}
+            prebuilt={prebuilt}
+            nfFormat={nf.format.bind(nf)}
+            t={t}
+            locale={locale}
+            packCentric={packCentric}
+            policyPacks={policyPacks}
+            codexEnabled={codexEnabled}
+            codexCoverage={codexCoverage}
+          />
+        </div>
       )}
       {tab === "packs" && (
         <PacksTab
