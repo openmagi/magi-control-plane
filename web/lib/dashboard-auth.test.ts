@@ -82,22 +82,35 @@ describe("signSession / verifySession", () => {
   })
 })
 
-describe("trustLoopbackHeader (P0 regression: fail-closed default)", () => {
+describe("trustLoopbackHeader (localhost trusted by default)", () => {
   const orig = process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
   afterEach(() => {
     if (orig === undefined) delete process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
     else process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = orig
   })
-  it("is FALSE by default (host header is spoofable; require a session)", async () => {
+  it("is TRUE by default (self-host single-operator localhost: no login)", async () => {
     delete process.env.MAGI_CP_TRUST_LOOPBACK_HEADER
     const { trustLoopbackHeader } = await import("./dashboard-auth")
-    expect(trustLoopbackHeader()).toBe(false)
-  })
-  it("opts in only on an explicit '1'", async () => {
-    process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = "1"
-    const { trustLoopbackHeader } = await import("./dashboard-auth")
     expect(trustLoopbackHeader()).toBe(true)
+  })
+  it("only an explicit '0' opts out (belt-and-suspenders session-always)", async () => {
     process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = "0"
+    const { trustLoopbackHeader } = await import("./dashboard-auth")
     expect(trustLoopbackHeader()).toBe(false)
+    process.env.MAGI_CP_TRUST_LOOPBACK_HEADER = "1"
+    expect(trustLoopbackHeader()).toBe(true)
+  })
+})
+
+describe("requestCameThroughProxy (WEB-1 P0: proxy hop suppresses loopback trust)", () => {
+  it("false for a direct request (no forwarding headers)", async () => {
+    const { requestCameThroughProxy } = await import("./dashboard-auth")
+    expect(requestCameThroughProxy(new Headers({ host: "localhost:3000" }))).toBe(false)
+  })
+  it("true when x-forwarded-for / x-forwarded-host / forwarded is present", async () => {
+    const { requestCameThroughProxy } = await import("./dashboard-auth")
+    expect(requestCameThroughProxy(new Headers({ "x-forwarded-for": "1.2.3.4" }))).toBe(true)
+    expect(requestCameThroughProxy(new Headers({ "x-forwarded-host": "evil.com" }))).toBe(true)
+    expect(requestCameThroughProxy(new Headers({ forwarded: "for=1.2.3.4" }))).toBe(true)
   })
 })

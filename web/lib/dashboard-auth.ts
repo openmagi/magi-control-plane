@@ -30,16 +30,34 @@ function secret(): string | null {
 /**
  * Whether to trust a loopback `host` header as proof of a local request.
  *
- * FAIL-CLOSED by default (opt-IN). The `host` header is fully
- * attacker-controlled on a direct TCP connection, so a request carrying
- * `Host: localhost` to a console exposed on 0.0.0.0 would otherwise bypass
- * the auth backstop entirely (the exact threat this backstop exists for).
- * So the default is to require a session for EVERY console route; a
- * localhost-only operator who wants the no-login convenience and KNOWS
- * their bind is loopback-only opts in with MAGI_CP_TRUST_LOOPBACK_HEADER=1.
+ * Default TRUE: magi-cp is a self-host, single-operator tool whose default
+ * bind is localhost-only, so a direct `localhost` request is the operator's
+ * own machine and forcing a login there is pure friction. The Host-header
+ * spoof the auth backstop guards against only matters when the console is
+ * exposed / behind a reverse proxy, and that case is detected separately by
+ * `requestCameThroughProxy` (a proxy hop adds `x-forwarded-*`), which
+ * suppresses the loopback exception automatically. An operator who wants a
+ * session required for EVERY request regardless (belt-and-suspenders) sets
+ * MAGI_CP_TRUST_LOOPBACK_HEADER=0.
  */
 export function trustLoopbackHeader(): boolean {
-  return process.env.MAGI_CP_TRUST_LOOPBACK_HEADER === "1"
+  return process.env.MAGI_CP_TRUST_LOOPBACK_HEADER !== "0"
+}
+
+/**
+ * True when the request carries reverse-proxy forwarding headers, i.e. it did
+ * NOT arrive as a direct connection. A direct `localhost` request has none of
+ * these; a proxy in front of an exposed console adds them. Used to suppress
+ * the loopback-host exception behind a proxy, where the `Host` header can be
+ * spoofed to look like loopback (the WEB-1 P0). Header names are lowercased
+ * by the runtime.
+ */
+export function requestCameThroughProxy(headers: Headers): boolean {
+  return (
+    headers.has("x-forwarded-for") ||
+    headers.has("x-forwarded-host") ||
+    headers.has("forwarded")
+  )
 }
 
 export function isLoopbackHost(host: string | null): boolean {
