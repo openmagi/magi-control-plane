@@ -301,4 +301,24 @@ describe("rules page source invariants (D82a)", () => {
     expect(src).toMatch(/tab === "checks"/)
     expect(src).toContain('href="/verifiers/new"')
   })
+
+  // ── Fresh-install clarity: the template catalog is hidden by default ──
+  it("gates the prebuilt-template fetch behind ?templates=1", () => {
+    // listPrebuiltPolicies must only run when showTemplates is set, so a
+    // fresh install shows an empty Policies tab, not the prebuilt catalog.
+    expect(src).toContain('searchParams.templates === "1"')
+    expect(src).toMatch(/if\s*\(\s*showTemplates\s*\)\s*\{[\s\S]*?cloud\.listPrebuiltPolicies/)
+  })
+
+  it("hides built-in packs unless ?templates=1 (floor + user packs stay)", () => {
+    expect(src).toMatch(
+      /if\s*\(\s*!showTemplates\s*\)\s*packs\s*=\s*packs\.filter\(\s*\(\s*p\s*\)\s*=>\s*p\.source\s*!==\s*['"]builtin['"]\s*\)/,
+    )
+  })
+
+  it("offers a Browse/Hide templates toggle on policies + packs tabs", () => {
+    expect(src).toContain("rules.templates.browse")
+    expect(src).toContain("rules.templates.hide")
+    expect(src).toMatch(/templates=1/)
+  })
 })

@@ -69,7 +69,7 @@ function parseTab(raw: string | undefined): Tab {
 export default async function RulesPage({
   searchParams,
 }: {
-  searchParams: { tab?: string; msg?: string; err?: string }
+  searchParams: { tab?: string; msg?: string; err?: string; templates?: string }
 }) {
   // D56e: legacy `conditions` and `verifiers` tab names redirect to
   // the new merged `checks` tab. Plain 307 redirect via Next's
@@ -100,6 +100,14 @@ export default async function RulesPage({
   const { nf } = await getIntl()
   const tab = parseTab(searchParams.tab)
   const flash = resolveFlash(searchParams.msg, searchParams.err)
+
+  // Fresh-install clarity: the prebuilt template catalog + the built-in
+  // packs are hidden by default so a new operator sees only what they
+  // authored (empty to start), not nine ready-made cards to scroll past.
+  // `?templates=1` reveals the catalog on demand ("Browse templates").
+  // The floor pack (source=user, always-on) is never a template and
+  // always shows; the backend catalog is untouched.
+  const showTemplates = searchParams.templates === "1"
 
   let policies: PolicyListItem[] = []
   let policiesErr: string | null = null
@@ -157,9 +165,12 @@ export default async function RulesPage({
   if (tab === "policies") {
     try { policies = await cloud.listPolicies() }
     catch (e: unknown) { policiesErr = codeForError(e) }
-    try { prebuilt = await cloud.listPrebuiltPolicies() }
-    catch (e: unknown) {
-      console.error(`rules: listPrebuiltPolicies failed code=${codeForError(e)}`)
+    // Prebuilt templates only when the operator opts in via ?templates=1.
+    if (showTemplates) {
+      try { prebuilt = await cloud.listPrebuiltPolicies() }
+      catch (e: unknown) {
+        console.error(`rules: listPrebuiltPolicies failed code=${codeForError(e)}`)
+      }
     }
     if (packCentric) {
       try {
@@ -191,6 +202,9 @@ export default async function RulesPage({
     // Policies tab does not pay for unused pack data.
     try { packs = await cloud.listPacks(locale) }
     catch (e: unknown) { packsErr = codeForError(e) }
+    // Built-in packs are templates: hidden unless ?templates=1. User packs
+    // (including the always-on floor pack, source=user) always show.
+    if (!showTemplates) packs = packs.filter((p) => p.source !== "builtin")
     codexEnabled = await _resolveCodexEnabled()
     if (codexEnabled) {
       const rollups = await Promise.all(packs.map(async (pk) => {
@@ -260,6 +274,15 @@ export default async function RulesPage({
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
+              {(tab === "policies" || tab === "packs") && (
+                <Link href={`/rules?tab=${tab}${showTemplates ? "" : "&templates=1"}`}>
+                  <Button variant="ghost" size="md">
+                    {showTemplates
+                      ? t("rules.templates.hide")
+                      : t("rules.templates.browse")}
+                  </Button>
+                </Link>
+              )}
               <Link href="/policies/new/evidence-gate">
                 <Button variant="secondary" size="md">
                   {t("rules.newEvidenceGateButton")}
