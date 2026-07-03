@@ -37,6 +37,8 @@ magi-cp-input-rewrite  = "magi_cp.local.gate:input_rewrite_cli"
 magi-cp-run-command    = "magi_cp.local.gate:run_command_cli"
 magi-cp-emit           = "magi_cp.local.emit:cli"
 magi-cp-await-approval = "magi_cp.local.emit:await_approval_cli"
+magi-cp-session-audit  = "magi_cp.local.session_audit:cli"
+magi-cp-session-gate   = "magi_cp.local.session_gate:cli"
 magi-cp-mcp            = "magi_cp.mcp.server:main"
 magi-cp-cloud          = "magi_cp.cloud.app:run"
 

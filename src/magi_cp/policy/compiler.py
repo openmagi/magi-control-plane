@@ -34,10 +34,12 @@ their floor to be additive set `exclusive=False` on the policy.
 from __future__ import annotations
 import hashlib
 import json
+import shlex
 import sys
 
 from .ir import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
+    AnyPolicy, ContextInjectionPolicy, EvidenceAuditPolicy, EvidencePolicy,
+    EvidencePreconditionPolicy, InputRewritePolicy,
     McpGatingPolicy, PermissionPolicy, RunCommandPolicy, SubagentPolicy,
     load_policy,
 )
@@ -59,6 +61,12 @@ DEFAULT_INPUT_REWRITE_SHIM = "/usr/local/bin/magi-cp-input-rewrite"
 # prints the stdout JSON. The policy id is the only thing baked into
 # the hook command line; the cloud resolves the spec at gate time.
 DEFAULT_RUN_COMMAND_SHIM = "/usr/local/bin/magi-cp-run-command"
+# Session-evidence pair: the audit records evidence to the session ledger,
+# the gate reads it. Unlike the cloud shims these are self-contained local
+# binaries; the config (kind / verdict / reason) is safe to bake into the
+# command line (leaks the wiring, not a secret).
+DEFAULT_SESSION_AUDIT_SHIM = "/usr/local/bin/magi-cp-session-audit"
+DEFAULT_SESSION_GATE_SHIM = "/usr/local/bin/magi-cp-session-gate"
 
 
 def _context_template_hash(template: str) -> str:
@@ -212,6 +220,33 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
                         f"{DEFAULT_RUN_COMMAND_SHIM} --policy {p.id}"
                     ),
                 }],
+            })
+        elif isinstance(p, EvidenceAuditPolicy):
+            # PostToolUse audit: record evidence of `kind` to the session
+            # ledger via the self-contained local audit binary.
+            hooks.setdefault(p.trigger.event, []).append({
+                "matcher": p.trigger.matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": (
+                        f"{DEFAULT_SESSION_AUDIT_SHIM} --kind {shlex.quote(p.kind)}"
+                        f" --extract {shlex.quote(p.extract)}"
+                        f" --judge {shlex.quote(p.judge)}"
+                    ),
+                }],
+            })
+        elif isinstance(p, EvidencePreconditionPolicy):
+            # PreToolUse gate: deny unless the session ledger holds the
+            # required (kind, verdict). The reason is free text -> shell-quote.
+            cmd = (
+                f"{DEFAULT_SESSION_GATE_SHIM} --require-kind {shlex.quote(p.require_kind)}"
+                f" --require-verdict {shlex.quote(p.require_verdict)}"
+            )
+            if p.reason:
+                cmd += f" --reason {shlex.quote(p.reason)}"
+            hooks.setdefault(p.trigger.event, []).append({
+                "matcher": p.trigger.matcher,
+                "hooks": [{"type": "command", "command": cmd}],
             })
         else:
             raise ValueError(
