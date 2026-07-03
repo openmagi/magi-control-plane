@@ -8,6 +8,8 @@ import {
   GATE_ACTIONS,
   buildEvidenceGatePolicies,
   describeEvidenceGate,
+  looksLikeEvidenceGateIntent,
+  parseEvidenceGateIntent,
   validateEvidenceGateDraft,
   type EvidenceGateDraft,
 } from "@/lib/evidence-gate-builder"
@@ -24,6 +26,7 @@ function fieldError(errs: { field: string; message: string }[], field: string): 
  *  their JSON to the server action for persistence. */
 export default function EvidenceGateForm({ action }: Props) {
   const [d, setD] = useState<EvidenceGateDraft>(DEFAULT_EVIDENCE_GATE_DRAFT)
+  const [nl, setNl] = useState("")
   const errs = useMemo(() => validateEvidenceGateDraft(d), [d])
   const [audit, gate] = useMemo(() => buildEvidenceGatePolicies(d), [d])
   const summary = useMemo(() => describeEvidenceGate(d), [d])
@@ -32,10 +35,28 @@ export default function EvidenceGateForm({ action }: Props) {
   const setAudit = (p: Partial<EvidenceGateDraft["audit"]>) => setD({ ...d, audit: { ...d.audit, ...p } })
   const setGate = (p: Partial<EvidenceGateDraft["gate"]>) => setD({ ...d, gate: { ...d.gate, ...p } })
 
+  const applyNl = () => setD(parseEvidenceGateIntent(nl))
+  const nlHint = nl.trim() && !looksLikeEvidenceGateIntent(nl)
+
   const label = "block text-xs uppercase tracking-wide text-[var(--color-text-tertiary)] mb-1"
 
   return (
     <form action={action} className="space-y-4">
+      {/* conversational seed: describe it -> fill the form */}
+      <Card className="space-y-2">
+        <div className="text-sm font-semibold">Describe it (optional)</div>
+        <Textarea
+          value={nl}
+          onChange={(e) => setNl(e.target.value)}
+          rows={2}
+          placeholder="e.g. In ~/trading-mcp, before mcp__trading__execute_trade runs, require that a WebFetch or Bash verified a credible source; ask for approval if missing."
+        />
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="secondary" size="sm" onClick={applyNl} disabled={!nl.trim()}>Fill the form</Button>
+          {nlHint ? <span className="text-xs text-[var(--color-text-tertiary)]">Tip: name the tool to gate and the fetch tools to check.</span> : null}
+        </div>
+      </Card>
+
       {/* plain-english summary */}
       <Card className="text-sm">
         <span className="text-[var(--color-text-tertiary)]">This enforces: </span>
@@ -100,6 +121,18 @@ export default function EvidenceGateForm({ action }: Props) {
           <label className={label}>Deny reason (shown to the agent)</label>
           <Textarea value={d.gate.reason} onChange={(e) => setGate({ reason: e.target.value })} rows={2} />
           {fieldError(errs, "gate.reason") ? <p className="text-xs text-[var(--color-danger)] mt-1">{fieldError(errs, "gate.reason")}</p> : null}
+        </div>
+      </Card>
+
+      {/* project scope */}
+      <Card className="space-y-2">
+        <div className="text-sm font-semibold">Scope (optional)</div>
+        <div>
+          <label className={label}>Only in project directory</label>
+          <Input value={d.projectScope} onChange={(e) => set({ projectScope: e.target.value })}
+                 className="font-mono w-full" placeholder="e.g. ~/trading-mcp  (blank = every session)" />
+          <p className="text-xs text-[var(--color-text-tertiary)] mt-1">When set, both rules only apply to Claude Code sessions whose working directory is inside this path.</p>
+          {fieldError(errs, "projectScope") ? <p className="text-xs text-[var(--color-danger)] mt-1">{fieldError(errs, "projectScope")}</p> : null}
         </div>
       </Card>
 

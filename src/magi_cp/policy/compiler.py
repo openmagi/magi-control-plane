@@ -224,16 +224,16 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
         elif isinstance(p, EvidenceAuditPolicy):
             # PostToolUse audit: record evidence of `kind` to the session
             # ledger via the self-contained local audit binary.
+            cmd = (
+                f"{DEFAULT_SESSION_AUDIT_SHIM} --kind {shlex.quote(p.kind)}"
+                f" --extract {shlex.quote(p.extract)}"
+                f" --judge {shlex.quote(p.judge)}"
+            )
+            if p.project_scope:
+                cmd += f" --cwd-prefix {shlex.quote(p.project_scope)}"
             hooks.setdefault(p.trigger.event, []).append({
                 "matcher": p.trigger.matcher,
-                "hooks": [{
-                    "type": "command",
-                    "command": (
-                        f"{DEFAULT_SESSION_AUDIT_SHIM} --kind {shlex.quote(p.kind)}"
-                        f" --extract {shlex.quote(p.extract)}"
-                        f" --judge {shlex.quote(p.judge)}"
-                    ),
-                }],
+                "hooks": [{"type": "command", "command": cmd}],
             })
         elif isinstance(p, EvidencePreconditionPolicy):
             # PreToolUse gate: deny unless the session ledger holds the
@@ -244,6 +244,8 @@ def compile_to_managed_settings(policies: list[AnyPolicy]) -> dict:
             )
             if p.reason:
                 cmd += f" --reason {shlex.quote(p.reason)}"
+            if p.project_scope:
+                cmd += f" --cwd-prefix {shlex.quote(p.project_scope)}"
             hooks.setdefault(p.trigger.event, []).append({
                 "matcher": p.trigger.matcher,
                 "hooks": [{"type": "command", "command": cmd}],

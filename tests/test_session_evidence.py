@@ -6,6 +6,7 @@ import json
 import pytest
 
 from magi_cp.local import session_audit, session_evidence, session_gate
+from magi_cp.local.session_scope import cwd_in_scope
 
 
 @pytest.fixture(autouse=True)
@@ -189,3 +190,39 @@ def test_only_noncredible_audit_still_blocks():
     rc, out = _gate({"session_id": sid, "tool_name": "x"},
                     "--require-kind", "source_credibility", "--require-verdict", "pass")
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# ── project (cwd) scope ──────────────────────────────────────────────
+def test_cwd_in_scope_boundaries():
+    assert cwd_in_scope("/a/proj", "") is True            # empty prefix = global
+    assert cwd_in_scope("/a/proj", "/a/proj") is True     # exact
+    assert cwd_in_scope("/a/proj/sub", "/a/proj") is True  # descendant
+    assert cwd_in_scope("/a/proj-x", "/a/proj") is False  # sibling, not a prefix match
+    assert cwd_in_scope("/other", "/a/proj") is False
+    assert cwd_in_scope("", "/a/proj") is False           # no cwd, scoped policy
+
+
+def test_gate_out_of_scope_is_noop(tmp_path):
+    # A scoped gate does not fire for a session in a different cwd, even with no
+    # evidence (which would otherwise deny).
+    rc, out = _gate({"session_id": "sc1", "tool_name": "x", "cwd": "/somewhere/else"},
+                    "--require-kind", "source_credibility",
+                    "--cwd-prefix", str(tmp_path / "proj"))
+    assert rc == 0 and out.strip() == ""
+
+
+def test_gate_in_scope_still_enforces(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    rc, out = _gate({"session_id": "sc2", "tool_name": "x", "cwd": str(proj)},
+                    "--require-kind", "source_credibility",
+                    "--cwd-prefix", str(proj))
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_audit_out_of_scope_records_nothing(tmp_path):
+    rc = _audit({"session_id": "sc3", "tool_name": "WebFetch", "cwd": "/elsewhere",
+                 "tool_input": {"url": "https://sec.gov/x"},
+                 "tool_response": {"content": "ok"}},
+                "--kind", "source_credibility", "--cwd-prefix", str(tmp_path / "proj"))
+    assert rc == 0 and session_evidence.entries("sc3") == []

@@ -94,3 +94,23 @@ def test_meta_lists_the_new_types():
     s = compile_to_managed_settings([_audit(), _pre()])
     types = {m["type"] for m in s["_magi_policies"]}
     assert types == {"evidence_audit", "evidence_precondition"}
+
+
+def test_project_scope_round_trips_and_compiles():
+    a = _audit(project_scope="/Users/kevin/trading-mcp")
+    g = _pre(project_scope="/Users/kevin/trading-mcp")
+    assert policy_to_dict(a)["project_scope"] == "/Users/kevin/trading-mcp"
+    assert policy_to_dict(g)["project_scope"] == "/Users/kevin/trading-mcp"
+    s = compile_to_managed_settings([a, g])
+    assert "--cwd-prefix /Users/kevin/trading-mcp" in s["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+    assert "--cwd-prefix /Users/kevin/trading-mcp" in s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+
+def test_empty_project_scope_omits_cwd_prefix():
+    s = compile_to_managed_settings([_audit(), _pre()])
+    assert "--cwd-prefix" not in s["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+
+
+def test_project_scope_rejects_control_chars():
+    with pytest.raises(ValueError, match="control characters"):
+        _audit(project_scope="/x\nrm -rf")
