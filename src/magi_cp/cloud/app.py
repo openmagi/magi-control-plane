@@ -62,27 +62,24 @@ from .keys import KeyStore
 from .presets_catalog import vendor_catalog
 
 
-TOKEN_TTL_SECONDS = 600   # short, refreshable. License expiry = fail-closed.
-MAX_REQUEST_BYTES = 256 * 1024
-MAX_CITATIONS_PER_REQUEST = 50
-MAX_QUOTE_LEN = 8_000
-MAX_REF_LEN = 1_000
-MAX_DOCUMENT_LEN = 200_000
-MAX_CORPUS_OVERRIDE_BYTES = 200_000
-
-PROTECTED_TOKEN_FIELDS = {
-    "step",
-    # PR4: canonical keying ONLY. Subject = generic subject identifier
-    # (e.g. "session_abc", "req_xyz", or for legal verticals: matter id).
-    # payload_hash = sha256 of canonical tool payload (or for legal:
-    # doc_id). PR2 had a transition window with legacy `matter`/`doc_hash`
-    # mirrored alongside; PR4 drops both legacy names from the protected
-    # set and from token bodies entirely. Any deployed gate older than
-    # PR2 will no longer find a verifying token — operators upgrading
-    # past PR4 must roll forward gate binaries first.
-    "subject", "payload_hash",
-    "verdict", "iat", "exp", "issuer", "kid",
-}
+# Shared limits + token constants now live in cloud/constants.py so the
+# request schemas can import them without a circular dependency. Re-exported
+# here (import *) so existing `app.MAX_...` / `app._KEY_PATTERN` references and
+# the test suite keep resolving unchanged.
+from .constants import (  # noqa: E402,F401
+    TOKEN_TTL_SECONDS,
+    MAX_REQUEST_BYTES,
+    MAX_CITATIONS_PER_REQUEST,
+    MAX_QUOTE_LEN,
+    MAX_REF_LEN,
+    MAX_DOCUMENT_LEN,
+    MAX_CORPUS_OVERRIDE_BYTES,
+    MAX_VERIFIER_PAYLOAD_BYTES,
+    _KEY_PATTERN,
+    _POLICY_ID_PATTERN,
+    _RESERVED_ID_SUFFIXES,
+    PROTECTED_TOKEN_FIELDS,
+)
 
 
 # ── PR2 synthesis helpers ─────────────────────────────────────────────
@@ -156,7 +153,7 @@ class CitationIn(BaseModel):
 
 # Shared regex for both old and new key fields — kept identical so the
 # alias path doesn't smuggle in shapes the legacy path would reject.
-_KEY_PATTERN = r"^[A-Za-z0-9_\-]+$"
+# (_KEY_PATTERN now lives in cloud/constants.py, imported at module top.)
 
 
 class VerifyReq(BaseModel):
@@ -357,7 +354,7 @@ class DryRunReq(BaseModel):
 # v2.0-W7: verifier payload cap (regex DoS defense). 20K is plenty for any
 # realistic filing-time payload and tight enough that pathological regex
 # inputs can't push past the deterministic-time budget.
-MAX_VERIFIER_PAYLOAD_BYTES = 20_000
+# (MAX_VERIFIER_PAYLOAD_BYTES now lives in cloud/constants.py.)
 
 
 # v1.2-W3: generic verifier dispatch.
@@ -2520,7 +2517,7 @@ from ..policy.precedence import SOURCE_PRECEDENCE as _SP  # noqa: E402  paired-w
 _SOURCE_REGEX = "^(" + "|".join(_SP) + ")$"
 
 
-_POLICY_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._\-/]{0,127}$"
+# (_POLICY_ID_PATTERN now lives in cloud/constants.py, imported at module top.)
 
 
 class PolicyIn(BaseModel):
@@ -2633,7 +2630,7 @@ class RunCommandReq(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
-_RESERVED_ID_SUFFIXES = ("/compiled", "/enabled")
+# (_RESERVED_ID_SUFFIXES now lives in cloud/constants.py, imported at module top.)
 
 
 def _run_command_allowed() -> bool:
