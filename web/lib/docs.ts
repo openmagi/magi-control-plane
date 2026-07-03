@@ -63,7 +63,7 @@ export const DOCS_INDEX: ReadonlyArray<DocEntry> = [
   {
     slug: "operator",
     title: "Operator",
-    summary: "Deploy on Docker, K8s, or fly.io. Key rotation, observability, backups.",
+    summary: "Deploy on Docker or K8s. Key rotation, observability, backups.",
   },
   {
     slug: "api",

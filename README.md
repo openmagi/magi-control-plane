@@ -6,7 +6,7 @@
 machine: a verifier registry, Ed25519-signed evidence ledger, HITL queue, and
 an NL → IR policy authoring dashboard. Every tool call, prompt, and session
 boundary can be gated against your policies at runtime; verdicts are sealed
-into a tamper-evident chain. Self-host on docker, K8s, or fly.io.
+into a tamper-evident chain. Self-host on docker or K8s.
 
 ## Self-host
 
