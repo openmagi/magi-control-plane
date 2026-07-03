@@ -345,6 +345,33 @@ def _compile_set_with_sha(policies: list[AnyPolicy]) -> tuple[dict, str]:
     return ms, hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _resolve_llm_provider_from_env(env_var: str) -> "object | None":
+    """Load an LlmProvider via a dotted import path in env.
+
+    Format: `MAGI_CP_LLM_COMPILER=mypkg.module:factory_callable`. The callable
+    receives no args and must return something conforming to LlmProvider.
+    Returns None when the env var is unset — keeps /policies/compile honest
+    about its 503 path (and the test suite stays hermetic).
+    """
+    spec = os.environ.get(env_var)
+    if not spec:
+        return None
+    if ":" not in spec:
+        raise RuntimeError(
+            f"{env_var} must be 'module.path:callable', got {spec!r}"
+        )
+    mod_path, _, attr = spec.partition(":")
+    import importlib
+    try:
+        mod = importlib.import_module(mod_path)
+    except Exception as e:
+        raise RuntimeError(f"{env_var}: failed to import {mod_path}: {e}") from e
+    if not hasattr(mod, attr):
+        raise RuntimeError(f"{env_var}: {mod_path} has no attribute {attr!r}")
+    factory = getattr(mod, attr)
+    return factory()
+
+
 __all__ = [
     "_canonical_json_bytes",
     "_synth_subject_and_hash",
@@ -357,4 +384,5 @@ __all__ = [
     "_serialize_policy_for_api",
     "_compile_with_sha",
     "_compile_set_with_sha",
+    "_resolve_llm_provider_from_env",
 ]
