@@ -259,11 +259,18 @@ export default async function RulesPage({
               </Link>
             </div>
           ) : (
-            <Link href="/policies/new">
-              <Button variant="primary" size="md">
-                {t("rules.newButton")}
-              </Button>
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link href="/policies/new/evidence-gate">
+                <Button variant="secondary" size="md">
+                  {t("rules.newEvidenceGateButton")}
+                </Button>
+              </Link>
+              <Link href="/policies/new">
+                <Button variant="primary" size="md">
+                  {t("rules.newButton")}
+                </Button>
+              </Link>
+            </div>
           )
         }
       />
