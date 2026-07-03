@@ -29,7 +29,6 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Reques
 from fastapi import Path as FPath
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..evidence import sign_token
 from ..policy import (
@@ -515,190 +514,26 @@ class LlmKeysTestReq(BaseModel):
     provider: Literal["anthropic", "openai"] | None = None
 
 
-# ── middlewares ──────────────────────────────────────────────────────
-class MaxBodyMiddleware(BaseHTTPMiddleware):
-    """413 on Content-Length OR by accumulating a streamed/chunked body."""
+# ── middleware + auth deps moved out (modularization 2026-07-03) ──────
+# cloud/middleware.py + cloud/deps.py hold these now. Re-exported here so
+# every existing reference (route decorators, tests importing from
+# magi_cp.cloud.app) keeps working unchanged.
+from .middleware import (  # noqa: E402,F401
+    MaxBodyMiddleware,
+    TokenBucketLimiter,
+    _BodyTooLarge,
+    _json_response,
+    _bounded_regex_search,
+)
+from .deps import (  # noqa: E402,F401
+    _check_key,
+    require_api_key,
+    require_hitl_key,
+    require_admin_key,
+    require_tenant_auth,
+    _resolve_tenant_id_from_request,
+)
 
-    def __init__(self, app, limit: int):
-        super().__init__(app)
-        self.limit = limit
-
-    async def dispatch(self, request: Request, call_next):
-        cl = request.headers.get("content-length")
-        if cl and cl.isdigit() and int(cl) > self.limit:
-            return _json_response(413, {"detail": "request body too large"})
-        # Wrap ASGI receive to count bytes for chunked / unknown-CL bodies
-        recv = request._receive
-        consumed = 0
-        limit = self.limit
-
-        async def capped_receive():
-            nonlocal consumed
-            msg = await recv()
-            if msg["type"] == "http.request":
-                body = msg.get("body") or b""
-                consumed += len(body)
-                if consumed > limit:
-                    raise _BodyTooLarge()
-            return msg
-
-        request._receive = capped_receive
-        try:
-            return await call_next(request)
-        except _BodyTooLarge:
-            return _json_response(413, {"detail": "request body too large"})
-
-
-class _BodyTooLarge(Exception):
-    pass
-
-
-class TokenBucketLimiter(BaseHTTPMiddleware):
-    """Per-key (or per-IP fallback) token bucket. Tiny, in-process — adequate
-    for v0 single-pod. Swap for slowapi/Redis in P5.
-    """
-    def __init__(self, app, *, capacity: int = 60, refill_per_sec: float = 10.0):
-        super().__init__(app)
-        self.cap = capacity
-        self.refill = refill_per_sec
-        self._buckets: dict[str, tuple[float, float]] = {}   # key → (tokens, last_ts)
-
-    # Evict idle buckets once the map grows past this, so a flood of
-    # distinct keys cannot grow _buckets without bound (API-2 memory DoS).
-    _EVICT_WHEN_OVER = 10_000
-    _EVICT_IDLE_S = 3600
-
-    def _evict_stale(self, now: float) -> None:
-        if len(self._buckets) <= self._EVICT_WHEN_OVER:
-            return
-        cutoff = now - self._EVICT_IDLE_S
-        stale = [k for k, (_, last) in self._buckets.items() if last < cutoff]
-        for k in stale:
-            self._buckets.pop(k, None)
-
-    async def dispatch(self, request: Request, call_next):
-        # No throttling on health/pubkey (cheap, public)
-        if request.url.path in ("/healthz", "/pubkey"):
-            return await call_next(request)
-        # Key on the CONNECTION source, never a caller-supplied header.
-        # Keying on x-api-key let an attacker mint a fresh bucket per request
-        # (rate-limit bypass) and grow _buckets without bound (API-2). Behind
-        # a trusted reverse proxy every request shares the proxy IP's bucket;
-        # a future improvement is parsing X-Forwarded-For from a configured
-        # trusted proxy, but the safe default is the socket peer.
-        key = request.client.host if request.client else "anon"
-        now = time.time()
-        self._evict_stale(now)
-        tokens, last = self._buckets.get(key, (self.cap, now))
-        tokens = min(self.cap, tokens + (now - last) * self.refill)
-        if tokens < 1:
-            self._buckets[key] = (tokens, now)
-            return _json_response(429, {"detail": "rate limit exceeded"})
-        self._buckets[key] = (tokens - 1, now)
-        return await call_next(request)
-
-
-def _json_response(status: int, payload: dict):
-    from fastapi.responses import JSONResponse
-    return JSONResponse(payload, status_code=status)
-
-
-async def _bounded_regex_search(
-    rx: "re.Pattern[str]", text: str, *, timeout: float = 2.0,
-) -> bool:
-    """Run ``rx.search(text)`` in a worker thread with a wall-clock cap.
-
-    A catastrophic-backtracking pattern from an authenticated caller would
-    otherwise wedge the event loop and stall every other tenant's request
-    (API-1). Running the search off the loop keeps the loop responsive; on
-    timeout we return False (deny) rather than block. The pattern is compiled
-    on the calling thread first, so a bad pattern still surfaces as a 422 and
-    only the (immutable, thread-safe) compiled object crosses into the thread.
-
-    Note: Python's ``re`` cannot be interrupted mid-scan, so a timed-out
-    search keeps running in its thread until it finishes; bounding the number
-    of concurrent inline regex evaluations is a follow-up. The loop itself is
-    never blocked.
-    """
-    def _run() -> bool:
-        return rx.search(text) is not None
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(_run), timeout=timeout)
-    except asyncio.TimeoutError:
-        return False
-
-
-# ── auth deps (constant-time compare; fail-closed if env unset) ──────
-def _check_key(env_var: str, header_value: str | None) -> None:
-    import hmac
-    expected = os.environ.get(env_var)
-    if not expected:
-        # Don't echo env var name back to anonymous callers (enumeration)
-        raise HTTPException(503, "service unavailable: auth not configured")
-    if not header_value or not hmac.compare_digest(header_value, expected):
-        raise HTTPException(401, "invalid or missing api key")
-
-
-def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    _check_key("MAGI_CP_API_KEY", x_api_key)
-
-
-def require_hitl_key(x_hitl_api_key: str | None = Header(default=None)) -> None:
-    _check_key("MAGI_CP_HITL_API_KEY", x_hitl_api_key)
-
-
-def require_admin_key(x_admin_api_key: str | None = Header(default=None)) -> None:
-    _check_key("MAGI_CP_ADMIN_API_KEY", x_admin_api_key)
-
-
-def require_tenant_auth(
-    request: Request, x_api_key: str | None = Header(default=None),
-) -> None:
-    """Multi-tenant aware data-plane auth.
-
-    Recognises:
-      - Legacy `MAGI_CP_API_KEY` env value → synthetic `default` tenant.
-      - DB-issued `mcp_…` keys hashed in `api_keys` table → joined tenant.
-
-    Sets `request.state.tenant_id` for downstream endpoints to scope queries.
-    """
-    from .tenants import authenticate_request
-    engine = request.app.state.engine
-    auth = authenticate_request(engine, x_api_key)
-    if auth is None:
-        raise HTTPException(401, "invalid or missing api key")
-    request.state.tenant_id = auth.tenant_id
-    request.state.api_key_id = auth.api_key_id
-
-
-def _resolve_tenant_id_from_request(request: Request) -> str | None:
-    """Best-effort tenant resolution for routes where auth is OPTIONAL.
-
-    Used by /verifiers + /catalog/evidence-types so that an unauthenticated
-    caller gets the global view (legacy behaviour) while an authenticated
-    caller transparently sees their tenant's custom verifiers merged in.
-    Mirrors the shape of require_tenant_auth but returns None instead of
-    raising on missing / invalid auth.
-    """
-    from .tenants import authenticate_request
-    # If require_tenant_auth has already run on this request, reuse its
-    # decision. Saves a DB round-trip on the common authed case.
-    cached = getattr(request.state, "tenant_id", None)
-    if cached is not None:
-        return cached
-    api_key = request.headers.get("x-api-key")
-    if not api_key:
-        return None
-    engine = getattr(request.app.state, "engine", None)
-    if engine is None:
-        return None
-    try:
-        auth = authenticate_request(engine, api_key)
-    except Exception:
-        return None
-    if auth is None:
-        return None
-    return auth.tenant_id
 
 
 # ── factory ──────────────────────────────────────────────────────────

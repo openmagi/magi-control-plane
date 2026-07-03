@@ -63,7 +63,7 @@ src/magi_cp/cloud/
   serialization.py    # policy (de)serialize + compile-with-sha + token issue
   routes/
     __init__.py
-    share.py          # attach(app, ...) — /v1/runs/share, /share/run
+    share.py          # attach(app, ...) for /v1/runs/share, /share/run
     compile.py        # /policies/compile*, /handoff-context, /dry-run
     verify.py         # /verify, /verify_inline, /citation_verify, /verifiers
     hitl.py           # /hitl/*
@@ -125,6 +125,6 @@ Every PR: pure move, run the full backend suite, assert same pass count
 
 - No new routes, no response-shape changes, no auth changes, no dependency
   changes.
-- Not splitting the stores (policy_store/pack_store/etc.) — they are already
+- Not splitting the stores (policy_store/pack_store/etc.), which are already
   separate modules.
 - Not touching `_build_production_app` beyond following the imports.
