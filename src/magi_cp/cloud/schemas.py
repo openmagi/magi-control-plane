@@ -166,6 +166,21 @@ class InteractiveCompileReq(BaseModel):
         return v
 
 
+class ReviewPolicyReq(BaseModel):
+    """Body for POST /policies/review: policy-integrity review.
+
+    `draft` is a policy draft (a compound like type=evidence_gate, or a
+    single rule). `intent` is the operator's plain-language goal (used by
+    the optional semantic layer). Both are loose at this boundary; the
+    review module runs deterministic structural checks first and only
+    then an optional LLM semantic pass, so a malformed draft yields
+    findings rather than a crash.
+    """
+    model_config = {"extra": "forbid"}
+    draft: dict
+    intent: str = Field(default="", max_length=4_000)
+
+
 # D57g: handoff from wizard / raw editor → conversational. The body
 # is a snapshot of in-progress authoring state; the response is the
 # same wire shape `step_compile` emits so the conversational client

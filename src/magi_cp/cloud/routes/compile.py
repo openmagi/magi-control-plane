@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from ..deps import require_admin_key
 from ..schemas import (
     CompileReq, DryRunReq, HandoffContextReq, InteractiveCompileReq,
+    ReviewPolicyReq,
 )
 from ..serialization import _deserialize_policy_from_api, _iso_ts
 from ...verifier.protocol import VerifierRegistry
@@ -185,6 +186,30 @@ def attach(
             # 422 as /policies/compile so the dashboard renders the same
             # actionable banner.
             raise HTTPException(422, str(e)) from e
+
+    @app.post("/policies/review", dependencies=[Depends(require_admin_key)])
+    async def policies_review(req: "ReviewPolicyReq", request: Request) -> dict:
+        """Policy-integrity review: does this authored policy implement the
+        operator's intent?
+
+        Returns {ok, issues: [{severity, message, source}], summary}. Runs
+        DETERMINISTIC structural checks always (orphan gate, non-enforcing
+        action, join-key mismatch, invalid member IR) and, when a reviewer
+        LLM is configured, an advisory SEMANTIC pass (intent vs rules). The
+        verdict is advisory: the dashboard shows it before Save but never
+        blocks. No provider is required (unlike /compile) so the
+        deterministic loop works on a deployment with no LLM keys.
+        """
+        from ...policy.review import review_policy_draft
+        active_reviewer = getattr(request.app.state, "llm_reviewer", None) or llm_reviewer
+        context = _build_compile_context(policy_group_store)
+        return await asyncio.to_thread(
+            review_policy_draft,
+            req.draft,
+            intent=req.intent,
+            reviewer=active_reviewer,
+            context=context,
+        )
 
     @app.post("/policies/handoff-context",
               dependencies=[Depends(require_admin_key)])
