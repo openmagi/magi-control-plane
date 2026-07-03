@@ -3,6 +3,7 @@ import {
   isLoopbackHost,
   verifySession,
   trustLoopbackHeader,
+  requestCameThroughProxy,
   CONSOLE_COOKIE,
 } from "@/lib/dashboard-auth"
 
@@ -66,7 +67,15 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   if (path === "/") return NextResponse.next()
   if (matchesPrefix(path, CONSOLE_PUBLIC)) return NextResponse.next()
 
-  if (trustLoopbackHeader() && isLoopbackHost(req.headers.get("host"))) {
+  // A direct localhost request (self-host single-operator default) skips the
+  // login. Behind a reverse proxy the Host header can be spoofed to look like
+  // loopback (WEB-1 P0), so a proxy hop (x-forwarded-*) suppresses the
+  // exception and a session is required.
+  if (
+    trustLoopbackHeader() &&
+    !requestCameThroughProxy(req.headers) &&
+    isLoopbackHost(req.headers.get("host"))
+  ) {
     return NextResponse.next()
   }
   if (await verifySession(req.cookies.get(CONSOLE_COOKIE)?.value)) {

@@ -211,16 +211,16 @@ BY DESIGN for the single-operator model (the operator IS the tenant). It is
 not a multi-tenant privilege boundary, and the console must never be exposed
 as a shared multi-user surface.
 
-- **Session required by default (fail-closed):** every console route requires a
-  signed session cookie. Set `MAGI_CP_DASHBOARD_SESSION_SECRET` (falls back to
-  `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server and sign in at `/login`.
-  With no secret configured the console denies every request.
-- **Localhost no-login convenience (opt-in):** a solo operator who binds the
-  dashboard to loopback only may set `MAGI_CP_TRUST_LOOPBACK_HEADER=1` to skip
-  sign-in for loopback requests. This is OFF by default because the `Host`
-  header is spoofable (`Host: localhost` on an exposed bind would otherwise
-  bypass the check), so only enable it when you know the bind is loopback-only.
-- **Behind a reverse proxy / exposed:** leave `MAGI_CP_TRUST_LOOPBACK_HEADER`
-  at its default `0` so a session is required for every request, and enforce
-  authentication at the proxy as well. Never rely on the loopback exception
-  when the dashboard is reachable off-host.
+- **Localhost (default): no sign-in.** A direct request to `localhost` is the
+  operator's own machine, so the console opens without a login. This is the
+  common single-operator case and the default.
+- **Behind a reverse proxy: sign-in required, automatically.** A proxy hop adds
+  `x-forwarded-*` headers; when those are present the loopback exception is
+  suppressed (the `Host` header can be spoofed to look like loopback, WEB-1),
+  so a signed session is required. Set `MAGI_CP_DASHBOARD_SESSION_SECRET`
+  (falls back to `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server, sign in
+  at `/login`, and enforce authentication at the proxy too. With no secret
+  configured the console denies every non-loopback request (fail-closed).
+- **Belt-and-suspenders:** set `MAGI_CP_TRUST_LOOPBACK_HEADER=0` to require a
+  signed session for EVERY request, including direct localhost, regardless of
+  forwarding headers.

@@ -84,10 +84,10 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
   {
     name: "MAGI_CP_TRUST_LOOPBACK_HEADER",
     group: "dashboard",
-    default: "0",
+    default: "1",
     allowed: "0|1",
-    ko: "기본 0(fail-closed): 모든 콘솔 요청에 세션을 요구합니다. host 헤더는 위조 가능하므로, loopback 전용 바인딩임을 아는 로컬 운영자만 1로 설정해 로그인 없는 편의를 켭니다.",
-    en: "Default 0 (fail-closed): every console request requires a session. The host header is spoofable, so only a local operator who knows the bind is loopback-only sets 1 to enable the no-login convenience.",
+    ko: "기본 1: 직접 localhost 요청은 로그인 없이 콘솔을 엽니다(셀프호스트 단일 운영자). 리버스 프록시 뒤에서는 x-forwarded-* 헤더가 붙어 loopback 예외가 자동으로 꺼지고 세션이 필요합니다(host 헤더 위조 방지). 0으로 두면 직접 localhost 포함 모든 요청에 세션을 강제합니다.",
+    en: "Default 1: a direct localhost request opens the console without a login (self-host single operator). Behind a reverse proxy, x-forwarded-* headers auto-suppress the loopback exception and a session is required (host-header spoof guard). Set 0 to force a session for EVERY request including direct localhost.",
   },
   {
     name: "MAGI_CP_ISSUER",

@@ -107,10 +107,11 @@ export default async function LoginPage({
       </form>
       <Card className="mt-6">
         <div className="text-xs text-[var(--color-text-tertiary)]">
-          Running on localhost only? You do not need to sign in. This page
-          appears because the request reached the console over a network. Behind
-          a reverse proxy, set <code>MAGI_CP_TRUST_LOOPBACK_HEADER=0</code> so a
-          session is always required, and enforce auth at the proxy too.
+          A direct localhost request opens the console without signing in. This
+          page appears because the request reached the console through a reverse
+          proxy (an <code>x-forwarded-*</code> header was present), where the
+          Host header can be spoofed, so a session is required. Sign in with
+          your tenant API key and enforce auth at the proxy too.
         </div>
         <div className="mt-2">
           <a href="/install">
