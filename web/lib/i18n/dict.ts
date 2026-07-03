@@ -787,9 +787,11 @@ const KO_RAW = {
   "ledger.col.subject": "subject",
   "ledger.col.prev": "prev",
   "ledger.col.h": "h",
+  "ledger.col.detail": "상세",
+  "ledger.detail.view": "본문 보기",
+  "ledger.detail.none": "본문 없음",
   "ledger.first": "← 처음",
   "ledger.next": "다음 →",
-  "ledger.redactionNote": "참고: 이 화면에서 body는 마스킹됩니다, 본문 조회는 인증된 audit token이 필요합니다.",
 
   /* ── install (public Korean+English self-host guide) ─────────── */
   "install.title": "설치",
@@ -1849,9 +1851,11 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "ledger.col.subject": "subject",
   "ledger.col.prev": "prev",
   "ledger.col.h": "h",
+  "ledger.col.detail": "Detail",
+  "ledger.detail.view": "View body",
+  "ledger.detail.none": "No body",
   "ledger.first": "← First",
   "ledger.next": "Next →",
-  "ledger.redactionNote": "Note: entry bodies are redacted in this view. Drill-down requires an authenticated audit token.",
 
   "install.title": "Install",
   "install.subtitle": "Wire the magi-control-plane gate into Claude Code in 5 minutes.",

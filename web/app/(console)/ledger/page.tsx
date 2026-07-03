@@ -38,6 +38,10 @@ export default async function LedgerPage({
     result = await cloud.ledger(
       since, LEDGER_PAGE_SIZE,
       verifierFilter.length > 0 ? verifierFilter : undefined,
+      // Self-host single-operator: the operator owns this ledger and
+      // authenticates with their own tenant key, so there is no reason to
+      // hide their own entry bodies. Fetch the full body for drill-down.
+      true,
     )
   } catch (e: unknown) {
     err = errMsg(e)
@@ -117,6 +121,7 @@ export default async function LedgerPage({
                     <th>{t("ledger.col.subject")}</th>
                     <th>{t("ledger.col.prev")}</th>
                     <th>{t("ledger.col.h")}</th>
+                    <th>{t("ledger.col.detail")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -133,16 +138,31 @@ export default async function LedgerPage({
                         </Code>
                       </td>
                       <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
+                      <td>
+                        {e.body ? (
+                          // No-JS drill-down: the operator owns this ledger,
+                          // so the full entry body is served (include_body)
+                          // and expanded inline via a native <details>.
+                          <details>
+                            <summary className="cursor-pointer text-xs font-medium text-[var(--color-accent-light)] hover:underline">
+                              {t("ledger.detail.view")}
+                            </summary>
+                            <pre className="mt-2 max-w-2xl overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[var(--color-muted-bg,#f3f4f6)] p-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
+                              {JSON.stringify(e.body, null, 2)}
+                            </pre>
+                          </details>
+                        ) : (
+                          <span className="text-xs text-[var(--color-text-tertiary)]">
+                            {t("ledger.detail.none")}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Card>
           )}
-
-          <p className="text-xs text-[var(--color-text-tertiary)] mt-3">
-            {t("ledger.redactionNote")}
-          </p>
 
           <nav
             aria-label="Ledger pagination"
