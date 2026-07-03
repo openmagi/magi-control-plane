@@ -35,7 +35,7 @@ from __future__ import annotations
 import pytest
 
 from magi_cp.policy.ir import (
-    ContextInjectionPolicy, EvidencePolicy, EvidenceReq, Trigger,
+    ContextInjectionPolicy, EvidencePolicy, Trigger,
     _CONTEXT_EVENT_LITERALS, _CONTEXT_INJECTION_EXCLUDED_EVENTS,
     _CONTEXT_INJECTION_ALTERNATE_CHANNEL, _SUPPORTED_EVENTS,
 )

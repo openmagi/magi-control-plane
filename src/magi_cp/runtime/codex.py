@@ -233,7 +233,7 @@ def _prefixed(reason: str) -> str:
 
 
 # ── Shim B queue helpers (design doc 4.2) ────────────────────────────
-import re as _re
+import re as _re  # noqa: E402
 
 
 def _safe_session_component(session_id: str) -> str:

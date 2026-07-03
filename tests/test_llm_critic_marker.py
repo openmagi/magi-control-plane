@@ -183,11 +183,11 @@ def test_short_marker_value_not_truncated():
 
 # ── D82c integration: /verify_inline substitutes markers in criterion ──
 
-import pytest
-from fastapi.testclient import TestClient
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-from magi_cp.cloud.app import create_app
-from magi_cp.cloud.keys import KeyStore
+from magi_cp.cloud.app import create_app  # noqa: E402
+from magi_cp.cloud.keys import KeyStore  # noqa: E402
 
 
 API_KEY = "marker-it-key"

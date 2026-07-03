@@ -19,7 +19,6 @@ from magi_cp.cloud.keys import KeyStore
 from magi_cp.cloud.pack_store import PackStore, UserPackRow
 from magi_cp.cloud.policy_store import PolicyStore
 from magi_cp.cloud.tenants import ApiKeyRepo, TenantRepo
-from magi_cp.policy.floor_pack import FLOOR_PACK_ID
 from magi_cp.policy.ir import EvidencePolicy, EvidenceReq, Trigger
 from magi_cp.policy.resolved import PolicyOverride
 

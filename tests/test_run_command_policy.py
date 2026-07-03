@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
-import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -795,7 +793,7 @@ def test_scripts_delete_holds_policy_lock_during_reference_scan(
     sid = up["body"]["id"]
     # Create a policy that references it.
     r = client.put(
-        f"/policies/p.del-ref",
+        "/policies/p.del-ref",
         json={
             "policy": {
                 "type": "run_command",

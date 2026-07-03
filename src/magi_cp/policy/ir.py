@@ -801,7 +801,7 @@ class ContextInjectionPolicy:
         # only allowing per-tool matcher classes on the four
         # tool-context events; everything else must be wildcard.
         from .matrix import (
-            MatcherClass, _AUDIT_ONLY_WILDCARD_EVENTS, matcher_class_of,
+            MatcherClass, matcher_class_of,
         )
         _TOOL_CONTEXT_EVENTS = frozenset({
             "PreToolUse", "PostToolUse",
