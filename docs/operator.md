@@ -10,7 +10,7 @@ engineer running the cloud.
                 |
                 |  server-side fetch
                 v
-  https://<your-api>                (FastAPI cloud; Docker, K8s, or fly.io)
+  https://<your-api>                (FastAPI cloud; Docker or K8s)
                 |
                 v
   Postgres (multi-replica) or SQLite (single-replica)
@@ -57,19 +57,6 @@ helm install magi-cp ./charts/magi-cp \
 
 Multi-replica needs Postgres (`postgres.dsn` in values). Single-replica
 falls back to SQLite on a PVC (`persistence.enabled: true`).
-
-### Option C: fly.io
-
-`deploy/fly.toml` brings up the FastAPI cloud on fly.io for solo
-self-hosters without K8s.
-
-```bash
-fly auth login
-fly launch --copy-config --no-deploy
-# Set secrets on fly:
-fly secrets set MAGI_CP_API_KEY=... MAGI_CP_ADMIN_HMAC_SECRET=...
-fly deploy
-```
 
 ### Dashboard (Next.js)
 
@@ -214,18 +201,26 @@ Rollback:
 
 ## Dashboard exposure
 
-The dashboard is designed for **operator localhost use**. Its server process
-holds ambient credentials (`MAGI_CP_API_KEY`, `MAGI_CP_ADMIN_API_KEY`,
+magi-cp is **self-host, single-operator** software. The dashboard is designed
+for one operator running it on their own machine. Its server process holds
+ambient credentials (`MAGI_CP_API_KEY`, `MAGI_CP_ADMIN_API_KEY`,
 `MAGI_CP_ADMIN_HMAC_SECRET`) that the BFF injects into backend calls, so a
-reachable dashboard is effectively an admin console.
+reachable dashboard is effectively an admin console. Sign-in at `/login`
+accepts any valid tenant API key and unlocks the operator console: this is
+BY DESIGN for the single-operator model (the operator IS the tenant). It is
+not a multi-tenant privilege boundary, and the console must never be exposed
+as a shared multi-user surface.
 
-- **Localhost (default):** loopback requests are trusted; no sign-in needed.
-- **Exposed over a network:** any non-loopback console request must present a
+- **Session required by default (fail-closed):** every console route requires a
   signed session cookie. Set `MAGI_CP_DASHBOARD_SESSION_SECRET` (falls back to
-  `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server and sign in at `/login`
-  with a tenant API key. With no secret configured the console **fails closed**
-  and denies every non-loopback request.
-- **Behind a reverse proxy:** the `Host` header is set by the proxy and can be
-  spoofed to look like loopback. Set `MAGI_CP_TRUST_LOOPBACK_HEADER=0` so a
-  session is required for **every** console request, and enforce authentication
-  at the proxy as well. Do not rely on the loopback exception behind a proxy.
+  `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server and sign in at `/login`.
+  With no secret configured the console denies every request.
+- **Localhost no-login convenience (opt-in):** a solo operator who binds the
+  dashboard to loopback only may set `MAGI_CP_TRUST_LOOPBACK_HEADER=1` to skip
+  sign-in for loopback requests. This is OFF by default because the `Host`
+  header is spoofable (`Host: localhost` on an exposed bind would otherwise
+  bypass the check), so only enable it when you know the bind is loopback-only.
+- **Behind a reverse proxy / exposed:** leave `MAGI_CP_TRUST_LOOPBACK_HEADER`
+  at its default `0` so a session is required for every request, and enforce
+  authentication at the proxy as well. Never rely on the loopback exception
+  when the dashboard is reachable off-host.

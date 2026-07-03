@@ -21,6 +21,10 @@ function safeFrom(from: string): string {
   return from.startsWith("/") && !from.startsWith("//") ? from : "/overview"
 }
 
+// magi-cp is self-host, single-operator software. Any valid tenant API key
+// unlocks the operator console BY DESIGN (the operator IS the tenant); this is
+// not a multi-tenant privilege boundary. The console must never be exposed as
+// a shared multi-user surface. See docs/operator.md "Dashboard exposure".
 async function login(formData: FormData): Promise<void> {
   "use server"
   const key = String(formData.get("apiKey") ?? "").trim()

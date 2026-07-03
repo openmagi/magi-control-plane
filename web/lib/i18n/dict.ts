@@ -805,7 +805,7 @@ const KO_RAW = {
   "install.proPlus.title": "Open Magi Pro+ 구독자",
   "install.proPlus.body": "Stripe 결제 즉시 테넌트 + API 키 자동 생성 → 이메일 전달, 받은 키로 위 한 줄 설치하면 끝.",
   "install.selfHost.title": "직접 호스팅",
-  "install.selfHost.body": "Helm chart, fly.io, docker compose 다 지원, 본인 인스턴스 호스트로 install.sh URL 만 바꾸면 됩니다.",
+  "install.selfHost.body": "Helm chart, docker compose 다 지원, 본인 인스턴스 호스트로 install.sh URL 만 바꾸면 됩니다.",
   "install.docs": "전체 가이드 + 트러블슈팅 (KO + EN)",
 
   /* ── setup wizard (API key → install) ────────────────────────── */
@@ -1866,7 +1866,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "install.proPlus.title": "Open Magi Pro+ subscribers",
   "install.proPlus.body": "Tenant + API key auto-provisioned at Stripe checkout and emailed instantly. Just paste it above.",
   "install.selfHost.title": "Self-hosting",
-  "install.selfHost.body": "Helm chart, fly.io, docker compose all supported. Replace the install.sh URL with your own instance's hostname.",
+  "install.selfHost.body": "Helm chart, docker compose all supported. Replace the install.sh URL with your own instance's hostname.",
   "install.docs": "Full guide + troubleshooting (KO + EN)",
 
   "setup.title": "Setup",
