@@ -108,3 +108,35 @@ def test_bad_policy_id_rejected(client):
     bad = _draft(id="has spaces!!")
     r = client.post("/policies/compound", json={"draft": bad, "source": "org"}, headers=ADMIN)
     assert r.status_code == 400
+
+
+def test_rule_level_toggle_cascades_to_owning_policy(client):
+    # Disabling ONE member rule of a compound cascades to all its rules, so the
+    # pair can never be half-toggled.
+    client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
+    r = client.patch("/policies/verified-trade-gate/enabled", json={"enabled": False}, headers=ADMIN)
+    assert r.status_code == 200
+    assert set(r.json()["cascaded_rule_ids"]) >= {"verified-trade-audit", "verified-trade-gate"}
+    groups = client.get("/policies/groups", headers=ADMIN).json()["policies"]
+    vt = next(g for g in groups if g["id"] == "verified-trade")
+    assert vt["enabled"] is False and vt["mixed"] is False
+
+
+def test_policy_level_toggle_enables_all_rules(client):
+    client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
+    client.patch("/policies/verified-trade-gate/enabled", json={"enabled": False}, headers=ADMIN)
+    # re-enable at the policy level
+    r = client.patch("/policies/groups/verified-trade/enabled", json={"enabled": True}, headers=ADMIN)
+    assert r.status_code == 200 and len(r.json()["rule_ids"]) == 5
+    groups = client.get("/policies/groups", headers=ADMIN).json()["policies"]
+    vt = next(g for g in groups if g["id"] == "verified-trade")
+    assert vt["enabled"] is True
+
+
+def test_free_standing_rule_toggle_is_isolated(client):
+    a = {"type": "permission", "id": "lone-rule",
+         "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+         "permission": "deny", "pattern": "Bash(rm:*)"}
+    client.post("/policies/compound", json={"draft": a, "source": "org"}, headers=ADMIN)
+    r = client.patch("/policies/lone-rule/enabled", json={"enabled": False}, headers=ADMIN)
+    assert r.status_code == 200 and r.json()["cascaded_rule_ids"] == ["lone-rule"]
