@@ -74,6 +74,16 @@ export interface IrDraftPaneProps {
    *  enabled policies regardless of pack membership, so the picker's
    *  "an unpacked policy fires in no session" hint would mislead. */
   packCentric?: boolean
+  /** Policy-integrity review verdict for the ready draft (advisory).
+   *  Rendered above the Save CTA so the operator sees "does this do what
+   *  I asked?" before committing. Null while not-ready or unfetched. */
+  review?: {
+    ok: boolean
+    summary: string
+    issues: { severity: string; message: string; source: string }[]
+  } | null
+  /** True while the review request is in flight. */
+  reviewPending?: boolean
   /** Optional test id for the root container. */
   testId?: string
 }
@@ -482,7 +492,8 @@ function evidenceGateScope(d: Record<string, unknown> | null): string {
 
 export function IrDraftPane({
   t, locale, draft, readyToSave, saveAction, missingFields,
-  suggestedPackText, packCentric = false, testId,
+  suggestedPackText, packCentric = false, review, reviewPending = false,
+  testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
@@ -735,6 +746,53 @@ export function IrDraftPane({
         disabled={!readyToSave}
         action={action === "run_command" ? "audit" : (action ?? "audit")}
       />
+
+      {/* Policy-integrity review (advisory). Renders once the draft is
+       *  ready: a green "implements your intent" confirmation, or amber/
+       *  red findings (orphan gate, non-enforcing action, intent
+       *  mismatch) the operator should see BEFORE saving. Never blocks
+       *  Save: the button below stays enabled regardless. */}
+      {readyToSave && (reviewPending || review) && (
+        <section
+          data-testid="ir-draft-review"
+          data-review-ok={review ? String(review.ok) : undefined}
+          aria-live="polite"
+          className={
+            "rounded-xl border p-3 text-xs " + (
+              reviewPending
+                ? "border-black/[0.06] bg-gray-50/60 text-[var(--color-text-secondary)]"
+                : review && review.ok
+                  ? "border-emerald-200 bg-emerald-50/70 text-emerald-900"
+                  : "border-amber-300 bg-amber-50/70 text-amber-900"
+            )
+          }
+        >
+          {reviewPending && (
+            <p className="m-0 italic" data-testid="ir-draft-review-pending">
+              {ko ? "정책이 의도대로 작동하는지 확인 중..." : "Checking that this policy does what you asked..."}
+            </p>
+          )}
+          {!reviewPending && review && (
+            <>
+              <p className="m-0 font-semibold" data-testid="ir-draft-review-summary">
+                {review.ok
+                  ? (ko ? "의도대로 작동합니다" : "Implements your intent")
+                  : (ko ? "확인이 필요합니다" : "Needs a look")}
+                {review.summary ? `: ${review.summary}` : ""}
+              </p>
+              {review.issues.length > 0 && (
+                <ul className="mt-1 mb-0 list-disc pl-4" data-testid="ir-draft-review-issues">
+                  {review.issues.map((iss, i) => (
+                    <li key={i} data-severity={iss.severity}>
+                      {iss.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       {readyToSave && draft && (
         <form

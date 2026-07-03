@@ -612,3 +612,25 @@ describe("D55b barrel-import guard covers every new client file", () => {
     }
   })
 })
+
+describe("ConversationalCompose policy-integrity review wiring", () => {
+  const src = read("ConversationalCompose.tsx")
+
+  it("fetches the review from the same-origin proxy when ready", () => {
+    expect(src).toContain('"/api/policies/review"')
+    expect(src).toContain("readyToSave")
+  })
+
+  it("passes the operator's intent (first user turn) to the review", () => {
+    expect(src).toMatch(/intent[\s\S]{0,80}history\.find/)
+  })
+
+  it("clears the verdict when the draft is not ready", () => {
+    expect(src).toContain("setReview(null)")
+  })
+
+  it("threads the verdict down to IrDraftPane", () => {
+    expect(src).toContain("review={review}")
+    expect(src).toContain("reviewPending={reviewPending}")
+  })
+})
