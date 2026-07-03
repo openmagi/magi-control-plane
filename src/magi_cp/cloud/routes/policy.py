@@ -22,10 +22,11 @@ from ...policy import (
     AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
     PolicyOverride, RunCommandPolicy, apply_rewriter, matcher_covers,
 )
+from ..policy_group_store import PolicyGroupStore, PolicyRecord
 from ..policy_store import PolicyStore
 from ..presets_catalog import vendor_catalog
 from ..schemas import (
-    InputRewriteReq, PatchEnabledReq, PutPolicyReq, RunCommandReq,
+    CompoundPolicyReq, InputRewriteReq, PatchEnabledReq, PutPolicyReq, RunCommandReq,
 )
 from ..script_store import ScriptStore
 from ..serialization import (
@@ -45,6 +46,7 @@ def attach(app: FastAPI, store: PolicyStore,
                            script_store_lock: asyncio.Lock | None = None,
                            pack_store: "PackStore | None" = None,
                            pack_store_lock: asyncio.Lock | None = None,
+                           policy_group_store: "PolicyGroupStore | None" = None,
                            ) -> None:
 
     def _assert_policy_lifecycle_endorsed(policy: AnyPolicy) -> None:
@@ -1536,6 +1538,106 @@ def attach(app: FastAPI, store: PolicyStore,
             "member_count": len(member_ids),
         }
 
+
+    # ── pack -> policy -> rule: the policy tier ──────────────────────
+    # A 'policy' is the user-facing unit (one authored intent); it owns one or
+    # more 'rules' (the IR policies above). Ownership is PolicyRecord.rule_ids;
+    # the compiler/resolve pipeline stays rule-based. Routed BEFORE the
+    # /policies/{id:path} catch-all so these literal paths win.
+    def _members_from_draft(draft: dict) -> list[dict]:
+        from ...policy.compound import expand_compound_draft, is_compound_draft
+        if is_compound_draft(draft):
+            return expand_compound_draft(draft)
+        return [draft]
+
+    @app.post("/policies/compound", dependencies=[Depends(require_admin_key)])
+    async def post_compound(body: CompoundPolicyReq) -> dict:
+        """Author a policy that owns one or more rules. Expand -> validate all
+        (atomic) -> write PolicyRecord + upsert member rules + drop rules the
+        policy previously owned but no longer does (re-save diff)."""
+        if policy_group_store is None:
+            raise HTTPException(500, "policy group store not configured")
+        draft = body.draft
+        policy_id = str(draft.get("id") or "").strip()
+        if not policy_id:
+            raise HTTPException(400, "policy draft needs an id")
+        try:
+            members_raw = _members_from_draft(draft)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        rules = []
+        for raw in members_raw:
+            rid = raw.get("id")
+            if any(str(rid).endswith(s) for s in _RESERVED_ID_SUFFIXES):
+                raise HTTPException(400, f"rule id must not end in {_RESERVED_ID_SUFFIXES}")
+            try:
+                rules.append(_deserialize_policy_from_api(raw))
+            except (ValueError, KeyError) as e:
+                raise HTTPException(400, f"rule {rid!r}: {e}")
+        new_rule_ids = [p.id for p in rules]
+
+        from ...policy.compound import is_compound_draft
+        record = PolicyRecord(
+            id=policy_id,
+            description=str(draft.get("description") or ""),
+            kind="compound" if is_compound_draft(draft) else "simple",
+            draft=draft, rule_ids=new_rule_ids,
+            source=body.source, enabled=body.enabled,
+        )
+        async with policy_lock:
+            prev = policy_group_store.get(policy_id)
+            stale = set(prev.rule_ids) - set(new_rule_ids) if prev else set()
+            keep = {p.id for p in rules}
+            existing = [ov for ov in store.load()
+                        if ov.policy.id not in keep and ov.policy.id not in stale]
+            for p in rules:
+                existing.append(PolicyOverride(
+                    policy=p, source=body.source,  # type: ignore[arg-type]
+                    enabled=body.enabled, enforcement=_enforcement_label(p),
+                ))
+            store.save(existing)
+            groups = [r for r in policy_group_store.load() if r.id != policy_id]
+            groups.append(record)
+            policy_group_store.save(groups)
+        return {"id": policy_id, "kind": record.kind, "rule_ids": new_rule_ids,
+                "types": [getattr(p, "type", "evidence") for p in rules],
+                "source": body.source, "enabled": body.enabled}
+
+    @app.get("/policies/groups", dependencies=[Depends(require_admin_key)])
+    def list_policy_groups() -> dict:
+        """Authored policies, grouped. Free-standing legacy rules not owned by
+        any policy surface as one-rule policies (read-time synthesis)."""
+        if policy_group_store is None:
+            return {"policies": []}
+        groups = policy_group_store.load()
+        owned: set[str] = set()
+        items = []
+        for g in groups:
+            owned.update(g.rule_ids)
+            items.append({"id": g.id, "description": g.description, "kind": g.kind,
+                          "rule_ids": list(g.rule_ids), "enabled": g.enabled,
+                          "source": g.source})
+        for ov in store.load():
+            if ov.policy.id not in owned:
+                items.append({"id": ov.policy.id, "description": ov.policy.description,
+                              "kind": "simple", "rule_ids": [ov.policy.id],
+                              "enabled": ov.enabled, "source": ov.source})
+        return {"policies": items}
+
+    @app.delete("/policies/groups/{policy_id:path}", dependencies=[Depends(require_admin_key)])
+    async def delete_policy_group(policy_id: str) -> dict:
+        """Delete an authored policy and all rules it owns (cascade)."""
+        if policy_group_store is None:
+            raise HTTPException(500, "policy group store not configured")
+        async with policy_lock:
+            rec = policy_group_store.get(policy_id)
+            if rec is None:
+                raise HTTPException(404, f"policy {policy_id!r} not found")
+            drop = set(rec.rule_ids)
+            store.save([ov for ov in store.load() if ov.policy.id not in drop])
+            policy_group_store.save(
+                [r for r in policy_group_store.load() if r.id != policy_id])
+        return {"deleted": policy_id, "rule_ids": list(rec.rule_ids)}
 
     @app.get("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     def get_policy(policy_id: str) -> dict:

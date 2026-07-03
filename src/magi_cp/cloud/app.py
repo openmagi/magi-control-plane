@@ -200,6 +200,14 @@ def create_app(
     share_repo = SharedRunRepo(engine)
     policy_store = PolicyStore(path=policy_store_path or os.environ.get(
         "MAGI_CP_POLICY_STORE", str(Path.home() / ".magi-cp" / "policies.json")))
+    # pack -> policy -> rule: the policy-tier store (groupings of rules a user
+    # authored as one intent), alongside the rule store.
+    from .policy_group_store import PolicyGroupStore
+    policy_group_store = PolicyGroupStore(
+        path=(policy_store_path.replace("policies.json", "policy-groups.json")
+              if policy_store_path else os.environ.get(
+                  "MAGI_CP_POLICY_GROUP_STORE",
+                  str(Path.home() / ".magi-cp" / "policy-groups.json"))))
     # D75: user-pack registry. Default path lives alongside the policy
     # store; built-in packs are catalog-only (no on-disk row needed).
     pack_store = PackStore(path=pack_store_path or os.environ.get(
@@ -1846,7 +1854,8 @@ def create_app(
                          script_store=script_store,
                          script_store_lock=script_store_lock,
                          pack_store=pack_store,
-                         pack_store_lock=pack_store_lock)
+                         pack_store_lock=pack_store_lock,
+                         policy_group_store=policy_group_store)
 
     # ── /admin/tenants (v2-W6a) — HMAC-signed; clawy webhook calls these ──
     routes_admin_tenant.attach(app, engine)

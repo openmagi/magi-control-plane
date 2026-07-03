@@ -439,6 +439,18 @@ class PutPolicyReq(BaseModel):
     # row) is accepted so an operator can pin a policy to "always-on".
     pack_ids: list[str] | None = None
 
+
+class CompoundPolicyReq(BaseModel):
+    """POST /policies/compound body. `draft` is a policy draft (a compound like
+    type=evidence_gate, or a single rule). The server expands it into its member
+    rules and saves the PolicyRecord + rules atomically."""
+    model_config = {"extra": "forbid"}
+    draft: dict
+    source: str = Field(..., pattern=_SOURCE_REGEX)
+    enabled: bool = True
+    pack_ids: list[str] | None = None
+
+
 class PatchEnabledReq(BaseModel):
     enabled: bool
 

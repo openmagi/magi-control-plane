@@ -22,7 +22,8 @@ from fastapi import HTTPException
 
 from ..evidence import sign_token
 from ..policy import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
+    AnyPolicy, ContextInjectionPolicy, EvidenceAuditPolicy, EvidencePolicy,
+    EvidencePreconditionPolicy, InputRewritePolicy,
     McpGatingPolicy, PermissionPolicy, RunCommandPolicy, SubagentPolicy,
     compile_to_managed_settings,
 )
@@ -311,6 +312,11 @@ def _serialize_policy_for_api(p: AnyPolicy) -> dict:
             "timeout_ms": p.timeout_ms,
             "fail_closed": p.fail_closed,
         }
+    if isinstance(p, (EvidenceAuditPolicy, EvidencePreconditionPolicy)):
+        # Both new archetypes round-trip through the IR serializer (incl.
+        # project_scope), so a saved member is readable via GET /policies/{id}.
+        from ..policy.ir import policy_to_dict
+        return policy_to_dict(p)
     raise HTTPException(500, f"unserializable policy type: {type(p).__name__}")
 
 
