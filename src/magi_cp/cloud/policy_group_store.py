@@ -55,10 +55,10 @@ class PolicyGroupStore:
     def load(self) -> list[PolicyRecord]:
         if not os.path.exists(self.path):
             return []
-        try:
-            raw = json.loads(open(self.path, encoding="utf-8").read())
-        except (ValueError, OSError):
-            return []
+        # Fail LOUD on corruption: silently returning [] would dissolve every
+        # policy grouping while the rules keep enforcing (the "my policies
+        # ungrouped themselves" failure mode). Let the OSError/ValueError raise.
+        raw = json.loads(open(self.path, encoding="utf-8").read())
         rows = raw.get("policies") if isinstance(raw, dict) else raw
         out: list[PolicyRecord] = []
         for item in rows if isinstance(rows, list) else []:
@@ -70,10 +70,14 @@ class PolicyGroupStore:
         return out
 
     def save(self, records: list[PolicyRecord]) -> None:
+        # Atomic write: temp file + os.replace, so a crash mid-write cannot
+        # truncate the store (which load() now refuses to swallow).
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         body = {"policies": [r.to_dict() for r in records]}
-        with open(self.path, "w", encoding="utf-8") as f:
+        tmp = f"{self.path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True))
+        os.replace(tmp, self.path)
 
     def get(self, policy_id: str) -> PolicyRecord | None:
         for r in self.load():

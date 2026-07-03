@@ -17,7 +17,9 @@ from collections.abc import Mapping
 __all__ = ["COMPOUND_TYPES", "is_compound_draft", "expand_compound_draft"]
 
 # Compound archetype `type` values and the member policy count they expand to.
-COMPOUND_TYPES: dict[str, int] = {"evidence_gate": 2}
+# Compound archetype `type` values. Member count is not fixed (an evidence_gate
+# expands to 2 rules, or 5 with the default ledger-protection denies).
+COMPOUND_TYPES: frozenset[str] = frozenset({"evidence_gate"})
 
 
 def is_compound_draft(draft: object) -> bool:
@@ -73,7 +75,27 @@ def _expand_evidence_gate(draft: Mapping) -> list[dict]:
         "action": str(gate.get("action") or "block"),
         "project_scope": scope,
     }
-    return [audit_policy, gate_policy]
+    # Ledger-integrity: deny the agent the write vectors into the evidence
+    # ledger dir, so under governance (managed-settings, no --skip-permissions)
+    # the audit hook is the only writer. Without these, a Bash/Write/Edit can
+    # forge `{"verdict":"pass"}` and unlock the gate. Read is not a forgery
+    # vector, so it's left allowed. Opt out with `protect_ledger: false`.
+    rules = [audit_policy, gate_policy]
+    if draft.get("protect_ledger", True):
+        for i, (tool, pat) in enumerate((
+            ("Write", "Write(~/.magi-cp/session-evidence/**)"),
+            ("Edit", "Edit(~/.magi-cp/session-evidence/**)"),
+            ("Bash", "Bash(*session-evidence*)"),
+        )):
+            rules.append({
+                "type": "permission",
+                "id": f"{stem}-ledger-deny-{i}",
+                "description": "Protect the evidence ledger from agent writes",
+                "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": tool},
+                "permission": "deny",
+                "pattern": pat,
+            })
+    return rules
 
 
 _EXPANDERS = {"evidence_gate": _expand_evidence_gate}
