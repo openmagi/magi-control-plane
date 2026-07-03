@@ -446,6 +446,38 @@ function actionLabel(
       } as const)[a]
 }
 
+/* ── compound (evidence_gate) summary ───────────────────────────────── */
+
+/** True when the draft is a compound evidence_gate (audit + precondition
+ *  authored as one policy). Its shape is `gate`/`audit` nested dicts, not
+ *  the single-policy `trigger`/`requires`/`action`, so the summary rows
+ *  need their own readers. */
+function isEvidenceGate(d: Record<string, unknown> | null): boolean {
+  return !!d && typeof d === "object" && d.type === "evidence_gate"
+}
+
+function evidenceGateTool(d: Record<string, unknown> | null): string {
+  if (!d) return ""
+  const gate = d.gate
+  if (!gate || typeof gate !== "object") return ""
+  const m = (gate as Record<string, unknown>).matcher
+  return typeof m === "string" ? m.trim() : ""
+}
+
+function evidenceGateAction(d: Record<string, unknown> | null): "block" | "ask" {
+  if (!d) return "block"
+  const gate = d.gate
+  const a = gate && typeof gate === "object"
+    ? (gate as Record<string, unknown>).action : undefined
+  return a === "ask" ? "ask" : "block"
+}
+
+function evidenceGateScope(d: Record<string, unknown> | null): string {
+  if (!d) return ""
+  const s = d.project_scope
+  return typeof s === "string" ? s.trim() : ""
+}
+
 /* ── component ─────────────────────────────────────────────────────── */
 
 export function IrDraftPane({
@@ -456,6 +488,9 @@ export function IrDraftPane({
   const action = actionFromDraft(draft)
   const irJson = draft ? JSON.stringify(draft, null, 2) : ""
   const hasDraft = !!draft && Object.keys(draft).length > 0
+  // Compound (evidence_gate) drafts carry gate/audit subtrees instead of
+  // trigger/requires/action, so they render a dedicated summary below.
+  const compound = isEvidenceGate(draft)
 
   // Q102: normalize the optional missing-field set into a typed Set so
   // the helpers below can do O(1) lookups without re-validating each
@@ -505,7 +540,57 @@ export function IrDraftPane({
             {t("newPolicy.conv.draftPane.emptyHint")}
           </p>
         )}
-        {hasDraft && (
+        {hasDraft && compound && (() => {
+          const tool = evidenceGateTool(draft)
+          const friendly = tool ? prettyMatcher(tool, ko) : ""
+          const gAction = evidenceGateAction(draft)
+          const scope = evidenceGateScope(draft)
+          return (
+            <dl
+              className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0"
+              data-testid="ir-draft-compound"
+            >
+              <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                {ko ? "언제" : "When"}
+              </dt>
+              <dd className="m-0" data-testid="ir-draft-compound-when">
+                {friendly
+                  ? (ko ? `${friendly} 실행 전` : `Before ${friendly} runs`)
+                  : namedMissingPlaceholder("matcher", t)}
+              </dd>
+              <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                {ko ? "조건" : "Condition"}
+              </dt>
+              <dd className="m-0" data-testid="ir-draft-compound-condition">
+                {ko
+                  ? "이번 세션에서 신뢰할 수 있는 출처가 확인됨"
+                  : "A credible source was verified earlier this session"}
+              </dd>
+              <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                {ko ? "동작" : "Action"}
+              </dt>
+              <dd className="m-0" data-testid="ir-draft-compound-action">
+                {gAction === "ask"
+                  ? (ko ? "사용자 승인 요청" : "Ask a human")
+                  : (ko ? "차단" : "Block the action")}
+              </dd>
+              {scope && (
+                <>
+                  <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
+                    {ko ? "적용 범위" : "Scope"}
+                  </dt>
+                  <dd
+                    className="m-0 font-mono text-[11px]"
+                    data-testid="ir-draft-compound-scope"
+                  >
+                    {scope}
+                  </dd>
+                </>
+              )}
+            </dl>
+          )
+        })()}
+        {hasDraft && !compound && (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 m-0">
             <dt className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-tertiary)]">
               {ko ? "언제" : "When"}

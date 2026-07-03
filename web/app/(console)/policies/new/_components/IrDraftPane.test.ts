@@ -228,3 +228,38 @@ describe("Q102: Live draft missing summary + Save this rule prominence", () => {
     expect(koHead).not.toContain("—")
   })
 })
+
+describe("IrDraftPane compound (evidence_gate) rendering", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("detects the evidence_gate discriminator", () => {
+    expect(src).toContain('d.type === "evidence_gate"')
+    expect(src).toContain("function isEvidenceGate")
+  })
+
+  it("reads gate.matcher / gate.action / project_scope for the summary", () => {
+    expect(src).toContain("function evidenceGateTool")
+    expect(src).toContain("function evidenceGateAction")
+    expect(src).toContain("function evidenceGateScope")
+  })
+
+  it("renders a dedicated compound summary block with testids", () => {
+    expect(src).toContain('data-testid="ir-draft-compound-when"')
+    expect(src).toContain('data-testid="ir-draft-compound-condition"')
+    expect(src).toContain('data-testid="ir-draft-compound-action"')
+    expect(src).toContain('data-testid="ir-draft-compound-scope"')
+  })
+
+  it("branches the generic single-policy summary off the compound flag", () => {
+    // The trigger/requires/action rows must NOT render for a compound.
+    expect(src).toContain("hasDraft && !compound")
+    expect(src).toContain("hasDraft && compound")
+  })
+
+  it("still serializes the full draft into ir_json for save", () => {
+    // The compound draft (type/gate/audit/kind) must round-trip through
+    // the hidden ir_json field so saveCompiled can route it.
+    expect(src).toContain("JSON.stringify(draft, null, 2)")
+    expect(src).toContain('name="ir_json"')
+  })
+})

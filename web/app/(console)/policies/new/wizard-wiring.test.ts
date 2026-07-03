@@ -2811,3 +2811,30 @@ describe("policies/new wizard — D80 polish (Step 3 picker + Step 4 layered + S
     expect(pickerSrc).not.toMatch(/min-h-\[11rem\]/)
   })
 })
+
+describe("policies/new compound (evidence_gate) save routing", () => {
+  const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
+
+  it("saveCompiled routes an evidence_gate draft to the compound path", () => {
+    // A compound draft must NOT go through PUT /policies (which expects a
+    // single rule); it goes to POST /policies/compound via
+    // persistCompoundDraft so the server expands its member rules.
+    expect(src).toContain('draftType === "evidence_gate"')
+    expect(src).toContain("persistCompoundDraft(")
+  })
+
+  it("persistCompoundDraft POSTs to /policies/compound", () => {
+    expect(src).toContain("/policies/compound")
+    expect(src).toMatch(/persistCompoundDraft[\s\S]+method:\s*"POST"/)
+  })
+
+  it("persistCompoundDraft sends the draft + source + enabled body", () => {
+    expect(src).toMatch(/persistCompoundDraft[\s\S]+draft, source, enabled: true/)
+  })
+
+  it("single-policy drafts still use PUT /policies via persistDraft", () => {
+    // The evidence_gate branch returns early; every other draft falls
+    // through to the unchanged persistDraft call.
+    expect(src).toMatch(/await persistDraft\(draft, source/)
+  })
+})

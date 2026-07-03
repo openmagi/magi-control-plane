@@ -2543,3 +2543,280 @@ def test_q101_inject_context_guardrail_fires_on_multi_turn_event():
     assert draft.get("action") == "audit"
     msg = body["assistant_message"]
     assert "Stop" in msg, msg
+
+
+# ── compound archetype: evidence_gate (audit + precondition) ───────────
+# The conversational compiler authors a COMPOUND policy deterministically:
+# "require a credible source before <tool> runs" carries type=evidence_gate
+# through every turn and is expanded to member IR policies only at save
+# (POST /policies/compound). These tests pass a FakeLlmProvider with NO
+# canned responses, so any LLM call raises, proving the compound sub-flow
+# never calls the model.
+
+
+def _client_no_llm() -> TestClient:
+    """A client whose compiler LLM raises if called. The compound
+    sub-flow must be fully deterministic, so a compound turn must never
+    reach `provider.complete`."""
+    from magi_cp.llm.provider import FakeLlmProvider
+    return _client(
+        llm_compiler=FakeLlmProvider([]), llm_reviewer=FakeLlmProvider([]),
+    )
+
+
+def test_compound_full_intent_one_turn_ready_no_llm():
+    """A single freeform turn naming the credible-source gate + the gated
+    tool + a project scope compiles to a ready compound draft without any
+    LLM call."""
+    c = _client_no_llm()
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": ("require a credible source before "
+                            "mcp__trading__execute_trade runs, "
+                            "only in ~/trading-mcp"),
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is True, body
+    assert body["ready_to_save"] is True, body
+    assert body["missing_fields"] == []
+    d = body["draft"]
+    assert d["type"] == "evidence_gate"
+    assert d["gate"]["matcher"] == "mcp__trading__execute_trade"
+    assert d["project_scope"] == "~/trading-mcp"
+    assert d["id"] == "verified-execute-trade"
+    # The wire draft carries the full archetype so it is a complete
+    # POST /policies/compound body.
+    assert d["kind"] == "source_credibility"
+    assert d["audit"]["judge"] == "domain-credibility"
+    assert d["gate"]["action"] == "block"
+
+
+def test_compound_draft_expands_and_members_validate():
+    """The compound draft the sub-flow emits expands to the audit +
+    precondition + ledger-protection rules, and every member round-trips
+    through the IR validator."""
+    from magi_cp.policy.compound import expand_compound_draft
+    from magi_cp.policy.ir import policy_from_dict
+    c = _client_no_llm()
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": ("block Bash unless a verified source was "
+                            "checked first"),
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    d = r.json()["draft"]
+    members = expand_compound_draft(d)
+    # audit + gate + 3 ledger-protection denies.
+    assert len(members) == 5, [m["id"] for m in members]
+    ids = {m["id"] for m in members}
+    assert d["id"] + "-audit" in ids
+    assert d["id"] + "-gate" in ids
+    for m in members:
+        policy_from_dict(m)  # raises on invalid
+
+
+def test_compound_intent_without_tool_asks_for_gated_action():
+    """When the freeform intent names the credible-source gate but NOT
+    the gated tool, the sub-flow asks the single q_matcher question and
+    stays not-ready."""
+    c = _client_no_llm()
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "require a credible source before placing a trade",
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is True
+    assert body["ready_to_save"] is False
+    assert body["missing_fields"] == ["matcher"]
+    qids = [q["id"] for q in body["questions"]]
+    assert qids == ["q_matcher"]
+    assert body["questions"][0]["targets_field"] == "matcher"
+
+
+def test_compound_second_turn_answer_tool_becomes_ready():
+    """Answering q_matcher on a compound draft fills gate.matcher, flips
+    ready_to_save, and re-derives the id from the chosen tool."""
+    c = _client_no_llm()
+    prior = {
+        "type": "evidence_gate",
+        "kind": "source_credibility",
+        "gate": {"matcher": ""},
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "require a credible source before a trade"},
+                {"role": "assistant", "content": "which tool?"},
+            ],
+            "draft_so_far": prior,
+            "answers": {"q_matcher": "mcp__trading__execute_trade"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is True
+    assert body["ready_to_save"] is True
+    d = body["draft"]
+    assert d["gate"]["matcher"] == "mcp__trading__execute_trade"
+    assert d["id"] == "verified-execute-trade"
+
+
+def test_compound_illegal_tool_answer_reasks():
+    """An illegal matcher answer is ignored so the wizard re-asks rather
+    than persisting garbage on the compound draft."""
+    c = _client_no_llm()
+    prior = {"type": "evidence_gate", "gate": {"matcher": ""}}
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [
+                {"role": "user",
+                 "content": "require a credible source before a trade"},
+                {"role": "assistant", "content": "which tool?"},
+            ],
+            "draft_so_far": prior,
+            "answers": {"q_matcher": "not a legal matcher !!!"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_save"] is False
+    assert body["missing_fields"] == ["matcher"]
+
+
+def test_compound_client_echo_stays_compound_across_turns():
+    """A client echoing a committed compound draft back keeps it a
+    compound (the sanitizer preserves type=evidence_gate + nested
+    audit/gate) rather than dropping into the single-policy flow."""
+    c = _client_no_llm()
+    prior = {
+        "type": "evidence_gate",
+        "kind": "source_credibility",
+        "project_scope": "~/trading-mcp",
+        "audit": {"event": "PostToolUse", "matcher": "WebFetch|Bash",
+                  "extract": "url", "judge": "domain-credibility"},
+        "gate": {"event": "PreToolUse",
+                 "matcher": "mcp__trading__execute_trade",
+                 "action": "block", "verdict": "pass", "reason": "no source"},
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": prior, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is True
+    assert body["ready_to_save"] is True
+    assert body["draft"]["type"] == "evidence_gate"
+
+
+def test_compound_korean_intent():
+    """A Korean credible-source-gate intent is classified as compound and
+    surfaces Korean copy."""
+    c = _client_no_llm()
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": ("mcp__trading__execute_trade 실행 전에 "
+                            "신뢰할 수 있는 출처를 먼저 확인하게 해줘"),
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is True
+    assert body["ready_to_save"] is True
+    assert body["draft"]["gate"]["matcher"] == "mcp__trading__execute_trade"
+
+
+def test_run_command_intent_not_stolen_by_compound():
+    """"run pytest before the final answer" is a run_command intent and
+    must NOT be captured by the compound sub-flow (no credible-source
+    cue). It reaches the LLM path as usual."""
+    canned = _llm_response(
+        message="This rule will run: pytest -q at the final answer.",
+        updates={
+            "type": "run_command",
+            "command": "pytest -q",
+            "runtime": "bash",
+            "trigger": {"event": "Stop", "matcher": "*"},
+        },
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "run pytest before the final answer"}],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is False
+    assert body["draft"]["type"] == "run_command"
+
+
+def test_single_verifier_intent_not_stolen_by_compound():
+    """"verify the citations before answering" is a single verifier
+    (citation_verify), not a compound: it has a gate cue but no
+    credible-SOURCE noun phrase, so it stays on the single-policy path."""
+    canned = _llm_response(
+        message="Got it, we'll verify citations.",
+        updates={},
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "verify the citations before answering"}],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compound"] is False
+    assert body["draft"] is None or body["draft"].get("type") != "evidence_gate"

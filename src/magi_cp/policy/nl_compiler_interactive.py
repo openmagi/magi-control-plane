@@ -239,6 +239,144 @@ def _looks_like_verifier_intent(user_text: str) -> bool:
     return has_verifier_verb and not has_runnable_verb
 
 
+# ── compound archetype: evidence_gate (audit + precondition) ───────────
+# A single user intent ("require a credible source before this tool
+# runs") that compiles to MORE THAN ONE primitive policy. The
+# conversational compiler authors it as ONE draft carrying
+# `type: "evidence_gate"` through every turn; the draft is expanded into
+# its member IR policies (via `policy.compound.expand_compound_draft`)
+# only at save time by POST /policies/compound. This mirrors the
+# run_command archetype pattern (one discriminator, its own missing-field
+# / question / apply-answer slices) but is authored DETERMINISTICALLY:
+# the compound sub-flow bypasses the LLM merge entirely, so a
+# prompt-injected model cannot re-shape a compound draft.
+_EVIDENCE_GATE_TYPE = "evidence_gate"
+
+# Top-level keys allowed ONLY on a committed compound draft. Everything
+# else is dropped by `_sanitize_draft_so_far`. `audit` / `gate` are
+# nested dicts coerced key-by-key; `kind` / `project_scope` are scalars.
+_EVIDENCE_GATE_TOP_KEYS: frozenset[str] = frozenset({
+    "type", "kind", "project_scope", "audit", "gate",
+})
+# Per-subtree allowed keys. The wizard only ever writes `gate.matcher`
+# (the gated tool) via an answer; every other nested field carries the
+# same defaults `compound.py` uses, so we keep them if a client echoes
+# them back but never let unknown keys ride along.
+_EVIDENCE_GATE_AUDIT_KEYS: frozenset[str] = frozenset({
+    "event", "matcher", "extract", "judge",
+})
+_EVIDENCE_GATE_GATE_KEYS: frozenset[str] = frozenset({
+    "event", "matcher", "action", "verdict", "reason",
+})
+_EVIDENCE_GATE_KIND_RE = re.compile(r"^[a-z0-9_]+$")
+_MAX_EVIDENCE_GATE_REASON = 400
+_MAX_PROJECT_SCOPE = 1_024
+
+# Intent detection. Narrow ON PURPOSE so the compound sub-flow does not
+# steal turns from run_command ("run the check before X") or the
+# single-verifier archetype. The gate half needs a "before / require /
+# only if" cue; the evidence half needs a SOURCE-CREDIBILITY concept
+# specifically (not a generic "check"), so "verify the citations"
+# (a high-precision single verifier) and "run pytest before answering"
+# (run_command) are both left to their own paths.
+_EGATE_GATE_RE = re.compile(
+    r"(?:\bbefore\b|\bunless\b|\bonly if\b|\brequire[sd]?\b|\bmust\b|\bprereq"
+    r"|먼저|전에|하기\s*전|없으면|해야|선행)",
+    re.IGNORECASE,
+)
+# The evidence half must name a credible/verified SOURCE specifically
+# (a source noun paired with a credibility/verification adjective). We
+# deliberately do NOT match a bare "credibility check" or "verify":
+# those read as a run_command ("run the credibility script") or a
+# single verifier, and the compound sub-flow must not steal their turns.
+# Requiring the "source / 출처 / 소스" noun is what keeps the classifier
+# from firing on "run the credibility check before each bash".
+_EGATE_EVIDENCE_RE = re.compile(
+    r"(?:(?:credible|verified|trustworthy|primary|official|reputable)"
+    r"\s+source"
+    r"|source\s+(?:is\s+)?(?:credible|verified|trustworthy|official|reputable)"
+    r"|신뢰할\s*수\s*있는\s*(?:출처|소스)|공신력\s*있는\s*(?:출처|소스)"
+    r"|공식\s*(?:출처|소스)|1차\s*(?:출처|소스|자료)"
+    r"|출처.{0,6}(?:검증|확인|신뢰)|(?:검증|확인)된?\s*출처)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_evidence_gate_intent(user_text: str) -> bool:
+    """True iff the text reads as a compound evidence-gate intent:
+    "require a credible/verified source before <tool> runs".
+
+    Conservative: requires BOTH a gate cue ("before / require / only if")
+    and a source-credibility NOUN PHRASE ("credible source", "출처 검증").
+    The source-noun requirement is what keeps this from stealing turns
+    from run_command ("run the credibility check before X") or the
+    single-verifier archetype ("verify the citations"). A false negative
+    just falls through to the ordinary flow, where the operator can still
+    author the pair from the Rules page.
+    """
+    if not user_text:
+        return False
+    return bool(_EGATE_GATE_RE.search(user_text)
+                and _EGATE_EVIDENCE_RE.search(user_text))
+
+
+# Tool-name extraction for the gated action. Prefer an explicit mcp__
+# tool; else the first bare tool that is NOT a fetch tool (the gated
+# action is the risky, non-fetch one). Mirrors the web
+# `parseEvidenceGateIntent` heuristic so both authoring surfaces read
+# the same intent identically.
+_EGATE_MCP_TOOL_RE = re.compile(r"\bmcp__[a-z0-9_]+__[a-z0-9_]+\b", re.IGNORECASE)
+_EGATE_BARE_TOOL_RE = re.compile(
+    r"\b(WebFetch|WebSearch|Bash|Read|Edit|Write|Glob|Grep)\b"
+)
+_EGATE_FETCH_TOOLS = frozenset({"WebFetch", "WebSearch"})
+# A cwd path the user names to scope the policy to one project, e.g.
+# "in ~/trading-mcp" or "under /Users/me/proj". Kept permissive; the IR
+# validator + sanitizer bound the length and reject whitespace.
+_EGATE_PROJECT_RE = re.compile(
+    r"(?:in|under|within|inside|scope[ds]?\s+to|only\s+in|만|내에서|안에서)\s+"
+    r"([~./][\w./~-]+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_evidence_gate_intent(user_text: str) -> dict[str, Any]:
+    """Deterministically seed a compound draft from freeform text.
+
+    Returns a partial `type: evidence_gate` draft: always the
+    discriminator, plus `gate.matcher` and `project_scope` when the text
+    names them. Everything the text does not name is left UNSET so the
+    conversational loop asks for it; `compound.py` supplies the archetype
+    defaults (kind, audit matcher/judge, gate reason) at expansion time.
+    """
+    out: dict[str, Any] = {"type": _EVIDENCE_GATE_TYPE}
+    raw = user_text or ""
+    mcp = _EGATE_MCP_TOOL_RE.findall(raw)
+    tool: str | None = None
+    if mcp:
+        tool = mcp[0]
+    else:
+        for m in _EGATE_BARE_TOOL_RE.findall(raw):
+            if m not in _EGATE_FETCH_TOOLS:
+                tool = m
+                break
+    if tool:
+        out["gate"] = {"matcher": tool}
+    scope_m = _EGATE_PROJECT_RE.search(raw)
+    if scope_m:
+        scope = scope_m.group(1).strip().rstrip(".")
+        if scope and len(scope) <= _MAX_PROJECT_SCOPE and not re.search(r"\s", scope):
+            out["project_scope"] = scope
+    return out
+
+
+def _is_evidence_gate_draft(draft: dict[str, Any] | None) -> bool:
+    """True iff the draft carries the compound evidence_gate discriminator."""
+    if not isinstance(draft, dict):
+        return False
+    return draft.get("type") == _EVIDENCE_GATE_TYPE
+
+
 # ── #100 follow-up: deterministic intent extractor ────────────────────
 # Prompt-only LLM control was unreliable across three iterations: the
 # model kept defaulting to "polite generic intro + canonical
@@ -1327,6 +1465,25 @@ def _run_command_missing_fields(draft: dict[str, Any]) -> list[FieldName]:
     return missing
 
 
+def _evidence_gate_missing_fields(draft: dict[str, Any]) -> list[FieldName]:
+    """Return the missing field set for a compound evidence_gate draft.
+
+    The compound archetype needs exactly one operator decision: WHICH
+    action to gate (`gate.matcher`). Everything else carries the
+    archetype defaults (`compound.py`): the evidence `kind`, the audit
+    matcher/judge that records credibility, the gate reason. The policy
+    id stem is auto-derived from the gated tool (see
+    `_derive_gate_stem`), so `id` is never surfaced as a question. We
+    reuse the canonical `matcher` field name so the wire vocabulary and
+    the answer-id reconstruction stay stable across archetypes.
+    """
+    gate = draft.get("gate") if isinstance(draft.get("gate"), dict) else {}
+    matcher = gate.get("matcher") if isinstance(gate, dict) else None
+    if not (isinstance(matcher, str) and matcher.strip()):
+        return ["matcher"]
+    return []
+
+
 def _missing_fields_for_draft(draft: dict[str, Any] | None) -> list[FieldName]:
     """Return the canonical fields not yet populated on the draft.
 
@@ -1347,6 +1504,8 @@ def _missing_fields_for_draft(draft: dict[str, Any] | None) -> list[FieldName]:
     """
     if not isinstance(draft, dict):
         return list(_CANONICAL_FIELDS)
+    if _is_evidence_gate_draft(draft):
+        return _evidence_gate_missing_fields(draft)
     if _is_run_command_draft(draft):
         return _run_command_missing_fields(draft)
     missing: list[FieldName] = []
@@ -2490,6 +2649,53 @@ def _sanitize_draft_so_far(raw: dict[str, Any] | None) -> dict[str, Any]:
         # does not start asking for verifier-shaped follow-ups.
         out.pop("requires", None)
         out.pop("action", None)
+    # Compound archetype passthrough (type: evidence_gate). The whole
+    # intent lives under one draft that expands to member IR policies
+    # only at save time. We coerce the nested audit/gate subtrees
+    # key-by-key so a client echoing the draft back cannot smuggle an
+    # unknown field, and drop the single-policy keys (trigger / requires
+    # / action) which are not meaningful on a compound.
+    if raw.get("type") == _EVIDENCE_GATE_TYPE:
+        out["type"] = _EVIDENCE_GATE_TYPE
+        out.pop("trigger", None)
+        out.pop("requires", None)
+        out.pop("action", None)
+        kind = raw.get("kind")
+        if isinstance(kind, str) and _EVIDENCE_GATE_KIND_RE.match(kind) \
+                and len(kind) <= 128:
+            out["kind"] = kind
+        scope = raw.get("project_scope")
+        if isinstance(scope, str) and scope and len(scope) <= _MAX_PROJECT_SCOPE \
+                and not re.search(r"\s", scope):
+            out["project_scope"] = scope
+        raw_audit = raw.get("audit")
+        if isinstance(raw_audit, dict):
+            audit: dict[str, Any] = {}
+            for k in _EVIDENCE_GATE_AUDIT_KEYS:
+                v = raw_audit.get(k)
+                if isinstance(v, str) and v.strip() and len(v) <= 256:
+                    audit[k] = v.strip()
+            if audit:
+                out["audit"] = audit
+        raw_gate = raw.get("gate")
+        if isinstance(raw_gate, dict):
+            gate: dict[str, Any] = {}
+            gm = raw_gate.get("matcher")
+            if isinstance(gm, str) and gm.strip() and len(gm) <= 256 \
+                    and _matcher_is_legal(gm.strip()):
+                gate["matcher"] = gm.strip()
+            for k in ("event", "verdict"):
+                v = raw_gate.get(k)
+                if isinstance(v, str) and v.strip() and len(v) <= 64:
+                    gate[k] = v.strip()
+            act = raw_gate.get("action")
+            if isinstance(act, str) and act in ("block", "ask"):
+                gate["action"] = act
+            rsn = raw_gate.get("reason")
+            if isinstance(rsn, str) and len(rsn) <= _MAX_EVIDENCE_GATE_REASON:
+                gate["reason"] = rsn
+            if gate:
+                out["gate"] = gate
     return out
 
 
@@ -2624,6 +2830,221 @@ def _validate_answers_against_prior_questions(
             )
 
 
+# ── compound (evidence_gate) sub-flow ─────────────────────────────────
+# Archetype defaults. Mirrors the web `DEFAULT_EVIDENCE_GATE_DRAFT` +
+# `buildEvidenceGateCompoundDraft` and the server `compound.py`
+# expansion defaults, so the conversational surface produces the SAME
+# compound draft the form-based surface does. Kept as literals here (not
+# imported) to preserve this module's lazy-import discipline.
+_EGATE_DEFAULT_KIND = "source_credibility"
+_EGATE_DEFAULT_AUDIT = {
+    "event": "PostToolUse",
+    "matcher": "WebFetch|Bash",
+    "extract": "url",
+    "judge": "domain-credibility",
+}
+_EGATE_DEFAULT_GATE_REASON = (
+    "This run has no verified credible source yet. Retrieve the figure "
+    "from an official primary source first, then retry."
+)
+_ID_STEM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _derive_gate_stem(tool: str) -> str:
+    """Derive a policy-id stem from the gated tool name.
+
+    `mcp__trading__execute_trade` -> `verified-execute-trade`; `Bash` ->
+    `verified-bash`. The stem must satisfy the IR `_validate_id` shape
+    (starts alphanumeric; letters, digits, `. _ -`), which `verified-…`
+    always does after lowercasing + collapsing runs of non-alphanumerics
+    to a single hyphen.
+    """
+    tail = tool.split("__")[-1] if "__" in tool else tool
+    slug = _ID_STEM_RE.sub("-", tail.lower()).strip("-")
+    return f"verified-{slug}" if slug else "verified-trade"
+
+
+def _finalize_compound_draft(draft: dict[str, Any]) -> dict[str, Any]:
+    """Fill archetype defaults over a partial compound draft so the wire
+    draft is a complete POST /policies/compound body. Non-destructive:
+    operator-supplied fields (gate.matcher, project_scope) win.
+    """
+    out: dict[str, Any] = dict(draft)
+    out["type"] = _EVIDENCE_GATE_TYPE
+    gate_in = out.get("gate") if isinstance(out.get("gate"), dict) else {}
+    matcher = str(gate_in.get("matcher") or "").strip()
+    out["kind"] = str(out.get("kind") or _EGATE_DEFAULT_KIND)
+    # The conversational flow never asks the operator for an id; it is
+    # always auto-derived from the gated tool so it reads meaningfully
+    # (`verified-execute-trade`). Re-derive each turn once a matcher is
+    # known so a placeholder from an earlier tool-less turn is replaced.
+    if matcher:
+        out["id"] = _derive_gate_stem(matcher)
+    elif not out.get("id"):
+        out["id"] = "verified-trade"
+    audit_in = out.get("audit") if isinstance(out.get("audit"), dict) else {}
+    out["audit"] = {
+        "event": str(audit_in.get("event") or _EGATE_DEFAULT_AUDIT["event"]),
+        "matcher": str(audit_in.get("matcher") or _EGATE_DEFAULT_AUDIT["matcher"]),
+        "extract": str(audit_in.get("extract") or _EGATE_DEFAULT_AUDIT["extract"]),
+        "judge": str(audit_in.get("judge") or _EGATE_DEFAULT_AUDIT["judge"]),
+    }
+    out["gate"] = {
+        "event": str(gate_in.get("event") or "PreToolUse"),
+        "matcher": matcher,
+        "action": (gate_in.get("action") if gate_in.get("action") in ("block", "ask")
+                   else "block"),
+        "verdict": str(gate_in.get("verdict") or "pass"),
+        "reason": str(gate_in.get("reason") or _EGATE_DEFAULT_GATE_REASON),
+    }
+    scope = str(out.get("project_scope") or "").strip()
+    if scope:
+        out["project_scope"] = scope
+    else:
+        out.pop("project_scope", None)
+    return out
+
+
+def _compound_ready(finalized: dict[str, Any]) -> tuple[bool, str | None]:
+    """A compound draft is ready iff it expands cleanly AND every member
+    IR policy round-trips through `policy_from_dict`. Both `compound.py`
+    and `ir.py` are imported lazily to preserve the module's import
+    discipline (and to avoid a cycle through `policy/matrix.py`).
+    """
+    try:
+        from .compound import expand_compound_draft
+        from .ir import policy_from_dict
+        members = expand_compound_draft(finalized)
+        if not members:
+            return False, "compound expanded to no policies"
+        for m in members:
+            policy_from_dict(m)
+        return True, None
+    except (ValueError, KeyError, TypeError) as e:
+        return False, str(e)
+
+
+def _compound_question(ko: bool) -> Question:
+    """The single operator decision for a compound: which action to gate."""
+    return Question(
+        id="q_matcher",
+        prompt=(
+            "어떤 작업을 실행하기 전에 신뢰할 수 있는 출처를 먼저 요구할까요? "
+            "예: 거래 실행 도구(mcp__trading__execute_trade), 셸 명령(Bash)."
+            if ko else
+            "Which action should require a verified source first? For "
+            "example: a trade tool (mcp__trading__execute_trade) or a "
+            "shell command (Bash)."
+        ),
+        kind="text",
+        targets_field="matcher",
+        options=None,
+    )
+
+
+def _build_compound_message(
+    finalized: dict[str, Any], *, ready: bool, ko: bool,
+    validator_error: str | None,
+) -> str:
+    """Deterministic status line for the compound sub-flow."""
+    gate = finalized.get("gate") if isinstance(finalized.get("gate"), dict) else {}
+    tool = str(gate.get("matcher") or "").strip()
+    scope = str(finalized.get("project_scope") or "").strip()
+    scope_note = (f" ({scope} 안에서만)" if ko else f" (only in {scope})") if scope else ""
+    if not tool:
+        return _to_plain_language(
+            "어떤 작업을 보호할지 알려주시면, 그 작업 전에 신뢰할 수 있는 "
+            "출처가 확인됐는지 강제하는 정책을 만들어 드릴게요."
+            if ko else
+            "Tell me which action to protect and I'll build a policy that "
+            "requires a verified credible source before it runs."
+        )
+    if ready:
+        return _to_plain_language(
+            f"준비됐어요. `{tool}` 실행 전에 이번 세션에서 신뢰할 수 있는 "
+            f"출처가 확인됐는지 강제하는 정책{scope_note}입니다. 저장하면 "
+            "기록(audit) + 사전조건(precondition) + 원장 보호 규칙으로 "
+            "확장됩니다."
+            if ko else
+            f"Ready. This policy blocks `{tool}` unless a credible source "
+            f"was verified earlier this session{scope_note}. Saving expands "
+            "it into an audit + a precondition + ledger-protection rules."
+        )
+    return _to_plain_language(
+        (f"`{tool}` 정책을 마무리하는 중 문제가 있었어요: {validator_error}"
+         if ko else
+         f"Almost there, but the `{tool}` policy didn't validate: "
+         f"{validator_error}")
+        if validator_error else
+        (f"`{tool}` 정책을 준비하고 있어요." if ko
+         else f"Preparing the `{tool}` policy.")
+    )
+
+
+def _step_compile_compound(
+    *, draft: dict[str, Any], seed: dict[str, Any] | None,
+    answers: dict[str, str] | None, ko: bool,
+) -> dict[str, Any]:
+    """Author a compound evidence_gate draft for one turn, deterministically.
+
+    The LLM is NOT called: the compound archetype has a single operator
+    decision (which action to gate), so a pure-Python turn is both
+    sufficient and safer (a prompt-injected model cannot re-shape the
+    compound). The draft carries `type: evidence_gate` end-to-end and is
+    expanded to member IR policies only at save time by
+    POST /policies/compound. The wire response sets `compound: true` so
+    the client routes the save to that endpoint instead of PUT /policies.
+    """
+    # Merge the freeform seed (from the latest user turn) over the
+    # sanitized draft: existing operator-committed fields win.
+    working: dict[str, Any] = dict(draft)
+    working["type"] = _EVIDENCE_GATE_TYPE
+    if seed:
+        s_gate = seed.get("gate") if isinstance(seed.get("gate"), dict) else None
+        if s_gate and s_gate.get("matcher"):
+            cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
+            if not (isinstance(cur, dict) and str(cur.get("matcher") or "").strip()):
+                working["gate"] = {**(cur or {}), "matcher": s_gate["matcher"]}
+        if seed.get("project_scope") and not working.get("project_scope"):
+            working["project_scope"] = seed["project_scope"]
+
+    # Apply the operator's answer to the gated-tool question. The value
+    # is validated as a legal matcher class; an illegal tool is ignored
+    # so the wizard re-asks rather than persisting garbage.
+    if answers:
+        ans = answers.get("q_matcher")
+        if isinstance(ans, str) and ans.strip() and _matcher_is_legal(ans.strip()):
+            cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
+            working["gate"] = {**(cur or {}), "matcher": ans.strip()}
+
+    finalized = _finalize_compound_draft(working)
+    missing = _evidence_gate_missing_fields(finalized)
+    has_matcher = "matcher" not in missing
+
+    ready = False
+    validator_error: str | None = None
+    if has_matcher:
+        ready, validator_error = _compound_ready(finalized)
+
+    questions: list[Question] = [] if (has_matcher or ready) else [_compound_question(ko)]
+    assistant_message = _build_compound_message(
+        finalized, ready=ready, ko=ko, validator_error=validator_error,
+    )
+    # When the tool is not yet chosen the wire draft is still incomplete;
+    # emit it so the client can round-trip it, but strip the placeholder
+    # empty gate.matcher so a half-draft can't be POSTed as-is.
+    wire_draft: dict[str, Any] = dict(finalized)
+    return {
+        "assistant_message": assistant_message,
+        "draft": wire_draft,
+        "missing_fields": list(missing),
+        "questions": [q.to_dict() for q in questions],
+        "needs_more": not ready,
+        "ready_to_save": ready,
+        "compound": True,
+    }
+
+
 # ── core step ─────────────────────────────────────────────────────────
 def step_compile(
     provider: LlmProvider,
@@ -2687,6 +3108,29 @@ def step_compile(
     sanitized = _sanitize_draft_so_far(draft_so_far)
 
     _validate_answers_against_prior_questions(answers, sanitized, ko)
+
+    # Step 1c: COMPOUND archetype (evidence_gate) short-circuit. When the
+    # sanitized draft is already committed to a compound (a client echo
+    # from a prior turn) OR the latest user turn reads as a compound
+    # evidence-gate intent ("require a credible source before <tool>"),
+    # author the whole compound DETERMINISTICALLY and return before the
+    # LLM merge. This isolates the compound archetype from the hardened
+    # single-policy merge loop: the compound has one operator decision
+    # (which action to gate), so a pure-Python turn is sufficient and a
+    # prompt-injected model can never re-shape it. Precedence: run_command
+    # and the high-precision single verifiers are handled by their own
+    # (LLM-assisted) paths below; `_looks_like_evidence_gate_intent` is
+    # deliberately narrow (source-credibility cue, no runnable verb) so
+    # it does not steal their turns.
+    _compound_latest = _latest_user_turn(history)
+    _compound_seed = (
+        _extract_evidence_gate_intent(_compound_latest)
+        if _looks_like_evidence_gate_intent(_compound_latest) else None
+    )
+    if _is_evidence_gate_draft(sanitized) or _compound_seed is not None:
+        return _step_compile_compound(
+            draft=sanitized, seed=_compound_seed, answers=answers, ko=ko,
+        )
 
     # Step 2: apply answers FIRST so the user's explicit clicks take
     # precedence over any LLM rewriting.
@@ -3273,6 +3717,9 @@ def step_compile(
         "questions": [q.to_dict() for q in questions],
         "needs_more": needs_more,
         "ready_to_save": ready_to_save,
+        # Single-policy path. The compound (evidence_gate) sub-flow sets
+        # this True so the client routes the save to POST /policies/compound.
+        "compound": False,
     }
 
 
@@ -3342,6 +3789,38 @@ def _assert_sanitizer_matches_allowlists() -> None:
         "run_command sanitizer emits keys outside the allowlist union: "
         f"{set(run_out.keys()) - allowed}"
     )
+    # Probe 3: a compound evidence_gate draft. The sanitizer must emit a
+    # subset of `_EVIDENCE_GATE_TOP_KEYS` (the single-policy keys trigger
+    # / requires / action are dropped on a compound), and the nested
+    # audit / gate subtrees must stay within their own key allowlists.
+    gate_probe: dict[str, Any] = {
+        "type": "evidence_gate",
+        "kind": "source_credibility",
+        "project_scope": "~/trading-mcp",
+        "description": "probe",
+        "audit": {"event": "PostToolUse", "matcher": "WebFetch|Bash",
+                  "extract": "url", "judge": "domain-credibility"},
+        "gate": {"event": "PreToolUse", "matcher": "mcp__trading__execute_trade",
+                 "action": "block", "verdict": "pass", "reason": "probe"},
+    }
+    gate_out = _sanitize_draft_so_far(gate_probe)
+    gate_allowed = _DRAFT_TOP_KEYS | _EVIDENCE_GATE_TOP_KEYS
+    assert set(gate_out.keys()) <= gate_allowed, (
+        "evidence_gate sanitizer emits keys outside the allowlist union: "
+        f"{set(gate_out.keys()) - gate_allowed}"
+    )
+    ga = gate_out.get("audit")
+    if isinstance(ga, dict):
+        assert set(ga.keys()) <= _EVIDENCE_GATE_AUDIT_KEYS, (
+            "audit subtree emits keys outside _EVIDENCE_GATE_AUDIT_KEYS: "
+            f"{set(ga.keys()) - _EVIDENCE_GATE_AUDIT_KEYS}"
+        )
+    gg = gate_out.get("gate")
+    if isinstance(gg, dict):
+        assert set(gg.keys()) <= _EVIDENCE_GATE_GATE_KEYS, (
+            "gate subtree emits keys outside _EVIDENCE_GATE_GATE_KEYS: "
+            f"{set(gg.keys()) - _EVIDENCE_GATE_GATE_KEYS}"
+        )
     # Trigger subtree must drop everything outside `host` + _TRIGGER_KEYS.
     trig = run_out.get("trigger")
     if isinstance(trig, dict):
