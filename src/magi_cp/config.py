@@ -88,7 +88,27 @@ def codex_runtime_enabled() -> bool:
     return raw.strip().lower() not in _FALSY
 
 
+# ── Run-command surface gate.
+_ALLOW_RUN_COMMAND_ENV = "MAGI_CP_ALLOW_RUN_COMMAND"
+
+
+def _run_command_allowed() -> bool:
+    """D63 env knob: refuse RunCommandPolicy saves + /scripts uploads
+    when `MAGI_CP_ALLOW_RUN_COMMAND=0`.
+
+    Default-ON: any unset / blank / non-"0" value enables the surface.
+    The self-host docker compose ships with the flag implicitly on; the
+    hosted image overrides it to "0" so the multi-tenant fleet never
+    spawns an inline subprocess off an authenticated REST request.
+    """
+    raw = os.environ.get(_ALLOW_RUN_COMMAND_ENV)
+    if raw is None:
+        return True
+    return raw.strip() != "0"
+
+
 __all__ = [
     "pack_centric_runtime_enabled",
     "codex_runtime_enabled",
+    "_run_command_allowed",
 ]
