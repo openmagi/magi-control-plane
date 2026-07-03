@@ -113,15 +113,23 @@ export default async function SetupPage({
       {tenant && (
         <>
           <Card tone="status" className="mb-6 flex flex-wrap items-center gap-3">
+            {/* Self-host (synthetic "default" tenant): the tenant id + plan
+                badge are meaningless noise (always default / free), so show
+                just a "connected" status. A hosted tenant keeps the id + plan
+                so an operator can confirm which tenant / plan the key maps to. */}
             <div className="text-sm">
-              {t("setup.tenant.label")}: <code translate="no" className="font-mono">{tenant.id}</code>
+              {tenant.synthetic
+                ? t("setup.tenant.connected")
+                : (<>{t("setup.tenant.label")}: <code translate="no" className="font-mono">{tenant.id}</code></>)}
             </div>
             <Badge variant={tenant.status === "active" ? "ok" : "deny"}>
               {tenant.status === "active"
                 ? t("setup.tenant.statusActive")
                 : t("setup.tenant.statusSuspended")}
             </Badge>
-            <Badge variant="info">{t("setup.tenant.plan")}: {tenant.plan}</Badge>
+            {!tenant.synthetic && (
+              <Badge variant="info">{t("setup.tenant.plan")}: {tenant.plan}</Badge>
+            )}
             <form action={clearKey} className="ml-auto">
               <Button type="submit" size="sm" variant="ghost">
                 {t("common.cancel")}
