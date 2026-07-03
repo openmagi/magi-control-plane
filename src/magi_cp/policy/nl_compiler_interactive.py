@@ -256,7 +256,7 @@ _EVIDENCE_GATE_TYPE = "evidence_gate"
 # else is dropped by `_sanitize_draft_so_far`. `audit` / `gate` are
 # nested dicts coerced key-by-key; `kind` / `project_scope` are scalars.
 _EVIDENCE_GATE_TOP_KEYS: frozenset[str] = frozenset({
-    "type", "kind", "project_scope", "audit", "gate",
+    "type", "kind", "project_scope", "audit", "gate", "emit_audit",
 })
 # Per-subtree allowed keys. The wizard only ever writes `gate.matcher`
 # (the gated tool) via an answer; every other nested field carries the
@@ -2668,6 +2668,11 @@ def _sanitize_draft_so_far(raw: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(scope, str) and scope and len(scope) <= _MAX_PROJECT_SCOPE \
                 and not re.search(r"\s", scope):
             out["project_scope"] = scope
+        # emit_audit: only the literal False is meaningful (reuse an
+        # existing audit). Default True is implicit; drop it so a
+        # default-shaped draft stays byte-identical.
+        if raw.get("emit_audit") is False:
+            out["emit_audit"] = False
         raw_audit = raw.get("audit")
         if isinstance(raw_audit, dict):
             audit: dict[str, Any] = {}
@@ -2942,9 +2947,35 @@ def _compound_question(ko: bool) -> Question:
     )
 
 
+def _existing_audit_provider(
+    context: dict[str, Any] | None, kind: str, self_id: str,
+) -> str | None:
+    """Return the id of an existing ENABLED policy that already provides
+    an audit for `kind` (a different policy than `self_id`), or None.
+
+    Context shape (built by the endpoint from PolicyGroupStore):
+      {"audit_kinds": {kind: [provider_policy_id, ...]}}
+    Only providers other than the draft being authored count, so
+    re-authoring a policy does not make it reuse (and thereby drop) its
+    OWN audit.
+    """
+    if not isinstance(context, dict):
+        return None
+    providers = context.get("audit_kinds")
+    if not isinstance(providers, dict):
+        return None
+    ids = providers.get(kind)
+    if not isinstance(ids, list):
+        return None
+    for pid in ids:
+        if isinstance(pid, str) and pid and pid != self_id:
+            return pid
+    return None
+
+
 def _build_compound_message(
     finalized: dict[str, Any], *, ready: bool, ko: bool,
-    validator_error: str | None,
+    validator_error: str | None, reused_from: str | None = None,
 ) -> str:
     """Deterministic status line for the compound sub-flow."""
     gate = finalized.get("gate") if isinstance(finalized.get("gate"), dict) else {}
@@ -2960,6 +2991,21 @@ def _build_compound_message(
             "requires a verified credible source before it runs."
         )
     if ready:
+        if reused_from:
+            # Organic reuse: the audit already exists on another policy,
+            # so this one saves as a gate + ledger-protection only and
+            # joins the existing evidence stream.
+            return _to_plain_language(
+                f"준비됐어요. 이미 `{reused_from}` 정책이 신뢰할 수 있는 출처를 "
+                f"기록하고 있어서, 이 정책은 그 기록을 재사용해 `{tool}` 실행을 "
+                f"막습니다{scope_note}. 중복 기록 규칙 없이 사전조건 + 원장 보호로만 "
+                "확장됩니다."
+                if ko else
+                f"Ready. Your `{reused_from}` policy already records credible "
+                f"sources, so this one reuses that evidence to block `{tool}`"
+                f"{scope_note}. It expands to a precondition + ledger-protection "
+                "only, with no duplicate audit."
+            )
         return _to_plain_language(
             f"준비됐어요. `{tool}` 실행 전에 이번 세션에서 신뢰할 수 있는 "
             f"출처가 확인됐는지 강제하는 정책{scope_note}입니다. 저장하면 "
@@ -2984,6 +3030,7 @@ def _build_compound_message(
 def _step_compile_compound(
     *, draft: dict[str, Any], seed: dict[str, Any] | None,
     answers: dict[str, str] | None, ko: bool,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Author a compound evidence_gate draft for one turn, deterministically.
 
@@ -2994,6 +3041,11 @@ def _step_compile_compound(
     expanded to member IR policies only at save time by
     POST /policies/compound. The wire response sets `compound: true` so
     the client routes the save to that endpoint instead of PUT /policies.
+
+    `context` (built by the endpoint from the policy store) makes the
+    turn CONTEXT-AWARE: when an existing enabled policy already records
+    the same evidence `kind`, this policy REUSES that audit
+    (emit_audit=False) instead of authoring a duplicate producer.
     """
     # Merge the freeform seed (from the latest user turn) over the
     # sanitized draft: existing operator-committed fields win.
@@ -3021,6 +3073,19 @@ def _step_compile_compound(
     missing = _evidence_gate_missing_fields(finalized)
     has_matcher = "matcher" not in missing
 
+    # Context-aware organic reuse: if another enabled policy already
+    # records this evidence `kind`, drop this policy's duplicate audit and
+    # reuse the existing producer (emit_audit=False). Only applies once
+    # the gated tool is chosen (a kind-only draft has nothing to gate yet)
+    # and never when the operator's echoed draft already pinned emit_audit.
+    reused_from: str | None = None
+    if has_matcher and "emit_audit" not in finalized:
+        reused_from = _existing_audit_provider(
+            context, str(finalized.get("kind") or ""), str(finalized.get("id") or ""),
+        )
+        if reused_from:
+            finalized["emit_audit"] = False
+
     ready = False
     validator_error: str | None = None
     if has_matcher:
@@ -3029,6 +3094,7 @@ def _step_compile_compound(
     questions: list[Question] = [] if (has_matcher or ready) else [_compound_question(ko)]
     assistant_message = _build_compound_message(
         finalized, ready=ready, ko=ko, validator_error=validator_error,
+        reused_from=reused_from,
     )
     # When the tool is not yet chosen the wire draft is still incomplete;
     # emit it so the client can round-trip it, but strip the placeholder
@@ -3052,8 +3118,15 @@ def step_compile(
     history: list[dict[str, str]] | None,
     draft_so_far: dict[str, Any] | None,
     answers: dict[str, str] | None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Drive one conversational turn.
+
+    `context` is an OPTIONAL, read-only view of the existing policy
+    landscape (built by the endpoint) that makes compound authoring
+    context-aware (e.g. reuse an existing evidence producer). It never
+    affects the single-policy path and defaults to None so every existing
+    caller / test is byte-identical.
 
     Server-authoritative flow:
       1. Validate inputs (history length, answers correspond to last-turn
@@ -3130,6 +3203,7 @@ def step_compile(
     if _is_evidence_gate_draft(sanitized) or _compound_seed is not None:
         return _step_compile_compound(
             draft=sanitized, seed=_compound_seed, answers=answers, ko=ko,
+            context=context,
         )
 
     # Step 2: apply answers FIRST so the user's explicit clicks take
