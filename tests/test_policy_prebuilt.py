@@ -161,13 +161,13 @@ def test_prebuilt_route_not_swallowed_by_path_catchall(client) -> None:
 def test_d60_catalog_carries_enabled_setup_required_setup_hint() -> None:
     """D60: every prebuilt now ships `enabled`, `setup_required`, and
     `setup_hint`. Without these the dashboard cannot render the toggle
-    state or the inline "needs setup" callout. The two verifiers whose
-    IR carries operator-supplied knobs (citation corpus override,
-    source allowlist) MUST set `setup_required=True` with a non-empty
-    hint; the other three default to False with empty hint."""
+    state or the inline "needs setup" callout. The one verifier whose
+    IR carries an operator-supplied knob that is useless when unset
+    (source allowlist) MUST set `setup_required=True` with a non-empty
+    hint; the others default to False with empty hint. (citation-verify
+    was taken off setup-required in D82d.)"""
     items = all_prebuilt_policies()
-    needs_setup = {"prebuilt/citation-verify-at-final",
-                   "prebuilt/source-allowlist-webfetch"}
+    needs_setup = {"prebuilt/source-allowlist-webfetch"}
     for p in items:
         assert "enabled" in p
         assert "setup_required" in p

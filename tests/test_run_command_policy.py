@@ -30,11 +30,15 @@ from magi_cp.policy.matrix import LEGAL_COMBINATIONS, MatcherClass
 
 
 ADMIN_KEY_HEADER = {"X-Admin-Api-Key": "test-admin-key"}
+# /policies/run_command is data-plane: it fail-closed requires MAGI_CP_API_KEY
+# (unset -> 503). Tests set the env in admin_env and pass the matching header.
+API_KEY_HEADER = {"X-Api-Key": "test-api-key"}
 
 
 @pytest.fixture
 def admin_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", "test-admin-key")
+    monkeypatch.setenv("MAGI_CP_API_KEY", "test-api-key")
 
 
 @pytest.fixture
@@ -411,6 +415,7 @@ def test_resolve_run_command_returns_spec(client: TestClient):
     r = client.post(
         "/policies/run_command",
         json={"policy_id": "p.resolve", "payload": {}},
+        headers=API_KEY_HEADER,
     )
     assert r.status_code == 200
     body = r.json()
@@ -424,6 +429,7 @@ def test_resolve_run_command_unknown_returns_not_matched(client: TestClient):
     r = client.post(
         "/policies/run_command",
         json={"policy_id": "p.unknown", "payload": {}},
+        headers=API_KEY_HEADER,
     )
     assert r.status_code == 200
     assert r.json()["matched"] is False
@@ -765,6 +771,7 @@ def test_policies_run_command_reply_is_ed25519_signed(client: TestClient):
     r = client.post(
         "/policies/run_command",
         json={"policy_id": "p.signed", "payload": {}},
+        headers=API_KEY_HEADER,
     )
     assert r.status_code == 200
     body = r.json()
