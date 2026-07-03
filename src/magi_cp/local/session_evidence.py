@@ -20,9 +20,9 @@ malformed record or an unreadable file degrades to "no evidence", never raises.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
 import time
 
 __all__ = ["ledger_dir", "record", "entries", "has", "VERDICTS"]
@@ -30,20 +30,30 @@ __all__ = ["ledger_dir", "record", "entries", "has", "VERDICTS"]
 VERDICTS = ("pass", "fail", "review")
 _MAX_SUBJECT = 512
 _MAX_DETAIL = 2000
-# session_id becomes a filename; allow only a safe charset (no path traversal).
-_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def ledger_dir() -> str:
-    """Directory holding per-session evidence ledgers (env-overridable)."""
+    """Directory holding per-session evidence ledgers (env-overridable).
+
+    Lives under ``~/.magi-cp`` by design: OUT of any agent workspace, so a
+    normal run never encounters it. In a governed setup (managed-settings, no
+    ``--dangerously-skip-permissions``) a companion policy denies the agent
+    read/write to this path, making the audit hook the only writer. Under
+    skip-permissions ("fully trusted agent") that guard is off by definition.
+    """
     return os.path.expanduser(
         os.environ.get("MAGI_CP_SESSION_EVIDENCE_DIR", "~/.magi-cp/session-evidence")
     )
 
 
 def _safe_session(session_id: str) -> str:
-    s = _SAFE_ID_RE.sub("_", session_id or "")
-    return s[:128] or "unknown"
+    """Deterministic, collision-resistant filename stem for a session id.
+
+    A sha256 hex digest: safe as a filename (no path traversal) and, unlike a
+    lossy char-substitution, cannot alias two distinct session ids onto one
+    ledger (which would leak evidence across sessions).
+    """
+    return hashlib.sha256((session_id or "unknown").encode("utf-8")).hexdigest()[:32]
 
 
 def _path(session_id: str) -> str:

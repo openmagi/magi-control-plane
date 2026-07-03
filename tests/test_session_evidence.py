@@ -91,6 +91,42 @@ def test_audit_noop_when_no_url():
     assert rc == 0 and session_evidence.entries("s4") == []
 
 
+# ── P0 self-attest fixes: parsed-hostname allowlist + fetch-only + response ──
+def test_audit_substring_hostname_forgery_now_fails():
+    # `evil.blog/dir.html` contains "ir." but the parsed HOST is evil.blog.
+    _audit({"session_id": "sf1", "tool_name": "WebFetch",
+            "tool_input": {"url": "https://evil.blog/dir.html"}},
+           "--kind", "source_credibility")
+    e = session_evidence.entries("sf1", kind="source_credibility")
+    assert len(e) == 1 and e[0]["verdict"] == "fail"
+
+
+def test_audit_echo_url_is_not_a_fetch_records_nothing():
+    # A bare `echo <url>` (not curl/wget) must not mint evidence.
+    rc = _audit({"session_id": "sf2", "tool_name": "Bash",
+                 "tool_input": {"command": "echo https://sec.gov"}},
+                "--kind", "source_credibility")
+    assert rc == 0 and session_evidence.entries("sf2") == []
+
+
+def test_audit_errored_fetch_records_nothing():
+    # A 403/empty WebFetch response must not record a pass.
+    _audit({"session_id": "sf3", "tool_name": "WebFetch",
+            "tool_input": {"url": "https://sec.gov/x"},
+            "tool_response": {"is_error": True, "content": ""}},
+           "--kind", "source_credibility")
+    assert session_evidence.entries("sf3") == []
+
+
+def test_audit_official_subdomain_passes():
+    _audit({"session_id": "sf4", "tool_name": "WebFetch",
+            "tool_input": {"url": "https://www.sec.gov/Archives/x.htm"},
+            "tool_response": {"content": "TESLA 10-Q ..."}},
+           "--kind", "source_credibility")
+    e = session_evidence.entries("sf4", kind="source_credibility")
+    assert len(e) == 1 and e[0]["verdict"] == "pass"
+
+
 # ── gate hook ────────────────────────────────────────────────────────
 def _gate(payload: dict, *args) -> tuple[int, str]:
     import io

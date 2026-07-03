@@ -1167,6 +1167,16 @@ class EvidencePreconditionPolicy:
                 f"EvidencePreconditionPolicy '{self.id}': action must be block/ask, "
                 f"got {self.action!r}"
             )
+        # The gate binary emits a PreToolUse decision envelope. Authoring it on
+        # any other event would file a hook whose output CC ignores -> a silent
+        # no-op (a green policy that enforces nothing). Pin it, like the other
+        # decision-emitting shims.
+        if self.trigger.event != "PreToolUse":
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': trigger.event must be "
+                f"PreToolUse (the gate emits a PreToolUse decision), got "
+                f"{self.trigger.event!r}"
+            )
         if not (isinstance(self.reason, str) and len(self.reason) <= _MAX_EVIDENCE_REASON_LEN):
             raise ValueError(
                 f"EvidencePreconditionPolicy '{self.id}': reason must be a string "
@@ -1232,6 +1242,13 @@ def _coerce_action(raw: dict) -> ActionLiteral:
 def load_policy(path: str) -> "AnyPolicy":
     raw = json.loads(open(path, "r", encoding="utf-8").read())
     return policy_from_dict(raw)
+
+
+def _require_keys(raw: dict, keys: tuple[str, ...], type_: str) -> None:
+    """Raise a clear ValueError (not a bare KeyError) on a missing field."""
+    missing = [k for k in keys if k not in raw]
+    if missing:
+        raise ValueError(f"{type_} policy missing required field(s): {', '.join(missing)}")
 
 
 def policy_from_dict(raw: dict) -> "AnyPolicy":
@@ -1314,6 +1331,7 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             version=raw.get("version", "0.1"),
         )
     if type_ == "evidence_audit":
+        _require_keys(raw, ("id", "trigger", "kind"), "evidence_audit")
         return EvidenceAuditPolicy(
             id=raw["id"],
             description=raw.get("description", ""),
@@ -1324,6 +1342,7 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             version=raw.get("version", "0.1"),
         )
     if type_ == "evidence_precondition":
+        _require_keys(raw, ("id", "trigger", "require_kind"), "evidence_precondition")
         return EvidencePreconditionPolicy(
             id=raw["id"],
             description=raw.get("description", ""),

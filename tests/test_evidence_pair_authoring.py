@@ -59,10 +59,11 @@ def test_precondition_rejects_non_gate_action():
         _pre(action="audit")
 
 
-def test_precondition_rejects_illegal_matrix_placement():
-    # 'block' is not legal on an observational-only event/matcher combo.
-    with pytest.raises(ValueError, match="illegal combination|unsupported"):
-        _pre(trigger={"event": "SessionStart", "matcher": "*"})
+def test_precondition_pinned_to_pretooluse():
+    # The gate emits a PreToolUse decision; authoring it elsewhere would file a
+    # hook whose output CC ignores (silent no-op). Reject at authoring time.
+    with pytest.raises(ValueError, match="must be PreToolUse"):
+        _pre(trigger={"event": "PostToolUse", "matcher": "mcp__trading__execute_trade"})
 
 
 # ── compiler emission ────────────────────────────────────────────────
