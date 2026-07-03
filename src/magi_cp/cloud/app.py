@@ -551,10 +551,10 @@ def create_app(
 ) -> FastAPI:
     # P8 fix-cycle #2: in deployments where MAGI_CP_REQUIRE_REGISTRY=1
     # the factory refuses a None registry. Production sets this via the
-    # Helm chart / fly.toml; test/library callers leave it unset and
-    # keep the lenient "registry=None → enforcing" path for fixture
-    # back-compat. The runtime invariant in _build_production_app is
-    # the deploy-shape guarantee; this env hook is the override for
+    # Helm chart (or docker-compose env); test/library callers leave it
+    # unset and keep the lenient "registry=None → enforcing" path for
+    # fixture back-compat. The runtime invariant in _build_production_app
+    # is the deploy-shape guarantee; this env hook is the override for
     # operators who construct their own factory wiring.
     if (verifier_registry is None
             and os.environ.get("MAGI_CP_REQUIRE_REGISTRY") == "1"):
