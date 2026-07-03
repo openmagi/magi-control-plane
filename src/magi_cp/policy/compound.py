@@ -38,6 +38,10 @@ def _expand_evidence_gate(draft: Mapping) -> list[dict]:
       kind (join key + evidence label), description, project_scope,
       audit: {event, matcher, extract, judge}
       gate:  {event, matcher, action, verdict, reason}
+      emit_audit (default True): when False the audit member is OMITTED so
+        the gate REUSES an audit another policy already provides for the
+        same `kind` (context-aware organic reuse). The conversational
+        compiler sets this when it detects an existing enabled producer.
     """
     kind = str(draft.get("kind") or "source_credibility")
     stem = _stem(draft)
@@ -80,7 +84,13 @@ def _expand_evidence_gate(draft: Mapping) -> list[dict]:
     # the audit hook is the only writer. Without these, a Bash/Write/Edit can
     # forge `{"verdict":"pass"}` and unlock the gate. Read is not a forgery
     # vector, so it's left allowed. Opt out with `protect_ledger: false`.
-    rules = [audit_policy, gate_policy]
+    #
+    # emit_audit=False omits the audit member entirely: the gate reuses an
+    # audit another policy already provides for this `kind` (organic
+    # reuse). The gate + ledger-protection denies still emit so the reused
+    # evidence stream stays forgery-resistant.
+    rules = [gate_policy] if draft.get("emit_audit", True) is False \
+        else [audit_policy, gate_policy]
     if draft.get("protect_ledger", True):
         for i, (tool, pat) in enumerate((
             ("Write", "Write(~/.magi-cp/session-evidence/**)"),

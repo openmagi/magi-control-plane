@@ -24,6 +24,7 @@ leaks internal vocab is caught at the boundary.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 
 import pytest
@@ -42,10 +43,16 @@ def _admin_key(monkeypatch):
 
 
 def _tmp_store_path() -> str:
-    f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
-    f.write("[]")
-    f.close()
-    return f.name
+    # Isolate each client in its OWN temp directory. create_app derives the
+    # policy-GROUP store path as `<dir>/policy-groups.json` (sibling of the
+    # policy store), so a shared parent dir (plain /tmp) would let one
+    # test's saved compound policy leak into another test's context-aware
+    # reuse detection. A per-call mkdtemp keeps the group store isolated.
+    d = tempfile.mkdtemp(prefix="magi-cp-compile-")
+    path = os.path.join(d, "policies.json")
+    with open(path, "w") as f:
+        f.write("[]")
+    return path
 
 
 def _client(*, llm_compiler=None, llm_reviewer=None) -> TestClient:
@@ -2820,3 +2827,124 @@ def test_single_verifier_intent_not_stolen_by_compound():
     body = r.json()
     assert body["compound"] is False
     assert body["draft"] is None or body["draft"].get("type") != "evidence_gate"
+
+
+# ── compound context-aware reuse ───────────────────────────────────────
+# When an existing enabled policy already records the same evidence kind,
+# authoring a new evidence-gate reuses that producer (emit_audit=False)
+# instead of duplicating the audit. The endpoint builds the context from
+# the policy group store, so these tests save a first policy, then author
+# a second.
+
+
+def test_compound_reuses_existing_producer_across_policies():
+    from magi_cp.policy.compound import expand_compound_draft
+    c = _client_no_llm()
+    # 1) author + save the first compound (creates the source_credibility
+    #    producer).
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": ("require a credible source before "
+                            "mcp__trading__execute_trade"),
+            }],
+            "draft_so_far": None, "answers": None,
+        },
+    )
+    d1 = r.json()["draft"]
+    assert "emit_audit" not in d1  # first policy emits its own audit
+    save1 = c.post("/policies/compound", headers=HEADERS,
+                   json={"draft": d1, "source": "org", "enabled": True})
+    assert save1.status_code == 200, save1.text
+
+    # 2) author a SECOND compound for a different tool, same default kind.
+    #    It must reuse the first policy's producer.
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": ("require a credible source before "
+                            "mcp__trading__cancel_order"),
+            }],
+            "draft_so_far": None, "answers": None,
+        },
+    )
+    body = r.json()
+    d2 = body["draft"]
+    assert body["ready_to_save"] is True
+    assert d2.get("emit_audit") is False, d2
+    members = expand_compound_draft(d2)
+    assert not any(m["id"].endswith("-audit") for m in members)
+    assert members[0]["type"] == "evidence_precondition"
+
+
+def test_compound_no_reuse_when_no_existing_producer():
+    """With an empty store the first policy emits its own audit (no
+    emit_audit flag, default True)."""
+    c = _client_no_llm()
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": "require a credible source before mcp__trading__execute_trade",
+            }],
+            "draft_so_far": None, "answers": None,
+        },
+    )
+    assert "emit_audit" not in r.json()["draft"]
+
+
+def test_compound_reuse_self_exclusion():
+    """Re-authoring the SAME policy id must not make it reuse (and thereby
+    drop) its OWN audit. _existing_audit_provider excludes self."""
+    from magi_cp.policy.nl_compiler_interactive import _existing_audit_provider
+    ctx = {"audit_kinds": {"source_credibility": ["verified-execute-trade"]}}
+    # a different draft reuses it
+    assert _existing_audit_provider(ctx, "source_credibility", "verified-cancel-order") \
+        == "verified-execute-trade"
+    # the same id does NOT reuse itself
+    assert _existing_audit_provider(ctx, "source_credibility", "verified-execute-trade") \
+        is None
+    # unknown kind -> no provider
+    assert _existing_audit_provider(ctx, "other_kind", "x") is None
+    # no context -> no provider
+    assert _existing_audit_provider(None, "source_credibility", "x") is None
+
+
+def test_compound_context_build_skips_disabled_and_reusers():
+    """The endpoint context excludes disabled policies and policies that
+    themselves reuse (emit_audit=False), so a dead/absent producer is
+    never offered for reuse."""
+    from magi_cp.cloud.routes.compile import _build_compile_context
+
+    class _FakeRec:
+        def __init__(self, id, draft, enabled):
+            self.id, self.draft, self.enabled = id, draft, enabled
+
+    class _FakeStore:
+        def load(self):
+            return [
+                _FakeRec("p-enabled",
+                         {"type": "evidence_gate", "kind": "source_credibility"}, True),
+                _FakeRec("p-disabled",
+                         {"type": "evidence_gate", "kind": "source_credibility"}, False),
+                _FakeRec("p-reuser",
+                         {"type": "evidence_gate", "kind": "source_credibility",
+                          "emit_audit": False}, True),
+                _FakeRec("p-notcompound", {"type": "run_command"}, True),
+            ]
+
+    ctx = _build_compile_context(_FakeStore())
+    assert ctx["audit_kinds"].get("source_credibility") == ["p-enabled"]
+
+
+def test_compound_context_build_none_store():
+    from magi_cp.cloud.routes.compile import _build_compile_context
+    assert _build_compile_context(None) == {"audit_kinds": {}}

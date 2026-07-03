@@ -57,6 +57,27 @@ def test_protect_ledger_can_be_disabled():
     assert [m["type"] for m in members] == ["evidence_audit", "evidence_precondition"]
 
 
+def test_emit_audit_false_omits_audit_member_for_reuse():
+    """emit_audit=False drops the audit member so the gate reuses an
+    audit another policy provides for the same kind. The gate +
+    ledger-protection denies still emit."""
+    members = expand_compound_draft(_evidence_gate_draft(emit_audit=False))
+    assert [m["type"] for m in members] == [
+        "evidence_precondition", "permission", "permission", "permission",
+    ]
+    # no audit member, but the gate still requires the shared kind
+    assert not any(m["id"].endswith("-audit") for m in members)
+    assert members[0]["require_kind"] == "source_credibility"
+    for m in members:
+        policy_from_dict(m)  # raises on invalid
+
+
+def test_emit_audit_false_without_ledger_is_gate_only():
+    members = expand_compound_draft(
+        _evidence_gate_draft(emit_audit=False, protect_ledger=False))
+    assert [m["type"] for m in members] == ["evidence_precondition"]
+
+
 def test_expand_uses_defaults_for_missing_fields():
     members = expand_compound_draft({"type": "evidence_gate",
                                      "gate": {"matcher": "mcp__x__y"}})
