@@ -1680,6 +1680,34 @@ def attach(app: FastAPI, store: PolicyStore,
                 [r for r in policy_group_store.load() if r.id != policy_id])
         return {"deleted": policy_id, "rule_ids": list(rec.rule_ids)}
 
+    @app.patch("/policies/groups/{policy_id:path}/enabled",
+               dependencies=[Depends(require_admin_key)])
+    async def patch_policy_group_enabled(policy_id: str, body: PatchEnabledReq) -> dict:
+        """Enable/disable an authored policy: cascades to every rule it owns.
+        The dashboard toggles here (policy granularity), not per rule."""
+        if policy_group_store is None:
+            raise HTTPException(500, "policy group store not configured")
+        rec = policy_group_store.get(policy_id)
+        if rec is None:
+            raise HTTPException(404, f"policy {policy_id!r} not found")
+        async with policy_lock:
+            targets = set(rec.rule_ids)
+            new_list = [
+                PolicyOverride(policy=ov.policy, source=ov.source,
+                               enabled=body.enabled if ov.policy.id in targets else ov.enabled,
+                               enforcement=ov.enforcement)
+                for ov in store.load()
+            ]
+            store.save(new_list)
+            groups = policy_group_store.load()
+            for i, r in enumerate(groups):
+                if r.id == policy_id:
+                    r.enabled = body.enabled
+                    groups[i] = r
+                    break
+            policy_group_store.save(groups)
+        return {"id": policy_id, "enabled": body.enabled, "rule_ids": list(rec.rule_ids)}
+
     @app.get("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     def get_policy(policy_id: str) -> dict:
         for ov in store.load():
@@ -1834,10 +1862,23 @@ def attach(app: FastAPI, store: PolicyStore,
         )
         async with policy_lock:
             existing = store.load()
+            # P1-2: a rule owned by a policy must not be toggled in isolation
+            # (half-toggling a compound degrades or un-enforces it). Expand the
+            # target to the owning policy's whole rule set so both entry points
+            # (rule-level here, and the policy-level route below) keep the
+            # invariant. A free-standing rule toggles just itself.
+            target_ids = {policy_id}
+            owning = None
+            if policy_group_store is not None:
+                for rec in policy_group_store.load():
+                    if policy_id in rec.rule_ids:
+                        owning = rec
+                        target_ids = set(rec.rule_ids)
+                        break
             found = False
             new_list: list[PolicyOverride] = []
             for ov in existing:
-                if ov.policy.id == policy_id:
+                if ov.policy.id in target_ids:
                     found = True
                     new_enforcement = ov.enforcement
                     # P8 follow-up (fix-cycle #4): re-validate against
@@ -1932,6 +1973,17 @@ def attach(app: FastAPI, store: PolicyStore,
             if not found:
                 raise HTTPException(404, f"policy {policy_id!r} not found")
             store.save(new_list)
-        return {"id": policy_id, "enabled": body.enabled}
+            # Keep the owning PolicyRecord.enabled in sync so the grouped view
+            # (which derives enabled from rules) and the record agree.
+            if owning is not None:
+                groups = policy_group_store.load()
+                for i, rec in enumerate(groups):
+                    if rec.id == owning.id:
+                        rec.enabled = body.enabled
+                        groups[i] = rec
+                        break
+                policy_group_store.save(groups)
+        return {"id": policy_id, "enabled": body.enabled,
+                "cascaded_rule_ids": sorted(target_ids) if owning else [policy_id]}
 
 

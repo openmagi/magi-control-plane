@@ -406,6 +406,33 @@ export default async function SharedRunPage({
           </aside>
         </div>
 
+        {/* CTA: invite the viewer to govern their own Claude Code runs */}
+        <a
+          href="https://cp.openmagi.ai"
+          rel="noopener noreferrer"
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 16, marginTop: 26, padding: "16px 20px", textDecoration: "none",
+            border: `1px solid ${C.green}`, borderRadius: 12,
+            background: "linear-gradient(90deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))",
+          }}
+        >
+          <div>
+            <div style={{ color: C.text, fontSize: 15, fontWeight: 600 }}>
+              Govern your own Claude Code runs
+            </div>
+            <div style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>
+              Deterministic policy + audit for AI agents. Set it up in minutes.
+            </div>
+          </div>
+          <span style={{
+            color: C.bg, background: C.green, borderRadius: 8,
+            padding: "8px 16px", fontSize: 14, fontWeight: 700, whiteSpace: "nowrap",
+          }}>
+            Try Magi →
+          </span>
+        </a>
+
         <footer style={{ color: C.muted, fontSize: 12, marginTop: 22, textAlign: "center" }}>
           Powered by{" "}
           <a href="https://openmagi.ai" style={{ color: C.prompt }} rel="noopener noreferrer">Magi</a>

@@ -116,6 +116,41 @@ export async function togglePolicyAction(formData: FormData): Promise<void> {
   redirect(`/rules?tab=policies&msg=toggled`)
 }
 
+/** pack -> policy -> rule: toggle an authored policy (cascades to its rules). */
+export async function togglePolicyGroupAction(formData: FormData): Promise<void> {
+  let id: string
+  try {
+    id = validatePolicyId(formData.get("id"))
+  } catch {
+    redirect("/rules?err=invalid_id")
+  }
+  const enabled = formData.get("enabled") === "true"
+  try {
+    await cloud.togglePolicyGroup(id, enabled)
+  } catch (e: unknown) {
+    redirect(`/rules?err=${codeForError(e)}`)
+  }
+  revalidatePath("/rules")
+  redirect(`/rules?tab=policies&msg=toggled`)
+}
+
+/** Delete an authored policy and cascade to the rules it owns. */
+export async function deletePolicyGroupAction(formData: FormData): Promise<void> {
+  let id: string
+  try {
+    id = validatePolicyId(formData.get("id"))
+  } catch {
+    redirect("/rules?err=invalid_id")
+  }
+  try {
+    await cloud.deletePolicyGroup(id)
+  } catch (e: unknown) {
+    redirect(`/rules?err=${codeForError(e)}`)
+  }
+  revalidatePath("/rules")
+  redirect(`/rules?tab=policies&msg=deleted`)
+}
+
 /** D60: enable/disable a prebuilt template directly from the toggle
  * on the prebuilt card. Splits the URL-side path between
  * `cloud.enablePrebuilt` and `cloud.disablePrebuilt` rather than

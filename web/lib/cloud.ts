@@ -487,6 +487,10 @@ export type PolicyGroupItem = {
   kind: string // "simple" | "compound"
   rule_ids: string[]
   enabled: boolean
+  /** true when member rules disagree (a compound was half-toggled). */
+  mixed?: boolean
+  /** rule_ids referenced by the policy but missing from the rule store. */
+  missing_rules?: string[]
   source: string
 }
 
@@ -736,6 +740,13 @@ export const cloud = {
     _fetch<unknown>(
       `/policies/groups/${id.split("/").map(encodeURIComponent).join("/")}`,
       { method: "DELETE", keyType: "admin" },
+    ).then(() => undefined),
+
+  /** Enable/disable an authored policy; cascades to all its rules. */
+  togglePolicyGroup: (id: string, enabled: boolean): Promise<void> =>
+    _fetch<unknown>(
+      `/policies/groups/${id.split("/").map(encodeURIComponent).join("/")}/enabled`,
+      { method: "PATCH", keyType: "admin", body: JSON.stringify({ enabled }) },
     ).then(() => undefined),
 
   /** D54: 5 prebuilt policy templates (one per built-in verifier).
