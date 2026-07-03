@@ -48,6 +48,7 @@ import re
 import signal
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from cryptography.hazmat.primitives import serialization
@@ -360,6 +361,15 @@ def decide(payload: dict):
     _session_cache.persist_session_id(payload.get("session_id") or "")
 
     hook_event_name = payload.get("hook_event_name") or "PreToolUse"
+    # SessionStart: auto-activate the configured packs for this CC session
+    # (opt-in via MAGI_CP_AUTO_ACTIVATE_PACKS) so the session shows up in the
+    # dashboard + its session-scoped policies apply without a manual
+    # /magi:pack-activate. Best-effort side-effect; SessionStart always
+    # allows (it is observe/setup, never denies). Design:
+    # docs/plans/2026-07-03-sessionstart-auto-pack-activation-design.md.
+    if hook_event_name == "SessionStart":
+        _activate_session_packs(payload)
+        return Verdict(decision="allow", hook_event_name=hook_event_name)
     cmd = payload.get("tool_input", {}).get("command", "")
     matches = list(SENTINEL_RE.finditer(cmd))
     if not matches:
@@ -453,6 +463,114 @@ def _endpoint_id() -> str | None:
     except OSError:
         return None
     return None
+
+
+def _auto_activate_packs() -> list[str]:
+    """Read MAGI_CP_AUTO_ACTIVATE_PACKS (comma-separated pack ids) from env
+    or ``~/.config/magi-cp/env``. Same source + precedence as
+    ``_endpoint_id``. Empty / unset -> [] (auto-activation is pure opt-in;
+    the floor pack is always-on regardless). Design:
+    docs/plans/2026-07-03-sessionstart-auto-pack-activation-design.md.
+    """
+    def _split(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
+    env = os.environ.get("MAGI_CP_AUTO_ACTIVATE_PACKS")
+    if env is not None:
+        return _split(env)
+    cfg = os.path.expanduser("~/.config/magi-cp/env")
+    if not os.path.exists(cfg):
+        return []
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "MAGI_CP_AUTO_ACTIVATE_PACKS":
+                    return _split(v.strip().strip("\"'"))
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError on a non-UTF-8 config file;
+        # auto-activation must never raise (SessionStart is fail-open).
+        return []
+    return []
+
+
+# Total wall-clock budget for auto-activation on a single SessionStart, so a
+# hung/slow cloud cannot stall session start for (per-pack timeout x N packs).
+_AUTO_ACTIVATE_TOTAL_BUDGET_S = 4.0
+
+
+def post_session_pack_activate(
+    session_id: str, pack_id: str, *,
+    api_key: str | None = None, cloud_url: str | None = None,
+    timeout: float = 2.0,
+) -> bool:
+    """Best-effort POST /session/{id}/packs/activate {pack_id}. Returns True
+    on 200, False on any error. NON-BLOCKING: the caller (SessionStart hook)
+    ignores failures so a session never fails on a missed activation.
+
+    Auth: `api_key` falls back to `MAGI_CP_API_KEY`. URL scheme enforced
+    (same plain-http guard as the heartbeat). Mirrors ``post_heartbeat``.
+    """
+    if not session_id or not pack_id:
+        return False
+    key = api_key or os.environ.get("MAGI_CP_API_KEY")
+    if not key:
+        return False
+    base_url = cloud_url or _cloud_url()
+    try:
+        _enforce_url_scheme(base_url)
+    except ValueError:
+        return False
+    # Quote the session id: it comes from the CC payload, so a stray "/",
+    # "?", "#" or ".." must not reshape the request path against the API.
+    safe_sid = urllib.parse.quote(session_id, safe="")
+    url = f"{base_url.rstrip('/')}/session/{safe_sid}/packs/activate"
+    try:
+        data = json.dumps({"pack_id": pack_id}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "X-Api-Key": key},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _activate_session_packs(payload: dict) -> None:
+    """SessionStart side-effect: auto-activate the configured packs for this
+    Claude Code session. Fail-open + best-effort: any error (unreachable
+    cloud, missing key, activate failure) is swallowed so the session always
+    proceeds. Pure side-effect; the caller emits the allow verdict.
+    """
+    # The ENTIRE body is guarded: auto-activation is a pure best-effort
+    # side-effect and SessionStart must never raise, deny, or block a
+    # session. Any failure (bad config bytes, cloud down, activate error) is
+    # swallowed. A total wall-clock budget bounds the per-session latency so
+    # a hung cloud cannot stall session start for 2s x N packs.
+    try:
+        session_id = payload.get("session_id") or ""
+        packs = _auto_activate_packs()
+        if not (session_id and packs):
+            return
+        import time as _time
+        deadline = _time.monotonic() + _AUTO_ACTIVATE_TOTAL_BUDGET_S
+        for pack_id in packs:
+            if _time.monotonic() >= deadline:
+                break
+            try:
+                post_session_pack_activate(session_id, pack_id)
+            except Exception:
+                # Never let one pack's failure break the session.
+                pass
+    except Exception:
+        # Belt-and-suspenders: config read / anything unexpected -> no-op.
+        pass
 
 
 def _managed_settings_digest() -> str | None:

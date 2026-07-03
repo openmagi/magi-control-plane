@@ -26,6 +26,22 @@ export async function GET(req: NextRequest) {
           ],
         },
       ],
+      // SessionStart runs the same gate binary once per new/resumed session.
+      // The gate auto-activates the packs in MAGI_CP_AUTO_ACTIVATE_PACKS
+      // (opt-in; no-op when unset) so a session shows up in the dashboard +
+      // its session-scoped policies apply without a manual /magi:pack-activate.
+      // Inert by default; fail-open (never blocks a session).
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "/usr/local/bin/magi-gate.sh",
+              "env": { "MAGI_CP_CLOUD_URL": cloudUrl },
+            },
+          ],
+        },
+      ],
     },
   }
 
