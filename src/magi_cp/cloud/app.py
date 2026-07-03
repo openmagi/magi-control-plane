@@ -32,7 +32,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..evidence import sign_token
 from ..policy import (
-    AnyPolicy, ContextInjectionPolicy, EvidencePolicy, InputRewritePolicy,
+    AnyPolicy, ContextInjectionPolicy, EvidenceAuditPolicy, EvidencePolicy,
+    EvidencePreconditionPolicy, InputRewritePolicy,
     McpGatingPolicy, PermissionPolicy, PolicyOverride,
     RunCommandPolicy, SubagentPolicy, apply_rewriter,
     compile_to_managed_settings, matcher_covers,
@@ -2475,6 +2476,11 @@ def _serialize_policy_for_api(p: AnyPolicy) -> dict:
             "timeout_ms": p.timeout_ms,
             "fail_closed": p.fail_closed,
         }
+    if isinstance(p, (EvidenceAuditPolicy, EvidencePreconditionPolicy)):
+        # Both new archetypes round-trip through the IR's own serializer,
+        # which already emits their full shape (incl. project_scope).
+        from ..policy.ir import policy_to_dict
+        return policy_to_dict(p)
     raise HTTPException(500, f"unserializable policy type: {type(p).__name__}")
 
 
@@ -2563,6 +2569,18 @@ class PutPolicyReq(BaseModel):
     # "author now, wire up later" state. Built-in ``pack/…`` ids are
     # rejected (immutable membership); the floor pack (a ``user-pack/…``
     # row) is accepted so an operator can pin a policy to "always-on".
+    pack_ids: list[str] | None = None
+
+
+class CompoundPolicyReq(BaseModel):
+    """POST body for /policies/compound. `draft` is a compound draft
+    (e.g. type=evidence_gate) that the server expands into its member IR
+    policies and persists atomically. Same source/enabled/pack semantics as
+    PutPolicyReq, applied to every member."""
+    model_config = {"extra": "forbid"}
+    draft: dict
+    source: str = Field(..., pattern=_SOURCE_REGEX)
+    enabled: bool = True
     pack_ids: list[str] | None = None
 
 
@@ -4171,6 +4189,42 @@ def _attach_policy_routes(app: FastAPI, store: PolicyStore,
                     "compiled_sha256": sha,
                 }
         raise HTTPException(404, f"policy {policy_id!r} not found")
+
+    @app.post("/policies/compound", dependencies=[Depends(require_admin_key)])
+    async def post_compound(body: CompoundPolicyReq) -> dict:
+        """Expand a compound draft into its member policies and save all of them
+        atomically (all valid or none written). One authored intent, several
+        coupled policies — the conversational compiler / evidence-gate builder
+        target this instead of N separate PUTs."""
+        from ..policy.compound import expand_compound_draft
+
+        try:
+            members_raw = expand_compound_draft(body.draft)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Validate every member up front (archetype __post_init__ via the
+        # deserializer) so a partial write is impossible.
+        policies = []
+        for raw in members_raw:
+            pid = raw.get("id")
+            if any(str(pid).endswith(s) for s in _RESERVED_ID_SUFFIXES):
+                raise HTTPException(400, f"policy id must not end in {_RESERVED_ID_SUFFIXES}")
+            try:
+                policies.append(_deserialize_policy_from_api(raw))
+            except (ValueError, KeyError) as e:
+                raise HTTPException(400, f"member {pid!r}: {e}")
+        member_ids = {p.id for p in policies}
+        async with policy_lock:
+            existing = [ov for ov in store.load() if ov.policy.id not in member_ids]
+            for p in policies:
+                existing.append(PolicyOverride(
+                    policy=p, source=body.source,  # type: ignore[arg-type]
+                    enabled=body.enabled, enforcement=_enforcement_label(p),
+                ))
+            store.save(existing)
+        return {"ids": [p.id for p in policies],
+                "types": [getattr(p, "type", "evidence") for p in policies],
+                "source": body.source, "enabled": body.enabled}
 
     @app.put("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     async def put_policy(policy_id: str, body: PutPolicyReq) -> dict:
