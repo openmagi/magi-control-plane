@@ -1075,7 +1075,23 @@ _EVIDENCE_JUDGES: tuple[str, ...] = ("domain-credibility",)
 _EVIDENCE_VERDICTS: tuple[str, ...] = ("pass", "fail", "review")
 _MAX_EVIDENCE_KIND_LEN = 128
 _MAX_EVIDENCE_REASON_LEN = 400
+_MAX_PROJECT_SCOPE_LEN = 1024
 _EVIDENCE_KIND_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _validate_project_scope(policy_id: str, scope: str) -> None:
+    """A project scope, when set, must be an absolute-ish path (no shell chars).
+
+    It is passed as a hook arg (shell-quoted at compile time) and compared as a
+    filesystem path at runtime. Reject control/quote characters so a bad value
+    can't smuggle anything through the compiled command line.
+    """
+    if not scope:
+        return
+    if not isinstance(scope, str) or len(scope) > _MAX_PROJECT_SCOPE_LEN:
+        raise ValueError(f"policy '{policy_id}': project_scope too long")
+    if any(c in scope for c in ("\n", "\r", "\x00")):
+        raise ValueError(f"policy '{policy_id}': project_scope has control characters")
 
 
 @dataclass
@@ -1093,6 +1109,9 @@ class EvidenceAuditPolicy:
     kind: str
     extract: str = "url"
     judge: str = "domain-credibility"
+    # Optional project scope: when set, the hook only applies to sessions whose
+    # cwd is inside this directory. Empty = global (all sessions).
+    project_scope: str = ""
     version: str = "0.1"
     type: Literal["evidence_audit"] = "evidence_audit"
 
@@ -1100,6 +1119,7 @@ class EvidenceAuditPolicy:
         self.validate()
 
     def validate(self) -> None:
+        _validate_project_scope(self.id, self.project_scope)
         if not (isinstance(self.kind, str) and _EVIDENCE_KIND_RE.match(self.kind)
                 and len(self.kind) <= _MAX_EVIDENCE_KIND_LEN):
             raise ValueError(
@@ -1144,6 +1164,9 @@ class EvidencePreconditionPolicy:
     require_verdict: str = "pass"
     reason: str = ""
     action: Literal["block", "ask"] = "block"
+    # Optional project scope: when set, the gate only applies to sessions whose
+    # cwd is inside this directory. Empty = global (all sessions).
+    project_scope: str = ""
     version: str = "0.1"
     type: Literal["evidence_precondition"] = "evidence_precondition"
 
@@ -1151,6 +1174,7 @@ class EvidencePreconditionPolicy:
         self.validate()
 
     def validate(self) -> None:
+        _validate_project_scope(self.id, self.project_scope)
         if not (isinstance(self.require_kind, str) and _EVIDENCE_KIND_RE.match(self.require_kind)
                 and len(self.require_kind) <= _MAX_EVIDENCE_KIND_LEN):
             raise ValueError(
@@ -1339,6 +1363,7 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             kind=raw["kind"],
             extract=raw.get("extract", "url"),
             judge=raw.get("judge", "domain-credibility"),
+            project_scope=raw.get("project_scope", ""),
             version=raw.get("version", "0.1"),
         )
     if type_ == "evidence_precondition":
@@ -1351,6 +1376,7 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             require_verdict=raw.get("require_verdict", "pass"),
             reason=raw.get("reason", ""),
             action=raw.get("action", "block"),
+            project_scope=raw.get("project_scope", ""),
             version=raw.get("version", "0.1"),
         )
     raise ValueError(f"unknown policy type: {type_!r}")
@@ -1454,6 +1480,7 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
             "trigger": {"host": p.trigger.host, "event": p.trigger.event,
                         "matcher": p.trigger.matcher},
             "kind": p.kind, "extract": p.extract, "judge": p.judge,
+            "project_scope": p.project_scope,
         }
     if isinstance(p, EvidencePreconditionPolicy):
         return {
@@ -1463,5 +1490,6 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
                         "matcher": p.trigger.matcher},
             "require_kind": p.require_kind, "require_verdict": p.require_verdict,
             "reason": p.reason, "action": p.action,
+            "project_scope": p.project_scope,
         }
     raise ValueError(f"unknown policy type: {type(p).__name__}")

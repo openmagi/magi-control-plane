@@ -19,6 +19,7 @@ import sys
 from collections.abc import Mapping
 
 from . import session_evidence
+from .session_scope import cwd_in_scope
 from ..runtime.cc import CCDriver
 
 from urllib.parse import urlparse
@@ -116,6 +117,8 @@ def cli(argv: list[str] | None = None) -> int:
     p.add_argument("--kind", required=True, help="evidence kind to record under")
     p.add_argument("--extract", default="url", help="how to pull the subject (url)")
     p.add_argument("--judge", default="domain-credibility", choices=sorted(_JUDGES))
+    p.add_argument("--cwd-prefix", default="",
+                   help="only record when the session cwd is inside this dir (empty=global)")
     args = p.parse_args(argv)
 
     try:
@@ -126,6 +129,8 @@ def cli(argv: list[str] | None = None) -> int:
         event = CCDriver().parse_hook_payload(raw)
     except (ValueError, UnicodeDecodeError):
         return 0
+    if not cwd_in_scope(event.cwd, args.cwd_prefix):
+        return 0  # out of the policy's project scope
     session_id = event.session_id
     tool_use_id = event.raw.get("tool_use_id")
 

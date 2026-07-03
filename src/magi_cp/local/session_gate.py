@@ -16,6 +16,7 @@ import json
 import sys
 
 from . import session_evidence
+from .session_scope import cwd_in_scope
 from ..runtime.cc import CCDriver
 
 
@@ -37,6 +38,8 @@ def cli(argv: list[str] | None = None) -> int:
                    choices=session_evidence.VERDICTS)
     p.add_argument("--reason", default="",
                    help="deny reason shown to the agent when evidence is missing")
+    p.add_argument("--cwd-prefix", default="",
+                   help="only enforce when the session cwd is inside this dir (empty=global)")
     args = p.parse_args(argv)
 
     try:
@@ -48,6 +51,8 @@ def cli(argv: list[str] | None = None) -> int:
         session_id = event.session_id
     except Exception:
         return 0  # cannot parse -> fall through to the permission rules
+    if not cwd_in_scope(event.cwd, args.cwd_prefix):
+        return 0  # out of the policy's project scope -> not our concern
     if not session_id:
         # Cannot identify the session -> cannot enforce a session precondition.
         # Fail open (the permission rules still apply); the audit/gate pair is a
