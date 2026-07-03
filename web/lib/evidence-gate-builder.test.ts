@@ -4,6 +4,8 @@ import {
   DEFAULT_EVIDENCE_GATE_DRAFT,
   buildEvidenceGatePolicies,
   describeEvidenceGate,
+  looksLikeEvidenceGateIntent,
+  parseEvidenceGateIntent,
   validateEvidenceGateDraft,
   type EvidenceGateDraft,
 } from "./evidence-gate-builder"
@@ -59,5 +61,42 @@ describe("describeEvidenceGate", () => {
     expect(describeEvidenceGate(DEFAULT_EVIDENCE_GATE_DRAFT)).toMatch(/^On mcp__trading__execute_trade, block unless/)
     const d = clone(); d.gate.action = "ask"
     expect(describeEvidenceGate(d)).toMatch(/hold for approval unless/)
+  })
+})
+
+describe("project scope", () => {
+  it("threads project_scope onto both policies when set", () => {
+    const d = clone(); d.projectScope = "/Users/kevin/trading-mcp"
+    const [audit, gate] = buildEvidenceGatePolicies(d)
+    expect(audit.project_scope).toBe("/Users/kevin/trading-mcp")
+    expect(gate.project_scope).toBe("/Users/kevin/trading-mcp")
+  })
+  it("empty scope stays empty (global)", () => {
+    const [audit] = buildEvidenceGatePolicies(DEFAULT_EVIDENCE_GATE_DRAFT)
+    expect(audit.project_scope).toBe("")
+  })
+  it("summary mentions the scope", () => {
+    const d = clone(); d.projectScope = "/x/proj"
+    expect(describeEvidenceGate(d)).toMatch(/only in \/x\/proj/)
+  })
+})
+
+describe("parseEvidenceGateIntent", () => {
+  it("detects the intent", () => {
+    expect(looksLikeEvidenceGateIntent("verify a credible source before execute_trade")).toBe(true)
+    expect(looksLikeEvidenceGateIntent("make me a sandwich")).toBe(false)
+  })
+  it("pulls the gated mcp tool + fetch tools + scope from a description", () => {
+    const d = parseEvidenceGateIntent(
+      "In ~/trading-mcp, before mcp__trading__execute_trade runs, require that a WebFetch or Bash verified a credible source; ask for approval if missing",
+    )
+    expect(d.gate.matcher).toBe("mcp__trading__execute_trade")
+    expect(d.audit.matcher).toBe("WebFetch|Bash")
+    expect(d.gate.action).toBe("ask")
+    expect(d.projectScope).toBe("~/trading-mcp")
+  })
+  it("falls back to defaults when nothing matches", () => {
+    const d = parseEvidenceGateIntent("require verification of the source first")
+    expect(d.gate.matcher).toBe(DEFAULT_EVIDENCE_GATE_DRAFT.gate.matcher)
   })
 })
