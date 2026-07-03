@@ -50,6 +50,13 @@ export async function Sidebar() {
   // on so operators are not offered a governance surface that does
   // nothing yet.
   const packCentric = isPackCentricEnabled()
+  // Self-host single-operator (the synthetic "default" tenant): hide the
+  // fleet-oriented surfaces that have no local meaning. Endpoints is
+  // heartbeat/attestation monitoring for MANY gates across machines; with
+  // one local gate it is an empty, setup-forcing dead page. Shared runs is
+  // for publishing redacted run links to external parties. Neither applies
+  // to a single local operator, so keep the sidebar focused.
+  const selfHost = tenant?.synthetic ?? true
 
   return (
     <div className="flex flex-col h-full p-5">
@@ -85,12 +92,16 @@ export async function Sidebar() {
           <NavGroup label={t("nav.group.audit")}>
             <NavItem href="/overview" label={t("nav.overview")} icon="overview" />
             <NavItem href="/ledger" label={t("nav.audit")} icon="ledger" />
-            <NavItem
-              href="/endpoints"
-              label={t("nav.endpoints")}
-              icon="endpoints"
-            />
-            <NavItem href="/shared" label={t("nav.shared")} icon="ledger" />
+            {!selfHost && (
+              <NavItem
+                href="/endpoints"
+                label={t("nav.endpoints")}
+                icon="endpoints"
+              />
+            )}
+            {!selfHost && (
+              <NavItem href="/shared" label={t("nav.shared")} icon="ledger" />
+            )}
           </NavGroup>
 
           <NavGroup label={t("nav.group.setup")}>
