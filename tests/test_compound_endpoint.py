@@ -41,25 +41,49 @@ def test_requires_admin(client):
     assert client.post("/policies/compound", json={"draft": _draft(), "source": "org"}).status_code == 401
 
 
-def test_expands_and_saves_both_members(client):
+def test_authors_policy_owning_both_rules(client):
     r = client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["ids"] == ["verified-trade-audit", "verified-trade-gate"]
-    assert body["types"] == ["evidence_audit", "evidence_precondition"]
-    # both are now readable via GET
-    for pid in body["ids"]:
+    assert body["id"] == "verified-trade" and body["kind"] == "compound"
+    assert body["rule_ids"] == ["verified-trade-audit", "verified-trade-gate"]
+    # both member rules readable
+    for pid in body["rule_ids"]:
         assert client.get(f"/policies/{pid}", headers=ADMIN).status_code == 200
+    # the policy shows up as ONE grouping (not two loose rules)
+    groups = client.get("/policies/groups", headers=ADMIN).json()["policies"]
+    vt = next(g for g in groups if g["id"] == "verified-trade")
+    assert vt["kind"] == "compound" and len(vt["rule_ids"]) == 2
+
+
+def test_resave_drops_stale_rules(client):
+    client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
+    # re-save the same policy id but as a simple one-rule policy -> old two rules
+    # (audit+gate) must be replaced by the single new rule.
+    simple = {"type": "permission", "id": "verified-trade",
+              "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+              "permission": "deny", "pattern": "Bash(curl:*)"}
+    r = client.post("/policies/compound", json={"draft": simple, "source": "org"}, headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.json()["rule_ids"] == ["verified-trade"]
+    # the old member rules are gone
+    assert client.get("/policies/verified-trade-audit", headers=ADMIN).status_code == 404
+
+
+def test_delete_cascades_to_member_rules(client):
+    client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
+    d = client.delete("/policies/groups/verified-trade", headers=ADMIN)
+    assert d.status_code == 200
+    assert set(d.json()["rule_ids"]) == {"verified-trade-audit", "verified-trade-gate"}
+    assert client.get("/policies/verified-trade-audit", headers=ADMIN).status_code == 404
 
 
 def test_unknown_compound_type_is_400(client):
-    r = client.post("/policies/compound", json={"draft": {"type": "nope"}, "source": "org"}, headers=ADMIN)
+    r = client.post("/policies/compound", json={"draft": {"id": "x", "type": "nope"}, "source": "org"}, headers=ADMIN)
     assert r.status_code == 400
 
 
 def test_invalid_member_is_atomic_400_nothing_saved(client):
-    # A gate with no matcher fails IR validation -> whole compound rejected,
-    # and the audit member must NOT be left behind.
     bad = _draft(gate={"event": "PreToolUse", "matcher": ""})
     r = client.post("/policies/compound", json={"draft": bad, "source": "org"}, headers=ADMIN)
     assert r.status_code == 400
