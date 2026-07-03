@@ -263,3 +263,29 @@ describe("IrDraftPane compound (evidence_gate) rendering", () => {
     expect(src).toContain('name="ir_json"')
   })
 })
+
+describe("IrDraftPane policy-integrity review panel", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("accepts a review verdict + pending prop", () => {
+    expect(src).toContain("review?:")
+    expect(src).toContain("reviewPending")
+  })
+
+  it("renders the review panel above the Save CTA once ready", () => {
+    expect(src).toContain('data-testid="ir-draft-review"')
+    expect(src).toContain('data-testid="ir-draft-review-summary"')
+    expect(src).toContain('data-testid="ir-draft-review-issues"')
+    expect(src).toContain('data-testid="ir-draft-review-pending"')
+  })
+
+  it("colors the panel by verdict (emerald ok / amber needs-look)", () => {
+    expect(src).toContain("emerald-50")
+    expect(src).toContain("amber-50")
+  })
+
+  it("never gates Save on the review (panel is advisory, sibling of the form)", () => {
+    // The Save form's render condition must not reference `review`.
+    expect(src).toContain("readyToSave && draft && (")
+  })
+})

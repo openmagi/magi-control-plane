@@ -151,6 +151,16 @@ export function ConversationalCompose({
   const [history, setHistory] = useState<HistoryTurn[]>([])
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [readyToSave, setReadyToSave] = useState(false)
+  // Policy-integrity review verdict, fetched once a draft is ready. The
+  // review is ADVISORY: it surfaces "does this implement your intent?"
+  // (an orphan gate, a non-enforcing action, an intent mismatch) next to
+  // the Save CTA, but never blocks the save.
+  const [review, setReview] = useState<{
+    ok: boolean
+    summary: string
+    issues: { severity: string; message: string; source: string }[]
+  } | null>(null)
+  const [reviewPending, setReviewPending] = useState(false)
   // Q102: track the server's canonical missing-field set so the
   // IrDraftPane can render the "still missing: ..." footer and
   // surface NAMED placeholders per row instead of an empty stub.
@@ -168,6 +178,50 @@ export function ConversationalCompose({
    *  actionable copy, not a top-of-page banner"). We keep a flag so
    *  the input can re-enable for retry. */
   const [errored, setErrored] = useState(false)
+
+  // Fetch the policy-integrity review whenever a draft becomes ready.
+  // Clears the verdict as soon as the draft is edited back to not-ready
+  // so a stale "looks good" can't linger over a changed draft.
+  useEffect(() => {
+    if (!readyToSave || !draft) {
+      setReview(null)
+      return
+    }
+    const intent =
+      history.find((h) => h.role === "user")?.content
+      ?? initialUserMessage ?? ""
+    let cancelled = false
+    setReviewPending(true)
+    fetch("/api/policies/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draft, intent }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled) return
+        if (
+          data && typeof data.ok === "boolean" && Array.isArray(data.issues)
+        ) {
+          setReview({
+            ok: data.ok,
+            summary: String(data.summary ?? ""),
+            issues: data.issues,
+          })
+        } else {
+          setReview(null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setReview(null)
+      })
+      .finally(() => {
+        if (!cancelled) setReviewPending(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [readyToSave, draft, history, initialUserMessage])
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const mountedRef = useRef(true)
@@ -762,6 +816,8 @@ export function ConversationalCompose({
         saveAction={saveAction}
         missingFields={missingFields}
         packCentric={packCentric}
+        review={review}
+        reviewPending={reviewPending}
         // P4: feed the pack picker's extractor the operator's first
         // message so a named work context ("리서치", "coding safety")
         // pre-selects the matching pack.
