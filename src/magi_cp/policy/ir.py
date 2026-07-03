@@ -1063,6 +1063,127 @@ class RunCommandPolicy:
             raise ValueError(f"policy '{self.id}': {e}") from e
 
 
+# ── session-evidence pair (audit writes, precondition reads) ─────────
+# Two coupled archetypes that make "one policy depends on what another
+# recorded earlier in the SAME session" authorable. The audit records
+# evidence of a named `kind`; the precondition denies an event unless
+# that kind is on record at the required verdict. They join on the
+# `kind` string. Compile to the `magi-cp-session-audit` /
+# `magi-cp-session-gate` binaries (see magi_cp.local.session_evidence).
+_EVIDENCE_EXTRACTS: tuple[str, ...] = ("url",)
+_EVIDENCE_JUDGES: tuple[str, ...] = ("domain-credibility",)
+_EVIDENCE_VERDICTS: tuple[str, ...] = ("pass", "fail", "review")
+_MAX_EVIDENCE_KIND_LEN = 128
+_MAX_EVIDENCE_REASON_LEN = 400
+_EVIDENCE_KIND_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+@dataclass
+class EvidenceAuditPolicy:
+    """Record evidence about the tool calls it matches, to the session ledger.
+
+    On each matched call the runtime extracts a subject (``extract``, e.g. the
+    URL a WebFetch/Bash retrieved), judges it (``judge``), and appends an
+    evidence record under ``kind`` to this session's ledger. Observational:
+    never blocks. A precondition gate later reads these records as session state.
+    """
+    id: str
+    description: str
+    trigger: Trigger
+    kind: str
+    extract: str = "url"
+    judge: str = "domain-credibility"
+    version: str = "0.1"
+    type: Literal["evidence_audit"] = "evidence_audit"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not (isinstance(self.kind, str) and _EVIDENCE_KIND_RE.match(self.kind)
+                and len(self.kind) <= _MAX_EVIDENCE_KIND_LEN):
+            raise ValueError(
+                f"EvidenceAuditPolicy '{self.id}': kind must match [a-z0-9_]+ "
+                f"(<= {_MAX_EVIDENCE_KIND_LEN} chars), got {self.kind!r}"
+            )
+        if self.extract not in _EVIDENCE_EXTRACTS:
+            raise ValueError(
+                f"EvidenceAuditPolicy '{self.id}': extract must be one of "
+                f"{_EVIDENCE_EXTRACTS}, got {self.extract!r}"
+            )
+        if self.judge not in _EVIDENCE_JUDGES:
+            raise ValueError(
+                f"EvidenceAuditPolicy '{self.id}': judge must be one of "
+                f"{_EVIDENCE_JUDGES}, got {self.judge!r}"
+            )
+        if self.trigger.event not in _SUPPORTED_EVENTS:
+            raise ValueError(
+                f"EvidenceAuditPolicy '{self.id}': trigger.event "
+                f"unsupported: {self.trigger.event}"
+            )
+        from .matrix import validate_combination
+        try:
+            validate_combination(self.trigger.event, self.trigger.matcher, "audit")
+        except ValueError as e:
+            raise ValueError(f"policy '{self.id}': {e}") from e
+
+
+@dataclass
+class EvidencePreconditionPolicy:
+    """Deny an event unless the session ledger holds required evidence.
+
+    The gate: on ``trigger``, if no ``require_kind`` record at ``require_verdict``
+    exists for this session, the action (``block`` / ``ask``) fires; otherwise the
+    call falls through to the normal permission rules. Pairs with an
+    :class:`EvidenceAuditPolicy` that records ``require_kind`` upstream.
+    """
+    id: str
+    description: str
+    trigger: Trigger
+    require_kind: str
+    require_verdict: str = "pass"
+    reason: str = ""
+    action: Literal["block", "ask"] = "block"
+    version: str = "0.1"
+    type: Literal["evidence_precondition"] = "evidence_precondition"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not (isinstance(self.require_kind, str) and _EVIDENCE_KIND_RE.match(self.require_kind)
+                and len(self.require_kind) <= _MAX_EVIDENCE_KIND_LEN):
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': require_kind must match "
+                f"[a-z0-9_]+, got {self.require_kind!r}"
+            )
+        if self.require_verdict not in _EVIDENCE_VERDICTS:
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': require_verdict must be "
+                f"one of {_EVIDENCE_VERDICTS}, got {self.require_verdict!r}"
+            )
+        if self.action not in ("block", "ask"):
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': action must be block/ask, "
+                f"got {self.action!r}"
+            )
+        if not (isinstance(self.reason, str) and len(self.reason) <= _MAX_EVIDENCE_REASON_LEN):
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': reason must be a string "
+                f"<= {_MAX_EVIDENCE_REASON_LEN} chars"
+            )
+        if self.trigger.event not in _SUPPORTED_EVENTS:
+            raise ValueError(
+                f"EvidencePreconditionPolicy '{self.id}': trigger.event "
+                f"unsupported: {self.trigger.event}"
+            )
+        from .matrix import validate_combination
+        try:
+            validate_combination(self.trigger.event, self.trigger.matcher, self.action)
+        except ValueError as e:
+            raise ValueError(f"policy '{self.id}': {e}") from e
+
+
 # Union of every IR policy type. The compiler dispatches on
 # `isinstance(p, X)` rather than on the `type` field so the runtime
 # stays string-key-free internally — `type` only matters when crossing
@@ -1070,7 +1191,7 @@ class RunCommandPolicy:
 AnyPolicy = (
     EvidencePolicy | PermissionPolicy | SubagentPolicy
     | McpGatingPolicy | ContextInjectionPolicy | InputRewritePolicy
-    | RunCommandPolicy
+    | RunCommandPolicy | EvidenceAuditPolicy | EvidencePreconditionPolicy
 )
 
 
@@ -1192,6 +1313,27 @@ def policy_from_dict(raw: dict) -> "AnyPolicy":
             fail_closed=bool(raw.get("fail_closed", False)),
             version=raw.get("version", "0.1"),
         )
+    if type_ == "evidence_audit":
+        return EvidenceAuditPolicy(
+            id=raw["id"],
+            description=raw.get("description", ""),
+            trigger=Trigger(**raw["trigger"]),
+            kind=raw["kind"],
+            extract=raw.get("extract", "url"),
+            judge=raw.get("judge", "domain-credibility"),
+            version=raw.get("version", "0.1"),
+        )
+    if type_ == "evidence_precondition":
+        return EvidencePreconditionPolicy(
+            id=raw["id"],
+            description=raw.get("description", ""),
+            trigger=Trigger(**raw["trigger"]),
+            require_kind=raw["require_kind"],
+            require_verdict=raw.get("require_verdict", "pass"),
+            reason=raw.get("reason", ""),
+            action=raw.get("action", "block"),
+            version=raw.get("version", "0.1"),
+        )
     raise ValueError(f"unknown policy type: {type_!r}")
 
 
@@ -1285,5 +1427,22 @@ def policy_to_dict(p: "AnyPolicy") -> dict:
             "args": list(p.args),
             "timeout_ms": p.timeout_ms,
             "fail_closed": p.fail_closed,
+        }
+    if isinstance(p, EvidenceAuditPolicy):
+        return {
+            "type": "evidence_audit",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "kind": p.kind, "extract": p.extract, "judge": p.judge,
+        }
+    if isinstance(p, EvidencePreconditionPolicy):
+        return {
+            "type": "evidence_precondition",
+            "id": p.id, "description": p.description, "version": p.version,
+            "trigger": {"host": p.trigger.host, "event": p.trigger.event,
+                        "matcher": p.trigger.matcher},
+            "require_kind": p.require_kind, "require_verdict": p.require_verdict,
+            "reason": p.reason, "action": p.action,
         }
     raise ValueError(f"unknown policy type: {type(p).__name__}")
