@@ -56,13 +56,18 @@ describe("Sidebar IA invariants", () => {
     expect(src).toMatch(/icon="docs"/)
   })
 
-  it("audit group surfaces the P10 /endpoints attestation page", () => {
+  it("gates /endpoints + /shared behind !selfHost (hidden on self-host)", () => {
+    // Self-host single-operator hides the fleet-oriented surfaces:
+    // /endpoints (multi-gate heartbeat attestation) and /shared (publish
+    // redacted run links externally) have no local meaning. Both nav items
+    // are wrapped in `{!selfHost && (...)}` so they only render on a
+    // non-synthetic (hosted) tenant.
     expect(src).toMatch(/href="\/endpoints"/)
-    expect(src).toMatch(/icon="endpoints"/)
-  })
-
-  it("audit group surfaces the /shared run-share management page", () => {
     expect(src).toMatch(/href="\/shared"/)
+    // The gate: the endpoints NavItem must be inside a !selfHost branch.
+    expect(src).toMatch(/!selfHost &&[\s\S]*?href="\/endpoints"/)
+    expect(src).toMatch(/!selfHost &&[\s\S]*?href="\/shared"/)
+    expect(src).toMatch(/const selfHost = tenant\?\.synthetic/)
   })
 
   it("authoring group points only at /rules (New policy lives in-page)", () => {

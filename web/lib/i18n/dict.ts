@@ -812,7 +812,7 @@ const KO_RAW = {
 
   /* ── setup wizard (API key → install) ────────────────────────── */
   "setup.title": "설치 가이드",
-  "setup.subtitle": "발급받은 API 키를 입력하면 본인 테넌트 상태와 단계별 설치 안내가 표시됩니다.",
+  "setup.subtitle": "본인 API 키를 입력하면 상태를 확인하고 단계별 설치 안내를 표시합니다.",
   "setup.field.apiKey": "API 키",
   "setup.field.apiKeyHelper": "`mcp_…` 형태, 알파 신청 후 이메일로 받으신 키를 그대로 붙여 넣으세요.",
   "setup.verify": "확인",
@@ -1049,7 +1049,7 @@ const KO_RAW = {
 
   /* ── P4: Codex runtime adapter - runtime picker + coverage ──────── */
   "settings.runtime.label": "런타임",
-  "settings.runtime.description": "이 테넌트의 게이트가 어떤 코딩 에이전트 런타임을 쓰는지 선택합니다. 기본값은 Claude Code 입니다.",
+  "settings.runtime.description": "게이트가 어떤 코딩 에이전트 런타임을 쓰는지 선택합니다. 기본값은 Claude Code 입니다.",
   "settings.runtime.coverage_preview": "커버리지: 정책 {enforced}개 강제 적용",
   "settings.runtime.coverage_preview_full": "정책 {enforced}개 강제, {downgraded}개 다운그레이드, {unsupported}개 미지원",
   "settings.runtime.switch_confirm": "전환 확정",
@@ -1085,7 +1085,7 @@ const KO_RAW = {
   "rules.packCentric.migration.dismiss": "닫기",
   "sessions.title": "세션",
   "sessions.description": "최근 Claude Code 세션과 각 세션이 활성화한 정책 묶음입니다. 어떤 세션이 어떤 묶음을 켜 두었는지 확인하고 강제로 끌 수 있습니다.",
-  "sessions.floorNote": "이 테넌트의 상시 적용 묶음(floor):",
+  "sessions.floorNote": "상시 적용 묶음(floor):",
   "sessions.empty.title": "활성 세션이 없습니다",
   "sessions.empty.body": "Claude Code에서 묶음을 활성화하면 여기에 표시됩니다.",
   "sessions.col.session": "세션 ID",
@@ -1874,7 +1874,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "install.docs": "Full guide + troubleshooting (KO + EN)",
 
   "setup.title": "Setup",
-  "setup.subtitle": "Enter the API key we emailed you. We'll fetch your tenant status and walk through the install.",
+  "setup.subtitle": "Enter your API key. We'll check the status and walk through the install.",
   "setup.field.apiKey": "API key",
   "setup.field.apiKeyHelper": "Format `mcp_…`. Paste the key from your alpha welcome email exactly.",
   "setup.verify": "Verify",
@@ -2112,7 +2112,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
 
   /* ── P4: Codex runtime adapter - runtime picker + coverage ──────── */
   "settings.runtime.label": "Runtime",
-  "settings.runtime.description": "Choose which coding-agent runtime this tenant's gate speaks. Defaults to Claude Code.",
+  "settings.runtime.description": "Choose which coding-agent runtime your gate speaks. Defaults to Claude Code.",
   "settings.runtime.coverage_preview": "Coverage: {enforced} policies enforced",
   "settings.runtime.coverage_preview_full": "{enforced} enforced, {downgraded} downgraded, {unsupported} unsupported",
   "settings.runtime.switch_confirm": "Confirm switch",
@@ -2148,7 +2148,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.packCentric.migration.dismiss": "Dismiss",
   "sessions.title": "Sessions",
   "sessions.description": "Recent Claude Code sessions and the packs each one has activated. See who left which pack on, and force it off.",
-  "sessions.floorNote": "This tenant's always-on floor pack:",
+  "sessions.floorNote": "Always-on floor pack:",
   "sessions.empty.title": "No active sessions",
   "sessions.empty.body": "Sessions appear here once a pack is activated from Claude Code.",
   "sessions.col.session": "Session ID",
