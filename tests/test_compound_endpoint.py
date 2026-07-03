@@ -46,14 +46,16 @@ def test_authors_policy_owning_both_rules(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["id"] == "verified-trade" and body["kind"] == "compound"
-    assert body["rule_ids"] == ["verified-trade-audit", "verified-trade-gate"]
-    # both member rules readable
+    # audit + gate + 3 ledger-protection denies
+    assert body["rule_ids"][:2] == ["verified-trade-audit", "verified-trade-gate"]
+    assert len(body["rule_ids"]) == 5
+    # every member rule readable
     for pid in body["rule_ids"]:
         assert client.get(f"/policies/{pid}", headers=ADMIN).status_code == 200
-    # the policy shows up as ONE grouping (not two loose rules)
+    # the policy shows up as ONE grouping (not loose rules)
     groups = client.get("/policies/groups", headers=ADMIN).json()["policies"]
     vt = next(g for g in groups if g["id"] == "verified-trade")
-    assert vt["kind"] == "compound" and len(vt["rule_ids"]) == 2
+    assert vt["kind"] == "compound" and len(vt["rule_ids"]) == 5
 
 
 def test_resave_drops_stale_rules(client):
@@ -74,7 +76,7 @@ def test_delete_cascades_to_member_rules(client):
     client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
     d = client.delete("/policies/groups/verified-trade", headers=ADMIN)
     assert d.status_code == 200
-    assert set(d.json()["rule_ids"]) == {"verified-trade-audit", "verified-trade-gate"}
+    assert "verified-trade-audit" in d.json()["rule_ids"] and len(d.json()["rule_ids"]) == 5
     assert client.get("/policies/verified-trade-audit", headers=ADMIN).status_code == 404
 
 
@@ -89,3 +91,20 @@ def test_invalid_member_is_atomic_400_nothing_saved(client):
     assert r.status_code == 400
     assert client.get("/policies/verified-trade-audit", headers=ADMIN).status_code == 404
     assert client.get("/policies/verified-trade-gate", headers=ADMIN).status_code == 404
+
+
+def test_cross_ownership_rejected_409(client):
+    # policy A owns verified-trade-audit (via a simple draft with that id).
+    a = {"type": "permission", "id": "verified-trade-audit",
+         "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+         "permission": "deny", "pattern": "Bash(rm:*)"}
+    assert client.post("/policies/compound", json={"draft": a, "source": "org"}, headers=ADMIN).status_code == 200
+    # policy B (the compound) tries to also own verified-trade-audit -> 409.
+    r = client.post("/policies/compound", json={"draft": _draft(), "source": "org"}, headers=ADMIN)
+    assert r.status_code == 409, r.text
+
+
+def test_bad_policy_id_rejected(client):
+    bad = _draft(id="has spaces!!")
+    r = client.post("/policies/compound", json={"draft": bad, "source": "org"}, headers=ADMIN)
+    assert r.status_code == 400

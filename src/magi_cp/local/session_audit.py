@@ -33,23 +33,83 @@ _OFFICIAL_DOMAINS = (
     "sec.gov", "ir.tesla.com", "assets-ir.tesla.com",
     "europa.eu", "federalreserve.gov", "treasury.gov",
 )
-# Bash commands we treat as a real fetch (so `echo https://sec.gov` records
-# nothing). The subject still comes from the request, but a non-fetch command
-# cannot accidentally mint evidence.
-_FETCH_CMD_RE = re.compile(r"\b(curl|wget|https?_get|fetch)\b", re.I)
-
-
 def _first_url(text: str) -> str:
     m = _URL_RE.search(text or "")
     return m.group(0) if m else ""
+
+
+# Shell operators that chain commands. A chained command decouples the
+# aggregate Bash exit code from the fetch and hides which command actually
+# ran, so evidence cannot be bound to it (`curl -sf .../404 ; echo ok` would
+# otherwise launder a failed fetch into a pass via echo's exit 0).
+_SHELL_OPS = frozenset({"&&", "||", "|", ";", "&"})
+# curl/wget options that CONSUME the next token as a URL-shaped value. Their
+# value is NOT the fetch target, so it must never be mistaken for it
+# (`curl -e https://sec.gov https://example.com` fetches example.com but the
+# referer is the allowlisted host). We skip the option AND its value.
+_VALUE_OPTS = frozenset({
+    "-e", "--referer", "-A", "--user-agent", "-x", "--proxy",
+    "-b", "--cookie", "-c", "--cookie-jar", "-H", "--header",
+    "-d", "--data", "-o", "--output", "-K", "--config",
+    "-u", "--user", "--connect-to", "--resolve", "-U", "--proxy-user",
+})
+
+
+def _fetch_url_from_bash(cmd: str) -> str:
+    """The URL actually FETCHED by a standalone curl/wget, or "" otherwise.
+
+    Hardened against self-attest forgery:
+    - comments stripped (`echo done # curl https://sec.gov` -> "");
+    - a chained command (`;`, `&&`, `||`, `|`, `&`) mints nothing, so a failed
+      fetch cannot be laundered by a trailing `echo ok` (the aggregate exit is
+      no longer curl's);
+    - the URL must be a POSITIONAL argument of curl/wget (or the value of
+      `--url`), never the value of an option like `-e`/`-A`/`--proxy`, so a
+      URL smuggled into a referer/user-agent/proxy flag cannot mint a pass for
+      a host the command never fetched.
+    """
+    import shlex
+    try:
+        argv = shlex.split(cmd, comments=True)
+    except ValueError:
+        return ""
+    if not argv or any(tok in _SHELL_OPS for tok in argv):
+        return ""
+    # Locate the fetch program (allow a leading prefix like `timeout 5 curl`).
+    start = next(
+        (i for i, tok in enumerate(argv)
+         if tok.rsplit("/", 1)[-1] in ("curl", "wget")),
+        None,
+    )
+    if start is None:
+        return ""
+    i = start + 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--url" and i + 1 < len(argv):
+            return argv[i + 1] if _URL_RE.fullmatch(argv[i + 1]) else ""
+        if tok.startswith("--url="):
+            val = tok[len("--url="):]
+            return val if _URL_RE.fullmatch(val) else ""
+        if tok in _VALUE_OPTS:
+            i += 2  # skip the option AND the value it consumes
+            continue
+        if tok.startswith("-"):
+            i += 1  # boolean/unknown flag; `--opt=value` form self-contains
+            continue
+        if _URL_RE.fullmatch(tok):  # positional == the fetch target
+            return tok
+        i += 1
+    return ""
 
 
 def extract_subject(how: str, tool_name: str, tool_input: dict) -> str:
     """Pull the URL to judge out of a tool call. ``how='url'`` for now.
 
     WebFetch is CC's own server-side fetch, so its url is used directly. For
-    Bash, only a recognized fetch command (curl/wget) yields a subject — a bare
-    `echo <url>` records nothing.
+    Bash, the URL must be an argument of a curl/wget word (comments stripped),
+    so neither a bare `echo <url>` nor a URL hidden in a `# comment` records
+    anything.
     """
     if how != "url" or not isinstance(tool_input, dict):
         return ""
@@ -57,8 +117,7 @@ def extract_subject(how: str, tool_name: str, tool_input: dict) -> str:
         u = tool_input.get("url")
         return u if isinstance(u, str) else ""
     if tool_name == "Bash":
-        cmd = str(tool_input.get("command", ""))
-        return _first_url(cmd) if _FETCH_CMD_RE.search(cmd) else ""
+        return _fetch_url_from_bash(str(tool_input.get("command", "")))
     return ""
 
 

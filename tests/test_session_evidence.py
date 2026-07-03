@@ -226,3 +226,83 @@ def test_audit_out_of_scope_records_nothing(tmp_path):
                  "tool_response": {"content": "ok"}},
                 "--kind", "source_credibility", "--cwd-prefix", str(tmp_path / "proj"))
     assert rc == 0 and session_evidence.entries("sc3") == []
+
+
+def test_audit_bash_comment_smuggle_records_nothing():
+    # A URL hidden in a comment (fetch token inside `#`) must not mint evidence.
+    rc = _audit({"session_id": "cs1", "tool_name": "Bash",
+                 "tool_input": {"command": "echo done # curl https://sec.gov/x"},
+                 "tool_response": {"content": "done"}},
+                "--kind", "source_credibility")
+    assert rc == 0 and session_evidence.entries("cs1") == []
+
+
+def test_audit_real_curl_arg_records():
+    _audit({"session_id": "cs2", "tool_name": "Bash",
+            "tool_input": {"command": "curl -s https://www.sec.gov/x.htm"},
+            "tool_response": {"content": "ok"}},
+           "--kind", "source_credibility")
+    e = session_evidence.entries("cs2", kind="source_credibility")
+    assert len(e) == 1 and e[0]["verdict"] == "pass"
+
+
+def test_audit_url_after_shell_operator_not_attributed_to_curl():
+    # `curl x && echo https://sec.gov` -> the URL belongs to echo, not curl.
+    _audit({"session_id": "cs3", "tool_name": "Bash",
+            "tool_input": {"command": "curl -s http://localhost/ && echo https://sec.gov"},
+            "tool_response": {"content": "ok"}},
+           "--kind", "source_credibility")
+    e = session_evidence.entries("cs3", kind="source_credibility")
+    # only localhost (the curl arg) is judged -> fail, not the sec.gov echo
+    assert all(x["verdict"] == "fail" for x in e)
+
+
+# ── fable-5 review: self-attest via curl option-arg + response laundering ──
+def test_audit_referer_option_url_is_not_the_fetch_target():
+    # `curl -e https://sec.gov https://example.com` FETCHES example.com; the
+    # allowlisted URL is only the referer. It must not mint a pass for sec.gov.
+    for opt in ("-e", "-A", "--proxy", "--referer", "--user-agent"):
+        sid = f"opt{opt}"
+        _audit({"session_id": sid, "tool_name": "Bash",
+                "tool_input": {"command": f"curl {opt} https://sec.gov https://example.com"},
+                "tool_response": {"content": "ok"}},
+               "--kind", "source_credibility")
+        e = session_evidence.entries(sid, kind="source_credibility")
+        # judged host is example.com (the positional target) -> fail, never a
+        # pass for the sec.gov option value.
+        assert all(x["verdict"] == "fail" for x in e)
+        assert not any(x["verdict"] == "pass" for x in e)
+
+
+def test_audit_chained_command_mints_nothing_no_response_laundering():
+    # `curl -sf https://sec.gov/404 ; echo ok` -> the curl fetch fails but the
+    # aggregate Bash exit is echo's 0. A chained command must mint nothing so a
+    # failed fetch cannot be laundered into a pass.
+    for cmd in (
+        "curl -sf https://sec.gov/does-not-exist ; echo ok",
+        "curl https://sec.gov/x || echo ok",
+        "curl https://sec.gov/x | jq .",
+    ):
+        sid = "chain" + str(abs(hash(cmd)))
+        rc = _audit({"session_id": sid, "tool_name": "Bash",
+                     "tool_input": {"command": cmd},
+                     "tool_response": {"content": "ok"}},
+                    "--kind", "source_credibility")
+        assert rc == 0 and session_evidence.entries(sid) == []
+
+
+def test_audit_standalone_curl_with_prefix_and_url_flag_still_mints():
+    # Regression guard: the hardening must NOT break legitimate fetches.
+    for cmd in (
+        "curl -s https://www.sec.gov/a.htm",
+        "timeout 5 curl -sS https://www.sec.gov/b.htm",
+        "curl --url https://www.sec.gov/c.htm",
+        "curl -o /tmp/x https://www.sec.gov/d.htm",
+    ):
+        sid = "ok" + str(abs(hash(cmd)))
+        _audit({"session_id": sid, "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+                "tool_response": {"content": "ok"}},
+               "--kind", "source_credibility")
+        e = session_evidence.entries(sid, kind="source_credibility")
+        assert len(e) == 1 and e[0]["verdict"] == "pass"
