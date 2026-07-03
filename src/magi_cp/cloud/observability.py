@@ -142,13 +142,21 @@ def attach_metrics(app) -> None:
 
     The counters carry a `tenant_id` label, so on an exposed instance an
     unauthenticated scraper could enumerate tenants + their activity (OBS-1).
-    Two defenses, both opt-in:
-      - MAGI_CP_METRICS_TOKEN: when set, require `Authorization: Bearer <token>`
-        (constant-time compare). Unset keeps the legacy no-auth behavior for
-        deployments that rely on network isolation instead.
-      - charts/magi-cp NetworkPolicy (networkPolicy.enabled): restrict ingress
-        to the monitoring namespace. The chart now ships that template rather
-        than only claiming it in a docstring.
+    `/metrics` also shares the API port, so it cannot be network-isolated from
+    the API by path alone. It is therefore FAIL-CLOSED by default, mirroring
+    the dashboard loopback backstop: unless the operator configures one of the
+    two explicit options below, an unauthenticated scrape gets 401.
+
+      - MAGI_CP_METRICS_TOKEN=<token>: require `Authorization: Bearer <token>`
+        (constant-time compare). The normal secure path; Prometheus supports a
+        bearer token natively.
+      - MAGI_CP_METRICS_PUBLIC=1: explicit opt-out for a deployment that
+        isolates /metrics at the network layer (private listener, NetworkPolicy,
+        scrape-only network). Serves with no auth. This is the conscious
+        "I know it is network-isolated" choice, symmetric with
+        MAGI_CP_TRUST_LOOPBACK_HEADER=1 on the dashboard.
+      - charts/magi-cp NetworkPolicy (networkPolicy.enabled) restricts pod
+        ingress; pair it with MAGI_CP_METRICS_PUBLIC=1 for a tokenless scrape.
     """
     import os
 
@@ -161,9 +169,15 @@ def attach_metrics(app) -> None:
     except ImportError:
         return
 
+    _TRUTHY = {"1", "true", "yes", "on"}
+
     @app.get("/metrics", include_in_schema=False)
     def metrics_endpoint(request: Request) -> Response:
         token = os.environ.get("MAGI_CP_METRICS_TOKEN")
+        public = (
+            os.environ.get("MAGI_CP_METRICS_PUBLIC", "").strip().lower()
+            in _TRUTHY
+        )
         if token:
             import hmac as _hmac
             presented = (
@@ -171,6 +185,13 @@ def attach_metrics(app) -> None:
             ).removeprefix("Bearer ").strip()
             if not presented or not _hmac.compare_digest(presented, token):
                 return Response("unauthorized", status_code=401)
+        elif not public:
+            # Fail closed: no token configured and not explicitly public.
+            return Response(
+                "metrics auth not configured: set MAGI_CP_METRICS_TOKEN, or "
+                "MAGI_CP_METRICS_PUBLIC=1 if /metrics is network-isolated",
+                status_code=401,
+            )
         return Response(
             generate_latest(_METRICS_REGISTRY),
             media_type=CONTENT_TYPE_LATEST,

@@ -108,6 +108,7 @@ def test_metrics_requires_token_when_set(monkeypatch):
     from magi_cp.cloud.observability import attach_metrics
 
     monkeypatch.setenv("MAGI_CP_METRICS_TOKEN", "scrape-secret")
+    monkeypatch.delenv("MAGI_CP_METRICS_PUBLIC", raising=False)
     app = FastAPI()
     attach_metrics(app)
     c = TestClient(app)
@@ -119,7 +120,7 @@ def test_metrics_requires_token_when_set(monkeypatch):
     assert ok.status_code == 200
 
 
-def test_metrics_no_auth_when_token_unset(monkeypatch):
+def test_metrics_fail_closed_when_neither_token_nor_public(monkeypatch):
     try:
         import prometheus_client  # noqa: F401
     except ImportError:
@@ -131,6 +132,26 @@ def test_metrics_no_auth_when_token_unset(monkeypatch):
     from magi_cp.cloud.observability import attach_metrics
 
     monkeypatch.delenv("MAGI_CP_METRICS_TOKEN", raising=False)
+    monkeypatch.delenv("MAGI_CP_METRICS_PUBLIC", raising=False)
+    app = FastAPI()
+    attach_metrics(app)
+    c = TestClient(app)
+    assert c.get("/metrics").status_code == 401   # OBS-1 fail-closed default
+
+
+def test_metrics_public_opt_out_serves_without_token(monkeypatch):
+    try:
+        import prometheus_client  # noqa: F401
+    except ImportError:
+        import pytest
+        pytest.skip("observability extra not installed")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from magi_cp.cloud.observability import attach_metrics
+
+    monkeypatch.delenv("MAGI_CP_METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("MAGI_CP_METRICS_PUBLIC", "1")
     app = FastAPI()
     attach_metrics(app)
     c = TestClient(app)
