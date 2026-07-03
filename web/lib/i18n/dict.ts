@@ -508,6 +508,8 @@ const KO_RAW = {
   "rules.summary.checks": "총 {total} · 빌트인 {builtin} · 커스텀 {custom} · 인라인 {inline}",
   "rules.summary.evidenceRecords": "총 {total} · 빌트인 {builtin} · 커스텀 {custom} · 인라인 {inline}",
   "rules.newButton": "새 정책 만들기",
+  "rules.templates.browse": "템플릿 둘러보기",
+  "rules.templates.hide": "템플릿 숨기기",
   "rules.empty.policies": "정책이 없습니다.",
   "rules.empty.policies.cta": "정책 작성하기",
   "rules.empty.checks": "Check 가 없습니다.",
@@ -913,7 +915,7 @@ const KO_RAW = {
 
   /* ── D72 first-time-visitor empty states (KO) ────────────────── */
   "rules.empty.policies.title": "정책이 아직 없어요",
-  "rules.empty.policies.body": "위의 prebuilt 정책을 켜거나 새 정책을 직접 만들어 보세요. 정책은 Claude Code가 훅을 발화시킬 때 차단, 질문, 감사, 컨텍스트 주입, 명령 실행 중 어떤 동작을 할지 결정합니다.",
+  "rules.empty.policies.body": "새 정책을 직접 만들거나, \"템플릿 둘러보기\"로 미리 만들어진 정책을 살펴보세요. 정책은 Claude Code가 훅을 발화시킬 때 차단, 질문, 감사, 컨텍스트 주입, 명령 실행 중 어떤 동작을 할지 결정합니다.",
   "rules.empty.policies.cta.primary": "새 정책 만들기",
   "rules.empty.policies.cta.secondary": "대화형으로 만들기",
   "rules.empty.checks.title": "검사(Check)가 없어요",
@@ -1575,6 +1577,8 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "rules.summary.checks": "{total} total · {builtin} built-in · {custom} custom · {inline} inline",
   "rules.summary.evidenceRecords": "{total} total · {builtin} built-in · {custom} custom · {inline} inline",
   "rules.newButton": "New policy",
+  "rules.templates.browse": "Browse templates",
+  "rules.templates.hide": "Hide templates",
   "rules.empty.policies": "No policies yet.",
   "rules.empty.policies.cta": "Author a policy",
   "rules.empty.checks": "No checks yet.",
@@ -1980,7 +1984,7 @@ const EN: Record<keyof typeof KO_RAW, string> = {
 
   /* ── D72 first-time-visitor empty states (EN) ────────────────── */
   "rules.empty.policies.title": "No policies yet",
-  "rules.empty.policies.body": "Toggle a prebuilt policy above, or create a new one. A policy decides what happens when Claude Code triggers a hook (block, ask, audit, inject context, run a command).",
+  "rules.empty.policies.body": "Create a new policy, or hit \"Browse templates\" to start from a prebuilt one. A policy decides what happens when Claude Code triggers a hook (block, ask, audit, inject context, run a command).",
   "rules.empty.policies.cta.primary": "New policy",
   "rules.empty.policies.cta.secondary": "Build with conversation",
   "rules.empty.checks.title": "No checks yet",
