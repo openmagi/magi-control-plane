@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 
 import {
   DEFAULT_EVIDENCE_GATE_DRAFT,
+  buildEvidenceGateCompoundDraft,
   buildEvidenceGatePolicies,
   describeEvidenceGate,
   looksLikeEvidenceGateIntent,
@@ -98,5 +99,19 @@ describe("parseEvidenceGateIntent", () => {
   it("falls back to defaults when nothing matches", () => {
     const d = parseEvidenceGateIntent("require verification of the source first")
     expect(d.gate.matcher).toBe(DEFAULT_EVIDENCE_GATE_DRAFT.gate.matcher)
+  })
+})
+
+describe("buildEvidenceGateCompoundDraft", () => {
+  it("produces one compound evidence_gate draft the server can expand", () => {
+    const d = clone(); d.projectScope = "/x/proj"
+    const c = buildEvidenceGateCompoundDraft(d) as Record<string, any>
+    expect(c.type).toBe("evidence_gate")
+    expect(c.id).toBe(d.idStem)
+    expect(c.kind).toBe(d.kind)
+    expect(c.project_scope).toBe("/x/proj")
+    expect(c.audit.matcher).toBe(d.audit.matcher)
+    expect(c.gate.matcher).toBe(d.gate.matcher)
+    expect(c.gate.action).toBe(d.gate.action)
   })
 })

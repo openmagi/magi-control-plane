@@ -480,6 +480,16 @@ type HitlListResp = { items: HitlItem[] }
 type DecideResp = { verdict?: string; token?: string | null; hitl_id?: number }
 type PolicyListResp = { items: PolicyListItem[] }
 
+/** An authored policy (the user-facing unit) and the rules it owns. */
+export type PolicyGroupItem = {
+  id: string
+  description: string
+  kind: string // "simple" | "compound"
+  rule_ids: string[]
+  enabled: boolean
+  source: string
+}
+
 // ── run-share (public, keyless) ──────────────────────────────────────
 export type SharedRunView = {
   schemaVersion?: string
@@ -714,6 +724,19 @@ export const cloud = {
   listPolicies: (): Promise<PolicyListItem[]> =>
     _fetch<PolicyListResp>("/policies", { method: "GET", keyType: "admin" })
       .then(d => d.items),
+
+  /** pack -> policy -> rule: the authored policies (each owning >=1 rule).
+   *  Free-standing legacy rules surface as one-rule policies. */
+  listPolicyGroups: (): Promise<PolicyGroupItem[]> =>
+    _fetch<{ policies: PolicyGroupItem[] }>("/policies/groups", { method: "GET", keyType: "admin" })
+      .then(d => d.policies),
+
+  /** Delete an authored policy and cascade to the rules it owns. */
+  deletePolicyGroup: (id: string): Promise<void> =>
+    _fetch<unknown>(
+      `/policies/groups/${id.split("/").map(encodeURIComponent).join("/")}`,
+      { method: "DELETE", keyType: "admin" },
+    ).then(() => undefined),
 
   /** D54: 5 prebuilt policy templates (one per built-in verifier).
    * Static catalog; the cloud computes it from

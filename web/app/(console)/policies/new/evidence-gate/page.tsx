@@ -4,7 +4,7 @@ import { redirect } from "next/navigation"
 import { ArrowLeftIcon } from "@heroicons/react/24/outline"
 
 import {
-  buildEvidenceGatePolicies,
+  buildEvidenceGateCompoundDraft,
   validateEvidenceGateDraft,
   type EvidenceGateDraft,
 } from "@/lib/evidence-gate-builder"
@@ -18,21 +18,6 @@ import EvidenceGateForm from "./EvidenceGateForm"
 export const dynamic = "force-dynamic"
 
 const BASE = "/policies/new/evidence-gate"
-
-async function putPolicy(dict: Record<string, unknown>, adminKey: string): Promise<Response> {
-  const id = String(dict.id)
-  const idForUrl = id.split("/").map(encodeURIComponent).join("/")
-  return fetch(
-    `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}/policies/${idForUrl}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
-      cache: "no-store",
-      body: JSON.stringify({ policy: dict, source: "org", enabled: true }),
-      signal: AbortSignal.timeout(8000),
-    },
-  )
-}
 
 async function saveEvidenceGate(formData: FormData): Promise<void> {
   "use server"
@@ -54,17 +39,25 @@ async function saveEvidenceGate(formData: FormData): Promise<void> {
     redirect(`${BASE}?err=${codeForError(e)}`); return
   }
 
-  // Persist the audit first, then the gate. If the gate PUT fails we leave the
-  // audit in place (harmless: an audit with no gate just records evidence).
-  const [audit, gate] = buildEvidenceGatePolicies(draft)
-  for (const dict of [audit, gate]) {
-    let r: Response
-    try { r = await putPolicy(dict, adminKey) }
-    catch (e) { redirect(`${BASE}?err=${codeForError(e)}`); return }
-    if (!r.ok) {
-      console.error(`cloud ${r.status} PUT /policies (${dict.id}): ${await r.text().catch(() => "")}`)
-      redirect(`${BASE}?err=${codeForError(new Error(`cloud ${r.status}`))}`); return
-    }
+  // Author ONE policy (the compound), which the server expands into its member
+  // rules and persists atomically as an owning policy.
+  const compound = buildEvidenceGateCompoundDraft(draft)
+  let r: Response
+  try {
+    r = await fetch(
+      `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}/policies/compound`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
+        cache: "no-store",
+        body: JSON.stringify({ draft: compound, source: "org", enabled: true }),
+        signal: AbortSignal.timeout(8000),
+      },
+    )
+  } catch (e) { redirect(`${BASE}?err=${codeForError(e)}`); return }
+  if (!r.ok) {
+    console.error(`cloud ${r.status} POST /policies/compound: ${await r.text().catch(() => "")}`)
+    redirect(`${BASE}?err=${codeForError(new Error(`cloud ${r.status}`))}`); return
   }
   redirect("/rules?flash=policy_saved")
 }
