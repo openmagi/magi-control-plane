@@ -38,29 +38,68 @@ def _first_url(text: str) -> str:
     return m.group(0) if m else ""
 
 
+# Shell operators that chain commands. A chained command decouples the
+# aggregate Bash exit code from the fetch and hides which command actually
+# ran, so evidence cannot be bound to it (`curl -sf .../404 ; echo ok` would
+# otherwise launder a failed fetch into a pass via echo's exit 0).
+_SHELL_OPS = frozenset({"&&", "||", "|", ";", "&"})
+# curl/wget options that CONSUME the next token as a URL-shaped value. Their
+# value is NOT the fetch target, so it must never be mistaken for it
+# (`curl -e https://sec.gov https://example.com` fetches example.com but the
+# referer is the allowlisted host). We skip the option AND its value.
+_VALUE_OPTS = frozenset({
+    "-e", "--referer", "-A", "--user-agent", "-x", "--proxy",
+    "-b", "--cookie", "-c", "--cookie-jar", "-H", "--header",
+    "-d", "--data", "-o", "--output", "-K", "--config",
+    "-u", "--user", "--connect-to", "--resolve", "-U", "--proxy-user",
+})
+
+
 def _fetch_url_from_bash(cmd: str) -> str:
-    """The URL argument of a curl/wget invocation, or "" if the command is not a
-    fetch. Parses the argv (shlex) so a URL smuggled in a COMMENT or in a
-    non-fetch token cannot mint evidence: `echo done # curl https://sec.gov`
-    yields "" because the fetch token is inside a comment, and the URL must be an
-    actual argument of a curl/wget word, not just anywhere in the string.
+    """The URL actually FETCHED by a standalone curl/wget, or "" otherwise.
+
+    Hardened against self-attest forgery:
+    - comments stripped (`echo done # curl https://sec.gov` -> "");
+    - a chained command (`;`, `&&`, `||`, `|`, `&`) mints nothing, so a failed
+      fetch cannot be laundered by a trailing `echo ok` (the aggregate exit is
+      no longer curl's);
+    - the URL must be a POSITIONAL argument of curl/wget (or the value of
+      `--url`), never the value of an option like `-e`/`-A`/`--proxy`, so a
+      URL smuggled into a referer/user-agent/proxy flag cannot mint a pass for
+      a host the command never fetched.
     """
     import shlex
     try:
         argv = shlex.split(cmd, comments=True)
     except ValueError:
         return ""
-    # Find a fetch token, then the first URL-shaped arg AFTER it (before any
-    # shell operator that would start a new command).
-    stops = {"&&", "||", "|", ";", "&"}
-    for i, tok in enumerate(argv):
-        base = tok.rsplit("/", 1)[-1]
-        if base in ("curl", "wget"):
-            for arg in argv[i + 1:]:
-                if arg in stops:
-                    break
-                if _URL_RE.fullmatch(arg):
-                    return arg
+    if not argv or any(tok in _SHELL_OPS for tok in argv):
+        return ""
+    # Locate the fetch program (allow a leading prefix like `timeout 5 curl`).
+    start = next(
+        (i for i, tok in enumerate(argv)
+         if tok.rsplit("/", 1)[-1] in ("curl", "wget")),
+        None,
+    )
+    if start is None:
+        return ""
+    i = start + 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--url" and i + 1 < len(argv):
+            return argv[i + 1] if _URL_RE.fullmatch(argv[i + 1]) else ""
+        if tok.startswith("--url="):
+            val = tok[len("--url="):]
+            return val if _URL_RE.fullmatch(val) else ""
+        if tok in _VALUE_OPTS:
+            i += 2  # skip the option AND the value it consumes
+            continue
+        if tok.startswith("-"):
+            i += 1  # boolean/unknown flag; `--opt=value` form self-contains
+            continue
+        if _URL_RE.fullmatch(tok):  # positional == the fetch target
+            return tok
+        i += 1
     return ""
 
 
