@@ -77,7 +77,13 @@ services:
     image: ghcr.io/openmagi/magi-cp-dashboard:latest
     pull_policy: always
     ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+      # Bind to loopback ONLY: the dashboard holds ambient admin credentials
+      # and is an operator-local console, so it must not be reachable from
+      # other machines by default. localhost:${DASHBOARD_PORT} on the host
+      # still works. To expose it deliberately (LAN / remote / behind a
+      # proxy), change this to "${DASHBOARD_PORT:-3000}:3000" and set
+      # MAGI_CP_TRUST_LOOPBACK_HEADER=0 + a MAGI_CP_DASHBOARD_SESSION_SECRET.
+      - "127.0.0.1:${DASHBOARD_PORT:-3000}:3000"
     restart: unless-stopped
     depends_on:
       cloud:

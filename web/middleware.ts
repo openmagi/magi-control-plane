@@ -3,7 +3,6 @@ import {
   isLoopbackHost,
   verifySession,
   trustLoopbackHeader,
-  requestCameThroughProxy,
   CONSOLE_COOKIE,
 } from "@/lib/dashboard-auth"
 
@@ -67,15 +66,16 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   if (path === "/") return NextResponse.next()
   if (matchesPrefix(path, CONSOLE_PUBLIC)) return NextResponse.next()
 
-  // A direct localhost request (self-host single-operator default) skips the
-  // login. Behind a reverse proxy the Host header can be spoofed to look like
-  // loopback (WEB-1 P0), so a proxy hop (x-forwarded-*) suppresses the
-  // exception and a session is required.
-  if (
-    trustLoopbackHeader() &&
-    !requestCameThroughProxy(req.headers) &&
-    isLoopbackHost(req.headers.get("host"))
-  ) {
+  // A loopback Host request skips the login (self-host single-operator
+  // default). The security boundary is the network bind, NOT this header:
+  // the docker-compose template binds the dashboard to 127.0.0.1 only, so it
+  // is unreachable off-host and the Host header cannot be spoofed from
+  // outside. An operator who deliberately exposes the console (binds 0.0.0.0
+  // or fronts it with a proxy) sets MAGI_CP_TRUST_LOOPBACK_HEADER=0 to force a
+  // session. (We do NOT key off x-forwarded-* here: the Next.js standalone
+  // server injects those on every request even with no proxy, so their mere
+  // presence is not a proxy signal.)
+  if (trustLoopbackHeader() && isLoopbackHost(req.headers.get("host"))) {
     return NextResponse.next()
   }
   if (await verifySession(req.cookies.get(CONSOLE_COOKIE)?.value)) {

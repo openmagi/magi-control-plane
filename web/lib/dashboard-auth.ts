@@ -30,34 +30,20 @@ function secret(): string | null {
 /**
  * Whether to trust a loopback `host` header as proof of a local request.
  *
- * Default TRUE: magi-cp is a self-host, single-operator tool whose default
- * bind is localhost-only, so a direct `localhost` request is the operator's
- * own machine and forcing a login there is pure friction. The Host-header
- * spoof the auth backstop guards against only matters when the console is
- * exposed / behind a reverse proxy, and that case is detected separately by
- * `requestCameThroughProxy` (a proxy hop adds `x-forwarded-*`), which
- * suppresses the loopback exception automatically. An operator who wants a
- * session required for EVERY request regardless (belt-and-suspenders) sets
- * MAGI_CP_TRUST_LOOPBACK_HEADER=0.
+ * Default TRUE: magi-cp is a self-host, single-operator tool, so a
+ * `localhost` request is the operator's own machine and forcing a login
+ * there is pure friction. The real security boundary is the NETWORK BIND,
+ * not this header: the docker-compose template binds the dashboard to
+ * 127.0.0.1 only, so it is unreachable off-host and the Host header cannot be
+ * spoofed from another machine. An operator who deliberately exposes the
+ * console (binds 0.0.0.0, or fronts it with a reverse proxy) sets
+ * MAGI_CP_TRUST_LOOPBACK_HEADER=0 to require a signed session for every
+ * request. (We intentionally do NOT try to detect a proxy from x-forwarded-*
+ * headers: the Next.js standalone server injects those on every request even
+ * with no proxy, so their presence is not a proxy signal.)
  */
 export function trustLoopbackHeader(): boolean {
   return process.env.MAGI_CP_TRUST_LOOPBACK_HEADER !== "0"
-}
-
-/**
- * True when the request carries reverse-proxy forwarding headers, i.e. it did
- * NOT arrive as a direct connection. A direct `localhost` request has none of
- * these; a proxy in front of an exposed console adds them. Used to suppress
- * the loopback-host exception behind a proxy, where the `Host` header can be
- * spoofed to look like loopback (the WEB-1 P0). Header names are lowercased
- * by the runtime.
- */
-export function requestCameThroughProxy(headers: Headers): boolean {
-  return (
-    headers.has("x-forwarded-for") ||
-    headers.has("x-forwarded-host") ||
-    headers.has("forwarded")
-  )
 }
 
 export function isLoopbackHost(host: string | null): boolean {
