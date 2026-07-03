@@ -12,6 +12,7 @@ def attach(
     app: FastAPI, engine, *,
     policy_store: "PolicyStore | None",
     pack_store: "PackStore | None",
+    policy_group_store=None,
 ) -> None:
     """Codex runtime adapter (P4): per-runtime coverage + per-tenant
     runtime preference for the dashboard runtime picker.
@@ -33,6 +34,9 @@ def attach(
     """
     from ...config import codex_runtime_enabled
     from ...policy.pack import builtin_pack_spec_by_id, _builtin_member_ids
+    from ...policy.pack_membership import (
+        build_group_rule_index, expand_pack_member_ids,
+    )
     from ...policy.prebuilt import build_prebuilt_evidence_policy
     from ...runtime import get_runtime, rollup_cells
     from ...runtime.trait import coverage_cell
@@ -82,10 +86,13 @@ def attach(
                     seen.add(ov.policy.id)
                     out.append(ov.policy)
         if pack_store is not None:
+            group_index = build_group_rule_index(policy_group_store)
             for row in pack_store.load():
                 if not getattr(row, "is_floor", False):
                     continue
-                for mid in row.policy_ids:
+                # pack -> policy -> rule: expand policy-group members to
+                # their rule ids before resolving IR.
+                for mid in expand_pack_member_ids(row.policy_ids, group_index):
                     if mid in seen:
                         continue
                     ir = _policy_ir_by_id(mid)
@@ -98,13 +105,14 @@ def attach(
         """Ordered member policy ids for a pack, or None when unknown.
         Mirrors ``_attach_policy_routes._resolve_pack_members`` (kept
         local so the runtime routes carry no dependency on that closure)."""
+        group_index = build_group_rule_index(policy_group_store)
         spec = builtin_pack_spec_by_id(pack_id)
         if spec is not None:
-            return _builtin_member_ids(spec)
+            return expand_pack_member_ids(_builtin_member_ids(spec), group_index)
         if pack_id.startswith("user-pack/") and pack_store is not None:
             for row in pack_store.load():
                 if row.id == pack_id:
-                    return list(row.policy_ids)
+                    return expand_pack_member_ids(row.policy_ids, group_index)
         return None
 
     @app.get(

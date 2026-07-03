@@ -18,6 +18,7 @@ def attach(
     pack_store: "PackStore | None",
     pack_store_lock: asyncio.Lock | None,
     policy_store: "PolicyStore | None" = None,
+    policy_group_store=None,
 ) -> None:
     """P1+P2 pack-centric runtime — session-scoped activation + resolver.
 
@@ -260,20 +261,31 @@ def attach(
         from ...policy.pack import (
             _builtin_member_ids, builtin_pack_spec_by_id,
         )
+        from ...policy.pack_membership import (
+            build_group_rule_index, expand_pack_member_ids,
+        )
+        # pack -> policy -> rule: a member id that names a policy-group
+        # expands to that policy's rule ids so the gate cache enforces the
+        # policy's rules. Loaded ONCE per request alongside the pack store.
+        group_index = build_group_rule_index(policy_group_store)
         # Load user packs ONCE per request. Empty index when the store
         # is not wired (self-host misconfig) — matches the pre-hoist
-        # "return []" branch.
+        # "return []" branch. Member ids are expanded through the policy
+        # tier at load time so the lookup returns rule ids downstream.
         user_pack_index: dict[str, list[str]] = {}
         if pack_store is not None:
             for row in pack_store.load():
-                user_pack_index[row.id] = list(row.policy_ids)
+                user_pack_index[row.id] = expand_pack_member_ids(
+                    row.policy_ids, group_index)
 
         def _lookup(pack_id: str) -> list[str]:
             if not isinstance(pack_id, str) or not pack_id:
                 return []
             spec = builtin_pack_spec_by_id(pack_id)
             if spec is not None:
-                return _builtin_member_ids(spec)
+                # Built-in packs may also reference a policy-group member.
+                return expand_pack_member_ids(
+                    _builtin_member_ids(spec), group_index)
             if pack_id.startswith("user-pack/"):
                 return list(user_pack_index.get(pack_id, ()))
             return []

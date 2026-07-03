@@ -319,7 +319,8 @@ def create_app(
     # Ledger + metrics-summary (audit views, integrity, aggregate).
     routes_ledger.attach(app, engine, ledger=ledger,
                          policy_store=policy_store, pack_store=pack_store,
-                         script_store=script_store)
+                         script_store=script_store,
+                         policy_group_store=policy_group_store)
 
     # ── /policies CRUD (v1) ──────────────────────────────────────
     # ── Codex runtime adapter (P4) - coverage + per-tenant runtime ────
@@ -328,7 +329,8 @@ def create_app(
     # helper's greedy `/policies/{policy_id:path}` catch-all.
     routes_runtime.attach(app, engine,
                            policy_store=policy_store,
-                           pack_store=pack_store)
+                           pack_store=pack_store,
+                           policy_group_store=policy_group_store)
 
     routes_policy.attach(app, policy_store, policy_lock,
                          verifier_registry=verifier_registry,
@@ -388,6 +390,7 @@ def create_app(
         pack_store=pack_store,
         pack_store_lock=pack_store_lock,
         policy_store=policy_store,
+        policy_group_store=policy_group_store,
     )
 
     return app

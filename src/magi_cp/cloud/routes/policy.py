@@ -710,15 +710,21 @@ def attach(app: FastAPI, store: PolicyStore,
 
     def _list_user_packs_dict(locale: str) -> list[dict]:
         from ...policy.pack import user_pack_to_dict
+        from ...policy.pack_membership import expand_pack_member_ids
         if pack_store is None:
             return []
         enabled = _enabled_id_set()
         store_ids = _all_policy_id_set()
+        gidx = _group_rule_index()
         out: list[dict] = []
         for row in pack_store.load():
+            # pack -> policy -> rule: expand policy-group members to rule
+            # ids so status (ok/partial/stale) is computed over the rules
+            # the pack actually contributes.
+            members = expand_pack_member_ids(row.policy_ids, gidx)
             pack = user_pack_to_dict(
                 row.id, row.name, row.description,
-                row.policy_ids, enabled,
+                members, enabled,
                 store_policy_ids=store_ids,
             )
             entry = dict(pack)
@@ -749,19 +755,28 @@ def attach(app: FastAPI, store: PolicyStore,
             ],
         }
 
+    def _group_rule_index() -> dict[str, list[str]]:
+        """{policy_group_id: [rule_id, ...]} for pack -> policy -> rule
+        membership expansion. Built per call from the policy-group store."""
+        from ...policy.pack_membership import build_group_rule_index
+        return build_group_rule_index(policy_group_store)
+
     def _resolve_pack_members(pack_id: str) -> list[str] | None:
-        """Return the ordered member ids of the given pack, or None
-        when the pack is unknown. Used by GET-single + enable + disable
-        handlers.
+        """Return the ordered member RULE ids of the given pack, or None
+        when the pack is unknown. A member that names a policy-group is
+        expanded to that policy's rule ids (pack -> policy -> rule) so the
+        GET-single + enable + disable handlers cascade to the whole policy.
         """
         from ...policy.pack import builtin_pack_spec_by_id, _builtin_member_ids
+        from ...policy.pack_membership import expand_pack_member_ids
+        gidx = _group_rule_index()
         spec = builtin_pack_spec_by_id(pack_id)
         if spec is not None:
-            return _builtin_member_ids(spec)
+            return expand_pack_member_ids(_builtin_member_ids(spec), gidx)
         if pack_id.startswith("user-pack/") and pack_store is not None:
             for row in pack_store.load():
                 if row.id == pack_id:
-                    return list(row.policy_ids)
+                    return expand_pack_member_ids(row.policy_ids, gidx)
         return None
 
     @app.get("/policy-packs/{pack_id:path}",
@@ -774,10 +789,12 @@ def attach(app: FastAPI, store: PolicyStore,
         from ...policy.pack import (
             all_builtin_packs, builtin_pack_spec_by_id, user_pack_to_dict,
         )
+        from ...policy.pack_membership import expand_pack_member_ids
         if not pack_id.startswith("pack/") and not pack_id.startswith("user-pack/"):
             raise HTTPException(404, f"pack {pack_id!r} not found")
         locale = _pack_locale(accept_language)
         enabled = _enabled_id_set()
+        gidx = _group_rule_index()
         # Built-in.
         spec = builtin_pack_spec_by_id(pack_id)
         if spec is not None:
@@ -785,9 +802,10 @@ def attach(app: FastAPI, store: PolicyStore,
                 p for p in all_builtin_packs(locale=locale, enabled_ids=enabled)
                 if p["id"] == pack_id
             )
+            # pack -> policy -> rule: expand policy-group members to rules.
             members_resolved = [
                 {"id": mid, "enabled": (mid in enabled)}
-                for mid in built["policy_ids"]
+                for mid in expand_pack_member_ids(built["policy_ids"], gidx)
             ]
             envelope = dict(built)
             envelope["members"] = members_resolved
@@ -797,15 +815,16 @@ def attach(app: FastAPI, store: PolicyStore,
             store_ids = _all_policy_id_set()
             for row in pack_store.load():
                 if row.id == pack_id:
+                    members = expand_pack_member_ids(row.policy_ids, gidx)
                     p = user_pack_to_dict(
                         row.id, row.name, row.description,
-                        row.policy_ids, enabled,
+                        members, enabled,
                         store_policy_ids=store_ids,
                     )
                     envelope = dict(p)
                     envelope["members"] = [
                         {"id": mid, "enabled": (mid in enabled)}
-                        for mid in row.policy_ids
+                        for mid in members
                     ]
                     return envelope
         raise HTTPException(404, f"pack {pack_id!r} not found")
