@@ -223,16 +223,20 @@ BY DESIGN for the single-operator model (the operator IS the tenant). It is
 not a multi-tenant privilege boundary, and the console must never be exposed
 as a shared multi-user surface.
 
-- **Localhost (default): no sign-in.** A direct request to `localhost` is the
-  operator's own machine, so the console opens without a login. This is the
-  common single-operator case and the default.
-- **Behind a reverse proxy: sign-in required, automatically.** A proxy hop adds
-  `x-forwarded-*` headers; when those are present the loopback exception is
-  suppressed (the `Host` header can be spoofed to look like loopback, WEB-1),
-  so a signed session is required. Set `MAGI_CP_DASHBOARD_SESSION_SECRET`
-  (falls back to `MAGI_CP_ADMIN_HMAC_SECRET`) on the dashboard server, sign in
-  at `/login`, and enforce authentication at the proxy too. With no secret
-  configured the console denies every non-loopback request (fail-closed).
-- **Belt-and-suspenders:** set `MAGI_CP_TRUST_LOOPBACK_HEADER=0` to require a
-  signed session for EVERY request, including direct localhost, regardless of
-  forwarding headers.
+- **Localhost (default): no sign-in.** A request with a loopback `Host` opens
+  the console without a login. This is the common single-operator case.
+- **The security boundary is the network bind, not the Host header.** The
+  `docker-compose.yml` template binds the dashboard to `127.0.0.1` only, so it
+  is physically unreachable from other machines and the `Host` header cannot be
+  spoofed from outside (this is what makes the loopback trust safe, and is the
+  proper fix for WEB-1). `localhost:<port>` on the host still works.
+- **Exposing it deliberately (LAN / remote / reverse proxy):** change the
+  dashboard port mapping to `0.0.0.0` (`"${DASHBOARD_PORT:-3000}:3000"`) OR
+  front it with a proxy, AND set `MAGI_CP_TRUST_LOOPBACK_HEADER=0` so a signed
+  session is required for every request, plus `MAGI_CP_DASHBOARD_SESSION_SECRET`
+  (falls back to `MAGI_CP_ADMIN_HMAC_SECRET`). Sign in at `/login` and enforce
+  auth at the proxy too. With no secret configured the console denies every
+  request (fail-closed). Do not rely on the loopback exception once the console
+  is reachable off-host.
+- Note: the Next.js standalone server injects `x-forwarded-*` headers on every
+  request even with no proxy, so those headers are NOT used as a proxy signal.

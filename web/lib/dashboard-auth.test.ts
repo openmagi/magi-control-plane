@@ -101,16 +101,3 @@ describe("trustLoopbackHeader (localhost trusted by default)", () => {
     expect(trustLoopbackHeader()).toBe(true)
   })
 })
-
-describe("requestCameThroughProxy (WEB-1 P0: proxy hop suppresses loopback trust)", () => {
-  it("false for a direct request (no forwarding headers)", async () => {
-    const { requestCameThroughProxy } = await import("./dashboard-auth")
-    expect(requestCameThroughProxy(new Headers({ host: "localhost:3000" }))).toBe(false)
-  })
-  it("true when x-forwarded-for / x-forwarded-host / forwarded is present", async () => {
-    const { requestCameThroughProxy } = await import("./dashboard-auth")
-    expect(requestCameThroughProxy(new Headers({ "x-forwarded-for": "1.2.3.4" }))).toBe(true)
-    expect(requestCameThroughProxy(new Headers({ "x-forwarded-host": "evil.com" }))).toBe(true)
-    expect(requestCameThroughProxy(new Headers({ forwarded: "for=1.2.3.4" }))).toBe(true)
-  })
-})
