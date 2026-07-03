@@ -18,6 +18,7 @@ def attach(
     policy_store: PolicyStore,
     pack_store,
     script_store,
+    policy_group_store=None,
 ) -> None:
 
     # D52c follow-up: cap the repeatable `verifier=` parameter so an
@@ -312,16 +313,25 @@ def attach(
         # dependency on the pack catalog import (which pulls the
         # policy IR; we want the metrics module to stay test-cheap).
         from ...policy.pack import all_builtin_packs
+        from ...policy.pack_membership import (
+            build_group_rule_index, expand_pack_member_ids,
+        )
+        # pack -> policy -> rule: expand policy-group members to their rule
+        # ids so the count matches the rules the pack actually contributes
+        # (1:1 with the /rules page), same as every other membership site.
+        group_index = build_group_rule_index(policy_group_store)
         pack_member_lists: list[list[str]] = []
         # all_builtin_packs returns dicts with policy_ids; reuse the
         # catalog so we get the same ordering the /policy-packs surface
         # exposes. locale is irrelevant for the count (policy_ids is
         # locale-agnostic) so we pass "en" arbitrarily.
         for p in all_builtin_packs(locale="en", enabled_ids=set()):
-            pack_member_lists.append(list(p.get("policy_ids", [])))
+            pack_member_lists.append(
+                expand_pack_member_ids(p.get("policy_ids", []), group_index))
         if pack_store is not None:
             for row in pack_store.load():
-                pack_member_lists.append(list(row.policy_ids))
+                pack_member_lists.append(
+                    expand_pack_member_ids(row.policy_ids, group_index))
         scripts_total = 0
         if script_store is not None:
             try:
