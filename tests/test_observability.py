@@ -16,14 +16,25 @@ def _tmp_store():
     return f.name
 
 
-def _client_production_like(monkeypatch, tmp_path):
-    """Build app via _build_production_app so /metrics is attached."""
+def _client_production_like(monkeypatch, tmp_path, *, metrics_public=True):
+    """Build app via _build_production_app so /metrics is attached.
+
+    /metrics is fail-closed by default now (OBS-1), so tests that scrape it
+    default to the explicit MAGI_CP_METRICS_PUBLIC=1 opt-out (the network-
+    isolated deployment case). Pass metrics_public=False to exercise the
+    fail-closed default.
+    """
     monkeypatch.setenv("MAGI_CP_KEY_DIR", str(tmp_path / "kd"))
     monkeypatch.setenv("MAGI_CP_DSN", "sqlite:///:memory:")
     monkeypatch.setenv("MAGI_CP_POLICY_STORE", _tmp_store())
     monkeypatch.setenv("MAGI_CP_API_KEY", "test-key")
     monkeypatch.setenv("MAGI_CP_HITL_API_KEY", "test-hitl")
     monkeypatch.setenv("MAGI_CP_ADMIN_API_KEY", "test-admin")
+    if metrics_public:
+        monkeypatch.setenv("MAGI_CP_METRICS_PUBLIC", "1")
+    else:
+        monkeypatch.delenv("MAGI_CP_METRICS_PUBLIC", raising=False)
+    monkeypatch.delenv("MAGI_CP_METRICS_TOKEN", raising=False)
     from magi_cp.cloud.app import _build_production_app
     return TestClient(_build_production_app())
 
@@ -40,11 +51,18 @@ def test_metrics_endpoint_exposes_prometheus_format(monkeypatch, tmp_path):
     assert "# HELP magi_cp_compile_total" in body
 
 
-def test_metrics_endpoint_needs_no_auth(monkeypatch, tmp_path):
-    """Public on the listener; operator restricts via network policy."""
-    c = _client_production_like(monkeypatch, tmp_path)
-    r = c.get("/metrics")
-    assert r.status_code == 200   # NO 401
+def test_metrics_fail_closed_by_default(monkeypatch, tmp_path):
+    """OBS-1: with neither MAGI_CP_METRICS_TOKEN nor MAGI_CP_METRICS_PUBLIC set,
+    an unauthenticated scrape is denied (the endpoint shares the API port and
+    carries tenant_id labels)."""
+    c = _client_production_like(monkeypatch, tmp_path, metrics_public=False)
+    assert c.get("/metrics").status_code == 401
+
+
+def test_metrics_public_opt_out_serves_without_auth(monkeypatch, tmp_path):
+    """MAGI_CP_METRICS_PUBLIC=1 is the explicit network-isolated opt-out."""
+    c = _client_production_like(monkeypatch, tmp_path)  # public=True by default
+    assert c.get("/metrics").status_code == 200
 
 
 def test_verify_dispatch_increments_counter(monkeypatch, tmp_path):

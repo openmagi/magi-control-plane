@@ -157,6 +157,18 @@ is attached only inside `_build_production_app`. Bare `create_app` is
 the test factory and intentionally omits metrics so the suite stays
 deterministic.
 
+The counters carry a `tenant_id` label and `/metrics` shares the API
+port (it cannot be network-isolated from the API by path), so it is
+**fail-closed by default**: an unauthenticated scrape gets `401` unless
+you configure one of:
+
+- `MAGI_CP_METRICS_TOKEN=<token>` and have Prometheus send
+  `Authorization: Bearer <token>` (the recommended path), or
+- `MAGI_CP_METRICS_PUBLIC=1` as an explicit opt-out when you isolate
+  `/metrics` at the network layer (private listener, `networkPolicy.enabled`
+  in the Helm chart, scrape-only network). Do not set this on a network
+  where untrusted clients can reach `:8787`.
+
 Key counters:
 
 | Metric | What it means |

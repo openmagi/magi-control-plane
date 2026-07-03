@@ -68,10 +68,18 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
   {
     name: "MAGI_CP_METRICS_TOKEN",
     group: "cloud",
-    default: "(unset: /metrics has no auth)",
+    default: "(unset: /metrics is fail-closed 401)",
     allowed: "opaque token",
-    ko: "설정하면 /metrics가 `Authorization: Bearer <token>`를 요구합니다. 노출된 인스턴스에서 테넌트 메타데이터 유출을 막습니다.",
-    en: "When set, /metrics requires `Authorization: Bearer <token>`. Prevents tenant metadata leakage on an exposed instance.",
+    ko: "설정하면 /metrics가 `Authorization: Bearer <token>`를 요구합니다. /metrics는 기본 fail-closed(401)이며, 토큰 또는 MAGI_CP_METRICS_PUBLIC 중 하나를 설정해야 스크랩됩니다.",
+    en: "When set, /metrics requires `Authorization: Bearer <token>`. /metrics is fail-closed (401) by default; set this token or MAGI_CP_METRICS_PUBLIC to allow scraping.",
+  },
+  {
+    name: "MAGI_CP_METRICS_PUBLIC",
+    group: "cloud",
+    default: "0",
+    allowed: "0|1",
+    ko: "1로 설정하면 토큰 없이 /metrics를 무인증으로 제공합니다. /metrics를 네트워크 계층(사설 리스너, NetworkPolicy)에서 격리한다는 명시적 opt-out입니다. tenant_id 라벨이 붙으므로 노출망에서는 켜지 마세요.",
+    en: "Set 1 to serve /metrics with no auth. Explicit opt-out for deployments that isolate /metrics at the network layer (private listener, NetworkPolicy). Do not enable on an exposed network (counters carry tenant_id labels).",
   },
   {
     name: "MAGI_CP_DASHBOARD_SESSION_SECRET",
