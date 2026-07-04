@@ -32,16 +32,21 @@ export default async function NewPolicyPackPage({
   const { t } = await getT()
   const flash = resolveFlash(undefined, searchParams.err)
 
-  // Build the picker's option list: every materialized policy id +
-  // every prebuilt id. We list prebuilts even when they haven't been
-  // enabled yet so an operator can build a pack that references them;
-  // the cloud's enable cascade will materialize the prebuilt on first
-  // enable.
-  let userPolicies: Awaited<ReturnType<typeof cloud.listPolicies>> = []
+  // E1 (audit CV-11): the picker is POLICY-first (rule -> policy -> pack).
+  // Source options from `listPolicyGroups` - the complete policy view
+  // (authored compound policies + free-standing rules synthesized as
+  // one-rule policies) - so an operator can put a POLICY in a pack. The
+  // cloud's expand_pack_member_ids resolves a compound's group id to its
+  // member rules at every membership site; a synthesized one-rule policy's
+  // id is the rule id and passes through unchanged. Prebuilts that are not
+  // yet materialized (so absent from the rule store, hence from groups) are
+  // still listed so a pack can reference them; the enable cascade
+  // materializes them on first enable.
+  let groups: Awaited<ReturnType<typeof cloud.listPolicyGroups>> = []
   let prebuilts: Awaited<ReturnType<typeof cloud.listPrebuiltPolicies>> = []
   let loadErr: string | null = null
   try {
-    userPolicies = await cloud.listPolicies()
+    groups = await cloud.listPolicyGroups()
   } catch (e: unknown) {
     loadErr = codeForError(e)
   }
@@ -51,12 +56,16 @@ export default async function NewPolicyPackPage({
     loadErr = loadErr ?? codeForError(e)
   }
 
-  // De-dupe: prebuilt rows can already appear in /policies once the
-  // operator enables them. The picker should still surface them once.
+  // De-dupe: an enabled prebuilt already surfaces as a one-rule policy in
+  // `groups`. The picker should still surface each id once.
   const optionIds = new Map<string, { id: string; label: string }>()
-  for (const p of userPolicies) {
-    if (!optionIds.has(p.id)) {
-      optionIds.set(p.id, { id: p.id, label: p.description || p.id })
+  for (const g of groups) {
+    if (!optionIds.has(g.id)) {
+      const n = g.rule_ids.length
+      const label = g.kind === "compound" && n > 1
+        ? `${g.description || g.id} (${n} rules)`
+        : (g.description || g.id)
+      optionIds.set(g.id, { id: g.id, label })
     }
   }
   for (const p of prebuilts) {
