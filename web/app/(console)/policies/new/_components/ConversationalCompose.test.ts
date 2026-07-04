@@ -161,7 +161,9 @@ describe("ConversationalCompose source invariants", () => {
     // wire body is derived from the synchronous in-scope value.
     expect(src).toMatch(/const\s+nextHistory\s*:/)
     expect(src).toMatch(/setHistory\(nextHistory\)/)
-    expect(src).toMatch(/wireHistory[^=]*=\s*nextHistory\.map/)
+    // G2 (IF-04): the wire history is windowed to the last MAX_WIRE_TURNS
+    // so a long conversation never trips the server's 16-turn cap.
+    expect(src).toMatch(/wireHistory[^=]*=\s*nextHistory\.slice\(-MAX_WIRE_TURNS\)\.map/)
     // The DEFENSIVE pattern (functional updaters) still applies to
     // OTHER setHistory calls outside the send path — the response /
     // error / pill-replace / question-pill paths must remain
@@ -642,5 +644,20 @@ describe("ConversationalCompose policy-integrity review wiring", () => {
     expect(src).toContain("review={review}")
     expect(src).toContain("reviewPending={reviewPending}")
     expect(src).toContain("reviewError={reviewError}")
+  })
+})
+
+describe("G2: history race + cap (IF-03/IF-04)", () => {
+  const src = readFileSync(path.join(__dirname, "ConversationalCompose.tsx"), "utf-8")
+
+  it("IF-03: the send path builds from historyRef, not the stale closure", () => {
+    expect(src).toContain("const historyRef = useRef<HistoryTurn[]>([])")
+    expect(src).toContain("historyRef.current = history")
+    expect(src).toMatch(/nextHistory[\s\S]{0,120}historyRef\.current/)
+  })
+
+  it("IF-04: windows the wire history to a bounded MAX_WIRE_TURNS < 16", () => {
+    expect(src).toMatch(/const MAX_WIRE_TURNS = \d+/)
+    expect(src).toContain("nextHistory.slice(-MAX_WIRE_TURNS)")
   })
 })

@@ -51,6 +51,13 @@ interface InteractiveTurnResponse {
   ready_to_save: boolean
 }
 
+/** G2 (IF-04): the server caps history at 16 turns (MAX_HISTORY_TURNS) and
+ *  400s beyond it. The client keeps the full transcript for the operator but
+ *  sends only the most recent turns on the wire so a long conversation never
+ *  trips the cap (which previously bricked the flow with a generic error).
+ *  Kept below 16 to leave headroom for the user turn appended this send. */
+const MAX_WIRE_TURNS = 14
+
 interface HistoryTurn {
   role: "user" | "assistant"
   content: string
@@ -149,6 +156,14 @@ export function ConversationalCompose({
     [locale],
   )
   const [history, setHistory] = useState<HistoryTurn[]>([])
+  /** G2 (IF-03): sendTurn is memoized on [draft, t, locale] and does NOT
+   *  recreate when `history` changes, so its closure captured a stale
+   *  history. After an error turn, the next send rebuilt state from the
+   *  pre-error history, deleting the errored user + error bubbles from the
+   *  UI AND the wire body. This ref always mirrors the committed history so
+   *  the turn builder reads the current transcript regardless of closure. */
+  const historyRef = useRef<HistoryTurn[]>([])
+  historyRef.current = history
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [readyToSave, setReadyToSave] = useState(false)
   // Policy-integrity review verdict, fetched once a draft is ready. The
@@ -457,16 +472,23 @@ export function ConversationalCompose({
     // `_latest_user_turn(history)` returned "" and the #100
     // deterministic intent extractor had nothing to scan. Building
     // `nextHistory` synchronously here removes the race.
+    // G2 (IF-03): build from the REF, not the closure `history`, so an
+    // error turn is preserved on the next send.
     const bubble = params.userBubble ?? params.userText
     const nextHistory: HistoryTurn[] = bubble
-      ? [...history, { role: "user", content: bubble }]
-      : history
+      ? [...historyRef.current, { role: "user", content: bubble }]
+      : historyRef.current
     setHistory(nextHistory)
     let answersSent = false
     try {
       answersSent = !!params.answers
+      // G2 (IF-04): window the wire history to the last MAX_WIRE_TURNS so a
+      // long conversation never trips the server's 16-turn cap (which 400'd
+      // with a generic error and could never recover, since history only
+      // grows). The server is stateless over draft_so_far and only reads the
+      // LATEST user turn, so dropping the oldest turns is safe.
       const wireHistory: { role: "user" | "assistant"; content: string }[] =
-        nextHistory.map((h) => ({ role: h.role, content: h.content }))
+        nextHistory.slice(-MAX_WIRE_TURNS).map((h) => ({ role: h.role, content: h.content }))
       const res = await fetch("/api/policies/compile-interactive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
