@@ -186,7 +186,7 @@ export function DryRunPanel({
   return (
     <div
       data-testid="dry-run-panel"
-      className="mt-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-subtle,#fafafa)] p-3"
+      className="mt-3 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)] p-3"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Button
@@ -485,13 +485,13 @@ function VerdictPillRow({
 function actionTone(a: ActionArchetype): string {
   switch (a) {
     case "block":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "ask":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "audit":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "strip":
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 
@@ -518,16 +518,16 @@ function verdictKey(v: DryRunSampleRow["verdict"]): VerdictKey {
 function verdictPillTone(v: VerdictKey): string {
   switch (v) {
     case "pass":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "fail":
     case "deny":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "review":
     case "needs_review":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "not_applicable":
     case "unknown":
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 

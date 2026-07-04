@@ -26,9 +26,9 @@ type T = (k: import("@/lib/i18n/dict").TKey, v?: Record<string, string | number>
 
 const KIND_BADGE_TONE: Record<CheckEntry["kind"], string> = {
   "builtin":            "bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]",
-  "custom":             "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]",
+  "custom":             "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]",
   "inline-regex":       "bg-amber-50 text-amber-800",
-  "inline-llm-critic":  "bg-violet-50 text-violet-800",
+  "inline-llm-critic":  "bg-sky-50 text-sky-800",
   "inline-shacl":       "bg-emerald-50 text-emerald-800",
 }
 

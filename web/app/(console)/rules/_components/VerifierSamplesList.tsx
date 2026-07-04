@@ -330,17 +330,17 @@ function verdictTone(v: VerifierSampleRow["verdict"]): string {
   // VerifierExpander.verdictTone helper.
   switch (v) {
     case "pass":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "fail":
     case "deny":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "review":
     case "needs_review":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "not_applicable":
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
     default:
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 

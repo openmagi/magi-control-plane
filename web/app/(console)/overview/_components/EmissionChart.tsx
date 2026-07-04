@@ -57,7 +57,7 @@ const ACTION_COLORS: Record<OverviewActionKey, string> = {
   block: "var(--color-overview-action-block, #DC2626)",          // red-600
   ask: "var(--color-overview-action-ask, #D97706)",              // amber-600
   audit: "var(--color-overview-action-audit, #2563EB)",          // blue-600
-  inject_context: "var(--color-overview-action-inject, #7C3AED)", // violet-600
+  inject_context: "var(--color-overview-action-inject, #475569)", // slate-600 (retired violet; full CVD-safe palette lands with the overview re-ink)
   run_command: "var(--color-overview-action-run, #059669)",      // emerald-600
   input_rewrite: "var(--color-overview-action-rewrite, #DB2777)", // pink-600
 }
