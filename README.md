@@ -9,6 +9,7 @@
 [Quickstart](docs/getting-started.md) ·
 [Policy IR](docs/policy-ir.md)
 
+[![CI](https://github.com/openmagi/magi-control-plane/actions/workflows/ci.yml/badge.svg)](https://github.com/openmagi/magi-control-plane/actions/workflows/ci.yml)
 ![status](https://img.shields.io/badge/status-early%20beta-f97316)
 ![install](https://img.shields.io/badge/install-Docker-2563eb)
 ![CLI](https://img.shields.io/badge/CLI-magi--cp-7c3aed)
