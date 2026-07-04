@@ -83,8 +83,8 @@ describe("D72: WelcomeBanner client component", () => {
   })
 })
 
-describe("D72: /rules Checks tab empty state", () => {
-  const src = read("rules/_components/ChecksTab.tsx")
+describe("D72: /rules merged Evidence tab empty state (H1)", () => {
+  const src = read("rules/_components/EvidenceTab.tsx")
 
   it("EmptyState carries the D72 title + body + CTA", () => {
     expect(src).toContain("rules.empty.checks.title")
@@ -94,15 +94,6 @@ describe("D72: /rules Checks tab empty state", () => {
 
   it("primary CTA links to /verifiers/new", () => {
     expect(src).toContain('href="/verifiers/new"')
-  })
-})
-
-describe("D72: /rules Evidence tab empty state", () => {
-  const src = read("rules/_components/EvidenceTab.tsx")
-
-  it("EmptyState carries the D72 title + body", () => {
-    expect(src).toContain("rules.empty.evidenceRecords.title")
-    expect(src).toContain("rules.empty.evidenceRecords.body")
   })
 })
 
