@@ -15,3 +15,10 @@ describe("policy detail page edit link", () => {
     expect(src).toContain("encodeURIComponent(JSON.stringify(detail.policy))")
   })
 })
+
+describe("CV-10: policy detail delete", () => {
+  it("renders a Delete form wired to deletePolicyAction", () => {
+    expect(src).toContain('data-testid="policy-delete-form"')
+    expect(src).toContain("deletePolicyAction")
+  })
+})

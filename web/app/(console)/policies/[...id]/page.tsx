@@ -9,6 +9,7 @@ import {
 } from "@/components/ui"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import { PolicyTestPanel } from "../_components/PolicyTestPanel"
+import { deletePolicyAction } from "../../rules/actions"
 
 export const dynamic = "force-dynamic"
 
@@ -84,14 +85,22 @@ export default async function PolicyDetailPage({
       <PageHeader
         title={<Code className="text-md">{detail.id}</Code>}
         actions={
-          /* D2 (edit path): re-open this rule's IR in the Advanced editor.
-             persistDraft preserves the current enabled on save (G4). */
-          <Link
-            href={`/policies/new?mode=advanced&draft=${encodeURIComponent(JSON.stringify(detail.policy))}`}
-            data-testid="policy-edit-link"
-          >
-            <Button variant="secondary" size="sm">{t("policies.edit")}</Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            {/* D2 (edit path): re-open this rule's IR in the Advanced
+                editor. persistDraft preserves the current enabled (G4). */}
+            <Link
+              href={`/policies/new?mode=advanced&draft=${encodeURIComponent(JSON.stringify(detail.policy))}`}
+              data-testid="policy-edit-link"
+            >
+              <Button variant="secondary" size="sm">{t("policies.edit")}</Button>
+            </Link>
+            {/* CV-10: delete this rule. Refused (409) if it belongs to a
+                multi-rule policy - the flash on /rules explains. */}
+            <form action={deletePolicyAction} data-testid="policy-delete-form">
+              <input type="hidden" name="id" value={detail.id} />
+              <Button type="submit" variant="ghost" size="sm">{t("policies.delete")}</Button>
+            </form>
+          </div>
         }
       />
 

@@ -4,7 +4,7 @@ import {
   Badge, Button, Card, EmptyState, EnforcementBadge, ErrorState,
 } from "@/components/ui"
 import type { Locale } from "@/lib/i18n/dict"
-import { deletePolicyGroupAction, togglePolicyGroupAction } from "../actions"
+import { deletePolicyAction, deletePolicyGroupAction, togglePolicyGroupAction } from "../actions"
 import { WelcomeBanner } from "./WelcomeBanner"
 
 /**
@@ -142,10 +142,21 @@ function PolicyCard({
               </Button>
             </form>
           )}
-          <form action={deletePolicyGroupAction}>
-            <input type="hidden" name="id" value={g.id} />
-            <Button type="submit" variant="ghost" size="sm">{t("rules.policy.delete")}</Button>
-          </form>
+          {/* CV-10: a one-rule policy (incl. a synthesized free-standing
+              rule) deletes via the rule route - the group route 404s for
+              a synthesized policy with no owning record. Multi-rule
+              (compound) policies delete via the group cascade. */}
+          {n > 1 ? (
+            <form action={deletePolicyGroupAction}>
+              <input type="hidden" name="id" value={g.id} />
+              <Button type="submit" variant="ghost" size="sm">{t("rules.policy.delete")}</Button>
+            </form>
+          ) : (
+            <form action={deletePolicyAction}>
+              <input type="hidden" name="id" value={g.rule_ids[0] ?? g.id} />
+              <Button type="submit" variant="ghost" size="sm">{t("rules.policy.delete")}</Button>
+            </form>
+          )}
         </div>
       </div>
 
