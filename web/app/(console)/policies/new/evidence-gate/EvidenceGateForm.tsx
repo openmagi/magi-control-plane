@@ -6,7 +6,7 @@ import {
   DEFAULT_EVIDENCE_GATE_DRAFT,
   EVIDENCE_JUDGES,
   GATE_ACTIONS,
-  buildEvidenceGatePolicies,
+  buildEvidenceGateExpansion,
   describeEvidenceGate,
   looksLikeEvidenceGateIntent,
   parseEvidenceGateIntent,
@@ -34,7 +34,9 @@ export default function EvidenceGateForm({ action }: Props) {
   const [d, setD] = useState<EvidenceGateDraft>(DEFAULT_EVIDENCE_GATE_DRAFT)
   const [nl, setNl] = useState("")
   const errs = useMemo(() => validateEvidenceGateDraft(d), [d])
-  const [audit, gate] = useMemo(() => buildEvidenceGatePolicies(d), [d])
+  // H2 (CV-08): preview the FULL server expansion (audit + gate + 3
+  // ledger-protection denies), so the operator approves exactly what saves.
+  const expansion = useMemo(() => buildEvidenceGateExpansion(d), [d])
   const summary = useMemo(() => describeEvidenceGate(d), [d])
 
   const set = (patch: Partial<EvidenceGateDraft>) => setD({ ...d, ...patch })
@@ -142,10 +144,13 @@ export default function EvidenceGateForm({ action }: Props) {
         </div>
       </Card>
 
-      {/* IR preview + submit */}
-      <details className="text-xs">
-        <summary className="cursor-pointer text-[var(--color-text-tertiary)]">Preview the two policies</summary>
-        <pre className="mt-2 p-3 bg-[var(--color-surface-2)] rounded overflow-x-auto">{JSON.stringify([audit, gate], null, 2)}</pre>
+      {/* IR preview + submit. H2: shows ALL rules that will be created,
+          including the 3 ledger-protection denies the server appends. */}
+      <details className="text-xs" data-testid="evidence-gate-preview">
+        <summary className="cursor-pointer text-[var(--color-text-tertiary)]">
+          Preview the {expansion.length} rules (audit + gate + ledger protection)
+        </summary>
+        <pre className="mt-2 p-3 bg-[var(--color-surface-2)] rounded overflow-x-auto">{JSON.stringify(expansion, null, 2)}</pre>
       </details>
 
       <input type="hidden" name="draft_json" value={JSON.stringify(d)} />

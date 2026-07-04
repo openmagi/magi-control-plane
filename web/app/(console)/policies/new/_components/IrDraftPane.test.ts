@@ -311,3 +311,13 @@ describe("F1/F2: review verdict localization + honest states", () => {
     expect(src).toContain("reviewError")
   })
 })
+
+describe("H3 (IF-13): dry-run disabled for compound drafts", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("gates the DryRunPanel off for an evidence_gate compound", () => {
+    // The dry-run endpoint 422s a compound; pass ir=null + disabled.
+    expect(src).toContain("readyToSave && draft && !compound")
+    expect(src).toContain("disabled={!readyToSave || compound}")
+  })
+})
