@@ -34,26 +34,28 @@
      trends direction (no glass over data-dense surfaces) and matches the
      DS's own reduced-transparency fallback, just applied always.
 
-     The console ground is white too (see --surface-console below), so a
-     white card needs a real edge to separate: GlassSurface ships a
-     `border-white/40` that is invisible on white, so re-point the glass
-     shadow tokens to a crisp hairline ring + a subtle lift (Linear/Vercel
-     style) instead of the default floaty 24px drop. App-local, _ds
-     untouched. */
+     White cards sit on a slightly-lower neutral-grey console ground (see
+     --surface-console below), which gives the surface-elevation depth a
+     dashboard needs. GlassSurface's `border-white/40` is near-invisible
+     there, so re-point the glass shadow tokens to a crisp hairline ring +
+     a subtle lift (Linear/Vercel style) instead of the default floaty 24px
+     drop. App-local, _ds untouched. */
   --glass-clear-bg: rgba(255, 255, 255, 0.92);
   --glass-regular-bg: #FFFFFF;
   --glass-thick-bg: #FFFFFF;
   --glass-blur: 0px;
   --glass-rim: none;
-  --glass-edge: 0 0 0 1px rgba(15, 23, 42, 0.10),
-                0 1px 3px rgba(15, 23, 42, 0.06);
+  --glass-edge: 0 0 0 1px rgba(15, 23, 42, 0.08),
+                0 1px 3px rgba(15, 23, 42, 0.05);
 }
 
 :root {
-  /* Console working canvas: pure white, one flat surface with the header,
-     sidebar, and cards. Cards separate by the hairline ring + lift above,
-     not by a ground tint. Console shell only; marketing keeps the paper. */
-  --surface-console: #FFFFFF;
+  /* Console working canvas: a faint NEUTRAL grey (not the warm limestone,
+     which read as a colour cast when every other surface was white). The
+     content field drops to grey so the white header, sidebar, and cards
+     lift off it: surface-elevation depth without any warm tint. Console
+     shell only; marketing keeps the limestone paper. */
+  --surface-console: #FAFAFA;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */
