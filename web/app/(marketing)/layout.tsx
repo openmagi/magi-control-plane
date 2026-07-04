@@ -16,19 +16,26 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
     <div
       className="min-h-screen antialiased"
       style={{
-        ["--canvas" as string]:        "#F7F7F4",
+        // Marketing-local vars. Ground + ink converge on The Ledger
+        // (limestone/carbon), brand + CTA collapse to the single oxide
+        // verdigris accent. The dark contract panel + terminal mockup
+        // vars stay (they are a deliberate dark surface, not the accent).
+        // The semantic --color-* tokens are intentionally NOT overridden
+        // here: marketing DS components inherit the vendored Ledger tokens
+        // so the whole site renders one palette.
+        ["--canvas" as string]:        "#EFEDE8",
         ["--mist" as string]:          "#F9FAFB",
-        ["--ink" as string]:           "#0B0F19",
+        ["--ink" as string]:           "#1B1D22",
         ["--night" as string]:         "#111827",
         ["--night-dim" as string]:     "#CBD5E1",
         ["--body" as string]:          "#334155",
         ["--subtle" as string]:        "#475569",
-        ["--brand" as string]:         "#0F766E",
-        ["--brand-strong" as string]:  "#115E59",
-        ["--brand-tint" as string]:    "#F0FDFA",
-        ["--brand-ring" as string]:    "#5EEAD4",
-        ["--cta" as string]:           "#7C3AED",
-        ["--cta-hover" as string]:     "#6D28D9",
+        ["--brand" as string]:         "#17635A",
+        ["--brand-strong" as string]:  "#14564E",
+        ["--brand-tint" as string]:    "#E9F1EF",
+        ["--brand-ring" as string]:    "#5FB3A6",
+        ["--cta" as string]:           "#17635A",
+        ["--cta-hover" as string]:     "#14564E",
         ["--panel" as string]:         "#0E120B",
         ["--panel-2" as string]:       "#12170D",
         ["--panel-border" as string]:  "#2A3119",
@@ -40,23 +47,7 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
         ["--term-out" as string]:      "#D7DCC3",
         ["--term-dim" as string]:      "#6B7560",
         ["--term-err" as string]:      "#F08E60",
-        ["--color-surface-base" as string]:   "#F7F7F4",
-        ["--color-surface-raised" as string]: "#FFFFFF",
-        ["--color-surface-overlay" as string]:"#F0FDFA",
-        ["--color-text-primary" as string]:   "#0B0F19",
-        ["--color-text-secondary" as string]: "#334155",
-        ["--color-text-tertiary" as string]:  "#64748B",
-        ["--color-text-on-accent" as string]: "#FFFFFF",
-        ["--color-accent" as string]:         "#7C3AED",
-        ["--color-accent-light" as string]:   "#6D28D9",
-        ["--color-accent-hover" as string]:   "#6D28D9",
-        ["--color-border-subtle" as string]:  "rgba(11,15,25,0.08)",
-        ["--color-border-strong" as string]:  "rgba(11,15,25,0.12)",
-        ["--color-border-focus" as string]:   "#7C3AED",
-        fontFamily:
-          "'Plus Jakarta Sans', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif",
         backgroundColor: "transparent",
-        color: "#0B0F19",
       }}
     >
       <NavBarShell />
