@@ -16,9 +16,6 @@ import path from "node:path"
  */
 describe("rules page source invariants (D82a)", () => {
   const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
-  const checksSrc = readFileSync(
-    path.join(__dirname, "_components/ChecksTab.tsx"), "utf-8",
-  )
   const evidenceSrc = readFileSync(
     path.join(__dirname, "_components/EvidenceTab.tsx"), "utf-8",
   )
@@ -32,48 +29,39 @@ describe("rules page source invariants (D82a)", () => {
     path.join(__dirname, "_components/PrebuiltRow.tsx"), "utf-8",
   )
 
-  // ── Tab structure ─────────────────────────────────────────────
-  it("declares the four-tab structure: policies, packs, checks, evidence-types", () => {
+  // ── Tab structure (H1: checks + evidence-types merged -> evidence) ──
+  it("declares the three-tab structure: policies, packs, evidence", () => {
     expect(src).toMatch(
-      /Tab\s*=\s*"policies"\s*\|\s*"packs"\s*\|\s*"checks"\s*\|\s*"evidence-types"/,
+      /Tab\s*=\s*"policies"\s*\|\s*"packs"\s*\|\s*"evidence"/,
     )
     expect(src).toContain('"policies"')
     expect(src).toContain('"packs"')
-    expect(src).toContain('"checks"')
-    expect(src).toContain('"evidence-types"')
+    expect(src).toContain('"evidence"')
   })
 
-  it("nav lists four entries with packs route param", () => {
-    // The TABS array drives the SubTabNav render; pin it includes
-    // packs so a future refactor that drops the literal from the
-    // array fails loudly.
-    expect(src).toMatch(/TABS:\s*readonly Tab\[\]\s*=\s*\[\s*"policies"\s*,\s*"packs"\s*,\s*"checks"\s*,\s*"evidence-types"\s*\]/)
-    // SubTabNav label switch: packs maps to the new label key.
+  it("nav lists three entries with packs route param", () => {
+    expect(src).toMatch(/TABS:\s*readonly Tab\[\]\s*=\s*\[\s*"policies"\s*,\s*"packs"\s*,\s*"evidence"\s*\]/)
     expect(src).toContain('"rules.tab.packs"')
   })
 
-  it("renders Checks + Evidence + Policies + Packs tab components", () => {
-    expect(src).toContain("ChecksTab")
+  it("renders the merged EvidenceTab + Policies + Packs tab components", () => {
     expect(src).toContain("EvidenceTab")
     expect(src).toContain("PoliciesTab")
     expect(src).toContain("PacksTab")
+    // The separate ChecksTab is gone (merged into EvidenceTab).
+    expect(src).not.toContain("ChecksTab")
     expect(src).toContain("tab === \"policies\"")
     expect(src).toContain("tab === \"packs\"")
-    expect(src).toContain("tab === \"checks\"")
-    expect(src).toContain("tab === \"evidence-types\"")
+    expect(src).toContain("tab === \"evidence\"")
   })
 
-  it("redirects legacy ?tab=conditions and ?tab=verifiers to ?tab=checks", () => {
+  it("redirects every legacy checks/evidence slug to ?tab=evidence", () => {
     expect(src).toContain('searchParams.tab === "conditions"')
     expect(src).toContain('searchParams.tab === "verifiers"')
+    expect(src).toContain('searchParams.tab === "checks"')
+    expect(src).toContain('searchParams.tab === "evidence-types"')
     expect(src).toContain('redirect(`/rules?')
-    expect(src).toContain('tab", "checks"')
-  })
-
-  it("redirects legacy ?tab=evidence to a sensible successor", () => {
-    expect(src).toContain('searchParams.tab === "evidence"')
-    expect(src).toContain('"verifier_created"')
-    expect(src).toContain('"evidence-types"')
+    expect(src).toContain('tab", "evidence"')
   })
 
   // ── D82a tab content boundaries ───────────────────────────────
@@ -122,18 +110,19 @@ describe("rules page source invariants (D82a)", () => {
     expect(src).toContain("cloud.ledgerCounts")
   })
 
-  // ── Checks tab ────────────────────────────────────────────────
-  it("ChecksTab reuses VerifierExpander for built-in and custom rows", () => {
-    expect(checksSrc).toContain("VerifierExpander")
-    expect(checksSrc).toContain("InlineBodyPanel")
+  // ── Merged Evidence tab (H1) ──────────────────────────────────
+  it("EvidenceTab is the top-level checks list (reuses VerifierExpander + inline body)", () => {
+    expect(evidenceSrc).toContain("VerifierExpander")
+    expect(evidenceSrc).toContain("InlineBodyPanel")
+    // inline check source deep-links to its owning policy.
+    expect(evidenceSrc).toContain('href={`/policies/${encodeURI(row.source)}`}')
   })
 
-  it("ChecksTab differentiates inline source via a /policies/ deep link", () => {
-    expect(checksSrc).toContain('href={`/policies/${encodeURI(row.source)}`}')
-  })
-
-  // ── Evidence tab ──────────────────────────────────────────────
-  it("EvidenceTab renders a payload schema table and ledger deep link", () => {
+  it("EvidenceTab drills each check into its emitted-record view", () => {
+    // The check is top-level; the record (verdicts + payload schema +
+    // ledger link) is the drill-down joined by id.
+    expect(evidenceSrc).toContain("recordsById")
+    expect(evidenceSrc).toContain("rules.evidence.emittedRecords")
     expect(evidenceSrc).toContain("payload_schema")
     expect(evidenceSrc).toContain("ledgerHref")
     expect(evidenceSrc).toContain("rules.evidenceRecords.viewInLedger")
@@ -142,6 +131,10 @@ describe("rules page source invariants (D82a)", () => {
   it("EvidenceTab surfaces recent emissions count with dash fallback", () => {
     expect(evidenceSrc).toContain("emissionCounts")
     expect(evidenceSrc).toContain("rules.evidenceRecords.recentEmissions")
+  })
+
+  it("EvidenceTab appends record types with no owning check (generic inline)", () => {
+    expect(evidenceSrc).toContain("orphanRecords")
   })
 
   // ── D82f: unified card list — prebuilt + user in one grid ─────

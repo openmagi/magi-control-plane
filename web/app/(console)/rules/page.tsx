@@ -20,7 +20,6 @@ import {
   ErrorState,
   PageHeader,
 } from "@/components/ui"
-import { ChecksTab } from "./_components/ChecksTab"
 import { EvidenceTab } from "./_components/EvidenceTab"
 import { PoliciesTab } from "./_components/PoliciesTab"
 import { PolicyGroupSection } from "./_components/PolicyGroupSection"
@@ -60,11 +59,14 @@ export const dynamic = "force-dynamic"
  * page a bookmark resolves to. Distinct slug + dedicated redirect.
  */
 
-type Tab = "policies" | "packs" | "checks" | "evidence-types"
-const TABS: readonly Tab[] = ["policies", "packs", "checks", "evidence-types"] as const
+// H1 (decision 2): the "checks" + "evidence-types" tabs merged into one
+// "evidence" tab (the check is the top-level entity, its emitted records are
+// the drill-down). Legacy slugs redirect below.
+type Tab = "policies" | "packs" | "evidence"
+const TABS: readonly Tab[] = ["policies", "packs", "evidence"] as const
 
 function parseTab(raw: string | undefined): Tab {
-  if (raw === "packs" || raw === "checks" || raw === "evidence-types") return raw
+  if (raw === "packs" || raw === "evidence") return raw
   return "policies"
 }
 
@@ -73,26 +75,18 @@ export default async function RulesPage({
 }: {
   searchParams: { tab?: string; msg?: string; err?: string; templates?: string }
 }) {
-  // D56e: legacy `conditions` and `verifiers` tab names redirect to
-  // the new merged `checks` tab. Plain 307 redirect via Next's
-  // server-side helper; preserves any flash params on the way through.
-  if (searchParams.tab === "conditions" || searchParams.tab === "verifiers") {
+  // H1 (decision 2): every legacy checks/evidence slug now lands on the
+  // single merged `evidence` tab. `conditions` (D56e) + `verifiers` (D52a)
+  // + `checks` + `evidence-types` all redirect there. Plain 307 redirect
+  // via Next's server-side helper; preserves flash params.
+  if (
+    searchParams.tab === "conditions"
+    || searchParams.tab === "verifiers"
+    || searchParams.tab === "checks"
+    || searchParams.tab === "evidence-types"
+  ) {
     const passthrough = new URLSearchParams()
-    passthrough.set("tab", "checks")
-    if (searchParams.msg) passthrough.set("msg", searchParams.msg)
-    if (searchParams.err) passthrough.set("err", searchParams.err)
-    redirect(`/rules?${passthrough.toString()}`)
-  }
-  // D56e follow-up: pre-D56e the `evidence` slug rendered the Verifiers
-  // tab (and /verifiers/new succeeded into `?tab=evidence&msg=verifier_created`).
-  // Bookmark + browser-history grace: the verifier-success URL lands on
-  // the new Checks tab (verifier authoring moved there); every other
-  // `?tab=evidence` URL lands on the new evidence-records tab.
-  if (searchParams.tab === "evidence") {
-    const passthrough = new URLSearchParams()
-    const dest =
-      searchParams.msg === "verifier_created" ? "checks" : "evidence-types"
-    passthrough.set("tab", dest)
+    passthrough.set("tab", "evidence")
     if (searchParams.msg) passthrough.set("msg", searchParams.msg)
     if (searchParams.err) passthrough.set("err", searchParams.err)
     redirect(`/rules?${passthrough.toString()}`)
@@ -118,7 +112,6 @@ export default async function RulesPage({
   let packs: PolicyPackEntry[] = []
   let packsErr: string | null = null
   let checks: CheckEntry[] = []
-  let checksErr: string | null = null
   let evidence: EvidenceRecordType[] = []
   let evidenceErr: string | null = null
 
@@ -224,38 +217,32 @@ export default async function RulesPage({
         rollups.filter((r): r is readonly [string, PackCoverage] => r !== null),
       )
     }
-  } else if (tab === "checks") {
-    try {
-      checks = await cloud.listChecks()
-      try {
-        // Only built-in / custom check ids map to ledger step names;
-        // inline-* rows emit under generic `inline_<kind>` steps which
-        // surface on the Evidence tab instead.
-        const steps = checks
-          .filter((c) => c.kind === "builtin" || c.kind === "custom")
-          .map((c) => c.id)
-          .filter(Boolean)
-        if (steps.length > 0) {
-          const r = await cloud.ledgerCounts(steps, SINCE_24H)
-          emissionCounts = r.counts
-        }
-      } catch {
-        // Leave as `{}` — each row falls through to the unavailable dash.
-      }
-    }
-    catch (e: unknown) { checksErr = codeForError(e) }
   } else {
-    // tab === "evidence-types"
+    // H1: tab === "evidence" - fetch BOTH the checks (top-level entities)
+    // and the evidence record types (their emitted-record drill-down),
+    // joined by id in EvidenceTab. Emission counts cover the union of both
+    // id sets so both the record drill-down and the generic inline record
+    // rows can render their recent-24h count.
     try {
-      evidence = await cloud.listEvidenceRecordTypes()
+      const [c, e] = await Promise.all([
+        cloud.listChecks(),
+        cloud.listEvidenceRecordTypes(),
+      ])
+      checks = c
+      evidence = e
       try {
-        const steps = evidence.map((e) => e.id).filter(Boolean)
+        const ids = new Set<string>()
+        for (const row of checks) {
+          if ((row.kind === "builtin" || row.kind === "custom") && row.id) ids.add(row.id)
+        }
+        for (const row of evidence) if (row.id) ids.add(row.id)
+        const steps = Array.from(ids)
         if (steps.length > 0) {
           const r = await cloud.ledgerCounts(steps, SINCE_24H)
           emissionCounts = r.counts
         }
       } catch {
-        // see above
+        // Leave as `{}` - each row falls through to the unavailable dash.
       }
     }
     catch (e: unknown) { evidenceErr = codeForError(e) }
@@ -267,7 +254,7 @@ export default async function RulesPage({
         title={t("rules.title")}
         description={<RulesDescription t={t} />}
         actions={
-          tab === "checks" ? (
+          tab === "evidence" ? (
             <div className="flex flex-wrap items-center gap-2">
               <Link href="/verifiers/new">
                 <Button variant="secondary" size="md">
@@ -345,22 +332,14 @@ export default async function RulesPage({
           packCoverage={packCoverage}
         />
       )}
-      {tab === "checks" && (
-        <ChecksTab
-          items={checks}
-          err={checksErr}
-          nfFormat={nf.format.bind(nf)}
-          t={t}
-          locale={locale}
-          emissionCounts={emissionCounts}
-        />
-      )}
-      {tab === "evidence-types" && (
+      {tab === "evidence" && (
         <EvidenceTab
-          items={evidence}
+          checks={checks}
+          records={evidence}
           err={evidenceErr}
           nfFormat={nf.format.bind(nf)}
           t={t}
+          locale={locale}
           emissionCounts={emissionCounts}
         />
       )}
@@ -430,8 +409,7 @@ function SubTabNav({ tab, t }: { tab: Tab; t: TFunc }) {
           const labelKey =
             id === "policies"       ? "rules.tab.policies" :
             id === "packs"          ? "rules.tab.packs"    :
-            id === "checks"         ? "rules.tab.checks"   :
-                                      "rules.tab.evidenceRecords"
+                                      "rules.tab.evidence"
           return (
             <Link
               key={id}
