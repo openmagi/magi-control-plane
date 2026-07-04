@@ -105,7 +105,12 @@ export async function Sidebar() {
           </NavGroup>
 
           <NavGroup label={t("nav.group.setup")}>
-            <NavItem href="/setup" label={t("setup.title")} icon="setup" />
+            {/* /setup is the hosted alpha-key onboarding; self-host uses a
+                local key + /settings, so hide it here (matches /endpoints
+                and /shared above). The page itself also redirects. */}
+            {!selfHost && (
+              <NavItem href="/setup" label={t("setup.title")} icon="setup" />
+            )}
             <NavItem href="/scripts" label={t("nav.scripts")} icon="setup" />
             <NavItem href="/settings" label={t("nav.settings")} icon="settings" />
           </NavGroup>

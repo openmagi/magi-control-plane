@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import { cloud } from "@/lib/cloud"
 import { getT } from "@/lib/i18n/server"
+import { getWorkspaceData } from "../_data/workspace"
 import {
   Badge, Button, Card, CodeBlock, CopyButton, ErrorState,
   Input, PageHeader, SubmitButton,
@@ -59,6 +60,16 @@ export default async function SetupPage({
   searchParams,
 }: { searchParams: { msg?: string; err?: string } }) {
   const { t } = await getT()
+
+  // Self-host has no hosted tenant to onboard: the workspace runs on a
+  // local key configured out-of-band, and LLM keys live in /settings. This
+  // page is the hosted alpha-key flow, so a positively-detected synthetic
+  // (self-host) tenant is sent to settings. We redirect only on a confirmed
+  // synthetic tenant, never on an ambiguous null, so a hosted operator who
+  // has not set a key yet is never trapped out of this page.
+  const { tenant: workspaceTenant } = await getWorkspaceData()
+  if (workspaceTenant?.synthetic === true) redirect("/settings")
+
   const storedKey = await readKeyCookie()
 
   let tenant: Awaited<ReturnType<typeof cloud.getMyTenant>> | null = null
