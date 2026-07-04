@@ -13,12 +13,11 @@ export default function Footer() {
   return (
     <footer
       role="contentinfo"
-      className="mt-12 border-t border-[var(--color-border-subtle)] py-6 text-sm text-[var(--color-text-tertiary)]"
-      style={{ maxWidth: "var(--content-max)", margin: "32px auto 0", padding: "20px 20px 32px" }}
+      className="mx-auto mt-8 max-w-[var(--content-max)] border-t border-[var(--color-border-subtle)] px-5 pb-8 pt-5 text-sm text-[var(--color-text-tertiary)]"
     >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          OpenMagi · magi-control-plane · alpha pilot
+          Open Magi Control Plane
         </div>
         <nav aria-label="Footer" className="flex flex-wrap gap-4">
           <Link href="/welcome" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]">

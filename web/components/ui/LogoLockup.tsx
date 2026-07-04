@@ -15,10 +15,10 @@ import Image from "next/image"
  * narrow enough to sit cleanly in the nav.
  *
  * The wordmark is rendered as text (not the official lockup PNG) so
- * the rule + sub-label can sit flush under it. "Magi" is painted in
- * the brand orange sampled from the official icon (#DD4B2D).
+ * the rule + sub-label can sit flush under it. The wordmark is set in
+ * carbon ink with a verdigris sub-label; the brand orange lives only in
+ * the icon mark itself (the PNG), per the one-accent Ledger direction.
  */
-const BRAND_ORANGE = "#DD4B2D"
 
 export function LogoLockup({
   size = "md",
@@ -50,7 +50,7 @@ export function LogoLockup({
       <span className="flex flex-col items-start gap-[3px] leading-none">
         <span translate="no" className={`${dims.brand} font-bold tracking-tight leading-none`}>
           <span className="text-[var(--ink)]">Open </span>
-          <span style={{ color: BRAND_ORANGE }}>Magi</span>
+          <span className="text-[var(--ink)]">Magi</span>
         </span>
         <span aria-hidden="true" className="block h-px w-full bg-[var(--ink)]/20" />
         <span
@@ -94,7 +94,7 @@ export function LogoLockupOnDark({
       <span className="flex flex-col items-start gap-[3px] leading-none">
         <span translate="no" className={`${dims.brand} font-bold tracking-tight leading-none`}>
           <span className="text-white">Open </span>
-          <span style={{ color: BRAND_ORANGE }}>Magi</span>
+          <span className="text-white">Magi</span>
         </span>
         <span aria-hidden="true" className="block h-px w-full bg-white/25" />
         <span
