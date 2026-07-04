@@ -1,6 +1,6 @@
 """Shim C cloud-side fallback: synthetic ``SessionEnd`` for Codex.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 4.3. Codex has ``Stop`` (turn-end) but no ``SessionEnd``. The
 runtime driver (``runtime/codex.py``) synthesizes a ``SessionEnd`` from a
 ``Stop`` payload with a truthy ``stop_hook_active`` (Shim C step 1/2).

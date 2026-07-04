@@ -1,6 +1,6 @@
 """P1 pack-centric runtime — session-active-pack endpoints.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 
 Endpoints (all require tenant auth via X-Api-Key):
   - POST /session/{session_id}/packs/activate   {pack_id}

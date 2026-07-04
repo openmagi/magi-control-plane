@@ -1,6 +1,6 @@
 """``magi-cp session pack ...`` : session-scoped pack activation CLI (P3).
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Slash-command surface", Phase 3).
 
 This is the operator-facing surface behind the Claude Code slash commands

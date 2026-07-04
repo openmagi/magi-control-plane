@@ -102,16 +102,11 @@ auto-activate packs at `SessionStart` from the comma-separated
 `MAGI_CP_AUTO_ACTIVATE_PACKS` env var. The pack-centric runtime is
 default-on (`MAGI_CP_PACK_CENTRIC_RUNTIME=1`).
 
-## Runtimes: Claude Code and Codex
+## Runtimes
 
-The gate speaks two host runtimes. **Claude Code** is the primary
-surface: the `PreToolUse` / `SessionStart` hooks read the payload on
-stdin and the gate returns a JSON decision. **Codex** is supported via a
-native lowering adapter (default-on): a `PermissionPolicy` compiles to a
-Codex permission profile or a managed `/etc/codex/requirements.toml`
-`prefix_rule`, with a matcher translator between the two tool
-vocabularies. The gate auto-detects the runtime from the hook payload;
-force it with `MAGI_CP_RUNTIME=cc|codex`.
+The gate speaks two host runtimes: Claude Code (the primary hook-based
+surface) and Codex (a native permission-lowering adapter). The gate
+auto-detects which one from the hook payload. See [Runtimes](./runtimes.md).
 
 ## Why fail-closed
 

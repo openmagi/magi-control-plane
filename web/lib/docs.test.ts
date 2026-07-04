@@ -14,14 +14,16 @@ import { DOCS_INDEX, isDocSlug, getDocEntry } from "./docs"
 describe("Q96 developer docs", () => {
   const docsDir = path.resolve(__dirname, "..", "..", "docs")
 
-  it("DOCS_INDEX has the brief-mandated 10 entries", () => {
-    expect(DOCS_INDEX.length).toBe(10)
+  it("DOCS_INDEX matches the on-disk docs set", () => {
+    expect(DOCS_INDEX.length).toBe(12)
     const expected = [
       "getting-started",
       "install",
       "architecture",
+      "runtimes",
       "policy-ir",
       "verifiers",
+      "session-evidence",
       "operator",
       "api",
       "cli",

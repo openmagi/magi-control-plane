@@ -1,6 +1,6 @@
 """P2 pack-centric runtime — GET /session/{id}/resolved endpoint.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Runtime changes" + Phase 2).
 
 The endpoint feeds the gate binary cache with a single-round-trip

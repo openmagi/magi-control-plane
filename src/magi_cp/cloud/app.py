@@ -140,7 +140,7 @@ from .deps import (  # noqa: E402,F401
 
 # ── route groups moved out (modularization 2026-07-03, design PR2) ────
 # create_app calls routes.<group>.attach(app, deps). See
-# docs/plans/2026-07-03-cloud-app-modularization-design.md.
+# 2026-07-03-cloud-app-modularization-design (private planning repo).
 from .routes import (  # noqa: E402
     runtime as routes_runtime,
     admin_tenant as routes_admin_tenant,
@@ -381,7 +381,7 @@ def create_app(
 
     # ── /session/{session_id}/packs — P1 pack-centric runtime ─────────
     # Session-scoped activation surface. See
-    # docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md.
+    # 2026-06-30-pack-centric-session-scoped-runtime (private planning repo).
     # P2 folds the ``/session/{id}/resolved`` gate-cache feeder into
     # the same attach helper so the pack + policy stores share one
     # closure (the resolver reads BOTH to fold pack membership into a

@@ -51,8 +51,8 @@ without any provider key.
 
 ## First policy
 
-Open the dashboard at `/rules`. It has four tabs: **Policies**, **Packs**,
-**Checks**, and **Evidence records**.
+Open the dashboard at `/rules`. It has three tabs: **Policies**, **Packs**,
+and **Evidence** (each check plus the ledger records it emits).
 
 - On **Policies**, toggle a prebuilt policy on. Prebuilts are vetted
   policies (each owning one or more IR rules); enabling one materializes

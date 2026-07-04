@@ -1,6 +1,6 @@
 """``magi-cp install`` : Codex (and Claude Code) adapter installer (P3).
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 5 (slash-command shipping) + Section 6 (managed enforcement) +
 Section 13 (rollback runbook / ``--force-remove-codex``).
 

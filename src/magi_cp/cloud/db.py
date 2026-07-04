@@ -174,7 +174,7 @@ class CompiledPolicySnapshot(Base):
 class SessionActivePacks(Base):
     """P1 pack-centric runtime: per-session active pack list.
 
-    Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+    Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
     (§ "Session-state store").
 
     One row per CC session per tenant. ``pack_ids`` carries the packs
@@ -538,7 +538,7 @@ def _apply_migrations(engine: Engine) -> None:
     # `session_active_packs`, plus the session-packs PK rebuild to include
     # runtime_id. Idempotent + guarded internally; a fresh create_all DB
     # already has the columns so this is a no-op there. Design brief:
-    # docs/plans/2026-06-30-codex-runtime-adapter-design.md (Section 9).
+    # 2026-06-30-codex-runtime-adapter-design (private planning repo) (Section 9).
     from .codex_runtime_migration import upgrade as _codex_runtime_upgrade
     _codex_runtime_upgrade(engine)
     # TENANT-2/3: rebuild endpoint_heartbeat + compiled_policy_snapshot PKs to
@@ -1206,7 +1206,7 @@ class CompiledPolicySnapshotRepo:
 
 
 # ── P1 pack-centric runtime: session-state store ──────────────────────
-# Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+# Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 #
 # 30-day TTL for the GC sweep (decision 5 — activation lifetime is NOT
 # TTL-driven; this bound is only how long an orphaned session sits in

@@ -43,7 +43,7 @@ class Tenant(Base):
     # pack. NULL means "not yet migrated"; the migration keys idempotency
     # on this column so it never re-runs for a tenant. Additive + nullable
     # so a pre-P5 DB reads unchanged after the `init_schema` DDL upgrade.
-    # Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+    # Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
     pack_centric_migrated_at: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True,
     )
@@ -53,7 +53,7 @@ class Tenant(Base):
     # tenant, gated globally by MAGI_CP_CODEX_RUNTIME_ENABLED. Additive +
     # non-null with a server default so a pre-adapter DB reads unchanged
     # after the init_schema DDL upgrade.
-    # Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+    # Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
     runtime_id: Mapped[str] = mapped_column(
         String(32), nullable=False, default="claude-code",
         server_default="claude-code",

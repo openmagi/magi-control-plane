@@ -1,6 +1,6 @@
 """P1 pack-centric runtime: floor-pack seeder.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Floor pack" + decisions 6 + 7).
 
 The floor pack is the tenant's "always-on" pack. Every session union-in

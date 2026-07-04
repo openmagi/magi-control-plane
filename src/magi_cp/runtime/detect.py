@@ -1,6 +1,6 @@
 """Runtime detection for the gate dispatcher.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 3.4. Detection order (highest priority first):
 
   1. Explicit ``MAGI_CP_RUNTIME`` env var (managed configs set this so a

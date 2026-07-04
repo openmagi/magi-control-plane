@@ -1,6 +1,6 @@
 """P2 Codex adapter: gap shims A-D.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 4. Each shim's fixture is drawn from the research recap:
 
   - Shim A (4.1): PreToolUse tool-coverage silent-skip. coverage_report

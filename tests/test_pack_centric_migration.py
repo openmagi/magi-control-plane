@@ -1,6 +1,6 @@
 """P5 pack-centric runtime: boot migration + default-flip tests.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Migration" + Phase 5).
 
 Covered here (per implementation-brief "Tests" bullet):

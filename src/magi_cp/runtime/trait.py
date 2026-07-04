@@ -1,6 +1,6 @@
 """Canonical `HookRuntime` trait + shared runtime-neutral types.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 (Section 3 "Architecture", L1/L6/L7 locked decisions).
 
 This module owns the seam that decouples "what a coding-agent runtime

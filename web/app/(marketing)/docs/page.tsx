@@ -32,8 +32,8 @@ export default async function DocsIndexPage() {
         </h1>
         <p className="mt-3 text-[15px] leading-7 text-[var(--color-text-secondary)]">
           {isKo
-            ? "Claude Code 위에서 도는 오픈소스 거버넌스 게이트. 정책 IR, verifier 레지스트리, Ed25519 서명 evidence ledger. 설치부터 운영까지 10개 챕터."
-            : "Open-source governance gate over Claude Code. Policy IR, verifier registry, Ed25519-signed evidence ledger. Ten chapters from install to operate."}
+            ? "Claude Code 위에서 도는 오픈소스 거버넌스 게이트. 정책 IR, verifier 레지스트리, Ed25519 서명 evidence ledger. 설치부터 운영까지 전 과정."
+            : "Open-source governance gate over Claude Code. Policy IR, verifier registry, Ed25519-signed evidence ledger. Everything from install to operate."}
         </p>
         <div className="mt-6 flex flex-wrap gap-3 text-sm">
           <Link

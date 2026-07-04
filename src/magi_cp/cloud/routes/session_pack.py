@@ -34,7 +34,7 @@ def attach(
     the CC session uuid.
 
     Semantics locked by
-    docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md:
+    2026-06-30-pack-centric-session-scoped-runtime (private planning repo):
 
       - Activation is one-shot; persists until session end or explicit
         deactivate (decision 5). Endpoints only refresh ``last_seen_at``

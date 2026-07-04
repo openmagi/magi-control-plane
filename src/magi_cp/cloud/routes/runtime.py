@@ -17,7 +17,7 @@ def attach(
     """Codex runtime adapter (P4): per-runtime coverage + per-tenant
     runtime preference for the dashboard runtime picker.
 
-    Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+    Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
     Section 7. Everything here is READ-safe; only the
     ``POST /tenants/{id}/runtime`` switch to ``codex`` is gated on
     ``MAGI_CP_CODEX_RUNTIME_ENABLED`` (default ON; the switch is refused

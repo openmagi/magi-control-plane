@@ -1,6 +1,6 @@
 """P2 pack-centric runtime: gate resolution shift.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Runtime changes" + Phase 2 rollout row).
 
 The cloud today answers "which policies fire on THIS hook call?" by
@@ -170,7 +170,7 @@ def legacy_resolve_policies_for_hook(
     ``enabled`` column. Do not build new behaviour on it; author new
     resolution logic in the pack-centric branch of
     :func:`resolve_policies_for_hook`.
-    Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+    Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 
 
     Preserves the pre-P2 semantics so the flag-OFF path stays

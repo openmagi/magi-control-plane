@@ -1,6 +1,6 @@
 """P4 pack-centric dashboard feeders.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 
 Covered here:
   - GET /admin/sessions lists a tenant's recent sessions + active packs,

@@ -14,7 +14,7 @@ We assert the dispatcher (``gate.main`` routing through ``cc.py``) equals
 BOTH a golden built from ``policy.cc_shapes`` AND a direct
 ``gate.evaluate`` call on the same payload.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 3.3 + Section 10 P1.
 """
 from __future__ import annotations

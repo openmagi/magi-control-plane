@@ -4,7 +4,7 @@ The gate's SessionStart handler reads MAGI_CP_AUTO_ACTIVATE_PACKS
 (env / config file), then best-effort POSTs an activate for each pack.
 It must NEVER fail a session: unset config = no-op, a failing POST is
 swallowed, and the verdict is always allow. Design:
-docs/plans/2026-07-03-sessionstart-auto-pack-activation-design.md.
+2026-07-03-sessionstart-auto-pack-activation-design (private planning repo).
 """
 from __future__ import annotations
 

@@ -14,7 +14,7 @@ import os
 
 
 # ── Rollout gate for the pack-centric session-scoped runtime.
-# Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+# Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 #
 # Phase 1 registered the name; Phase 2 wired the gate resolution shift
 # (walk `session_active_packs` + the floor pack instead of the legacy
@@ -51,7 +51,7 @@ def pack_centric_runtime_enabled() -> bool:
 
 
 # ── Rollout gate for the Codex CLI runtime adapter.
-# Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+# Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 #
 # Default ON (2026-07-01, no-default-OFF policy). This is a GLOBAL
 # AVAILABILITY switch, not an auto-migration: with it ON the dispatcher

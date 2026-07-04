@@ -17,8 +17,10 @@ export type DocSlug =
   | "getting-started"
   | "install"
   | "architecture"
+  | "runtimes"
   | "policy-ir"
   | "verifiers"
+  | "session-evidence"
   | "operator"
   | "api"
   | "cli"
@@ -48,7 +50,12 @@ export const DOCS_INDEX: ReadonlyArray<DocEntry> = [
   {
     slug: "architecture",
     title: "Architecture",
-    summary: "Three-layer model: local, cloud, floor. Trust boundaries.",
+    summary: "Three-layer model: local, cloud, floor. Packs, policies, rules.",
+  },
+  {
+    slug: "runtimes",
+    title: "Runtimes",
+    summary: "Claude Code hooks and the Codex native-lowering adapter.",
   },
   {
     slug: "policy-ir",
@@ -59,6 +66,11 @@ export const DOCS_INDEX: ReadonlyArray<DocEntry> = [
     slug: "verifiers",
     title: "Verifiers",
     summary: "The 5 wired verifiers and how to register a custom one.",
+  },
+  {
+    slug: "session-evidence",
+    title: "Session-evidence gate",
+    summary: "Make a tool call depend on evidence recorded earlier this session.",
   },
   {
     slug: "operator",
