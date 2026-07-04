@@ -38,7 +38,7 @@ GET /policies
 X-Admin-Api-Key: ...
 
 200 OK
-{"policies": [{"id": "legal-filing/v1", "enabled": true, "tier": "platform", "enforcement": "enforcing"}]}
+{"policies": [{"id": "legal-filing/v1", "enabled": true, "source": "platform", "enforcement": "enforcing"}]}
 ```
 
 ```http
@@ -46,7 +46,7 @@ GET /policies/{id}
 X-Admin-Api-Key: ...
 
 200 OK
-{"id": "legal-filing/v1", "version": 1, "policy": <IR>, "compiled_sha256": "...", "enforcement": "enforcing"}
+{"id": "legal-filing/v1", "version": "0.1", "policy": <IR>, "compiled_sha256": "...", "enforcement": "enforcing"}
 ```
 
 ```http
@@ -85,6 +85,41 @@ X-Admin-Api-Key: ...
 {"ir": {...}, "review": "...", "schema_issues": []}
 ```
 
+One-shot NL -> IR. Requires an LLM provider (`503` when unconfigured).
+`prior_turns` (optional, up to 20) can carry earlier context.
+
+```http
+POST /policies/compile-interactive
+X-Admin-Api-Key: ...
+
+{"history": [{"role":"user","content":"..."}], "draft_so_far": {...}, "answers": {"q1": "..."}}
+
+200 OK
+{"assistant": "...", "questions": [...], "draft": {...}}
+```
+
+Turn-by-turn conversational compiler. Stateless: every call reconstructs
+state from the body (`history`, `draft_so_far`, `answers`). Only this
+endpoint mutates the draft, and it is compound-aware (one intent can own
+several rules). Same `503`-on-unconfigured-provider shape as
+`/policies/compile`.
+
+```http
+POST /policies/review
+X-Admin-Api-Key: ...
+
+{"draft": {...}, "intent": "require a verified source before trading"}
+
+200 OK
+{"ok": true, "issues": [{"severity": "...", "message": "...", "source": "..."}], "summary": "..."}
+```
+
+Policy-integrity review: does this draft implement the operator's intent?
+Runs deterministic structural checks always (orphan gate, non-enforcing
+action, join-key mismatch, invalid member IR) and, when a reviewer LLM is
+configured, an advisory semantic pass. Advisory only; no provider
+required, so the deterministic checks run even with no LLM keys.
+
 ## Verify
 
 ```http
@@ -97,10 +132,10 @@ X-Api-Key: ...
 {"status": "pass", "reason": null, "token": "ed25519:..."}
 ```
 
-`status` is `pass`, `fail`, or `review`. On `pass`, a signed token is
+`status` is `pass`, `review`, or `deny`. On `pass`, a signed token is
 issued bound to `(subject, payload_hash)` with TTL from the policy. On
 `review`, the verdict is enqueued into HITL and the gate is told to
-wait.
+wait. On `deny`, no token is issued and the gate blocks.
 
 ## HITL
 

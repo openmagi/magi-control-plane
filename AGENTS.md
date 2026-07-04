@@ -46,6 +46,10 @@ regardless of whether a workflow runs the E2E harness.
 ## House rules
 
 - No em-dashes anywhere (source, tests, docs, commit messages).
+- No plan / design docs in this public repo. Planning artifacts live
+  outside it (the private `clawy` monorepo under `docs/plans/`). Do not
+  recreate `docs/plans/`; the docs guard test (`web/lib/docs.test.ts`)
+  fails if it reappears.
 - Brand: "Open Magi". Runtime: `magi-agent`.
 - Korean primary in `web/lib/i18n/locales/ko.ts`; English in
   `web/lib/i18n/locales/en.ts`.

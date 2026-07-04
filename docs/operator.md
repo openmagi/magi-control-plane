@@ -23,6 +23,12 @@ is policy authoring plus serving the install files.
 
 ### Option A: Docker Compose (single host)
 
+For most self-hosters the one-line installer is the fastest path: it
+pulls the published images and brings up both the cloud and the dashboard
+locally. See [Install](./install.md).
+
+To run from a repo clone instead:
+
 ```bash
 git clone https://github.com/openmagi/magi-control-plane.git
 cd magi-control-plane
@@ -32,7 +38,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The compose file ships the cloud at `:8787` and the dashboard at `:3787`.
+The repo-root compose file builds the cloud on `:8787` (plus an optional
+`postgres` profile). The dashboard is a separate deploy: either the
+served self-host template (which the installer uses; it binds the
+dashboard to `127.0.0.1:3000`) or the Vercel path below.
 
 ### Option B: Kubernetes
 
@@ -88,18 +97,13 @@ vercel --prod
 | `OPENAI_API_KEY` | Cloud | LLM provider for authoring. |
 | `MAGI_CP_PUBLIC_CLOUD_URL` | Dashboard | Server-side fetch target. |
 | `MAGI_CP_SHARE_BASE_URL` | Cloud | Public base URL stamped on share links. |
+| `MAGI_CP_AUTO_ACTIVATE_PACKS` | Local gate | Comma-separated pack ids auto-activated on `SessionStart`. |
 
 ## Tenant provisioning
 
-```bash
-docker compose exec cloud magi-cp keys provision \
-  --tenant-id $(uuidgen | tr A-Z a-z) \
-  --plan default \
-  --email <subscriber_email>
-# Emits tenant_id + api_key + key_id. Copy and email the key immediately.
-```
-
-For an automated flow, use the HMAC-signed admin endpoints (see [API](./api.md)):
+The single-operator installer generates your key locally, so a fresh
+self-host has no tenants to provision. Multi-tenant deploys mint keys via
+the HMAC-signed admin endpoints (see [API](./api.md)):
 
 1. `POST /admin/tenants` with `{tenant_id, plan, expires_at}`.
 2. `POST /admin/tenants/{tenant_id}/keys` returns the cleartext key.
@@ -107,16 +111,17 @@ For an automated flow, use the HMAC-signed admin endpoints (see [API](./api.md))
 
 ## Key rotation
 
-Run quarterly or after a suspected key compromise.
+Run quarterly or after a suspected key compromise. `rotate` mints a new
+active key and keeps prior keys so in-flight tokens still verify; revoke
+the old key once its tokens have expired.
 
 ```bash
-docker compose exec cloud magi-cp keys rotate-active \
-  --reason "scheduled-2026Q3"
-# emits new kid. Ledger entries sign under the new kid; signature verify
-# still accepts the old kid until you retire it.
+docker compose exec cloud magi-cp keys rotate
+# Emits the new kid. Ledger entries sign under it; signature verify still
+# accepts the old kid until you revoke it.
 
-docker compose exec cloud magi-cp keys retire <old_kid> \
-  --after "2026-10-01T00:00Z"
+# Wait at least TOKEN_TTL_SECONDS (600s), then:
+docker compose exec cloud magi-cp keys revoke <old_kid>
 ```
 
 Local gates fetch `GET /pubkey?kid=...` on demand and pin per
