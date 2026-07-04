@@ -519,7 +519,7 @@ function CTA({ c }: { c: CTACopy }) {
       <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
         <PrimaryCTA size="lg" href="/install">{c.cta}</PrimaryCTA>
         <a
-          href="https://github.com/openmagi"
+          href="https://github.com/openmagi/magi-control-plane"
           target="_blank" rel="noopener noreferrer"
           className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-white/20 bg-white/5 px-6 py-3.5 text-base font-semibold text-white hover:bg-white/10 transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
         >

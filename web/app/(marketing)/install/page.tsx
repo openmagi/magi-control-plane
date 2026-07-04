@@ -219,7 +219,7 @@ export default async function InstallPage({
 
           <p className="mt-8 text-center text-sm text-[var(--subtle)]">
             <a
-              href="https://github.com/openmagi"
+              href="https://github.com/openmagi/magi-control-plane"
               target="_blank" rel="noopener noreferrer"
               className="text-[var(--brand)] hover:text-[var(--brand-strong)] hover:underline"
             >

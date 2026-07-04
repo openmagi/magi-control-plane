@@ -13,7 +13,14 @@ interface Props {
   closeMenuLabel: string
   items: NavItem[]
   rightSlot?: ReactNode
+  /** Right-aligned filled CTA (e.g. Dashboard entry), openmagi.ai style. */
+  cta?: NavItem
 }
+
+const CTA_CLASS =
+  "inline-flex items-center justify-center rounded-lg bg-[var(--cta)] px-4 py-2 " +
+  "text-sm font-semibold text-white hover:bg-[var(--cta-hover)] hover:no-underline " +
+  "transition-colors duration-200 cursor-pointer"
 
 function isActive(pathname: string, href: string, all: string[]): boolean {
   const match = all
@@ -23,7 +30,7 @@ function isActive(pathname: string, href: string, all: string[]): boolean {
 }
 
 export default function NavBarClient({
-  brand, openMenuLabel, closeMenuLabel, items, rightSlot,
+  brand, openMenuLabel, closeMenuLabel, items, rightSlot, cta,
 }: Props) {
   const pathname = usePathname() || "/"
   const [open, setOpen] = useState(false)
@@ -78,6 +85,11 @@ export default function NavBarClient({
           <div className="ml-2 pl-3 border-l border-[var(--color-border-subtle)]">
             {rightSlot}
           </div>
+        )}
+        {cta && (
+          <Link href={cta.href} className={`ml-1 ${CTA_CLASS}`}>
+            {cta.label}
+          </Link>
         )}
       </nav>
 
@@ -140,6 +152,11 @@ export default function NavBarClient({
               <div className="mt-2 pt-2 border-t border-[var(--color-border-subtle)] px-3">
                 {rightSlot}
               </div>
+            )}
+            {cta && (
+              <Link href={cta.href} className={`mt-2 ${CTA_CLASS}`}>
+                {cta.label}
+              </Link>
             )}
           </nav>
         </div>
