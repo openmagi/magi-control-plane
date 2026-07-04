@@ -14,6 +14,7 @@ import { verifierFiresOnLifecycle } from "@/lib/verifier-descriptors"
 import { DryRunPanel } from "../_components/DryRunPanel"
 import PolicyBuilder from "@/components/PolicyBuilder"
 import ConversationalCompose from "./_components/ConversationalCompose"
+import { encodeSeed } from "./_components/handoff-seed"
 import HandoffLink from "./_components/HandoffLink"
 import AdvancedAuthoring from "./_components/AdvancedAuthoring"
 import { PackMultiSelect } from "./_components/PackMultiSelect"
@@ -1484,6 +1485,26 @@ function _parsePackIds(formData: FormData): string[] {
  *  admin-key + error-flash handling, but the endpoint + redirect differ:
  *  a compound has no single-rule detail page, so we land on the policies
  *  list where the grouped policy renders. */
+/** G1 (audit UX-08): a compound is authored conversationally; a save failure
+ *  must NOT eject the operator to the mode picker with an empty chat. Redirect
+ *  BACK into conversational mode with the draft encoded as a seed, so the
+ *  compose remounts with the operator's ready draft intact (the same seed
+ *  mechanism the wizard->conversational handoff uses). */
+function _compoundSaveErrorRedirect(
+  draft: Record<string, unknown>, code: string,
+): never {
+  let tail = `err=${code}`
+  try {
+    const seed = encodeSeed({ draft_ir: draft })
+    tail = `mode=conversational&seed=${encodeURIComponent(seed)}&${tail}`
+  } catch {
+    // Over-length / non-serializable draft: fall back to err-only (the
+    // operator loses the draft, but this is the pre-G1 behavior, not worse).
+    tail = `mode=conversational&${tail}`
+  }
+  redirect(`/policies/new?${tail}`)
+}
+
 async function persistCompoundDraft(
   draft: { id?: string; type?: string; [k: string]: unknown },
   source: string,
@@ -1491,7 +1512,7 @@ async function persistCompoundDraft(
 ): Promise<void> {
   const policyId = String(draft.id ?? "").trim()
   try { validatePolicyId(policyId) }
-  catch { redirect("/policies/new?err=invalid_id"); return }
+  catch { _compoundSaveErrorRedirect(draft, "invalid_id"); return }
   let adminKey: string
   try {
     if (!process.env.MAGI_CP_ADMIN_API_KEY) {
@@ -1500,7 +1521,7 @@ async function persistCompoundDraft(
     }
     adminKey = process.env.MAGI_CP_ADMIN_API_KEY
   } catch (e) {
-    redirect(`/policies/new?err=${codeForError(e)}`); return
+    _compoundSaveErrorRedirect(draft, codeForError(e)); return
   }
   // G4 (IF-14): preserve the current enabled on re-save; new ids arm.
   const enabled = await _existingEnabled(policyId, adminKey, "group")
@@ -1520,10 +1541,10 @@ async function persistCompoundDraft(
     )
     if (!r.ok) {
       console.error(`cloud ${r.status} POST /policies/compound: ${await r.text().catch(() => "")}`)
-      redirect(`/policies/new?err=${codeForError(new Error(`cloud ${r.status}`))}`); return
+      _compoundSaveErrorRedirect(draft, codeForError(new Error(`cloud ${r.status}`))); return
     }
   } catch (e) {
-    redirect(`/policies/new?err=${codeForError(e)}`); return
+    _compoundSaveErrorRedirect(draft, codeForError(e)); return
   }
   try {
     const { cookies } = await import("next/headers")
