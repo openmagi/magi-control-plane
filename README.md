@@ -31,7 +31,7 @@ authoring dashboard. Every tool call, prompt, and session boundary can be gated
 against your policies at runtime, and every verdict is sealed into a
 tamper-evident chain.
 
-## The problem
+## The Problem
 
 Prompting is not control. An agent can say it read a document it never opened,
 run a command you never approved, or ship a plausible answer with no audit
@@ -73,15 +73,15 @@ Three layers, and the line between them is the security boundary:
 
 Policies are authored as a **pack -> policy -> rule** model: a rule is one
 compiled unit, a policy is one authored intent that owns one or more rules, and
-a pack groups policies you activate per session. See
-[Architecture](docs/architecture.md).
+a pack groups policies you activate per session (the floor pack is always on).
+See [Architecture](docs/architecture.md).
 
 ## CLI
 
 ```text
 magi-cp gate                 PreToolUse / SessionStart hook reader (stdin -> JSON)
 magi-cp session pack ...     session-scoped pack activation
-magi-cp emit                 request a verifier call, cache the token in the WAL
+magi-cp emit                 request a citation_verify token, cache it in the WAL
 magi-cp await-approval       poll HITL, write the issued token to the WAL
 magi-cp compile <ir> <out>   Policy IR -> managed-settings.json
 magi-cp cloud                run the FastAPI cloud server
@@ -99,12 +99,12 @@ Full reference: [CLI](docs/cli.md).
 make install          # editable install + dev deps
 make test             # pytest
 make cloud-dev        # cloud API on :8787  (registry-wired + builtins)
-make build-plugin     # policies/*.json -> plugin/managed-settings.json
+make build-plugin     # compile the demo policy -> plugin/managed-settings.json
 cd web && npm install && npm run dev   # dashboard on :3000
 ```
 
-The cloud is reachable at `http://127.0.0.1:8787`. `GET /healthz` is public;
-everything else needs a key.
+The cloud is reachable at `http://127.0.0.1:8787`. `GET /healthz` and the
+`GET /pubkey` endpoint are public; mutating routes need a key.
 
 ## Docs
 
