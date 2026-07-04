@@ -338,6 +338,15 @@ _EGATE_PROJECT_RE = re.compile(
     r"([~./][\w./~-]+)",
     re.IGNORECASE,
 )
+# H4/CV-07: an "ask for approval" cue. Without this, "ask for approval before
+# X" silently became a BLOCK gate (the archetype default), doing something
+# other than the operator asked. When matched, gate.action=ask (hold for a
+# human) instead of block.
+_EGATE_ASK_RE = re.compile(
+    r"\bask\b|\bapprov|\bconfirm|\bpermission\b|\bprompt\s+me\b"
+    r"|승인|허가|물어|확인\s*받|사람.{0,4}(?:확인|승인|허가)|손들",
+    re.IGNORECASE,
+)
 
 
 # A2 (UX-01/IF-02): the compound has a single operator decision - which
@@ -392,8 +401,14 @@ def _extract_evidence_gate_intent(user_text: str) -> dict[str, Any]:
             if m not in _EGATE_FETCH_TOOLS:
                 tool = m
                 break
+    gate: dict[str, Any] = {}
     if tool:
-        out["gate"] = {"matcher": tool}
+        gate["matcher"] = tool
+    # H4/CV-07: "ask for approval" -> hold for a human, not block.
+    if _EGATE_ASK_RE.search(raw):
+        gate["action"] = "ask"
+    if gate:
+        out["gate"] = gate
     scope_m = _EGATE_PROJECT_RE.search(raw)
     if scope_m:
         scope = scope_m.group(1).strip().rstrip(".")
@@ -3093,6 +3108,13 @@ def _step_compile_compound(
             cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
             if not (isinstance(cur, dict) and str(cur.get("matcher") or "").strip()):
                 working["gate"] = {**(cur or {}), "matcher": s_gate["matcher"]}
+        # H4/CV-07: carry the "ask" action from the seed when the draft has
+        # not already pinned one, so "ask for approval" doesn't default to
+        # block. Only "ask" is seeded (block is the archetype default).
+        if s_gate and s_gate.get("action") == "ask":
+            cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
+            if not (isinstance(cur, dict) and str(cur.get("action") or "").strip()):
+                working["gate"] = {**(cur or {}), "action": "ask"}
         if seed.get("project_scope") and not working.get("project_scope"):
             working["project_scope"] = seed["project_scope"]
 
