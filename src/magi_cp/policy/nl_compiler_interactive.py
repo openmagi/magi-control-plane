@@ -3120,18 +3120,30 @@ def _step_compile_compound(
     missing = _evidence_gate_missing_fields(finalized)
     has_matcher = "matcher" not in missing
 
-    # Context-aware organic reuse: if another enabled policy already
-    # records this evidence `kind`, drop this policy's duplicate audit and
-    # reuse the existing producer (emit_audit=False). Only applies once
-    # the gated tool is chosen (a kind-only draft has nothing to gate yet)
-    # and never when the operator's echoed draft already pinned emit_audit.
+    # Context-aware organic reuse: if another live policy already records
+    # this evidence `kind`, drop this policy's duplicate audit and reuse the
+    # existing producer (emit_audit=False). Only applies once the gated tool
+    # is chosen (a kind-only draft has nothing to gate yet).
+    #
+    # B1 (audit IF-09): re-evaluate EVERY turn, not just the turn the
+    # matcher first lands. If a prior turn baked emit_audit=False but the
+    # producer has since disappeared (disabled/deleted), DROP the key so the
+    # policy restores its self-producing default instead of silently
+    # authoring a gate whose evidence nothing records.
     reused_from: str | None = None
-    if has_matcher and "emit_audit" not in finalized:
-        reused_from = _existing_audit_provider(
+    if has_matcher:
+        provider = _existing_audit_provider(
             context, str(finalized.get("kind") or ""), str(finalized.get("id") or ""),
         )
-        if reused_from:
-            finalized["emit_audit"] = False
+        if "emit_audit" not in finalized:
+            if provider:
+                finalized["emit_audit"] = False
+                reused_from = provider
+        elif finalized.get("emit_audit") is False:
+            if provider:
+                reused_from = provider  # still reusing; keep the message accurate
+            else:
+                finalized.pop("emit_audit", None)  # producer gone -> self-produce
 
     ready = False
     validator_error: str | None = None
