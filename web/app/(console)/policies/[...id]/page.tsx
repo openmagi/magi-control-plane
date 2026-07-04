@@ -4,7 +4,7 @@ import { codeForError } from "@/lib/flash"
 import { validatePolicyId } from "@/lib/policy-id"
 import { getT } from "@/lib/i18n/server"
 import {
-  Badge, Card, Code, CodeBlock, CopyButton, EnforcementBadge,
+  Badge, Button, Card, Code, CodeBlock, CopyButton, EnforcementBadge,
   ErrorState, PageHeader,
 } from "@/components/ui"
 import { DryRunPanel } from "../_components/DryRunPanel"
@@ -81,7 +81,19 @@ export default async function PolicyDetailPage({
       <p className="mb-3">
         <Link href="/policies" className="text-sm">{t("newPolicy.back")}</Link>
       </p>
-      <PageHeader title={<Code className="text-md">{detail.id}</Code>} />
+      <PageHeader
+        title={<Code className="text-md">{detail.id}</Code>}
+        actions={
+          /* D2 (edit path): re-open this rule's IR in the Advanced editor.
+             persistDraft preserves the current enabled on save (G4). */
+          <Link
+            href={`/policies/new?mode=advanced&draft=${encodeURIComponent(JSON.stringify(detail.policy))}`}
+            data-testid="policy-edit-link"
+          >
+            <Button variant="secondary" size="sm">{t("policies.edit")}</Button>
+          </Link>
+        }
+      />
 
       <Card className="mb-6">
         <div className="flex flex-wrap gap-x-6 gap-y-3 items-center">

@@ -1776,6 +1776,39 @@ def attach(app: FastAPI, store: PolicyStore,
             policy_group_store.save(groups)
         return {"id": policy_id, "enabled": body.enabled, "rule_ids": list(rec.rule_ids)}
 
+    @app.get("/policies/groups/{policy_id:path}",
+             dependencies=[Depends(require_admin_key)])
+    def get_policy_group(policy_id: str) -> dict:
+        """Return a single authored policy incl. its stored authoring `draft`.
+
+        D2 (edit path): the list route omits the draft, so a compound policy's
+        original authoring shape was unreachable from any client - re-opening
+        one for edit was impossible. This returns the PolicyRecord verbatim so
+        the evidence-gate form / conversational shell can seed from it. Must be
+        registered BEFORE the `/policies/{policy_id:path}` catch-all so the
+        literal `groups/` prefix wins.
+        """
+        if policy_group_store is None:
+            raise HTTPException(500, "policy group store not configured")
+        rec = policy_group_store.get(policy_id)
+        if rec is None:
+            raise HTTPException(404, f"policy {policy_id!r} not found")
+        # Derive live enabled from member rules (ground truth), mirroring
+        # list_policy_groups, rather than the write-once record flag.
+        rule_enabled = {ov.policy.id: ov.enabled for ov in store.load()}
+        member_states = [rule_enabled.get(rid) for rid in rec.rule_ids
+                         if rid in rule_enabled]
+        enabled = any(member_states) if member_states else bool(rec.enabled)
+        return {
+            "id": rec.id,
+            "description": rec.description,
+            "kind": rec.kind,
+            "draft": rec.draft,
+            "rule_ids": list(rec.rule_ids),
+            "source": rec.source,
+            "enabled": enabled,
+        }
+
     @app.get("/policies/{policy_id:path}", dependencies=[Depends(require_admin_key)])
     def get_policy(policy_id: str) -> dict:
         for ov in store.load():
