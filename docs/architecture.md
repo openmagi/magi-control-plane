@@ -71,10 +71,47 @@ the cloud is unreachable, the gate denies.
 ## Verifier registry
 
 The registry is a thin lookup keyed by `step` name. Each verifier
-implements a `verify(request) -> verdict` method and is registered at
+implements a `run(payload) -> Verdict` method and is registered at
 boot. The 5 wired verifiers are in [Verifiers](./verifiers.md). Add a
-custom verifier by registering a subclass into the registry before
+custom verifier by registering it into the registry before
 `_build_production_app` runs.
+
+## Packs, policies, and rules
+
+Above the IR sits a three-level authoring model:
+
+- **Rule** is the minimal unit: one IR row in the policy store (an
+  `EvidencePolicy`, `PermissionPolicy`, `RunCommandPolicy`, and so on).
+  A rule is what compiles to a `managed-settings.json` hook and what
+  precedence resolves over. See [Policy IR](./policy-ir.md).
+- **Policy** is one authored intent that owns one or more rules. "Require
+  a verified source before trading" is a single policy owning an audit
+  rule plus a precondition rule. A rule authored directly is a policy
+  owning exactly one rule. A policy does not compile to anything on its
+  own; it expands to its rules.
+- **Pack** is a named collection that references policies. At compile
+  time each pack expands its policies to their rules. The floor pack is
+  always on; other packs are activated per session.
+
+### Session-scoped activation
+
+Packs are activated for a Claude Code session, not globally. Inside a
+session, `/magi:pack-activate <pack_id>` turns a pack on until the
+session ends (or `/magi:pack-deactivate`). The gate can also
+auto-activate packs at `SessionStart` from the comma-separated
+`MAGI_CP_AUTO_ACTIVATE_PACKS` env var. The pack-centric runtime is
+default-on (`MAGI_CP_PACK_CENTRIC_RUNTIME=1`).
+
+## Runtimes: Claude Code and Codex
+
+The gate speaks two host runtimes. **Claude Code** is the primary
+surface: the `PreToolUse` / `SessionStart` hooks read the payload on
+stdin and the gate returns a JSON decision. **Codex** is supported via a
+native lowering adapter (default-on): a `PermissionPolicy` compiles to a
+Codex permission profile or a managed `/etc/codex/requirements.toml`
+`prefix_rule`, with a matcher translator between the two tool
+vocabularies. The gate auto-detects the runtime from the hook payload;
+force it with `MAGI_CP_RUNTIME=cc|codex`.
 
 ## Why fail-closed
 

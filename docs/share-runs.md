@@ -17,6 +17,9 @@ magi-cp share "$sid" --dry-run
 magi-cp share "$sid"
 ```
 
+Uploads require an HTTPS cloud URL. For a loopback cloud over plain HTTP,
+add `--allow-plain-http` (refused for any non-loopback host).
+
 The link target points at the dashboard. The dashboard fetches the
 `runView` from the cloud and renders it. Logged-out visitors can view
 the page; bots are blocked via `noindex`.

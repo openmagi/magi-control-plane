@@ -74,13 +74,12 @@ describe("Q96 developer docs", () => {
     // Q96 dropped the legacy internal-only files that used to sit
     // alongside the developer docs. The list below stays banned.
     //
-    // `docs/plans/` is DELIBERATELY NOT banned: the /docs renderer
-    // uses the DOCS_INDEX allowlist (see the invariant below), never
-    // a filesystem glob, so plan / design markdown living under
-    // docs/plans/ is never rendered on the public site. Keeping the
-    // design docs in-repo (pack-centric runtime, codex adapter, etc.)
-    // is useful and safe as long as the renderer stays allowlist-based.
+    // `docs/plans/` is now banned too (see the dedicated assertion
+    // below): planning / design artifacts live outside this public
+    // repo, in the private clawy monorepo under docs/plans/. Only the
+    // rendered developer docs (DOCS_INDEX) belong under docs/.
     const banned = [
+      "plans",
       "workflows",
       "clawy-integration.md",
       "design-partner-onepager.md",
@@ -92,6 +91,16 @@ describe("Q96 developer docs", () => {
     for (const name of banned) {
       expect(existsSync(path.join(docsDir, name)), `internal-only path remains: ${name}`).toBe(false)
     }
+  })
+
+  it("docs/plans/ never returns: plan docs live outside this public repo", () => {
+    // House rule: no plan / design docs in the public repo. They live
+    // in the private clawy monorepo (docs/plans/). This guard fails
+    // loudly if a plans directory is ever reintroduced here.
+    expect(
+      existsSync(path.join(docsDir, "plans")),
+      "docs/plans/ must not exist; keep planning docs in the private clawy repo",
+    ).toBe(false)
   })
 
   it("the renderer is allowlist-based: no DOCS_INDEX slug escapes into a subdirectory", () => {

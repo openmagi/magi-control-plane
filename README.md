@@ -10,18 +10,21 @@ into a tamper-evident chain. Self-host on docker or K8s.
 
 ## Self-host
 
-One-line installer (replace `<your-instance>` and `mcp_YOUR_KEY` with your
-deploy hostname + tenant key — see the install guide for getting them):
+Single-operator, one-line installer. Brings up the cloud + dashboard in
+Docker on your machine and wires Claude Code to them, generating your keys
+locally (no remote tenant key to obtain first):
 
 ```bash
-curl -fsSL https://<your-instance>/install.sh | bash -s -- mcp_YOUR_KEY
+curl -fsSL https://cp.openmagi.ai/install.sh | bash
 ```
 
 The installer:
-1. installs the Python `magi-cp` package
-2. drops `~/.claude/managed-settings.json` + `~/.local/bin/magi-gate.sh`
-3. persists your key + cloud URL to `~/.config/magi-cp/env` (0600)
-4. runs the smoke test to confirm the gate fires
+1. checks Docker + Compose v2 and pulls the public GHCR images
+2. generates `~/.magi/control-plane/.env` with random keys and runs
+   `docker compose up -d`
+3. drops `~/.claude/managed-settings.json` + `~/.local/bin/magi-gate.sh`
+   and installs the `/magi:pack-*` slash commands
+4. persists your key + cloud URL to `~/.config/magi-cp/env` (0600)
 
 See [docs/](docs/) for the install guide, operator guide, and architecture
 reference.
@@ -42,14 +45,16 @@ everything else needs a key.
 ## CLI
 
 ```text
-magi-cp gate                 PreToolUse hook reader (stdin → exit + JSON)
-magi-cp emit                 request citation_verify, cache in WAL
+magi-cp gate                 PreToolUse / SessionStart hook reader (stdin → JSON)
+magi-cp session pack ...      session-scoped pack activation
+magi-cp emit                 request a verifier call, cache in WAL
 magi-cp await-approval       poll HITL, write token to WAL
 magi-cp compile <ir> <out>   Policy IR → managed-settings
 magi-cp cloud                run FastAPI cloud server
 magi-cp mcp                  stdio MCP server
 magi-cp keys                 Ed25519 signing key lifecycle
 magi-cp share <sessionId>    Claude Code run → public share link
+magi-cp install              install the runtime adapter (Codex / Claude Code)
 ```
 
 ## Architecture in one paragraph

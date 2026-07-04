@@ -4,33 +4,31 @@ Common failure modes. Grouped by source.
 
 ## Install
 
-### `python3.11+ not found`
+The installer is Docker-based; the common failures are Docker, image
+pull, and health-wait timeouts.
 
-The installer needs Python 3.11 or newer.
+### `Docker not found` / `Docker Compose v2 not found`
 
-```bash
-# macOS
-brew install python@3.12
+Install Docker Desktop on macOS or Windows. On Linux,
+`curl -fsSL https://get.docker.com | sh` then add your user to the
+`docker` group. Compose v2 ships with recent Docker Desktop; on Linux
+install `docker-compose-plugin`. Re-run the installer afterwards.
 
-# Debian / Ubuntu
-sudo apt install python3.12
-```
+### `docker compose pull failed`
 
-### `docker: command not found`
+Read `/tmp/magi-pull.log`. Usually GHCR is unreachable (proxy / firewall)
+or rate-limited. Behind a proxy, set `HTTPS_PROXY` and retry.
 
-The Docker Compose stack needs a working `docker` binary. Install
-Docker Desktop on macOS or Windows. On Linux, `apt install docker-ce`
-plus add your user to the `docker` group.
+### Cloud or dashboard never becomes healthy
 
-### Installer hangs at "downloading managed-settings.json"
-
-Network blocked between your laptop and the cloud. Test with:
+The installer waits for `/healthz` (cloud) and `/welcome` (dashboard).
+Inspect the containers:
 
 ```bash
-curl -fsSL https://<your-instance>/healthz
+cd ~/.magi/control-plane
+docker compose logs cloud
+docker compose logs dashboard
 ```
-
-If the host is unreachable, your network or VPN is blocking it.
 
 ## Local gate
 
@@ -45,7 +43,7 @@ If the host is unreachable, your network or VPN is blocking it.
 2. WAL has a fresh token for the `(subject, payload_hash)` pair?
 
    ```bash
-   ls -la "$HOME/.magi-cp/local/tokens/"
+   cat "$HOME/.magi-cp/local/wal.jsonl"
    ```
 
 3. Token expired? Default TTL is 600 seconds. Re-emit:
@@ -105,7 +103,7 @@ be world-readable.
 ### `KeyStore has no active key`
 
 The on-disk layout is missing `<MAGI_CP_KEY_DIR>/ACTIVE`. Either run
-`magi-cp keys rotate-active` (creates one) or boot the cloud once
+`magi-cp keys rotate` (creates one) or boot the cloud once
 (`magi-cp cloud`) which calls `ensure_keypair()` at startup.
 
 ## Dashboard
@@ -114,10 +112,11 @@ The on-disk layout is missing `<MAGI_CP_KEY_DIR>/ACTIVE`. Either run
 
 The Next.js server cannot reach the cloud.
 
-- Default cloud URL is `http://127.0.0.1:8787`. Override with
-  `MAGI_CP_CLOUD_URL`.
+- The dashboard reads its cloud target server-side from
+  `MAGI_CP_PUBLIC_CLOUD_URL` (default `http://127.0.0.1:8787`).
 - Cloud not running on that port? `curl <url>/healthz` from the same host.
-- 5 s default timeout. Bump with `MAGI_CP_CLOUD_TIMEOUT_MS` on slow infra.
+- In Docker, confirm the dashboard container can reach the cloud
+  container (same compose network / host port mapping).
 
 ### `/policies/new` UI shows 503
 
@@ -164,14 +163,13 @@ you need metric assertions.
 ### `cannot revoke active kid X; rotate to a new key first`
 
 Self-protection. You cannot revoke the key the cloud is currently
-signing with. Run `magi-cp keys rotate-active`, then revoke the old
-`kid`.
+signing with. Run `magi-cp keys rotate`, then revoke the old `kid`.
 
 ### Old tokens fail to verify after rotation
 
-Expected if you ran `magi-cp keys retire <old>` before all in-flight
+Expected if you ran `magi-cp keys revoke <old>` before all in-flight
 tokens expired. The default TTL is 600 s. Rotate, then wait at least
-600 s before retiring.
+600 s before revoking.
 
 ## Backup and restore
 
