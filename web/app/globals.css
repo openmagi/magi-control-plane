@@ -11,78 +11,21 @@
   src: url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/PretendardVariable.min.woff2") format("woff2-variations");
 }
 
-/* ── Plus Jakarta Sans (Latin). magi-agent OSS dashboard font ────── */
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap");
-
-/* ── Design tokens. mirrors magi-agent OSS dashboard (light/purple) ──
-   Source: magi-agent/apps/web/app/globals.css + dashboard/layout.tsx +
-   components/dashboard/sidebar-nav.tsx. Theme is light with purple
-   primary + emerald status accents. Semantic token names retained so
-   component CSS stays stable. */
-@theme {
-  /* surfaces */
-  --color-surface-base:    #FAFAFA; /* page bg (matches magi-agent --background) */
-  --color-surface-raised:  #FFFFFF; /* card, sidebar (bg-white/80 elsewhere) */
-  --color-surface-overlay: #F4F0FF; /* nav-active tint (primary/10 equivalent) */
-  --color-surface-input:   #FFFFFF;
-
-  /* borders */
-  --color-border-subtle: rgba(0, 0, 0, 0.06);   /* magi-agent border-black/[0.06] */
-  --color-border-strong: rgba(0, 0, 0, 0.10);
-  --color-border-focus:  #7C3AED;               /* primary */
-
-  /* text */
-  --color-text-primary:    #1A1A2E; /* magi-agent --foreground */
-  --color-text-secondary:  #475569; /* magi-agent --text-secondary */
-  --color-text-tertiary:   #64748B; /* magi-agent --text-muted */
-  --color-text-disabled:   #94A3B8;
-  --color-text-on-accent:  #FFFFFF;
-
-  /* semantic status. emerald success matches magi-agent "Local" pill */
-  --color-pass-fg:    #047857; /* emerald-700 */
-  --color-pass-bg:    rgba(16, 185, 129, 0.10); /* emerald-500/10 */
-  --color-review-fg:  #B45309; /* amber-700 */
-  --color-review-bg:  #FEF3C7; /* amber-100 */
-  --color-deny-fg:    #B91C1C; /* red-700 */
-  --color-deny-bg:    #FEE2E2; /* red-100 */
-  --color-info-fg:    #2563EB; /* blue-600 */
-  --color-info-bg:    #DBEAFE; /* blue-100 */
-
-  /* accent (CTA. magi-agent --primary / --cta) */
-  --color-accent:        #7C3AED; /* purple-600 */
-  --color-accent-light:  #6D28D9; /* purple-700 (active nav text) */
-  --color-accent-hover:  #6D28D9;
-  --color-accent-press:  #5B21B6;
-
-  /* typography */
-  --font-sans: "Plus Jakarta Sans", "Pretendard Variable", "Pretendard",
-               "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic",
-               -apple-system, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-
-  --text-xs: 11px;     --text-xs--line-height: 16px;
-  --text-sm: 13px;     --text-sm--line-height: 20px;
-  --text-base: 14px;   --text-base--line-height: 22px;
-  --text-md: 16px;     --text-md--line-height: 24px;
-  --text-lg: 18px;     --text-lg--line-height: 28px;
-  --text-xl: 24px;     --text-xl--line-height: 32px;
-  --text-2xl: 32px;    --text-2xl--line-height: 40px;
-
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
-
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
-  --shadow-lg: 0 16px 32px rgba(15, 23, 42, 0.12);
-
-  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-
-  --header-height: 56px;
-  --sidebar-width: 288px;   /* magi-agent w-72 */
-  --content-max:   1280px;
+/* ── Design tokens ───────────────────────────────────────────────────
+   The full palette, type scale, radii, shadows, motion, and layout tokens
+   are the vendored canonical Open Magi design system ("The Ledger"),
+   imported from _ds/tokens.css above. DO NOT re-declare them here: an
+   inline copy is a second source of truth that silently drifts. The only
+   app-local overrides are the three font families below, which inject the
+   next/font self-hosted faces (wired in app/layout.tsx) ahead of the web
+   fallbacks and add the Ledger display voice. */
+@theme inline {
+  --font-sans: var(--font-instrument-sans), "Instrument Sans",
+               "Pretendard Variable", "Pretendard", "Apple SD Gothic Neo",
+               "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace,
+               "SF Mono", Menlo, monospace;
+  --font-display: "Cabinet Grotesk", "Space Grotesk", system-ui, sans-serif;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */
@@ -103,9 +46,15 @@
   }
   body {
     min-height: 100dvh;
-    /* clean off-white canvas. the subtle grid is marketing-only (applied on
+    /* clean limestone canvas. the subtle grid is marketing-only (applied on
        the marketing wrapper + hero), never on the console. */
     background-color: var(--color-surface-base);
+  }
+
+  /* The Ledger display voice: Cabinet Grotesk on headings, tightened. */
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
   }
 
   a {

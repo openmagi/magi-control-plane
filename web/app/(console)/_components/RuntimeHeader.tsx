@@ -31,8 +31,10 @@ export async function RuntimeHeader() {
     pillDotClass = "bg-amber-500"
     pillLabel = isKo ? "응답 없음" : "Offline"
   } else if (isSelfHost) {
-    pillClass = "border-violet-500/20 bg-violet-500/10 text-violet-700"
-    pillDotClass = "bg-violet-500"
+    // Self-host is the console's default posture, so it wears the accent
+    // (verdigris) rather than the retired violet.
+    pillClass = "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]"
+    pillDotClass = "bg-[var(--color-accent)]"
     pillLabel = isKo ? "자체 호스트" : "Self-host"
   } else {
     pillClass = "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"

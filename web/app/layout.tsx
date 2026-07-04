@@ -1,6 +1,21 @@
 import "./globals.css"
 import type { Metadata, Viewport } from "next"
+import { Instrument_Sans, JetBrains_Mono } from "next/font/google"
 import { getLocale, getT } from "@/lib/i18n/server"
+
+/* The Ledger body + mono voices, self-hosted via next/font (no
+   render-blocking CDN @import). Referenced by --font-sans / --font-mono in
+   globals.css. Cabinet Grotesk (display) loads from Fontshare in <head>. */
+const instrumentSans = Instrument_Sans({
+  subsets: ["latin"],
+  variable: "--font-instrument-sans",
+  display: "swap",
+})
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains-mono",
+  display: "swap",
+})
 
 const SITE_URL =
   process.env.MAGI_CP_PUBLIC_SITE_URL ||
@@ -46,7 +61,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#FAFAFA",
+  themeColor: "#EFEDE8",
 }
 
 /**
@@ -64,8 +79,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang={locale} suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://cdn.jsdelivr.net" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://api.fontshare.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap"
+        />
       </head>
-      <body>
+      <body className={`${instrumentSans.variable} ${jetbrainsMono.variable}`}>
         <a className="skip-link" href="#main-content">
           {t("nav.skipToMain")}
         </a>
