@@ -16,34 +16,85 @@ from ..serialization import _deserialize_policy_from_api, _iso_ts
 from ...verifier.protocol import VerifierRegistry
 
 
-def _build_compile_context(policy_group_store) -> dict:
+def _build_compile_context(policy_group_store, policy_store=None) -> dict:
     """Read-only snapshot of the existing policy landscape for the
     conversational compiler (context-aware compound authoring).
 
-    Returns {"audit_kinds": {kind: [provider_policy_id, ...]}}: every
-    ENABLED compound policy that emits its OWN audit (emit_audit != False)
-    is a producer for its evidence `kind`. A new evidence-gate for the
-    same kind can then reuse that producer instead of authoring a
-    duplicate. Best-effort: any store/parse error yields an empty context
-    so the compiler simply falls back to the non-context-aware path.
+    Returns {"audit_kinds": {kind: [provider_policy_id, ...]}} - every
+    producer that RECORDS an evidence `kind` and is actually live, so a
+    new evidence-gate for the same kind can reuse it instead of authoring
+    a duplicate. Two producer sources:
+
+      1. compound `evidence_gate` policies that emit their own audit
+         (`emit_audit != False`);
+      2. standalone `evidence_audit` RULES (e.g. REST-authored) - without
+         these, review raises a false "orphan gate" for a gate reusing a
+         standalone producer (audit CV-09).
+
+    B1 (audit IF-07): "live" is derived from GROUND TRUTH - the enabled
+    state of the producer's member RULES in the policy store - NOT the
+    write-once `PolicyRecord.enabled`, which a pack cascade flips without
+    syncing (and which the pack-centric runtime does not even consult).
+    The PATCH cascade keeps a compound's member rules in lockstep, so any
+    enabled member means the producer is live. Best-effort: any store
+    error yields an empty context so the compiler falls back to the
+    non-context-aware path.
     """
     audit_kinds: dict[str, list[str]] = {}
-    if policy_group_store is None:
-        return {"audit_kinds": audit_kinds}
-    try:
-        records = policy_group_store.load()
-    except Exception:  # noqa: BLE001 - context is advisory; never fail the turn
-        return {"audit_kinds": audit_kinds}
-    for r in records:
-        if not getattr(r, "enabled", False):
-            continue
-        draft = getattr(r, "draft", None)
-        if not isinstance(draft, dict) or draft.get("type") != "evidence_gate":
-            continue
-        if draft.get("emit_audit") is False:
-            continue  # this policy reuses someone else's audit; not a producer
-        kind = str(draft.get("kind") or "source_credibility")
-        audit_kinds.setdefault(kind, []).append(r.id)
+
+    # Ground-truth enabled rule ids from the policy store.
+    enabled_rule_ids: set[str] = set()
+    if policy_store is not None:
+        try:
+            enabled_rule_ids = {
+                ov.policy.id for ov in policy_store.load()
+                if getattr(ov, "enabled", False)
+            }
+        except Exception:  # noqa: BLE001 - advisory; never fail the turn
+            enabled_rule_ids = set()
+
+    owned_rule_ids: set[str] = set()
+    if policy_group_store is not None:
+        try:
+            records = policy_group_store.load()
+        except Exception:  # noqa: BLE001
+            records = []
+        for r in records:
+            rule_ids = list(getattr(r, "rule_ids", []) or [])
+            owned_rule_ids.update(rule_ids)
+            draft = getattr(r, "draft", None)
+            if not isinstance(draft, dict) or draft.get("type") != "evidence_gate":
+                continue
+            if draft.get("emit_audit") is False:
+                continue  # reuses someone else's audit; not a producer
+            # Ground truth: live iff a member rule is enabled (the PATCH
+            # cascade keeps a compound's members in lockstep). Falls back to
+            # PolicyRecord.enabled only when the rule store was not wired.
+            if policy_store is not None:
+                if not any(rid in enabled_rule_ids for rid in rule_ids):
+                    continue
+            elif not getattr(r, "enabled", False):
+                continue
+            kind = str(draft.get("kind") or "source_credibility")
+            audit_kinds.setdefault(kind, []).append(r.id)
+
+    # Standalone evidence_audit rules (not owned by a compound) - a REST-
+    # authored producer for the same kind (CV-09).
+    if policy_store is not None:
+        try:
+            for ov in policy_store.load():
+                pol = ov.policy
+                if (getattr(pol, "type", None) == "evidence_audit"
+                        and getattr(ov, "enabled", False)
+                        and pol.id not in owned_rule_ids):
+                    k = getattr(pol, "kind", None)
+                    if isinstance(k, str) and k:
+                        lst = audit_kinds.setdefault(k, [])
+                        if pol.id not in lst:
+                            lst.append(pol.id)
+        except Exception:  # noqa: BLE001
+            pass
+
     return {"audit_kinds": audit_kinds}
 
 
@@ -54,6 +105,7 @@ def attach(
     llm_compiler,
     llm_reviewer,
     policy_group_store=None,
+    policy_store=None,
 ) -> None:
     @app.post("/policies/compile", dependencies=[Depends(require_admin_key)])
     async def policies_compile(req: "CompileReq", request: Request) -> dict:
@@ -167,7 +219,7 @@ def attach(
         # Context-aware compound authoring: hand the compiler a read-only
         # snapshot of existing producers so a new evidence-gate can reuse
         # one instead of duplicating it. Advisory only; never blocks.
-        context = _build_compile_context(policy_group_store)
+        context = _build_compile_context(policy_group_store, policy_store)
         try:
             return await asyncio.to_thread(
                 step_compile,
@@ -202,7 +254,7 @@ def attach(
         """
         from ...policy.review import review_policy_draft
         active_reviewer = getattr(request.app.state, "llm_reviewer", None) or llm_reviewer
-        context = _build_compile_context(policy_group_store)
+        context = _build_compile_context(policy_group_store, policy_store)
         return await asyncio.to_thread(
             review_policy_draft,
             req.draft,

@@ -299,7 +299,8 @@ def create_app(
     routes_compile.attach(app, engine, ledger=ledger,
                           verifier_registry=verifier_registry,
                           llm_compiler=llm_compiler, llm_reviewer=llm_reviewer,
-                          policy_group_store=policy_group_store)
+                          policy_group_store=policy_group_store,
+                          policy_store=policy_store)
 
     # LLM API-key dashboard surface (status / write+hot-reload / test).
     routes_llm_keys.attach(app, llm_keys_lock=llm_keys_lock)

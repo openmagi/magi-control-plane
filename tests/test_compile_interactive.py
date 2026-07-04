@@ -3021,3 +3021,24 @@ def test_compound_confirmation_does_not_clobber_matcher():
         "draft_so_far": prior, "answers": None,
     })
     assert r.json()["draft"]["gate"]["matcher"] == "mcp__trading__execute_trade"
+
+
+def test_compound_reuse_dropped_when_producer_gone():
+    """B1/IF-09: an echoed draft that pinned emit_audit=False on an earlier
+    turn drops it when the producer no longer exists (empty store), so the
+    policy restores its self-producing default instead of a dead gate."""
+    c = _client_no_llm()
+    prior = {
+        "type": "evidence_gate", "kind": "source_credibility",
+        "emit_audit": False,
+        "gate": {"matcher": "mcp__trading__execute_trade"},
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [], "draft_so_far": prior, "answers": None,
+    })
+    d = r.json()["draft"]
+    # No producer in the (empty) store -> emit_audit restored to default.
+    assert d.get("emit_audit") is not False, d
+    from magi_cp.policy.compound import expand_compound_draft
+    # self-produces again: audit member present.
+    assert any(m["id"].endswith("-audit") for m in expand_compound_draft(d))
