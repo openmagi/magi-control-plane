@@ -158,7 +158,7 @@ export function PoliciesTab({
  *  Adds a BUILT-IN badge alongside the enforcement chip, and a
  *  quiet secondary link ("Setup" for setup-required, "Edit before
  *  enabling" otherwise). */
-function PrebuiltCard({
+export function PrebuiltCard({
   entry, draftHref, locale, t, packCentric = false, packs = [],
   codexEnabled = false, codexCell,
 }: {
