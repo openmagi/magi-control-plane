@@ -743,3 +743,73 @@ def test_concurrent_cascades_serialize_under_lock(client) -> None:
     assert out_enable["status"] == "all"
     assert out_disable_again["status"] == "none"
     del asyncio  # imported only to make the rationale legible above
+
+
+# ── CV-10: DELETE /policies/{id} - make rules deletable ────────────────
+
+def _put_rule(client, rid: str):
+    r = client.put(f"/policies/{rid}", headers=ADMIN_HEADERS, json={
+        "policy": {
+            "id": rid, "type": "permission",
+            "trigger": {"host": "claude-code", "event": "PreToolUse", "matcher": "Bash"},
+            "permission": "deny", "pattern": "Bash(rm:-rf*)",
+        },
+        "source": "org", "enabled": True,
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_delete_free_standing_rule(client) -> None:
+    _put_rule(client, "deny-rm")
+    r = client.delete("/policies/deny-rm", headers=ADMIN_HEADERS)
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] == "deny-rm"
+    assert client.get("/policies/deny-rm", headers=ADMIN_HEADERS).status_code == 404
+
+
+def test_delete_unknown_rule_404(client) -> None:
+    assert client.delete("/policies/nope", headers=ADMIN_HEADERS).status_code == 404
+
+
+def test_delete_rule_scrubs_pack_membership(client) -> None:
+    _put_rule(client, "deny-rm")
+    client.post("/policy-packs", headers=ADMIN_HEADERS,
+                json={"name": "P", "slug": "p", "policy_ids": ["deny-rm"]})
+    r = client.delete("/policies/deny-rm", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    assert "user-pack/p" in r.json()["scrubbed_packs"]
+    # the pack no longer references the deleted rule
+    got = client.get("/policy-packs/user-pack/p", headers=ADMIN_HEADERS).json()
+    assert all(m["id"] != "deny-rm" for m in got["members"])
+
+
+def test_delete_member_of_multi_rule_policy_refused_409(client) -> None:
+    # A compound's member rule cannot be deleted in isolation.
+    client.post("/policies/compound", headers=ADMIN_HEADERS, json={
+        "draft": {
+            "type": "evidence_gate", "id": "verified-trade",
+            "kind": "source_credibility",
+            "gate": {"matcher": "mcp__trading__execute_trade", "action": "block"},
+        },
+        "source": "org",
+    })
+    r = client.delete("/policies/verified-trade-gate", headers=ADMIN_HEADERS)
+    assert r.status_code == 409, r.text
+    # still present
+    assert client.get("/policies/verified-trade-gate", headers=ADMIN_HEADERS).status_code == 200
+
+
+def test_delete_does_not_shadow_group_delete(client) -> None:
+    # The literal groups/ DELETE must still win over the rule catch-all.
+    client.post("/policies/compound", headers=ADMIN_HEADERS, json={
+        "draft": {
+            "type": "evidence_gate", "id": "verified-trade",
+            "kind": "source_credibility",
+            "gate": {"matcher": "mcp__trading__execute_trade", "action": "block"},
+        },
+        "source": "org",
+    })
+    r = client.delete("/policies/groups/verified-trade", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    assert "verified-trade-gate" in r.json()["rule_ids"]
+    assert client.get("/policies/verified-trade-gate", headers=ADMIN_HEADERS).status_code == 404

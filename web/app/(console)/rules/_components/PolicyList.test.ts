@@ -56,3 +56,15 @@ describe("rules page wires PolicyList as the primary policies surface", () => {
     expect(page).toContain("PrebuiltCard")
   })
 })
+
+describe("CV-10: one-rule policies are deletable", () => {
+  const src = read("PolicyList.tsx")
+
+  it("routes one-rule deletes to the rule action, multi-rule to the group cascade", () => {
+    expect(src).toContain("deletePolicyAction")
+    expect(src).toContain("deletePolicyGroupAction")
+    // one-rule uses rule_ids[0]; the group route 404s on a synthesized policy.
+    expect(src).toMatch(/n > 1 \?[\s\S]{0,600}deletePolicyGroupAction[\s\S]{0,600}deletePolicyAction/)
+    expect(src).toContain("g.rule_ids[0]")
+  })
+})

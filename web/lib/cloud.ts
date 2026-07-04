@@ -948,6 +948,11 @@ export const cloud = {
   getPolicy: (id: string): Promise<PolicyDetail> =>
     _fetch<PolicyDetail>(`/policies/${_encId(id)}`, { method: "GET", keyType: "admin" }),
 
+  /** CV-10: delete a single rule. Refused (409) for a member of a
+   *  multi-rule policy; scrubs the id from every pack's membership. */
+  deletePolicy: (id: string): Promise<{ deleted: string; scrubbed_packs: string[] }> =>
+    _fetch(`/policies/${_encId(id)}`, { method: "DELETE", keyType: "admin" }),
+
   getCompiled: (id: string): Promise<CompiledManagedSettings> =>
     _fetch<CompiledManagedSettings>(`/policies/${_encId(id)}/compiled`,
                                      { method: "GET", keyType: "admin" }),

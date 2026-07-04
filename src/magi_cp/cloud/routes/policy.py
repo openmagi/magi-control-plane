@@ -1828,6 +1828,65 @@ def attach(app: FastAPI, store: PolicyStore,
                 }
         raise HTTPException(404, f"policy {policy_id!r} not found")
 
+    @app.delete("/policies/{policy_id:path}",
+                dependencies=[Depends(require_admin_key)])
+    async def delete_policy(policy_id: str) -> dict:
+        """CV-10: delete a single rule. Rules were create-forever (only
+        disable), so wizard/Advanced-authored rules accreted in the store.
+
+        Registered AFTER the `/policies/groups/{id}` DELETE so the literal
+        groups/ route still wins for a policy-group delete.
+
+        A rule that is a MEMBER of a multi-rule compound policy is refused
+        (409) - deleting it in isolation would half-break the compound;
+        the operator deletes the owning policy instead. A free-standing
+        rule (or one owned by a one-rule policy) is removed, its one-rule
+        owning record is dropped, and the id is scrubbed from every pack's
+        membership so no pack references a rule that no longer exists.
+        """
+        async with policy_lock:
+            existing = store.load()
+            if not any(ov.policy.id == policy_id for ov in existing):
+                raise HTTPException(404, f"policy {policy_id!r} not found")
+            # Refuse if owned by a multi-rule policy; drop a one-rule owner.
+            owning_one_rule: str | None = None
+            if policy_group_store is not None:
+                for rec in policy_group_store.load():
+                    if policy_id in rec.rule_ids:
+                        if len(rec.rule_ids) > 1:
+                            raise HTTPException(
+                                409,
+                                f"rule {policy_id!r} is owned by policy "
+                                f"{rec.id!r}; delete that policy instead")
+                        owning_one_rule = rec.id
+                        break
+            store.save([ov for ov in existing if ov.policy.id != policy_id])
+            if owning_one_rule is not None and policy_group_store is not None:
+                policy_group_store.save(
+                    [r for r in policy_group_store.load()
+                     if r.id != owning_one_rule])
+        # Scrub the id from every pack's membership (outside policy_lock,
+        # inside pack_store_lock, matching the join path).
+        scrubbed: list[str] = []
+        if pack_store is not None and pack_store_lock is not None:
+            async with pack_store_lock:
+                rows = pack_store.load()
+                changed = False
+                new_rows = []
+                for r in rows:
+                    if policy_id in r.policy_ids:
+                        new_rows.append(UserPackRow(
+                            id=r.id, name=r.name, description=r.description,
+                            policy_ids=[m for m in r.policy_ids if m != policy_id],
+                            is_floor=r.is_floor))
+                        scrubbed.append(r.id)
+                        changed = True
+                    else:
+                        new_rows.append(r)
+                if changed:
+                    pack_store.save(new_rows)
+        return {"deleted": policy_id, "scrubbed_packs": scrubbed}
+
     async def _validate_and_stamp(policy: AnyPolicy) -> str:
         """Run every authoring-time gate on a deserialized rule and return its
         resolved enforcement label. Shared by PUT and the compound save path so

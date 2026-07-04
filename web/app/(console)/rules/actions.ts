@@ -151,6 +151,27 @@ export async function deletePolicyGroupAction(formData: FormData): Promise<void>
   redirect(`/rules?tab=policies&msg=deleted`)
 }
 
+/** CV-10: delete a single RULE (a one-rule / free-standing policy). The
+ *  group-delete route 404s for a synthesized one-rule policy (it has no
+ *  PolicyRecord), so those rules were undeletable from the UI. The rule
+ *  DELETE route drops the rule + any one-rule owning record + scrubs pack
+ *  membership. PolicyList routes one-rule policies here. */
+export async function deletePolicyAction(formData: FormData): Promise<void> {
+  let id: string
+  try {
+    id = validatePolicyId(formData.get("id"))
+  } catch {
+    redirect("/rules?err=invalid_id")
+  }
+  try {
+    await cloud.deletePolicy(id)
+  } catch (e: unknown) {
+    redirect(`/rules?err=${codeForError(e)}`)
+  }
+  revalidatePath("/rules")
+  redirect(`/rules?tab=policies&msg=deleted`)
+}
+
 /** D60: enable/disable a prebuilt template directly from the toggle
  * on the prebuilt card. Splits the URL-side path between
  * `cloud.enablePrebuilt` and `cloud.disablePrebuilt` rather than
