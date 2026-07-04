@@ -147,7 +147,7 @@ export default async function LedgerPage({
                             <summary className="cursor-pointer text-xs font-medium text-[var(--color-accent-light)] hover:underline">
                               {t("ledger.detail.view")}
                             </summary>
-                            <pre className="mt-2 max-w-2xl overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[var(--color-muted-bg,#f3f4f6)] p-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
+                            <pre className="mt-2 max-w-2xl overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[var(--color-surface-overlay)] p-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
                               {JSON.stringify(e.body, null, 2)}
                             </pre>
                           </details>
@@ -332,15 +332,15 @@ function chipClasses(row: EvidenceTypeEntry, isOn: boolean): string {
   }
   if (row.source === "builtin") {
     return (
-      `${base} bg-[var(--color-muted-bg,#f3f4f6)] ` +
-      "text-[var(--color-muted-fg,#374151)] hover:bg-black/[0.06]"
+      `${base} bg-[var(--color-surface-overlay)] ` +
+      "text-[var(--color-text-tertiary)] hover:bg-black/[0.06]"
     )
   }
   // custom + policy-derived share the dashed-outline treatment so the
   // operator can see at a glance "this is not an authored built-in".
   return (
     `${base} border border-dashed border-black/[0.18] ` +
-    "bg-white text-[var(--color-muted-fg,#374151)] hover:bg-black/[0.04]"
+    "bg-white text-[var(--color-text-tertiary)] hover:bg-black/[0.04]"
   )
 }
 

@@ -117,7 +117,7 @@ export function VerifierExpander({
   const summaryLabel = t("rules.verifier.expander.toggleWithStep", { step })
 
   return (
-    <details className="group mt-2 rounded-lg border border-black/[0.05] bg-[var(--color-surface-1,#f9fafb)]/40">
+    <details className="group mt-2 rounded-lg border border-black/[0.05] bg-[var(--color-surface-raised)]/40">
       <summary
         aria-label={summaryLabel}
         className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)] hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)]"
@@ -437,10 +437,10 @@ function InputAssemblyPanel({
         <div
           role="note"
           data-testid="verifier-expander-input-assembly-unspecified-notice"
-          className="rounded-md border border-[var(--color-muted-fg,#374151)]/20 bg-[var(--color-muted-bg,#f3f4f6)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
+          className="rounded-md border border-[var(--color-text-tertiary)]/20 bg-[var(--color-surface-overlay)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
         >
           <div className="mb-1 flex items-baseline gap-1.5">
-            <span className="inline-flex items-center rounded-full bg-[var(--color-muted-fg,#374151)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-text-tertiary)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
               {t("rules.verifier.expander.inputAssembly.unspecifiedBadge")}
             </span>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
@@ -455,10 +455,10 @@ function InputAssemblyPanel({
         <div
           role="note"
           data-testid="verifier-expander-input-assembly-caller-notice"
-          className="rounded-md border border-[var(--color-review-fg,#b45309)]/30 bg-[var(--color-review-bg,#fffbeb)] p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
+          className="rounded-md border border-[var(--color-review-fg)]/30 bg-[var(--color-review-bg)] p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
         >
           <div className="mb-1 flex items-baseline gap-1.5">
-            <span className="inline-flex items-center rounded-full bg-[var(--color-review-fg,#b45309)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-review-fg,#b45309)]">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-review-fg)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-review-fg)]">
               {t("rules.verifier.expander.inputAssembly.callerAssembledBadge")}
             </span>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
@@ -473,10 +473,10 @@ function InputAssemblyPanel({
         <div
           role="note"
           data-testid="verifier-expander-input-assembly-cc-stdin-note"
-          className="rounded-md border border-[var(--color-muted-fg,#374151)]/20 bg-[var(--color-muted-bg,#f3f4f6)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
+          className="rounded-md border border-[var(--color-text-tertiary)]/20 bg-[var(--color-surface-overlay)]/60 p-2 text-xs leading-relaxed text-[var(--color-text-primary)]"
         >
           <div className="mb-1 flex items-baseline gap-1.5">
-            <span className="inline-flex items-center rounded-full bg-[var(--color-muted-fg,#374151)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+            <span className="inline-flex items-center rounded-full bg-[var(--color-text-tertiary)]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
               {t("rules.verifier.expander.inputAssembly.ccStdinBadge")}
             </span>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
@@ -506,7 +506,7 @@ function TriggersPanel({ triggers, t }: { triggers: TriggerSpec[]; t: T }) {
           <li key={`${tr.event}:${tr.matcher_class}:${i}`} className="text-xs">
             <div className="flex flex-wrap items-baseline gap-2">
               <Code className="text-[12px]">{tr.event}</Code>
-              <span className="inline-flex items-center rounded-full bg-[var(--color-muted-bg,#f3f4f6)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+              <span className="inline-flex items-center rounded-full bg-[var(--color-surface-overlay)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 {tr.matcher_class}
               </span>
             </div>
@@ -676,17 +676,17 @@ function verdictTone(verdict: string): string {
   // the chip render is byte-identical until tokens are themed.
   switch (verdict) {
     case "pass":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "deny":
     case "fail":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "review":
     case "needs_review":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "not_applicable":
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
     default:
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 

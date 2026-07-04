@@ -172,7 +172,7 @@ export function PolicyTestPanel({
   return (
     <section
       data-testid="policy-test-panel"
-      className="mt-6 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-subtle,#fafafa)] p-4"
+      className="mt-6 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)] p-4"
     >
       <h2 className="text-md font-semibold m-0">
         {t(titleKey)}
@@ -193,7 +193,7 @@ export function PolicyTestPanel({
           data-testid="policy-test-template"
           value={templateId}
           onChange={(e) => onTemplateChange(e.target.value)}
-          className="mt-1 w-full max-w-md rounded-md border border-[var(--color-border)] bg-white px-2 py-1.5 text-sm"
+          className="mt-1 w-full max-w-md rounded-md border border-[var(--color-border-subtle)] bg-white px-2 py-1.5 text-sm"
         >
           {SYNTHETIC_PAYLOAD_TEMPLATES.map((tpl) => (
             <option key={tpl.id} value={tpl.id}>
@@ -220,7 +220,7 @@ export function PolicyTestPanel({
           onChange={(e) => setPayloadText(e.target.value)}
           rows={10}
           spellCheck={false}
-          className="mt-1 w-full rounded-md border border-[var(--color-border)] bg-white px-2 py-1.5 font-mono text-[12px]"
+          className="mt-1 w-full rounded-md border border-[var(--color-border-subtle)] bg-white px-2 py-1.5 font-mono text-[12px]"
         />
         {payloadParseError && (
           <p
@@ -280,35 +280,35 @@ function verdictTone(v: string): string {
   switch (v) {
     case "deny":
     case "fail":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "review":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "pass":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "skipped":
     case "indeterminate":
     default:
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 
 function actionTone(a: string): string {
   switch (a) {
     case "block":
-      return "bg-[var(--color-deny-bg,#fff1f2)] text-[var(--color-deny-fg,#be123c)]"
+      return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
     case "ask":
-      return "bg-[var(--color-review-bg,#fffbeb)] text-[var(--color-review-fg,#b45309)]"
+      return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
     case "audit":
-      return "bg-[var(--color-pass-bg,#ecfdf5)] text-[var(--color-pass-fg,#047857)]"
+      return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
     case "rewrite":
     case "inject_context":
     case "run_command":
-      return "bg-[var(--color-accent-bg,#ede9fe)] text-[var(--color-accent,#6d28d9)]"
+      return "bg-[var(--color-info-bg)] text-[var(--color-info-fg)]"
     case "allow":
     case "skipped":
     case "indeterminate":
     default:
-      return "bg-[var(--color-muted-bg,#f3f4f6)] text-[var(--color-muted-fg,#374151)]"
+      return "bg-[var(--color-surface-overlay)] text-[var(--color-text-tertiary)]"
   }
 }
 
@@ -478,7 +478,7 @@ function PackResultBlock({
           <li
             key={m.policy_id ?? i}
             data-testid="pack-test-member"
-            className="rounded-md border border-[var(--color-border)] bg-white p-3"
+            className="rounded-md border border-[var(--color-border-subtle)] bg-white p-3"
           >
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="font-mono text-[12px] text-[var(--color-text-primary)]">
