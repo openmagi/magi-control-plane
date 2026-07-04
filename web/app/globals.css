@@ -26,6 +26,26 @@
   --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace,
                "SF Mono", Menlo, monospace;
   --font-display: "Cabinet Grotesk", "Space Grotesk", system-ui, sans-serif;
+
+  /* The Ledger console is flat paper, not liquid glass. The vendored glass
+     tiers are translucent (55% white), so over the limestone ground the
+     default cards pick up the warm ground and read as a muddy, heavy
+     panel. Make the glass tiers opaque and drop the blur so cards are
+     crisp white paper. This is the trends direction (no glass over
+     data-dense surfaces) and matches the DS's own reduced-transparency
+     fallback, just applied always. App-local, so _ds stays untouched. */
+  --glass-clear-bg: rgba(255, 255, 255, 0.92);
+  --glass-regular-bg: #FFFFFF;
+  --glass-thick-bg: #FFFFFF;
+  --glass-blur: 0px;
+}
+
+:root {
+  /* Console working canvas: a paler, less-saturated warm than the
+     limestone --color-surface-base, so the large empty console field
+     reads airy instead of a heavy beige block. Console shell only;
+     marketing keeps the full-strength paper. */
+  --surface-console: #F6F4EF;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */

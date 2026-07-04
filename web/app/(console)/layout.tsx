@@ -15,7 +15,7 @@ import { RuntimeHeader } from "./_components/RuntimeHeader"
 export default async function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const { t } = await getT()
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen bg-[var(--surface-console)]">
       <SidebarClient
         openMenuLabel={t("nav.openMenu")}
         closeMenuLabel={t("nav.closeMenu")}
