@@ -14,10 +14,8 @@ import {
 import { resolveFlash, codeForError } from "@/lib/flash"
 import { getIntl, getT } from "@/lib/i18n/server"
 import {
-  Badge,
   Button,
   Card,
-  ErrorState,
   PageHeader,
 } from "@/components/ui"
 import { EvidenceTab } from "./_components/EvidenceTab"
@@ -293,13 +291,29 @@ export default async function RulesPage({
         }
       />
 
-      {flash?.kind === "ok" && (
-        <Card role="status" aria-live="polite" tone="status" className="mb-3">
-          <Badge variant="ok">{flash.text}</Badge>
+      {/* One flash language for both outcomes: a toned banner (green for
+          ok, red for error) with a status dot + message, instead of the
+          old split (status Card for ok vs ErrorState for error). */}
+      {flash && (
+        <Card
+          role={flash.kind === "error" ? "alert" : "status"}
+          aria-live="polite"
+          tone={flash.kind === "error" ? "alert" : "status"}
+          className="mb-3 flex items-center gap-2.5"
+        >
+          <span
+            aria-hidden="true"
+            className={
+              "h-1.5 w-1.5 shrink-0 rounded-full "
+              + (flash.kind === "error"
+                ? "bg-[var(--color-deny-fg)]"
+                : "bg-[var(--color-pass-fg)]")
+            }
+          />
+          <span className="text-sm font-medium text-[var(--color-text-primary)]">
+            {flash.text}
+          </span>
         </Card>
-      )}
-      {flash?.kind === "error" && (
-        <ErrorState title={flash.text} severity="error" />
       )}
 
       <SubTabNav tab={tab} t={t} />
