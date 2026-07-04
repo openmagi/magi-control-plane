@@ -17,7 +17,11 @@ export async function RuntimeHeader() {
   const isSelfHost = !tenant || tenant.synthetic
 
   const route = isKo ? "콘솔" : "Console"
-  const title = isKo ? "Magi Control Plane" : "Magi Control Plane"
+  // Persistent brand strip label. This is NOT the page <h1>: each console
+  // page renders its own descriptive <h1> via PageHeader, so this stays a
+  // plain <div> to avoid two h1s per route (WCAG heading order). Brand
+  // string matches the document <title> in app/layout.tsx.
+  const title = "Open Magi Control Plane"
 
   let pillClass: string
   let pillLabel: string
@@ -43,9 +47,9 @@ export async function RuntimeHeader() {
           {route}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h1 className="text-base font-semibold text-[var(--color-text-primary)] m-0">
+          <div className="text-base font-semibold text-[var(--color-text-primary)]">
             {title}
-          </h1>
+          </div>
           <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${pillClass}`}>
             <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${pillDotClass}`} />
             {pillLabel}
