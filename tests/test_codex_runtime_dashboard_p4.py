@@ -1,6 +1,6 @@
 """P4 Codex runtime adapter: dashboard coverage + per-tenant runtime.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 7 (dashboard changes) + Section 9.3 (feature-flag ladder).
 
 Covered here:

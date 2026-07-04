@@ -1,6 +1,6 @@
 """Codex CLI runtime driver.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 (Section 2 wire format, Section 3 architecture, Section 4 gap shims,
 Section 6 managed enforcement). P1 delivered the straight-through
 parse / emit / requirements.toml wrap. P2 (this file) adds the four gap

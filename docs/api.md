@@ -120,6 +120,51 @@ action, join-key mismatch, invalid member IR) and, when a reviewer LLM is
 configured, an advisory semantic pass. Advisory only; no provider
 required, so the deterministic checks run even with no LLM keys.
 
+```http
+POST /policies/compound
+X-Admin-Api-Key: ...
+
+{"draft": {...}, "source": "platform", "enabled": true, "pack_ids": ["research-mode"]}
+
+200 OK
+{"policy_id": "...", "rule_ids": ["..."]}
+```
+
+Author a policy that owns one or more rules directly (the non-conversational
+counterpart to `/policies/compile-interactive`). The server expands the
+draft into its member rules and saves the policy record plus rules
+atomically. `pack_ids` (optional) drops the new policy into those packs.
+
+Note: the `GET`/`PUT`/`PATCH /policies/{id}` routes above operate on
+**rules** (single IR rows). The **policy** tier (a policy owns one or more
+rules) has its own routes:
+
+```http
+GET /policies/groups
+X-Admin-Api-Key: ...
+
+200 OK
+{"policies": [{"id": "...", "rule_ids": ["..."], "enabled": true}]}
+```
+
+Free-standing legacy rules not owned by any policy surface here as
+one-rule policies (read-time synthesis).
+
+```http
+PATCH /policies/groups/{id}/enabled
+X-Admin-Api-Key: ...
+
+{"enabled": false}
+```
+
+Prebuilt policies (vetted, cloud-shipped) are listed and toggled on with:
+
+```http
+GET  /policies/prebuilt                 # list prebuilt policies + enabled state
+POST /policies/prebuilt/{slug}/enable   # materialize a prebuilt as a saved policy (idempotent)
+X-Admin-Api-Key: ...
+```
+
 ## Verify
 
 ```http

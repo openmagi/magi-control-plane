@@ -365,7 +365,7 @@ def decide(payload: dict):
     # dashboard + its session-scoped policies apply without a manual
     # /magi:pack-activate. Best-effort side-effect; SessionStart always
     # allows (it is observe/setup, never denies). Design:
-    # docs/plans/2026-07-03-sessionstart-auto-pack-activation-design.md.
+    # 2026-07-03-sessionstart-auto-pack-activation-design (private planning repo).
     if hook_event_name == "SessionStart":
         _activate_session_packs(payload)
         return Verdict(decision="allow", hook_event_name=hook_event_name)
@@ -469,7 +469,7 @@ def _auto_activate_packs() -> list[str]:
     or ``~/.config/magi-cp/env``. Same source + precedence as
     ``_endpoint_id``. Empty / unset -> [] (auto-activation is pure opt-in;
     the floor pack is always-on regardless). Design:
-    docs/plans/2026-07-03-sessionstart-auto-pack-activation-design.md.
+    2026-07-03-sessionstart-auto-pack-activation-design (private planning repo).
     """
     def _split(raw: str | None) -> list[str]:
         if not raw:

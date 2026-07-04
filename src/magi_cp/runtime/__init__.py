@@ -6,7 +6,7 @@ implement it today: ``cc.py`` (Claude Code, the reference runtime) and
 ``codex.py`` (Codex CLI, default-off behind
 ``MAGI_CP_CODEX_RUNTIME_ENABLED``).
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md.
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo).
 """
 from __future__ import annotations
 

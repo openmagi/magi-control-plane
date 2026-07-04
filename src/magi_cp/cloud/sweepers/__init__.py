@@ -2,7 +2,7 @@
 
 Currently one member: ``codex_session_end`` (Shim C fallback — synthetic
 ``SessionEnd`` fanout for stale Codex sessions). See
-``docs/plans/2026-06-30-codex-runtime-adapter-design.md`` Section 4.3.
+``2026-06-30-codex-runtime-adapter-design (private planning repo)`` Section 4.3.
 """
 from __future__ import annotations
 

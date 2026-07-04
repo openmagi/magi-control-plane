@@ -1,6 +1,6 @@
 """P1 Codex adapter: runtime detection order + kill switch.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 3.4. Detection order (highest first): explicit ``MAGI_CP_RUNTIME``
 env → Codex payload sniff → ``CLAUDE_CODE_SESSION_ID`` env → CC fallback.
 The global kill switch ``MAGI_CP_CODEX_RUNTIME_ENABLED`` (default OFF)

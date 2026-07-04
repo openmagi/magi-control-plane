@@ -1,6 +1,6 @@
 """P1 Codex adapter: ``requirements.toml`` emitter byte-stability.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 3.2 + Section 6.2. The emitter mirrors
 ``compile_to_managed_settings``: pure, byte-stable, and order-invariant
 (events + matchers sorted). These tests pin a golden requirements.toml +

@@ -1,6 +1,6 @@
 """Codex runtime adapter: schema-only migration for existing DBs.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 9 (Migration). Additive + reversible; no data destroyed on
 rollback:
 

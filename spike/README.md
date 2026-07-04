@@ -1,7 +1,7 @@
 # magi-control-plane — PoC spike
 
 > 2026-06-18~19. 전략 = clawy `docs/notes/2026-06-18-magi-governance-control-plane-decision.md`.
-> v0 plan = clawy `docs/plans/2026-06-18-magi-control-plane-v0-plan.md` (§8 컨트롤플레인 아키텍처).
+> v0 plan = clawy `2026-06-18-magi-control-plane-v0-plan (private planning repo)` (§8 컨트롤플레인 아키텍처).
 > magi-agent OSS와 sibling(별도 프로젝트). 본 spike는 검증 끝나면 별도 리포로 분리.
 
 ## 검증 상태 (전부 PASS)

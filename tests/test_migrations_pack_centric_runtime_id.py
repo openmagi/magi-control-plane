@@ -1,6 +1,6 @@
 """P1 Codex adapter: additive ``runtime_id`` migration.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 9. The migration adds ``runtime_id`` to ``tenants`` and
 ``session_active_packs`` (defaulting to ``claude-code``) and rebuilds the
 session-packs primary key to include it. Additive + reversible + no data

@@ -1,6 +1,6 @@
 """P2 Codex adapter: coverage-report golden.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 4 + Section 7.2. A fixed fixture policy list exercises all four
 shims plus the native-config-pending archetypes, and its serialized
 CoverageReport is pinned to

@@ -1,6 +1,6 @@
 """P2 pack-centric runtime — gate binary cache + inheritance + sticky.
 
-Design brief: docs/plans/2026-06-30-pack-centric-session-scoped-runtime.md
+Design brief: 2026-06-30-pack-centric-session-scoped-runtime (private planning repo)
 (§ "Gate binary cache", decisions 2 + 3).
 
 Covered here (per implementation brief "Tests" bullet):

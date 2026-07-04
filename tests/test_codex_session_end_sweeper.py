@@ -1,6 +1,6 @@
 """P2 Codex adapter, Shim C cloud fallback: synthetic SessionEnd sweeper.
 
-Design brief: docs/plans/2026-06-30-codex-runtime-adapter-design.md
+Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo)
 Section 4.3. The sweeper fires a synthetic SessionEnd for a stale Codex
 session (last_seen older than the TTL) whose active packs require a
 session-end fanout. A fresh session, a non-Codex session, and a session
