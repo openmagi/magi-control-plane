@@ -4,7 +4,7 @@ import { fmtUtc, clampNonNegInt, LEDGER_PAGE_SIZE } from "@/lib/format"
 import { getIntl, getT } from "@/lib/i18n/server"
 import { ledgerHref, parseVerifierParam } from "@/lib/ledger-url"
 import {
-  Badge, Button, Card, Code, EmptyState, ErrorState, PageHeader,
+  Badge, Button, Card, Code, CopyButton, EmptyState, ErrorState, PageHeader,
 } from "@/components/ui"
 
 export const dynamic = "force-dynamic"
@@ -82,86 +82,98 @@ export default async function LedgerPage({
 
       {result && (
         <>
-          <Card className="mb-4 flex flex-wrap items-center gap-3">
-            <span className="text-sm">
-              {t("ledger.chainIntegrity")}:{" "}
-              {result.chain_ok
-                ? <Badge variant="ok">{t("ledger.chainOk")}</Badge>
-                : <Badge variant="deny">{t("ledger.chainBroken")}</Badge>}
-            </span>
-            <span className="text-xs text-[var(--color-text-tertiary)]">
-              {t("ledger.cursor", { n: nf.format(result.next_since_id) })}
-            </span>
-          </Card>
-
           {result.entries.length === 0 ? (
-            verifierFilter.length > 0 ? (
-              <EmptyState title={t("ledger.filter.empty")} />
-            ) : (
-              <EmptyState
-                title={t("ledger.empty.title")}
-                body={t("ledger.empty.body")}
-                action={
-                  <Link href="/rules">
-                    <Button variant="primary">{t("ledger.empty.cta")}</Button>
-                  </Link>
-                }
-              />
-            )
+            <>
+              <LedgerMasthead chainOk={result.chain_ok} cursor={nf.format(result.next_since_id)} attached={false} t={t} />
+              {verifierFilter.length > 0 ? (
+                <EmptyState title={t("ledger.filter.empty")} />
+              ) : (
+                <EmptyState
+                  title={t("ledger.empty.title")}
+                  body={t("ledger.empty.body")}
+                  action={
+                    <Link href="/rules">
+                      <Button variant="primary">{t("ledger.empty.cta")}</Button>
+                    </Link>
+                  }
+                />
+              )}
+            </>
           ) : (
-            <Card noPadding className="overflow-x-auto">
-              <table>
-                <caption className="sr-only">
-                  {t("ledger.title")}
-                </caption>
-                <thead>
-                  <tr>
-                    <th>{t("ledger.col.id")}</th>
-                    <th>{t("ledger.col.ts")}</th>
-                    <th>{t("ledger.col.subject")}</th>
-                    <th>{t("ledger.col.prev")}</th>
-                    <th>{t("ledger.col.h")}</th>
-                    <th>{t("ledger.col.detail")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.entries.map(e => (
-                    <tr key={e.id}>
-                      <td>{e.id}</td>
-                      <td className="text-[var(--color-text-tertiary)]">
-                        {fmtUtc(e.ts)}
-                      </td>
-                      <td><Code>{e.subject}</Code></td>
-                      <td>
-                        <Code title={e.prev}>
-                          {e.prev ? e.prev.slice(0, 12) + "…" : "∅"}
-                        </Code>
-                      </td>
-                      <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
-                      <td>
-                        {e.body ? (
-                          // No-JS drill-down: the operator owns this ledger,
-                          // so the full entry body is served (include_body)
-                          // and expanded inline via a native <details>.
-                          <details>
-                            <summary className="cursor-pointer text-xs font-medium text-[var(--color-accent-light)] hover:underline">
-                              {t("ledger.detail.view")}
-                            </summary>
-                            <pre className="mt-2 max-w-2xl overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[var(--color-surface-overlay)] p-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
-                              {JSON.stringify(e.body, null, 2)}
-                            </pre>
-                          </details>
-                        ) : (
-                          <span className="text-xs text-[var(--color-text-tertiary)]">
-                            {t("ledger.detail.none")}
-                          </span>
-                        )}
-                      </td>
+            // The audit ledger is a tamper-evident hash chain. Render it as
+            // one bordered record: an integrity masthead over a monospace
+            // table with a sticky header, hairline rows, and per-row raw-JSON
+            // copy. Server-rendered; the body drill-down stays no-JS
+            // (<details>), copy is progressive enhancement.
+            <div className="overflow-hidden rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)]">
+              <LedgerMasthead chainOk={result.chain_ok} cursor={nf.format(result.next_since_id)} attached t={t} />
+              <div className="max-h-[calc(100dvh-16rem)] overflow-auto">
+                <table className="w-full">
+                  <caption className="sr-only">{t("ledger.title")}</caption>
+                  <thead className="sticky top-0 z-10 bg-[var(--color-surface-raised)]">
+                    <tr>
+                      <th className="text-right">{t("ledger.col.id")}</th>
+                      <th>{t("ledger.col.ts")}</th>
+                      <th>{t("ledger.col.subject")}</th>
+                      <th>{t("ledger.col.prev")}</th>
+                      <th>{t("ledger.col.h")}</th>
+                      <th>{t("ledger.col.detail")}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
+                  </thead>
+                  <tbody>
+                    {result.entries.map(e => (
+                      <tr
+                        key={e.id}
+                        className="align-top transition-colors hover:bg-[var(--color-surface-overlay)]/60"
+                      >
+                        <td className="text-right font-mono tabular-nums text-[var(--color-text-tertiary)]">
+                          {e.id}
+                        </td>
+                        <td className="whitespace-nowrap font-mono text-xs text-[var(--color-text-tertiary)]">
+                          {fmtUtc(e.ts)}
+                        </td>
+                        <td><Code>{e.subject}</Code></td>
+                        <td>
+                          <Code title={e.prev}>
+                            {e.prev ? e.prev.slice(0, 12) + "…" : "∅"}
+                          </Code>
+                        </td>
+                        <td><Code title={e.h}>{e.h.slice(0, 12)}…</Code></td>
+                        <td>
+                          {e.body ? (
+                            // No-JS drill-down: the operator owns this ledger,
+                            // so the full entry body is served (include_body)
+                            // and expanded inline via a native <details>.
+                            <details>
+                              <summary className="cursor-pointer text-xs font-medium text-[var(--color-accent-light)] hover:underline">
+                                {t("ledger.detail.view")}
+                              </summary>
+                              <div className="mt-2 flex items-start gap-2">
+                                <pre className="max-w-2xl flex-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[var(--color-surface-overlay)] p-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
+                                  {JSON.stringify(e.body, null, 2)}
+                                </pre>
+                                <CopyButton
+                                  value={JSON.stringify(e.body, null, 2)}
+                                  size="sm"
+                                  variant="ghost"
+                                  label={t("common.copy")}
+                                  copiedLabel={t("common.copied")}
+                                  className="shrink-0"
+                                />
+                              </div>
+                            </details>
+                          ) : (
+                            <span className="text-xs text-[var(--color-text-tertiary)]">
+                              {t("ledger.detail.none")}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           <nav
@@ -192,6 +204,39 @@ export default async function LedgerPage({
         </>
       )}
     </>
+  )
+}
+
+/** Ledger integrity masthead: the chain-integrity verdict + cursor as the
+ * record's status line. `attached` sits it flush on top of the table
+ * (shared bottom border); standalone (empty state) it is its own card. */
+function LedgerMasthead({
+  chainOk, cursor, attached, t,
+}: {
+  chainOk: boolean
+  cursor: string
+  attached: boolean
+  t: TFunc
+}) {
+  return (
+    <div
+      className={
+        "flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 "
+        + (attached
+          ? "border-b border-[var(--color-border-subtle)]"
+          : "mb-4 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)]")
+      }
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+        {t("ledger.chainIntegrity")}
+      </span>
+      {chainOk
+        ? <Badge variant="ok">{t("ledger.chainOk")}</Badge>
+        : <Badge variant="deny">{t("ledger.chainBroken")}</Badge>}
+      <span className="ml-auto font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+        {t("ledger.cursor", { n: cursor })}
+      </span>
+    </div>
   )
 }
 
