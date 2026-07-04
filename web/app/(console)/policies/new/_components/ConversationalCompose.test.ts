@@ -621,16 +621,26 @@ describe("ConversationalCompose policy-integrity review wiring", () => {
     expect(src).toContain("readyToSave")
   })
 
-  it("passes the operator's intent (first user turn) to the review", () => {
-    expect(src).toMatch(/intent[\s\S]{0,80}history\.find/)
+  it("F3: composes the intent from ALL user turns (not just the first)", () => {
+    expect(src).toContain('history.filter((h) => h.role === "user")')
+    expect(src).toContain("userTurns.join")
+  })
+
+  it("F1: forwards the operator locale to the review", () => {
+    expect(src).toMatch(/body: JSON\.stringify\(\{ draft, intent, locale \}\)/)
   })
 
   it("clears the verdict when the draft is not ready", () => {
     expect(src).toContain("setReview(null)")
   })
 
+  it("F2: sets a neutral review-error state on fetch failure", () => {
+    expect(src).toContain("setReviewError(true)")
+  })
+
   it("threads the verdict down to IrDraftPane", () => {
     expect(src).toContain("review={review}")
     expect(src).toContain("reviewPending={reviewPending}")
+    expect(src).toContain("reviewError={reviewError}")
   })
 })

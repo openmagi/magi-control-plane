@@ -261,6 +261,7 @@ def attach(
             intent=req.intent,
             reviewer=active_reviewer,
             context=context,
+            locale=req.locale,
         )
 
     @app.post("/policies/handoff-context",

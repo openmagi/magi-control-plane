@@ -157,10 +157,18 @@ export function ConversationalCompose({
   // the Save CTA, but never blocks the save.
   const [review, setReview] = useState<{
     ok: boolean
-    summary: string
-    issues: { severity: string; message: string; source: string }[]
+    summaryCode: string
+    checked: string[]
+    issues: {
+      severity: string; code: string; message: string
+      params: Record<string, unknown>; source: string
+    }[]
   } | null>(null)
   const [reviewPending, setReviewPending] = useState(false)
+  // F2: distinguish "review couldn't run" (neutral) from "no review". Null
+  // review + reviewError=true renders a neutral "couldn't check" row instead
+  // of silently hiding the trust surface (which reads as "no feature").
+  const [reviewError, setReviewError] = useState(false)
   // Q102: track the server's canonical missing-field set so the
   // IrDraftPane can render the "still missing: ..." footer and
   // surface NAMED placeholders per row instead of an empty stub.
@@ -185,17 +193,22 @@ export function ConversationalCompose({
   useEffect(() => {
     if (!readyToSave || !draft) {
       setReview(null)
+      setReviewError(false)
       return
     }
-    const intent =
-      history.find((h) => h.role === "user")?.content
-      ?? initialUserMessage ?? ""
+    // F3 (IF-11/UX-17): compose the intent from ALL user turns (bounded),
+    // not just the first, so a conversation that pivots ("actually block,
+    // not audit") is reviewed against what the operator actually asked.
+    const userTurns = history.filter((h) => h.role === "user").map((h) => h.content)
+    if (userTurns.length === 0 && initialUserMessage) userTurns.push(initialUserMessage)
+    const intent = userTurns.join("\n").slice(0, 4000)
     let cancelled = false
     setReviewPending(true)
+    setReviewError(false)
     fetch("/api/policies/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ draft, intent }),
+      body: JSON.stringify({ draft, intent, locale }),
     })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -205,15 +218,18 @@ export function ConversationalCompose({
         ) {
           setReview({
             ok: data.ok,
-            summary: String(data.summary ?? ""),
+            summaryCode: String(data.summary_code ?? ""),
+            checked: Array.isArray(data.checked) ? data.checked : [],
             issues: data.issues,
           })
+          setReviewError(false)
         } else {
           setReview(null)
+          setReviewError(true)
         }
       })
       .catch(() => {
-        if (!cancelled) setReview(null)
+        if (!cancelled) { setReview(null); setReviewError(true) }
       })
       .finally(() => {
         if (!cancelled) setReviewPending(false)
@@ -221,7 +237,7 @@ export function ConversationalCompose({
     return () => {
       cancelled = true
     }
-  }, [readyToSave, draft, history, initialUserMessage])
+  }, [readyToSave, draft, history, initialUserMessage, locale])
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const mountedRef = useRef(true)
@@ -818,6 +834,7 @@ export function ConversationalCompose({
         packCentric={packCentric}
         review={review}
         reviewPending={reviewPending}
+        reviewError={reviewError}
         // P4: feed the pack picker's extractor the operator's first
         // message so a named work context ("리서치", "coding safety")
         // pre-selects the matching pack.

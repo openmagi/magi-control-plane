@@ -68,6 +68,9 @@ export async function POST(req: NextRequest) {
     }
     intent = obj.intent.slice(0, MAX_INTENT_CHARS)
   }
+  // F1: forward the operator locale so the advisory semantic layer answers
+  // in their language. Bounded; defaults to "en".
+  const locale = obj.locale === "ko" ? "ko" : "en"
 
   const key = adminKey()
   if (!key) {
@@ -80,7 +83,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Api-Key": key },
       cache: "no-store",
-      body: JSON.stringify({ draft, intent }),
+      body: JSON.stringify({ draft, intent, locale }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
   } catch (e) {

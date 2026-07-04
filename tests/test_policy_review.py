@@ -156,3 +156,80 @@ def test_review_endpoint_requires_admin_key():
     c = _client()
     r = c.post("/policies/review", json={"draft": _gate()})
     assert r.status_code in (401, 403)
+
+
+# ── F1: structured issue codes + F2 honest checked states ──────────────
+
+def test_review_issues_carry_stable_codes():
+    v = review_policy_draft(_gate(gate={"matcher": "", "action": "block"}))
+    codes = {i["code"] for i in v["issues"]}
+    assert "no_gate_matcher" in codes
+    # every issue carries a code + params for the dashboard to localize
+    for i in v["issues"]:
+        assert isinstance(i["code"], str) and i["code"]
+        assert "params" in i
+
+
+def test_review_reports_which_layers_checked():
+    # deterministic only (no reviewer) -> checked == ["integrity"].
+    v = review_policy_draft(_gate())
+    assert v["checked"] == ["integrity"]
+    assert v["summary_code"] == "clean"
+    # with a reviewer + intent -> semantic also ran.
+    v2 = review_policy_draft(
+        _gate(), intent="block bad trades", reviewer=_reviewer(True, []))
+    assert v2["checked"] == ["integrity", "semantic"]
+
+
+def test_review_semantic_not_counted_without_intent():
+    v = review_policy_draft(_gate(), intent="", reviewer=_reviewer(True, []))
+    assert v["checked"] == ["integrity"]  # semantic skipped (no intent)
+
+
+# ── F3: minimal single-rule checks (no longer a silent no-op) ──────────
+
+def test_single_rule_tool_event_without_matcher_warns():
+    v = review_policy_draft({
+        "id": "r1", "trigger": {"event": "PreToolUse", "matcher": ""},
+        "requires": [{"kind": "regex", "pattern": "x"}], "action": "block",
+    })
+    assert any(i["code"] == "single_no_matcher" for i in v["issues"])
+    assert v["ok"] is True  # warn, not error
+
+
+def test_single_rule_action_vs_intent_mismatch_warns():
+    # intent says "block", rule only records (audit) -> warn.
+    v = review_policy_draft(
+        {"id": "r1", "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+         "requires": [{"kind": "regex", "pattern": "x"}], "action": "audit"},
+        intent="block any rm -rf",
+    )
+    assert any(i["code"] == "action_intent_mismatch" for i in v["issues"])
+
+
+def test_single_rule_action_vs_intent_ko_cue():
+    v = review_policy_draft(
+        {"id": "r1", "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+         "requires": [{"kind": "regex", "pattern": "x"}], "action": "audit"},
+        intent="rm -rf 는 무조건 차단해줘",
+    )
+    assert any(i["code"] == "action_intent_mismatch" for i in v["issues"])
+
+
+def test_single_rule_stop_event_stays_quiet():
+    # Stop/session events legitimately use a wildcard matcher.
+    v = review_policy_draft({
+        "id": "r1", "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "regex", "pattern": "x"}], "action": "block",
+    })
+    assert all(i["code"] != "single_no_matcher" for i in v["issues"])
+
+
+# ── F1: locale steers the semantic layer ───────────────────────────────
+
+def test_review_endpoint_accepts_locale():
+    c = _client(llm_reviewer=None)
+    r = c.post("/policies/review", headers=HEADERS,
+               json={"draft": _gate(), "intent": "x", "locale": "ko"})
+    assert r.status_code == 200, r.text
+    assert "checked" in r.json()
