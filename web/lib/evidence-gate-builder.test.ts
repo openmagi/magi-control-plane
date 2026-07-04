@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest"
 import {
   DEFAULT_EVIDENCE_GATE_DRAFT,
   buildEvidenceGateCompoundDraft,
+  buildEvidenceGateExpansion,
   buildEvidenceGatePolicies,
   describeEvidenceGate,
   looksLikeEvidenceGateIntent,
@@ -113,5 +114,24 @@ describe("buildEvidenceGateCompoundDraft", () => {
     expect(c.audit.matcher).toBe(d.audit.matcher)
     expect(c.gate.matcher).toBe(d.gate.matcher)
     expect(c.gate.action).toBe(d.gate.action)
+  })
+})
+
+describe("H2 (CV-08): buildEvidenceGateExpansion mirrors the server (5 rules)", () => {
+  it("returns audit + gate + 3 ledger-protection denies", () => {
+    const d = DEFAULT_EVIDENCE_GATE_DRAFT
+    const rules = buildEvidenceGateExpansion(d)
+    expect(rules).toHaveLength(5)
+    expect(rules[0].type).toBe("evidence_audit")
+    expect(rules[1].type).toBe("evidence_precondition")
+    const denies = rules.slice(2)
+    expect(denies.every((r) => r.type === "permission")).toBe(true)
+    expect(denies.map((r) => r.id)).toEqual([
+      `${d.idStem}-ledger-deny-0`,
+      `${d.idStem}-ledger-deny-1`,
+      `${d.idStem}-ledger-deny-2`,
+    ])
+    // the denies protect the session-evidence ledger dir
+    expect(denies.every((r) => String(r.pattern).includes("session-evidence"))).toBe(true)
   })
 })

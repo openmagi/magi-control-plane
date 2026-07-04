@@ -814,10 +814,16 @@ export function IrDraftPane({
        * cannot be replayed deterministically). A future widening of
        * the panel's union can map run_command directly.
        */}
+      {/* H3 (IF-13): a compound evidence_gate draft is NOT a single-rule
+          IR, so the dry-run endpoint 422s it. The panel was enabled for a
+          ready compound and clicking it showed a validation error on a
+          draft this same pane calls READY. Gate it off for compounds - the
+          dry-run of the gate's precondition is a follow-up (it would need
+          to expand + replay the member). */}
       <DryRunPanel
         locale={locale}
-        ir={readyToSave && draft ? draft : null}
-        disabled={!readyToSave}
+        ir={readyToSave && draft && !compound ? draft : null}
+        disabled={!readyToSave || compound}
         action={action === "run_command" ? "audit" : (action ?? "audit")}
       />
 
