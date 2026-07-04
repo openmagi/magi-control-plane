@@ -228,3 +228,24 @@ def test_get_policy_group_does_not_shadow_single_rule_get(client):
     r = client.get("/policies/verified-trade-audit", headers=ADMIN)
     assert r.status_code == 200
     assert r.json()["id"] == "verified-trade-audit"
+
+
+# ── G3: pack_ids validated BEFORE the write (no partial commit) ────────
+
+def test_compound_bad_pack_id_writes_nothing(client):
+    # A built-in pack (immutable) 400s; the policy must NOT be saved.
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org",
+                          "pack_ids": ["pack/coding-safety"]})
+    assert r.status_code == 400, r.text
+    # nothing committed: neither the group nor its member rules exist.
+    assert client.get("/policies/groups/verified-trade", headers=ADMIN).status_code == 404
+    assert client.get("/policies/verified-trade-gate", headers=ADMIN).status_code == 404
+
+
+def test_compound_unknown_pack_id_writes_nothing(client):
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org",
+                          "pack_ids": ["user-pack/nope"]})
+    assert r.status_code == 404, r.text
+    assert client.get("/policies/groups/verified-trade", headers=ADMIN).status_code == 404

@@ -79,3 +79,17 @@ describe("PackMultiSelect is built once + reused (P4)", () => {
     expect(src).toContain("PackMultiSelect")
   })
 })
+
+describe("G3 (IF-05): built-in packs are non-selectable", () => {
+  const src = readFileSync(
+    path.join(__dirname, "PackMultiSelect.tsx"), "utf-8",
+  )
+
+  it("disables the checkbox for a pack/ (built-in) id", () => {
+    expect(src).toContain('pack.id.startsWith("pack/")')
+    expect(src).toContain("disabled={isBuiltin}")
+    // never let a built-in be checked/toggled (it always 400s on join)
+    expect(src).toContain("checked={isSelected && !isBuiltin}")
+    expect(src).toMatch(/if \(!isBuiltin\) toggle/)
+  })
+})

@@ -1570,6 +1570,41 @@ def attach(app: FastAPI, store: PolicyStore,
             return expand_compound_draft(draft)
         return [draft]
 
+    def _validate_pack_ids_for_join(requested: list) -> list[str]:
+        """G3 (audit IF-05): validate a pack_ids request WITHOUT writing.
+
+        Shared by put_policy + post_compound so a bad pack_id fails before
+        the policy is committed (no partial-commit / saved-but-reported-
+        failed). Checks: string shape, built-in (immutable) -> 400, wrong
+        prefix -> 404, and EXISTENCE of the user-pack -> 404. Returns the
+        deduped, order-preserving list of pack ids to join. Pure read (no
+        lock); a pack deleted between this check and the join is a TOCTOU
+        the join loop still 404s.
+        """
+        if not requested:
+            return []
+        if pack_store is None or pack_store_lock is None:
+            raise HTTPException(500, "pack store not configured")
+        known = {r.id for r in pack_store.load()}
+        seen_req: set[str] = set()
+        ordered_req: list[str] = []
+        for pid in requested:
+            if not isinstance(pid, str) or not pid:
+                raise HTTPException(422, "pack_ids entries must be strings")
+            if pid.startswith("pack/"):
+                raise HTTPException(
+                    400,
+                    f"pack {pid!r} has immutable built-in membership; "
+                    "select a user pack (or the floor pack) instead",
+                )
+            if not pid.startswith("user-pack/") or pid not in known:
+                raise HTTPException(404, f"pack {pid!r} not found")
+            if pid in seen_req:
+                continue
+            seen_req.add(pid)
+            ordered_req.append(pid)
+        return ordered_req
+
     @app.post("/policies/compound", dependencies=[Depends(require_admin_key)])
     async def post_compound(body: CompoundPolicyReq) -> dict:
         """Author a policy that owns one or more rules. Expand -> validate all
@@ -1616,6 +1651,13 @@ def attach(app: FastAPI, store: PolicyStore,
             draft=draft, rule_ids=new_rule_ids,
             source=body.source, enabled=body.enabled,
         )
+        # G3 (audit IF-05): validate pack_ids BEFORE the group/rule write so a
+        # bad pack_id fails with nothing written, not a saved-but-reported-
+        # failed compound (see put_policy for the full rationale). Existence
+        # is checked here too (not just the prefix) so an unknown user-pack
+        # 404s before the write, not after.
+        requested = body.pack_ids or []
+        ordered_req = _validate_pack_ids_for_join(requested)
         async with policy_lock:
             # P1-3: a member rule id must not already be owned by a DIFFERENT
             # policy (else a re-save would silently steal it, and a cascade
@@ -1652,31 +1694,11 @@ def attach(app: FastAPI, store: PolicyStore,
         # Without this a conversationally authored compound whose operator
         # selected a pack is saved with its rules in no pack, i.e. silently
         # inert under the pack-centric runtime. Kept OUTSIDE policy_lock but
-        # INSIDE pack_store_lock so membership serialises with the cascade +
-        # user-pack CRUD handlers. Built-in packs are immutable -> 400;
-        # unknown -> 404. Idempotent.
+        # INSIDE pack_store_lock. Validation (built-in -> 400, unknown ->
+        # 404) already ran above the write (G3); the only failure left here
+        # is a validated pack deleted between validate and join (TOCTOU).
         joined_packs: list[str] = []
-        requested = body.pack_ids or []
-        if requested:
-            if pack_store is None or pack_store_lock is None:
-                raise HTTPException(500, "pack store not configured")
-            seen_req: set[str] = set()
-            ordered_req: list[str] = []
-            for pid in requested:
-                if not isinstance(pid, str) or not pid:
-                    raise HTTPException(422, "pack_ids entries must be strings")
-                if pid.startswith("pack/"):
-                    raise HTTPException(
-                        400,
-                        f"pack {pid!r} has immutable built-in membership; "
-                        "select a user pack (or the floor pack) instead",
-                    )
-                if not pid.startswith("user-pack/"):
-                    raise HTTPException(404, f"pack {pid!r} not found")
-                if pid in seen_req:
-                    continue
-                seen_req.add(pid)
-                ordered_req.append(pid)
+        if ordered_req:
             async with pack_store_lock:
                 rows = pack_store.load()
                 index = {r.id: i for i, r in enumerate(rows)}
@@ -1950,6 +1972,15 @@ def attach(app: FastAPI, store: PolicyStore,
         # because matrix-coherence already passed by this point and
         # we want a clear 403, not a 400 about "policy save".
         resolved_enforcement = await _validate_and_stamp(policy)
+        # G3 (audit IF-05): VALIDATE pack_ids BEFORE the policy write, not
+        # after. Previously the policy was saved+enabled first and the
+        # pack-join validation (built-in -> 400, unknown -> 404) ran after
+        # the commit; a bad pack_id then raised post-commit and the
+        # dashboard reported the whole save as FAILED while an enabled
+        # policy already existed (state desync). Now a bad pack_id fails
+        # cleanly with NOTHING written.
+        ordered_req = _validate_pack_ids_for_join(body.pack_ids or [])
+
         async with policy_lock:
             existing = store.load()
             existing = [ov for ov in existing if ov.policy.id != policy_id]
@@ -1959,37 +1990,15 @@ def attach(app: FastAPI, store: PolicyStore,
                 enforcement=resolved_enforcement,
             ))
             store.save(existing)
-        # P4: pack membership at authoring time. After the policy write
-        # commits, add its id to each selected user-pack's member list.
-        # Kept OUTSIDE the policy_lock but INSIDE pack_store_lock so pack
-        # membership mutations serialise with the enable/disable cascade
-        # + user-pack CRUD handlers that share that lock. Built-in packs
-        # are immutable → 400; an unknown id → 404. Idempotent: a policy
-        # already in a pack is a no-op for that pack.
+        # Pack membership at authoring time. Kept OUTSIDE the policy_lock but
+        # INSIDE pack_store_lock so membership mutations serialise with the
+        # enable/disable cascade + user-pack CRUD handlers. Idempotent: a
+        # policy already in a pack is a no-op for that pack. Validation ran
+        # above the write, so the only failure left here is an
+        # already-existing pack that was deleted between validate and join
+        # (a genuine TOCTOU race), which 404s.
         joined_packs: list[str] = []
-        requested = body.pack_ids or []
-        if requested:
-            if pack_store is None or pack_store_lock is None:
-                raise HTTPException(500, "pack store not configured")
-            # Dedupe request while preserving order so a caller that
-            # names the same pack twice does not double-append.
-            seen_req: set[str] = set()
-            ordered_req: list[str] = []
-            for pid in requested:
-                if not isinstance(pid, str) or not pid:
-                    raise HTTPException(422, "pack_ids entries must be strings")
-                if pid.startswith("pack/"):
-                    raise HTTPException(
-                        400,
-                        f"pack {pid!r} has immutable built-in membership; "
-                        "select a user pack (or the floor pack) instead",
-                    )
-                if not pid.startswith("user-pack/"):
-                    raise HTTPException(404, f"pack {pid!r} not found")
-                if pid in seen_req:
-                    continue
-                seen_req.add(pid)
-                ordered_req.append(pid)
+        if ordered_req:
             async with pack_store_lock:
                 rows = pack_store.load()
                 index = {r.id: i for i, r in enumerate(rows)}
