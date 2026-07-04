@@ -2838,3 +2838,15 @@ describe("policies/new compound (evidence_gate) save routing", () => {
     expect(src).toMatch(/await persistDraft\(draft, source/)
   })
 })
+
+describe("D1: persistDraft validates typed archetypes on the server, not the client", () => {
+  const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
+
+  it("runs client validateDraft ONLY for the evidence shape", () => {
+    // Any typed archetype (permission/mcp_gating/subagent/raw JSON) skips
+    // the evidence-only client validation and lets the cloud validate.
+    expect(src).toContain("isEvidenceShape")
+    expect(src).toMatch(/isEvidenceShape\s*=\s*!draftType\s*\|\|\s*draftType === "evidence"/)
+    expect(src).toMatch(/if \(isEvidenceShape\) \{[\s\S]*validateDraft/)
+  })
+})

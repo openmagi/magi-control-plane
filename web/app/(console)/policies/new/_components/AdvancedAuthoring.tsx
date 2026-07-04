@@ -82,6 +82,7 @@ export default function AdvancedAuthoring({
   locale, saveAction, initial, wiredSteps, vendorSteps, labels,
   packCentric = false,
 }: AdvancedAuthoringProps) {
+  const ko = locale === "ko"
   const draftRef = useRef<PolicyDraft | null>(initial ?? null)
 
   const handleDraftChange = useCallback((d: PolicyDraft) => {
@@ -160,6 +161,49 @@ export default function AdvancedAuthoring({
           ) : undefined
         }
       />
+
+      {/* D1 (audit CV-01/CV-04): the raw-JSON escape hatch. PolicyBuilder
+       *  only authors the evidence shape, so permission / mcp_gating /
+       *  subagent / context_injection / input_rewrite were un-authorable
+       *  from any dashboard mode (REST-curl only). This textarea posts a
+       *  full typed IR object straight to PUT /policies; the cloud's
+       *  per-type validate() is canonical and complete, so any archetype
+       *  is authorable here. persistDraft skips the evidence-only client
+       *  validation for typed drafts. */}
+      <details className="rounded-xl border border-black/[0.08] bg-gray-50/60 p-3"
+               data-testid="advanced-raw-json">
+        <summary className="cursor-pointer text-sm font-semibold text-[var(--color-text-primary)]">
+          {ko ? "고급: 정책 JSON 직접 붙여넣기" : "Advanced: paste raw policy JSON"}
+        </summary>
+        <p className="mt-2 mb-2 text-xs text-[var(--color-text-secondary)]">
+          {ko
+            ? "전체 정책 IR 객체를 붙여넣으면 모든 종류(permission, mcp_gating, subagent 등)를 저작할 수 있어요. 저장 시 서버가 검증합니다."
+            : "Paste a full policy IR object to author any archetype (permission, mcp_gating, subagent, ...). Validated by the server on save."}
+        </p>
+        <form action={saveAction} className="flex flex-col gap-2"
+              data-testid="advanced-raw-json-form">
+          <textarea
+            name="draft_json"
+            data-testid="advanced-raw-json-input"
+            rows={12}
+            spellCheck={false}
+            className="w-full rounded-lg border border-black/[0.12] bg-white p-2 font-mono text-[12px] leading-relaxed"
+            placeholder={
+              '{\n  "id": "deny-rm-rf",\n  "type": "permission",\n'
+              + '  "trigger": { "host": "claude-code", "event": "PreToolUse", "matcher": "Bash" },\n'
+              + '  "permission": "deny",\n  "pattern": "Bash(rm:-rf*)"\n}'
+            }
+          />
+          <input type="hidden" name="source" value="org" />
+          <button
+            type="submit"
+            data-testid="advanced-raw-json-save"
+            className="self-start rounded-lg bg-[var(--color-accent,#7C3AED)] px-4 py-1.5 text-sm font-semibold text-white shadow-sm"
+          >
+            {ko ? "JSON 저장" : "Save JSON"}
+          </button>
+        </form>
+      </details>
     </div>
   )
 }

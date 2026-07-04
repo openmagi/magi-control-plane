@@ -1346,16 +1346,15 @@ async function persistDraft(
    *  transaction as the policy write. */
   packIds?: string[],
 ): Promise<void> {
-  // D57f-1 / D57f-2: validateDraft only knows the evidence shape; skip
-  // it for the sibling archetypes (the cloud's per-type validate() is
-  // canonical and the dashboard surfaces the cloud's 4xx via the flash
-  // redirect path).
+  // D57f-1 / D57f-2 + D1: validateDraft only knows the evidence shape.
+  // Run it ONLY for evidence-shaped drafts (no `type`, or type=evidence);
+  // every other archetype - the sibling declarative types AND the raw-JSON
+  // escape hatch (permission / mcp_gating / subagent / ...) - is validated
+  // by the cloud's per-type validate(), which is canonical and complete.
+  // The dashboard surfaces the cloud's 4xx via the flash redirect path.
   const draftType = (draft as { type?: string }).type
-  if (
-    draftType !== "context_injection"
-    && draftType !== "input_rewrite"
-    && draftType !== "run_command"
-  ) {
+  const isEvidenceShape = !draftType || draftType === "evidence"
+  if (isEvidenceShape) {
     const errs = validateDraft(draft as PolicyDraft)
     if (errs.length > 0) { redirect("/policies/new?err=invalid_input"); return }
   }

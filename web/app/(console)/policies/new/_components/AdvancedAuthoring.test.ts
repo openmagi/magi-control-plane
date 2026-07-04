@@ -89,3 +89,22 @@ describe("AdvancedAuthoring page.tsx wiring", () => {
     expect(pageSrc).toMatch(/handoffOrigin="conversational"/)
   })
 })
+
+describe("D1: raw-JSON escape hatch", () => {
+  const src = read("AdvancedAuthoring.tsx")
+
+  it("renders a raw-JSON form posting draft_json to the save action", () => {
+    expect(src).toContain('data-testid="advanced-raw-json-form"')
+    expect(src).toContain('name="draft_json"')
+    expect(src).toContain("action={saveAction}")
+  })
+
+  it("has a JSON textarea + save button", () => {
+    expect(src).toContain('data-testid="advanced-raw-json-input"')
+    expect(src).toContain('data-testid="advanced-raw-json-save"')
+  })
+
+  it("carries the source field like the evidence save path", () => {
+    expect(src).toContain('name="source"')
+  })
+})
