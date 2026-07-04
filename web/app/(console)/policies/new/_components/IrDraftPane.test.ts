@@ -106,7 +106,7 @@ describe("IrDraftPane run_command rendering invariants", () => {
 
 /* ── Q102 invariants ────────────────────────────────────────────────── */
 
-describe("Q102: Live draft missing summary + Save this rule prominence", () => {
+describe("Q102: Live draft missing summary + Save this policy prominence", () => {
   const src = read("IrDraftPane.tsx")
   const dictPath = path.join(
     HERE, "..", "..", "..", "..", "..", "lib", "i18n", "dict.ts",

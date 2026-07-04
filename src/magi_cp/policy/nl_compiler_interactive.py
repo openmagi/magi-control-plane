@@ -855,7 +855,7 @@ def _auto_description_for_draft(draft: dict[str, Any], ko: bool) -> str:
         return ""
     if ko:
         return (
-            f"{event} {matcher or '*'} 시점에 {step} 검증기로 검사하고 "
+            f"{event} {matcher or '*'} 시점에 {step} 검증자로 검사하고 "
             f"결과를 {action} 처리합니다."
         )
     return (
@@ -1265,11 +1265,11 @@ def _question_for_field(field: FieldName, ko: bool) -> Question:
                 QuestionOption(
                     value="step",
                     label=(
-                        "기존 검증기 사용"
+                        "기존 검증자 사용"
                         if ko else "An existing verifier"
                     ),
                     hint=(
-                        "이미 등록된 검증기를 참조합니다."
+                        "이미 등록된 검증자를 참조합니다."
                         if ko else "Reference a registered verifier by name."
                     ),
                 ),
@@ -1397,7 +1397,7 @@ def _question_for_requires_body(draft: dict[str, Any], ko: bool) -> Question:
     else:
         # step archetype: the body is the verifier name to bind.
         prompt = (
-            "어떤 검증기를 사용할까요? 등록된 이름을 적어주세요."
+            "어떤 검증자를 사용할까요? 등록된 이름을 적어주세요."
             if ko else
             "Which verifier should we use? Enter its registered name."
         )
@@ -2073,7 +2073,7 @@ def _build_assistant_message(
         else:
             # step archetype: body is the verifier name.
             body = (
-                "어떤 검증기를 사용할까요? 등록된 이름을 적어주세요."
+                "어떤 검증자를 사용할까요? 등록된 이름을 적어주세요."
                 if ko else
                 "Which verifier should we use? Enter its registered name."
             )
@@ -2109,15 +2109,18 @@ def _build_assistant_message(
 
     elif state == "S4_ready":
         rid = draft.get("id", "")
+        # UX-06: name the ACTUAL Save button (was a hardcoded English
+        # "Save this rule" that matched no button), in policy framing
+        # (decision 1: the operator-facing unit is the policy).
         if ko:
             body = (
-                f"초안 준비됐어요. ID는 `{rid}`. 우측 \"Save this rule\" "
+                f"초안 준비됐어요. ID는 `{rid}`. 우측 \"이 정책 저장\" "
                 f"버튼으로 저장하면 됩니다."
             )
         else:
             body = (
                 f"Draft is ready. The id is `{rid}`. Click "
-                f"\"Save this rule\" on the right."
+                f"\"Save this policy\" on the right."
             )
 
     if inject_rewrite_prefix and not body:

@@ -1920,7 +1920,7 @@ def test_q103_build_assistant_message_emits_state_correct_copy():
         "S1_verifier_selected", s1_shacl, ko=True,
     )
     s1_step = {"requires": [{"kind": "step", "step": "", "verdict": "pass"}]}
-    assert "검증기" in _build_assistant_message(
+    assert "검증자" in _build_assistant_message(
         "S1_verifier_selected", s1_step, ko=True,
     )
 
@@ -1952,7 +1952,7 @@ def test_q103_build_assistant_message_emits_state_correct_copy():
     )
     assert "초안 준비됐어요" in msg_s4
     assert "block-bash-rm" in msg_s4
-    assert "Save this rule" in msg_s4
+    assert "이 정책 저장" in msg_s4
     msg_s4_en = _build_assistant_message(
         "S4_ready", {"id": "block-bash-rm"}, ko=False,
     )
@@ -2058,7 +2058,7 @@ def test_q103_llm_assistant_message_is_dropped_when_state_is_s4():
     # Deterministic S4 framing surfaces.
     assert "Draft is ready" in msg
     assert "block-bash-rm" in msg
-    assert "Save this rule" in msg
+    assert "Save this policy" in msg
 
 
 def test_q103_llm_premature_completion_claim_replaced_by_state_message():
