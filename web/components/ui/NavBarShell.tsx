@@ -13,8 +13,12 @@ export default async function NavBarShell() {
     { href: "/welcome#how", label: isKo ? "동작 방식" : "How it works" },
     { href: "/install",     label: isKo ? "설치"       : "Install" },
     { href: "/docs",        label: isKo ? "문서"       : "Docs" },
-    { href: "https://github.com/openmagi", label: "GitHub" },
+    { href: "https://github.com/openmagi/magi-control-plane", label: "GitHub" },
   ]
+  // Dashboard entry CTA, right-aligned like openmagi.ai's nav. `/` redirects
+  // to /rules; link straight there so the marketing shell has a first-class
+  // way into the console (previously there was none).
+  const cta: NavItem = { href: "/rules", label: isKo ? "대시보드" : "Dashboard" }
   return (
     <NavBarClient
       brand={t("nav.brand")}
@@ -22,6 +26,7 @@ export default async function NavBarShell() {
       closeMenuLabel={t("nav.closeMenu")}
       items={items}
       rightSlot={<LangSelect />}
+      cta={cta}
     />
   )
 }
