@@ -2867,3 +2867,20 @@ describe("D2/G4: edit path + preserve-enabled on re-save", () => {
     expect(src).toMatch(/if \(!r\.ok\) return true/)
   })
 })
+
+describe("G1: compound save-failure preserves the conversation (UX-08)", () => {
+  const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
+
+  it("redirects a compound save error back into conversational mode with a seed", () => {
+    expect(src).toContain("function _compoundSaveErrorRedirect")
+    expect(src).toContain("mode=conversational&seed=")
+    expect(src).toContain("encodeSeed({ draft_ir: draft })")
+  })
+
+  it("persistCompoundDraft routes ALL error exits through the seed redirect", () => {
+    // No bare `redirect(`/policies/new?err=` should remain in the compound
+    // path - every failure carries the draft forward.
+    expect(src).toMatch(/persistCompoundDraft[\s\S]*?_compoundSaveErrorRedirect\(draft, "invalid_id"\)/)
+    expect(src).toMatch(/_compoundSaveErrorRedirect\(draft, codeForError/)
+  })
+})
