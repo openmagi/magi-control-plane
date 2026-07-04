@@ -143,7 +143,7 @@ def test_pr_number_non_int_is_dropped_fail_closed() -> None:
         "schemaVersion": "openmagi.runView.v1",
         "results": [
             {"prNumber": "ghp_" + "Z" * 36, "prUrl": "https://x/y/pull/1"},
-            {"prNumber": {"leak": "/Users/kevin/.ssh/id_rsa"}, "prUrl": "https://x/y/pull/2"},
+            {"prNumber": {"leak": "/home/user/.ssh/id_rsa"}, "prUrl": "https://x/y/pull/2"},
             {"prNumber": 42, "prUrl": "https://x/y/pull/42"},
         ],
     }

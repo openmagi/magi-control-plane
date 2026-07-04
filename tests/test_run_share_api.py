@@ -125,7 +125,7 @@ def test_public_get_missing_token_404(client):
 def test_session_id_is_scrubbed(client):
     secret = "ghp_" + "B" * 36
     v = _view()
-    v["sessionId"] = f"sess {secret} /Users/kevin/.ssh/id_rsa"
+    v["sessionId"] = f"sess {secret} /home/user/.ssh/id_rsa"
     r = client.post("/v1/runs/share", json={"view": v}, headers=HEADERS)
     view = client.get(f"/share/run/{r.json()['token']}").json()["view"]
     assert secret not in view["sessionId"]

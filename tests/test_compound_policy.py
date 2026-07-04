@@ -15,7 +15,7 @@ def _evidence_gate_draft(**over):
         "id": "verified-trade",
         "description": "Require a credible source before trading",
         "kind": "source_credibility",
-        "project_scope": "/Users/kevin/trading-mcp",
+        "project_scope": "/home/user/trading-mcp",
         "audit": {"event": "PostToolUse", "matcher": "WebFetch|Bash",
                   "extract": "url", "judge": "domain-credibility"},
         "gate": {"event": "PreToolUse", "matcher": "mcp__trading__execute_trade",
@@ -44,7 +44,7 @@ def test_evidence_gate_expands_to_two_valid_ir_policies():
     # joined on kind
     assert members[0]["kind"] == members[1]["require_kind"] == "source_credibility"
     # scope propagated to the audit/gate pair
-    assert members[0]["project_scope"] == members[1]["project_scope"] == "/Users/kevin/trading-mcp"
+    assert members[0]["project_scope"] == members[1]["project_scope"] == "/home/user/trading-mcp"
     # the denies protect the ledger dir
     assert all("session-evidence" in m["pattern"] for m in members[2:])
     # each member is valid IR

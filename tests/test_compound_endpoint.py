@@ -29,7 +29,7 @@ def _draft(**over):
         "id": "verified-trade",
         "description": "Require a credible source before trading",
         "kind": "source_credibility",
-        "project_scope": "/Users/kevin/trading-mcp",
+        "project_scope": "/home/user/trading-mcp",
         "audit": {"event": "PostToolUse", "matcher": "WebFetch|Bash"},
         "gate": {"event": "PreToolUse", "matcher": "mcp__trading__execute_trade",
                  "action": "block", "reason": "verify a source first"},
