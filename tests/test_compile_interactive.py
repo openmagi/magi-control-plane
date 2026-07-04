@@ -3042,3 +3042,40 @@ def test_compound_reuse_dropped_when_producer_gone():
     from magi_cp.policy.compound import expand_compound_draft
     # self-produces again: audit member present.
     assert any(m["id"].endswith("-audit") for m in expand_compound_draft(d))
+
+
+# ── H4/CV-07: conversational evidence-gate "ask" cue ───────────────────
+
+def test_compound_ask_cue_sets_ask_action():
+    """"ask for approval before X" must set gate.action=ask, not silently
+    default to block (CV-07)."""
+    c = _client_no_llm()
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "ask for approval of a credible source before mcp__trading__execute_trade runs"}],
+        "draft_so_far": None, "answers": None,
+    })
+    d = r.json()["draft"]
+    assert d["gate"]["matcher"] == "mcp__trading__execute_trade"
+    assert d["gate"]["action"] == "ask"
+
+
+def test_compound_ask_cue_korean():
+    c = _client_no_llm()
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "mcp__trading__execute_trade 실행 전에 신뢰할 수 있는 출처를 승인 받게 해줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    d = r.json()["draft"]
+    assert d["gate"]["action"] == "ask"
+
+
+def test_compound_no_ask_cue_defaults_block():
+    c = _client_no_llm()
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before mcp__trading__execute_trade"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.json()["draft"]["gate"]["action"] == "block"
