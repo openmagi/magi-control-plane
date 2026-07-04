@@ -1332,6 +1332,37 @@ type RunCommandDraftPersist = {
   fail_closed: boolean
 }
 
+/** G4 (audit IF-14): preserve a policy's current enabled state on re-save
+ *  (edit) instead of unconditionally re-arming it. Re-authoring a rule the
+ *  operator had deliberately disabled must NOT silently turn it back on.
+ *  Reads the existing enabled from the cloud (`kind` = "group" for the
+ *  compound group route, else the per-rule route). A new id (404) or any
+ *  read failure defaults to enabled:true (genuinely new policies arm). */
+async function _existingEnabled(
+  id: string, adminKey: string, kind: "rule" | "group",
+): Promise<boolean> {
+  const idForUrl = id.split("/").map(encodeURIComponent).join("/")
+  const path = kind === "group"
+    ? `/policies/groups/${idForUrl}`
+    : `/policies/${idForUrl}`
+  try {
+    const r = await fetch(
+      `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}${path}`,
+      {
+        method: "GET",
+        headers: { "X-Admin-Api-Key": adminKey },
+        cache: "no-store",
+        signal: AbortSignal.timeout(8000),
+      },
+    )
+    if (!r.ok) return true // 404 (new) or error -> default arm
+    const j = await r.json().catch(() => null)
+    return j && typeof j.enabled === "boolean" ? j.enabled : true
+  } catch {
+    return true
+  }
+}
+
 async function persistDraft(
   draft:
     | PolicyDraft
@@ -1371,6 +1402,8 @@ async function persistDraft(
     redirect(`/policies/new?err=${codeForError(e)}`); return
   }
   const idForUrl = draft.id.split("/").map(encodeURIComponent).join("/")
+  // G4 (IF-14): preserve the current enabled on edit; new ids arm.
+  const enabled = await _existingEnabled(draft.id, adminKey, "rule")
   try {
     const r = await fetch(
       `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}/policies/${idForUrl}`,
@@ -1379,7 +1412,7 @@ async function persistDraft(
         headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
         cache: "no-store",
         body: JSON.stringify({
-          policy: draft, source, enabled: true,
+          policy: draft, source, enabled,
           // Only include pack_ids when the operator selected at least
           // one pack; omitting the field keeps the orphan (no-pack)
           // path byte-identical to the pre-P4 request shape.
@@ -1469,6 +1502,8 @@ async function persistCompoundDraft(
   } catch (e) {
     redirect(`/policies/new?err=${codeForError(e)}`); return
   }
+  // G4 (IF-14): preserve the current enabled on re-save; new ids arm.
+  const enabled = await _existingEnabled(policyId, adminKey, "group")
   try {
     const r = await fetch(
       `${process.env.MAGI_CP_CLOUD_URL || "http://127.0.0.1:8787"}/policies/compound`,
@@ -1477,7 +1512,7 @@ async function persistCompoundDraft(
         headers: { "Content-Type": "application/json", "X-Admin-Api-Key": adminKey },
         cache: "no-store",
         body: JSON.stringify({
-          draft, source, enabled: true,
+          draft, source, enabled,
           ...(packIds && packIds.length > 0 ? { pack_ids: packIds } : {}),
         }),
         signal: AbortSignal.timeout(8000),

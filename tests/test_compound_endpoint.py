@@ -187,3 +187,44 @@ def test_compound_without_pack_ids_is_unchanged(client):
                     json={"draft": _draft(), "source": "org"})
     assert r.status_code == 200, r.text
     assert r.json()["pack_ids"] == []
+
+
+# ── D2: GET /policies/groups/{id} returns the stored draft (edit path) ──
+
+def test_get_policy_group_returns_stored_draft(client):
+    client.post("/policies/compound", headers=ADMIN,
+                json={"draft": _draft(), "source": "org"})
+    r = client.get("/policies/groups/verified-trade", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == "verified-trade"
+    assert body["kind"] == "compound"
+    # the stored authoring draft round-trips (unreachable before D2)
+    assert body["draft"]["type"] == "evidence_gate"
+    assert body["draft"]["gate"]["matcher"] == "mcp__trading__execute_trade"
+    assert len(body["rule_ids"]) == 5
+    assert body["enabled"] is True
+
+
+def test_get_policy_group_enabled_from_member_ground_truth(client):
+    client.post("/policies/compound", headers=ADMIN,
+                json={"draft": _draft(), "source": "org"})
+    # disable via a member rule toggle (cascades)
+    client.patch("/policies/verified-trade-gate/enabled",
+                 json={"enabled": False}, headers=ADMIN)
+    r = client.get("/policies/groups/verified-trade", headers=ADMIN)
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+
+
+def test_get_policy_group_unknown_404(client):
+    assert client.get("/policies/groups/nope", headers=ADMIN).status_code == 404
+
+
+def test_get_policy_group_does_not_shadow_single_rule_get(client):
+    # The literal `groups/` route must not swallow a normal policy GET.
+    client.post("/policies/compound", headers=ADMIN,
+                json={"draft": _draft(), "source": "org"})
+    r = client.get("/policies/verified-trade-audit", headers=ADMIN)
+    assert r.status_code == 200
+    assert r.json()["id"] == "verified-trade-audit"

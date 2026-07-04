@@ -735,6 +735,18 @@ export const cloud = {
     _fetch<{ policies: PolicyGroupItem[] }>("/policies/groups", { method: "GET", keyType: "admin" })
       .then(d => d.policies),
 
+  /** D2: fetch a single authored policy incl. its stored authoring `draft`
+   *  (for the edit path). The list route omits the draft. */
+  getPolicyGroup: (id: string): Promise<{
+    id: string; description: string; kind: string
+    draft: Record<string, unknown>; rule_ids: string[]
+    source: string; enabled: boolean
+  }> =>
+    _fetch(
+      `/policies/groups/${id.split("/").map(encodeURIComponent).join("/")}`,
+      { method: "GET", keyType: "admin" },
+    ),
+
   /** Delete an authored policy and cascade to the rules it owns. */
   deletePolicyGroup: (id: string): Promise<void> =>
     _fetch<unknown>(

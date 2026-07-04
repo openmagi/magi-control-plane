@@ -2829,7 +2829,10 @@ describe("policies/new compound (evidence_gate) save routing", () => {
   })
 
   it("persistCompoundDraft sends the draft + source + enabled body", () => {
-    expect(src).toMatch(/persistCompoundDraft[\s\S]+draft, source, enabled: true/)
+    // G4 (IF-14): enabled is preserved from the existing policy on re-save
+    // (via _existingEnabled), not hardcoded true.
+    expect(src).toMatch(/persistCompoundDraft[\s\S]+draft, source, enabled,/)
+    expect(src).toContain("_existingEnabled(policyId, adminKey, \"group\")")
   })
 
   it("single-policy drafts still use PUT /policies via persistDraft", () => {
@@ -2848,5 +2851,19 @@ describe("D1: persistDraft validates typed archetypes on the server, not the cli
     expect(src).toContain("isEvidenceShape")
     expect(src).toMatch(/isEvidenceShape\s*=\s*!draftType\s*\|\|\s*draftType === "evidence"/)
     expect(src).toMatch(/if \(isEvidenceShape\) \{[\s\S]*validateDraft/)
+  })
+})
+
+describe("D2/G4: edit path + preserve-enabled on re-save", () => {
+  const src = readFileSync(path.join(__dirname, "page.tsx"), "utf-8")
+
+  it("persistDraft preserves the existing enabled on re-save (not hardcoded true)", () => {
+    expect(src).toContain("_existingEnabled(draft.id, adminKey, \"rule\")")
+    expect(src).toMatch(/policy: draft, source, enabled,/)
+  })
+
+  it("_existingEnabled defaults to arm for a new id (404) or read failure", () => {
+    expect(src).toContain("async function _existingEnabled")
+    expect(src).toMatch(/if \(!r\.ok\) return true/)
   })
 })
