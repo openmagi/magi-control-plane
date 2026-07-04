@@ -22,8 +22,8 @@ import {
 } from "@/components/ui"
 import { ChecksTab } from "./_components/ChecksTab"
 import { EvidenceTab } from "./_components/EvidenceTab"
-import { PoliciesTab } from "./_components/PoliciesTab"
-import { PolicyGroupSection } from "./_components/PolicyGroupSection"
+import { PolicyList } from "./_components/PolicyList"
+import { PrebuiltCard, prebuiltDraftHref } from "./_components/PoliciesTab"
 import { PacksTab } from "./_components/PacksTab"
 
 export const dynamic = "force-dynamic"
@@ -318,20 +318,41 @@ export default async function RulesPage({
       <SubTabNav tab={tab} t={t} />
 
       {tab === "policies" && (
-        <div className="space-y-4">
-          <PolicyGroupSection groups={policyGroups} />
-          <PoliciesTab
-            items={policies}
+        <div className="space-y-6">
+          {/* C1 (Q1 / decision 1): policy-first. The primary list is the
+              complete policy view (compounds + free-standing one-rule
+              policies), each with its member RULES as a drill-down. */}
+          <PolicyList
+            groups={policyGroups}
+            rulesById={new Map(policies.map((p) => [p.id, p]))}
             err={policiesErr}
-            prebuilt={prebuilt}
             nfFormat={nf.format.bind(nf)}
             t={t}
             locale={locale}
             packCentric={packCentric}
             policyPacks={policyPacks}
-            codexEnabled={codexEnabled}
-            codexCoverage={codexCoverage}
           />
+          {/* Prebuilt template catalog (opt-in via ?templates=1). */}
+          {showTemplates && prebuilt.length > 0 && (
+            <div className="space-y-3">
+              <div className="text-sm font-semibold">{t("rules.templates.heading")}</div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+                {prebuilt.map((entry) => (
+                  <PrebuiltCard
+                    key={entry.id}
+                    entry={entry}
+                    draftHref={prebuiltDraftHref(entry)}
+                    locale={locale}
+                    t={t}
+                    packCentric={packCentric}
+                    packs={policyPacks[entry.id] ?? []}
+                    codexEnabled={codexEnabled}
+                    codexCell={codexCoverage[entry.id]}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
       {tab === "packs" && (
