@@ -97,13 +97,13 @@ def test_meta_lists_the_new_types():
 
 
 def test_project_scope_round_trips_and_compiles():
-    a = _audit(project_scope="/Users/kevin/trading-mcp")
-    g = _pre(project_scope="/Users/kevin/trading-mcp")
-    assert policy_to_dict(a)["project_scope"] == "/Users/kevin/trading-mcp"
-    assert policy_to_dict(g)["project_scope"] == "/Users/kevin/trading-mcp"
+    a = _audit(project_scope="/home/user/trading-mcp")
+    g = _pre(project_scope="/home/user/trading-mcp")
+    assert policy_to_dict(a)["project_scope"] == "/home/user/trading-mcp"
+    assert policy_to_dict(g)["project_scope"] == "/home/user/trading-mcp"
     s = compile_to_managed_settings([a, g])
-    assert "--cwd-prefix /Users/kevin/trading-mcp" in s["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-    assert "--cwd-prefix /Users/kevin/trading-mcp" in s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert "--cwd-prefix /home/user/trading-mcp" in s["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+    assert "--cwd-prefix /home/user/trading-mcp" in s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
 
 def test_empty_project_scope_omits_cwd_prefix():

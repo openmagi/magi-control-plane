@@ -67,10 +67,10 @@ describe("describeEvidenceGate", () => {
 
 describe("project scope", () => {
   it("threads project_scope onto both policies when set", () => {
-    const d = clone(); d.projectScope = "/Users/kevin/trading-mcp"
+    const d = clone(); d.projectScope = "/home/user/trading-mcp"
     const [audit, gate] = buildEvidenceGatePolicies(d)
-    expect(audit.project_scope).toBe("/Users/kevin/trading-mcp")
-    expect(gate.project_scope).toBe("/Users/kevin/trading-mcp")
+    expect(audit.project_scope).toBe("/home/user/trading-mcp")
+    expect(gate.project_scope).toBe("/home/user/trading-mcp")
   })
   it("empty scope stays empty (global)", () => {
     const [audit] = buildEvidenceGatePolicies(DEFAULT_EVIDENCE_GATE_DRAFT)
