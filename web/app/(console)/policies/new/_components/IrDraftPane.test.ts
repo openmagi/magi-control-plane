@@ -289,3 +289,25 @@ describe("IrDraftPane policy-integrity review panel", () => {
     expect(src).toContain("readyToSave && draft && (")
   })
 })
+
+describe("F1/F2: review verdict localization + honest states", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("F1: localizes issues by stable code (not raw server message)", () => {
+    expect(src).toContain("function localizeReviewIssue")
+    expect(src).toContain('case "orphan_gate"')
+    expect(src).toContain('case "action_intent_mismatch"')
+    // semantic-source prose passes through (already in operator locale)
+    expect(src).toMatch(/iss\.source === "semantic"[\s\S]{0,40}return iss\.message/)
+  })
+
+  it("F2: green 'implements your intent' only when the semantic layer ran", () => {
+    expect(src).toContain('review.checked.includes("semantic")')
+    expect(src).toContain("Structure checked")
+  })
+
+  it("F2: renders a neutral couldn't-check row on review error", () => {
+    expect(src).toContain('data-testid="ir-draft-review-error"')
+    expect(src).toContain("reviewError")
+  })
+})

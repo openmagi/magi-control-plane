@@ -76,14 +76,23 @@ export interface IrDraftPaneProps {
   packCentric?: boolean
   /** Policy-integrity review verdict for the ready draft (advisory).
    *  Rendered above the Save CTA so the operator sees "does this do what
-   *  I asked?" before committing. Null while not-ready or unfetched. */
+   *  I asked?" before committing. Null while not-ready or unfetched.
+   *  F1/F2: issues carry stable `code`s the pane localizes; `checked` lists
+   *  which layers ran so a no-op review is not shown as a green pass. */
   review?: {
     ok: boolean
-    summary: string
-    issues: { severity: string; message: string; source: string }[]
+    summaryCode: string
+    checked: string[]
+    issues: {
+      severity: string; code: string; message: string
+      params: Record<string, unknown>; source: string
+    }[]
   } | null
   /** True while the review request is in flight. */
   reviewPending?: boolean
+  /** F2: true when the review request failed - renders a neutral
+   *  "couldn't check (you can still save)" row, not a hidden surface. */
+  reviewError?: boolean
   /** Optional test id for the root container. */
   testId?: string
 }
@@ -490,10 +499,75 @@ function evidenceGateScope(d: Record<string, unknown> | null): string {
 
 /* ── component ─────────────────────────────────────────────────────── */
 
+/* ── F1: localize review issue codes + summary ──────────────────────── */
+type ReviewIssue = {
+  severity: string; code: string; message: string
+  params: Record<string, unknown>; source: string
+}
+
+/** Localize a deterministic issue by its stable `code`; fall back to the
+ *  server's English `message` for the semantic layer (source=semantic, whose
+ *  prose the LLM already wrote in the operator's locale) or an unknown code. */
+function localizeReviewIssue(iss: ReviewIssue, ko: boolean): string {
+  if (iss.source === "semantic") return iss.message
+  const a = (iss.params?.action as string) ?? ""
+  switch (iss.code) {
+    case "no_gate_matcher":
+      return ko
+        ? "어떤 작업을 막을지 지정하지 않아, 아무것도 차단하지 않습니다."
+        : "The policy does not say which action to gate, so it would never block anything."
+    case "non_enforcing_action":
+      return ko
+        ? `동작이 '${a}'라 기록만 하고 막지는 않습니다. 차단하려면 block 또는 ask 를 쓰세요.`
+        : `The gate action is '${a}', which records but does not stop the action. Use block or ask to enforce.`
+    case "orphan_gate":
+      return ko
+        ? "이 정책은 기존 출처-검증 producer 를 재사용하는데, 켜져 있는 producer 가 없어 매번 차단됩니다. producer 정책을 켜거나 이 정책이 직접 기록하게 하세요."
+        : "This policy reuses an existing credible-source producer, but none is enabled. It would block every time. Enable the producer policy or let this one record its own evidence."
+    case "kind_mismatch":
+      return ko
+        ? "기록하는 evidence 종류와 gate 가 요구하는 종류가 달라, gate 가 기록을 보지 못합니다."
+        : "The recorder and the gate use different evidence types, so the gate would never see the recorded evidence."
+    case "expand_failed":
+      return ko ? "정책을 확장할 수 없습니다." : "The policy could not be expanded."
+    case "no_rules":
+      return ko ? "정책이 규칙으로 확장되지 않습니다." : "The policy expands to no rules."
+    case "invalid_member":
+      return ko
+        ? `규칙 '${(iss.params?.id as string) ?? ""}'이(가) 유효하지 않습니다.`
+        : `Rule '${(iss.params?.id as string) ?? ""}' is invalid.`
+    case "single_no_matcher":
+      return ko
+        ? "도구 시점을 대상으로 하지만 도구를 지정하지 않아, 특정 작업에 매칭되지 않습니다."
+        : "This rule targets a tool event but names no tool, so it will not match a specific action."
+    case "action_intent_mismatch":
+      return ko
+        ? "설명은 차단/중지를 요구하는데 이 규칙은 기록(audit)만 합니다. 차단하려면 block 또는 ask 를 쓰세요."
+        : "Your description asks to block or stop something, but this rule only records (audit). Use block or ask to enforce."
+    default:
+      return iss.message
+  }
+}
+
+function localizeReviewSummary(code: string, ok: boolean, ko: boolean): string {
+  if (code === "clean") {
+    return ko ? "의도대로 작동합니다. 발견된 문제 없음." : "Implements your intent, no issues found."
+  }
+  if (code === "notes") {
+    return ko ? "괜찮아 보입니다. 저장 전 아래 메모를 확인하세요." : "Looks sound; see the notes below before saving."
+  }
+  if (code === "gap") {
+    return ko
+      ? "의도대로 작동하지 않게 만드는 문제가 있습니다."
+      : "This policy has a gap that would stop it from working as intended."
+  }
+  return ok ? "" : ""
+}
+
 export function IrDraftPane({
   t, locale, draft, readyToSave, saveAction, missingFields,
   suggestedPackText, packCentric = false, review, reviewPending = false,
-  testId,
+  reviewError = false, testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
@@ -748,18 +822,16 @@ export function IrDraftPane({
       />
 
       {/* Policy-integrity review (advisory). Renders once the draft is
-       *  ready: a green "implements your intent" confirmation, or amber/
-       *  red findings (orphan gate, non-enforcing action, intent
-       *  mismatch) the operator should see BEFORE saving. Never blocks
-       *  Save: the button below stays enabled regardless. */}
-      {readyToSave && (reviewPending || review) && (
+       *  ready: a green confirmation, amber/red findings, or a neutral
+       *  "couldn't check" row on failure (F2). Never blocks Save. */}
+      {readyToSave && (reviewPending || review || reviewError) && (
         <section
           data-testid="ir-draft-review"
           data-review-ok={review ? String(review.ok) : undefined}
           aria-live="polite"
           className={
             "rounded-xl border p-3 text-xs " + (
-              reviewPending
+              reviewPending || (reviewError && !review)
                 ? "border-black/[0.06] bg-gray-50/60 text-[var(--color-text-secondary)]"
                 : review && review.ok
                   ? "border-emerald-200 bg-emerald-50/70 text-emerald-900"
@@ -772,19 +844,26 @@ export function IrDraftPane({
               {ko ? "정책이 의도대로 작동하는지 확인 중..." : "Checking that this policy does what you asked..."}
             </p>
           )}
+          {!reviewPending && !review && reviewError && (
+            <p className="m-0" data-testid="ir-draft-review-error">
+              {ko ? "확인을 완료하지 못했어요 (저장은 가능합니다)." : "Couldn't finish the check (you can still save)."}
+            </p>
+          )}
           {!reviewPending && review && (
             <>
               <p className="m-0 font-semibold" data-testid="ir-draft-review-summary">
                 {review.ok
-                  ? (ko ? "의도대로 작동합니다" : "Implements your intent")
+                  ? (review.checked.includes("semantic")
+                      ? (ko ? "의도대로 작동합니다" : "Implements your intent")
+                      : (ko ? "구조 확인 완료" : "Structure checked"))
                   : (ko ? "확인이 필요합니다" : "Needs a look")}
-                {review.summary ? `: ${review.summary}` : ""}
+                {": " + localizeReviewSummary(review.summaryCode, review.ok, ko)}
               </p>
               {review.issues.length > 0 && (
                 <ul className="mt-1 mb-0 list-disc pl-4" data-testid="ir-draft-review-issues">
                   {review.issues.map((iss, i) => (
-                    <li key={i} data-severity={iss.severity}>
-                      {iss.message}
+                    <li key={i} data-severity={iss.severity} data-code={iss.code}>
+                      {localizeReviewIssue(iss, ko)}
                     </li>
                   ))}
                 </ul>

@@ -179,6 +179,10 @@ class ReviewPolicyReq(BaseModel):
     model_config = {"extra": "forbid"}
     draft: dict
     intent: str = Field(default="", max_length=4_000)
+    # F1: the operator's locale, so the advisory semantic layer answers in
+    # their language. Deterministic findings carry stable codes the dashboard
+    # localizes; this only steers the LLM prose.
+    locale: str = Field(default="en", max_length=8)
 
 
 # D57g: handoff from wizard / raw editor → conversational. The body
