@@ -88,8 +88,16 @@ export function PackMultiSelect({
     loading: string
     empty: string
     suggested: string
+    /** G3: built-in pack marker + immutability tooltip. Optional so the
+     *  existing call sites need no change; fall back to plain English. */
+    builtin?: string
+    builtinImmutable?: string
   }
 }) {
+  const _builtin = labels.builtin ?? "built-in"
+  const _builtinImmutable =
+    labels.builtinImmutable
+    ?? "Built-in pack membership is fixed; select a user pack instead."
   const [packs, setPacks] = useState<PolicyPackEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
@@ -192,13 +200,28 @@ export function PackMultiSelect({
           {ordered.map((pack) => {
             const isSelected = selected.includes(pack.id)
             const isSuggested = pack.id === resolvedSuggestion
+            // G3 (audit IF-05): built-in packs (`pack/…`) have IMMUTABLE
+            // membership - the join endpoint 400s them. Rendering them as a
+            // live checkbox steered operators into a guaranteed-400 save.
+            // Show them disabled with a "built-in" marker instead.
+            const isBuiltin = pack.id.startsWith("pack/")
             return (
               <li key={pack.id}>
-                <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-[var(--color-surface-overlay)]">
+                <label
+                  className={
+                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm " + (
+                      isBuiltin
+                        ? "cursor-not-allowed opacity-60"
+                        : "cursor-pointer hover:bg-[var(--color-surface-overlay)]"
+                    )
+                  }
+                  title={isBuiltin ? _builtinImmutable : undefined}
+                >
                   <input
                     type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggle(pack.id)}
+                    checked={isSelected && !isBuiltin}
+                    disabled={isBuiltin}
+                    onChange={() => { if (!isBuiltin) toggle(pack.id) }}
                     aria-label={pack.name}
                   />
                   <span className="font-medium text-[var(--color-text-primary)]">
@@ -209,7 +232,12 @@ export function PackMultiSelect({
                       {labels.alwaysOn}
                     </span>
                   )}
-                  {isSuggested && (
+                  {isBuiltin && !pack.is_floor && (
+                    <span className="rounded-full bg-[var(--color-muted-bg,#f3f4f6)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg,#374151)]">
+                      {_builtin}
+                    </span>
+                  )}
+                  {isSuggested && !isBuiltin && (
                     <span className="rounded-full bg-[var(--color-info-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-info-fg)]">
                       {labels.suggested}
                     </span>
