@@ -50,17 +50,22 @@ type Props = {
   dtf: Intl.DateTimeFormat
 }
 
+// Verdict chip colors. These mirror the canonical `_ds/Badge` variant
+// tokens (ok/deny/review/muted) so the row badge speaks the exact same
+// palette as every other verdict surface. Do not invent `--color-bg-*`
+// names here: only the `--color-pass/review/deny-*` trio and the muted
+// border treatment exist in `_ds/tokens.css`.
 function verdictBadgeClass(v: Verdict | null): string {
   if (v === "pass") {
-    return "bg-[var(--color-bg-success)] text-[var(--color-text-success)]"
+    return "bg-[var(--color-pass-bg)] text-[var(--color-pass-fg)]"
   }
   if (v === "fail") {
-    return "bg-[var(--color-bg-danger)] text-[var(--color-text-danger)]"
+    return "bg-[var(--color-deny-bg)] text-[var(--color-deny-fg)]"
   }
   if (v === "needs_review") {
-    return "bg-[var(--color-bg-warning)] text-[var(--color-text-warning)]"
+    return "bg-[var(--color-review-bg)] text-[var(--color-review-fg)]"
   }
-  return "bg-[var(--color-bg-muted)] text-[var(--color-text-tertiary)]"
+  return "border border-[var(--color-border-subtle)] text-[var(--color-text-tertiary)]"
 }
 
 function verdictLabel(v: Verdict | null, labels: Props["labels"]): string {

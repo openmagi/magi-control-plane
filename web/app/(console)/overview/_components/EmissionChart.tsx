@@ -342,8 +342,8 @@ function ChartDetailPanel({
     <div
       className={
         "pointer-events-none absolute rounded-md "
-        + "border border-[var(--color-border-default)] "
-        + "bg-[var(--color-bg-elevated)] px-3 py-2 text-xs shadow-sm "
+        + "border border-[var(--color-border-strong)] "
+        + "bg-[var(--color-surface-raised)] px-3 py-2 text-xs shadow-sm "
         + positionClass
       }
       data-testid="overview-chart-detail"
