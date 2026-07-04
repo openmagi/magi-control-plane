@@ -1646,9 +1646,58 @@ def attach(app: FastAPI, store: PolicyStore,
             groups.append(record)
             policy_group_store.save(groups)
             store.save(existing)
+        # Pack membership: mirror put_policy's join, but append the
+        # POLICY-GROUP id (not the individual rule ids) so
+        # expand_pack_member_ids resolves the pack to the member rules.
+        # Without this a conversationally authored compound whose operator
+        # selected a pack is saved with its rules in no pack, i.e. silently
+        # inert under the pack-centric runtime. Kept OUTSIDE policy_lock but
+        # INSIDE pack_store_lock so membership serialises with the cascade +
+        # user-pack CRUD handlers. Built-in packs are immutable -> 400;
+        # unknown -> 404. Idempotent.
+        joined_packs: list[str] = []
+        requested = body.pack_ids or []
+        if requested:
+            if pack_store is None or pack_store_lock is None:
+                raise HTTPException(500, "pack store not configured")
+            seen_req: set[str] = set()
+            ordered_req: list[str] = []
+            for pid in requested:
+                if not isinstance(pid, str) or not pid:
+                    raise HTTPException(422, "pack_ids entries must be strings")
+                if pid.startswith("pack/"):
+                    raise HTTPException(
+                        400,
+                        f"pack {pid!r} has immutable built-in membership; "
+                        "select a user pack (or the floor pack) instead",
+                    )
+                if not pid.startswith("user-pack/"):
+                    raise HTTPException(404, f"pack {pid!r} not found")
+                if pid in seen_req:
+                    continue
+                seen_req.add(pid)
+                ordered_req.append(pid)
+            async with pack_store_lock:
+                rows = pack_store.load()
+                index = {r.id: i for i, r in enumerate(rows)}
+                for pid in ordered_req:
+                    idx = index.get(pid)
+                    if idx is None:
+                        raise HTTPException(404, f"pack {pid!r} not found")
+                    cur = rows[idx]
+                    members = list(cur.policy_ids)
+                    if policy_id not in members:
+                        members.append(policy_id)
+                    rows[idx] = UserPackRow(
+                        id=cur.id, name=cur.name, description=cur.description,
+                        policy_ids=members, is_floor=cur.is_floor,
+                    )
+                    joined_packs.append(pid)
+                pack_store.save(rows)
         return {"id": policy_id, "kind": record.kind, "rule_ids": new_rule_ids,
                 "types": [getattr(p, "type", "evidence") for p in rules],
-                "source": body.source, "enabled": body.enabled}
+                "source": body.source, "enabled": body.enabled,
+                "pack_ids": joined_packs}
 
     @app.get("/policies/groups", dependencies=[Depends(require_admin_key)])
     def list_policy_groups() -> dict:
