@@ -12,7 +12,7 @@
  *     Delegates to the shared DryRunPanel (D53b). We render IT here
  *     so the brief's "Reuse the existing DryRunPanel.tsx without
  *     modification" constraint holds.
- *   - A "Save this rule" CTA gated on `ready_to_save=true`. Posts to
+ *   - A "Save this policy" CTA gated on `ready_to_save=true`. Posts to
  *     the existing saveCompiled server action exposed by the parent
  *     page; we render a real <form action={saveAction}> with the
  *     current draft serialized into the hidden `ir_json` field.
