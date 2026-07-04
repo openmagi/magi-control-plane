@@ -28,24 +28,32 @@
   --font-display: "Cabinet Grotesk", "Space Grotesk", system-ui, sans-serif;
 
   /* The Ledger console is flat paper, not liquid glass. The vendored glass
-     tiers are translucent (55% white), so over the limestone ground the
-     default cards pick up the warm ground and read as a muddy, heavy
-     panel. Make the glass tiers opaque and drop the blur so cards are
-     crisp white paper. This is the trends direction (no glass over
-     data-dense surfaces) and matches the DS's own reduced-transparency
-     fallback, just applied always. App-local, so _ds stays untouched. */
+     tiers are translucent (55% white), so over a tinted ground the default
+     cards pick up the ground and read as muddy, heavy panels. Make the
+     tiers opaque and drop the blur so cards are crisp white. This is the
+     trends direction (no glass over data-dense surfaces) and matches the
+     DS's own reduced-transparency fallback, just applied always.
+
+     The console ground is white too (see --surface-console below), so a
+     white card needs a real edge to separate: GlassSurface ships a
+     `border-white/40` that is invisible on white, so re-point the glass
+     shadow tokens to a crisp hairline ring + a subtle lift (Linear/Vercel
+     style) instead of the default floaty 24px drop. App-local, _ds
+     untouched. */
   --glass-clear-bg: rgba(255, 255, 255, 0.92);
   --glass-regular-bg: #FFFFFF;
   --glass-thick-bg: #FFFFFF;
   --glass-blur: 0px;
+  --glass-rim: none;
+  --glass-edge: 0 0 0 1px rgba(15, 23, 42, 0.10),
+                0 1px 3px rgba(15, 23, 42, 0.06);
 }
 
 :root {
-  /* Console working canvas: a paler, less-saturated warm than the
-     limestone --color-surface-base, so the large empty console field
-     reads airy instead of a heavy beige block. Console shell only;
-     marketing keeps the full-strength paper. */
-  --surface-console: #F6F4EF;
+  /* Console working canvas: pure white, one flat surface with the header,
+     sidebar, and cards. Cards separate by the hairline ring + lift above,
+     not by a ground tint. Console shell only; marketing keeps the paper. */
+  --surface-console: #FFFFFF;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */
