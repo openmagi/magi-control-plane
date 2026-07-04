@@ -340,6 +340,38 @@ _EGATE_PROJECT_RE = re.compile(
 )
 
 
+# A2 (UX-01/IF-02): the compound has a single operator decision - which
+# action to gate - asked as a `text` question (`q_matcher`). The dashboard
+# has no text-answer channel bound to questions, so a freeform reply naming
+# the tool arrives as plain history with answers=null. This scans the latest
+# user turn for a legal GATED tool so the answer lands instead of re-asking
+# forever. Fetch tools are excluded (the gate must not block the fetch that
+# produces the evidence, which would deadlock the gate) - same policy as the
+# intent extractor above.
+def _scan_gate_tool(user_text: str) -> str | None:
+    """Pick a legal gated tool from freeform text: an explicit mcp__ tool,
+    else the first non-fetch bare tool. None if nothing legal is named."""
+    raw = user_text or ""
+    for m in _EGATE_MCP_TOOL_RE.findall(raw):
+        if _matcher_is_legal(m):
+            return m
+    for m in _EGATE_BARE_TOOL_RE.findall(raw):
+        if m not in _EGATE_FETCH_TOOLS and _matcher_is_legal(m):
+            return m
+    return None
+
+
+# UX-02: a later turn may CORRECT the gated tool ("no, gate Bash instead").
+# We only overwrite an already-set matcher when the turn carries an explicit
+# change cue, so an incidental tool mention in a confirmation ("yes, the Bash
+# rule looks good") does not silently clobber the operator's choice.
+_EGATE_CHANGE_RE = re.compile(
+    r"\b(?:instead|rather|not|change|actually|no,)\b"
+    r"|대신|말고|바꿔|아니(?:라|요|)|정정",
+    re.IGNORECASE,
+)
+
+
 def _extract_evidence_gate_intent(user_text: str) -> dict[str, Any]:
     """Deterministically seed a compound draft from freeform text.
 
@@ -3031,6 +3063,7 @@ def _step_compile_compound(
     *, draft: dict[str, Any], seed: dict[str, Any] | None,
     answers: dict[str, str] | None, ko: bool,
     context: dict[str, Any] | None = None,
+    latest_user_text: str = "",
 ) -> dict[str, Any]:
     """Author a compound evidence_gate draft for one turn, deterministically.
 
@@ -3068,6 +3101,20 @@ def _step_compile_compound(
         if isinstance(ans, str) and ans.strip() and _matcher_is_legal(ans.strip()):
             cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
             working["gate"] = {**(cur or {}), "matcher": ans.strip()}
+
+    # A2/UX-02: the operator answers "which tool?" in the chat box (no
+    # answers channel for text questions), so scan the latest user turn for
+    # a legal gated tool. Set it when the matcher is MISSING (the dead-end
+    # fix); OVERWRITE an existing matcher only when the turn carries an
+    # explicit change cue (a correction like "no, gate Bash instead").
+    scanned = _scan_gate_tool(latest_user_text)
+    if scanned:
+        cur = working.get("gate") if isinstance(working.get("gate"), dict) else {}
+        existing_m = str((cur or {}).get("matcher") or "").strip()
+        if not existing_m:
+            working["gate"] = {**(cur or {}), "matcher": scanned}
+        elif scanned != existing_m and _EGATE_CHANGE_RE.search(latest_user_text or ""):
+            working["gate"] = {**(cur or {}), "matcher": scanned}
 
     finalized = _finalize_compound_draft(working)
     missing = _evidence_gate_missing_fields(finalized)
@@ -3203,7 +3250,7 @@ def step_compile(
     if _is_evidence_gate_draft(sanitized) or _compound_seed is not None:
         return _step_compile_compound(
             draft=sanitized, seed=_compound_seed, answers=answers, ko=ko,
-            context=context,
+            context=context, latest_user_text=_compound_latest,
         )
 
     # Step 2: apply answers FIRST so the user's explicit clicks take

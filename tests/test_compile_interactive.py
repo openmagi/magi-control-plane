@@ -2948,3 +2948,76 @@ def test_compound_context_build_skips_disabled_and_reusers():
 def test_compound_context_build_none_store():
     from magi_cp.cloud.routes.compile import _build_compile_context
     assert _build_compile_context(None) == {"audit_kinds": {}}
+
+
+# ── A2/UX-01/UX-02: compound tool-answer lands from freeform chat ──────
+# The compound "which tool?" question is kind=text; the dashboard has no
+# text-answer channel, so the tool name arrives as freeform history with
+# answers=null. The sub-flow must scan the latest user turn.
+
+
+def test_compound_freeform_tool_answer_lands():
+    """Intent without a tool asks q_matcher; a later freeform turn naming
+    the tool (answers=null) must set the matcher, not re-ask forever."""
+    c = _client_no_llm()
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before placing a trade"}],
+        "draft_so_far": None, "answers": None,
+    })
+    b = r.json()
+    assert b["ready_to_save"] is False
+    assert b["missing_fields"] == ["matcher"]
+    # freeform tool name, NO answers payload
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [
+            {"role": "user", "content": "require a credible source before a trade"},
+            {"role": "assistant", "content": "which tool?"},
+            {"role": "user", "content": "mcp__trading__execute_trade"},
+        ],
+        "draft_so_far": b["draft"], "answers": None,
+    })
+    b2 = r.json()
+    assert b2["ready_to_save"] is True, b2
+    assert b2["draft"]["gate"]["matcher"] == "mcp__trading__execute_trade"
+
+
+def test_compound_bare_tool_answer_lands():
+    c = _client_no_llm()
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before the risky action"}],
+        "draft_so_far": None, "answers": None,
+    })
+    b = r.json()
+    assert b["missing_fields"] == ["matcher"]
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "the Bash tool"}],
+        "draft_so_far": b["draft"], "answers": None,
+    })
+    assert r.json()["draft"]["gate"]["matcher"] == "Bash"
+
+
+def test_compound_correction_overwrites_with_change_cue():
+    """A later turn with a change cue ("no, gate Bash instead") overwrites
+    the gated tool (UX-02)."""
+    c = _client_no_llm()
+    prior = {"type": "evidence_gate", "kind": "source_credibility",
+             "gate": {"matcher": "mcp__trading__execute_trade"}}
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "no, gate Bash instead"}],
+        "draft_so_far": prior, "answers": None,
+    })
+    assert r.json()["draft"]["gate"]["matcher"] == "Bash"
+
+
+def test_compound_confirmation_does_not_clobber_matcher():
+    """An incidental tool mention with NO change cue must not overwrite."""
+    c = _client_no_llm()
+    prior = {"type": "evidence_gate", "kind": "source_credibility",
+             "gate": {"matcher": "mcp__trading__execute_trade"}}
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "looks good, save it"}],
+        "draft_so_far": prior, "answers": None,
+    })
+    assert r.json()["draft"]["gate"]["matcher"] == "mcp__trading__execute_trade"
