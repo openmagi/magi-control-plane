@@ -32,10 +32,12 @@ import type {
  *     (not `role="status" aria-live`) so mouse-scrub across 24 bars
  *     does not flood screen readers — meaningful announcements come
  *     from the table + the parent OverviewLive headline.
- *   - Bar fills use Tailwind 600-series hues chosen for separation;
- *     not formally CVD-validated. Each segment also carries a
- *     redundant `<title>` so SR / hover reads the action by label,
- *     not by hue alone.
+ *   - Bar fills use a CVD-safe categorical palette (Okabe & Ito, with
+ *     the reddish-purple swapped for a neutral grey to stay off the
+ *     retired brand violet) so the six actions stay distinguishable
+ *     under deuteranopia/protanopia. Each segment also carries a
+ *     redundant `<title>` and the hidden SR table below, so hue is never
+ *     the only channel.
  */
 
 type Props = {
@@ -53,13 +55,17 @@ type Props = {
   locale?: string
 }
 
+// CVD-safe categorical palette (Okabe & Ito), ordered by severity for the
+// legend. Distinguishable under deuteranopia/protanopia by design; the
+// reddish-purple slot is a neutral grey so no chart segment reads as the
+// retired brand violet.
 const ACTION_COLORS: Record<OverviewActionKey, string> = {
-  block: "var(--color-overview-action-block, #DC2626)",          // red-600
-  ask: "var(--color-overview-action-ask, #D97706)",              // amber-600
-  audit: "var(--color-overview-action-audit, #2563EB)",          // blue-600
-  inject_context: "var(--color-overview-action-inject, #475569)", // slate-600 (retired violet; full CVD-safe palette lands with the overview re-ink)
-  run_command: "var(--color-overview-action-run, #059669)",      // emerald-600
-  input_rewrite: "var(--color-overview-action-rewrite, #DB2777)", // pink-600
+  block: "var(--color-overview-action-block, #D55E00)",           // vermillion
+  ask: "var(--color-overview-action-ask, #E69F00)",               // orange
+  audit: "var(--color-overview-action-audit, #0072B2)",           // blue
+  inject_context: "var(--color-overview-action-inject, #56B4E9)", // sky blue
+  run_command: "var(--color-overview-action-run, #009E73)",       // bluish green
+  input_rewrite: "var(--color-overview-action-rewrite, #666666)", // neutral grey
 }
 
 // SVG view box. We size in CSS via 100% width and viewBox-driven aspect.
