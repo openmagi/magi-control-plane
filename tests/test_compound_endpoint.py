@@ -18,7 +18,8 @@ def _env(monkeypatch):
 def client(tmp_path):
     ks = KeyStore(dir=str(tmp_path / "keys"))
     app = create_app(keystore=ks, dsn="sqlite:///:memory:",
-                     policy_store_path=str(tmp_path / "policies.json"))
+                     policy_store_path=str(tmp_path / "policies.json"),
+                     pack_store_path=str(tmp_path / "packs.json"))
     return TestClient(app)
 
 
@@ -140,3 +141,49 @@ def test_free_standing_rule_toggle_is_isolated(client):
     client.post("/policies/compound", json={"draft": a, "source": "org"}, headers=ADMIN)
     r = client.patch("/policies/lone-rule/enabled", json={"enabled": False}, headers=ADMIN)
     assert r.status_code == 200 and r.json()["cascaded_rule_ids"] == ["lone-rule"]
+
+
+# ── A1: compound save honors pack_ids (was silently dropped) ───────────
+
+def _make_pack(client, slug="tg"):
+    r = client.post("/policy-packs", headers=ADMIN,
+                    json={"name": "Trade Guard", "slug": slug, "policy_ids": []})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_compound_joins_requested_pack_by_group_id(client):
+    pack_id = _make_pack(client)
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org",
+                          "pack_ids": [pack_id]})
+    assert r.status_code == 200, r.text
+    assert r.json()["pack_ids"] == [pack_id]
+    # The pack stores the POLICY-GROUP id (the reference), not the rules.
+    got = client.get(f"/policy-packs/{pack_id}", headers=ADMIN).json()
+    # members are expanded to the group's rule ids at read time.
+    member_ids = [m["id"] for m in got["members"]]
+    assert "verified-trade-audit" in member_ids
+    assert "verified-trade-gate" in member_ids
+
+
+def test_compound_pack_ids_reject_builtin_pack(client):
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org",
+                          "pack_ids": ["pack/coding-safety"]})
+    assert r.status_code == 400, r.text
+
+
+def test_compound_pack_ids_unknown_user_pack_404(client):
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org",
+                          "pack_ids": ["user-pack/nope"]})
+    assert r.status_code == 404, r.text
+
+
+def test_compound_without_pack_ids_is_unchanged(client):
+    # Back-compat: omitting pack_ids returns [] and joins nothing.
+    r = client.post("/policies/compound", headers=ADMIN,
+                    json={"draft": _draft(), "source": "org"})
+    assert r.status_code == 200, r.text
+    assert r.json()["pack_ids"] == []
