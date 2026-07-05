@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic"
 /** Bump when og-image.png changes visibly. The OG image URL embeds
  *  this version as a query string so Telegram / Slack / X crawlers
  *  drop their cached preview and refetch on the next link share. */
-const OG_IMAGE_VERSION = "3"
+const OG_IMAGE_VERSION = "4"
 
 export const metadata: Metadata = {
   title: "Open Magi · Control Plane: Guardrails for Claude Code",
