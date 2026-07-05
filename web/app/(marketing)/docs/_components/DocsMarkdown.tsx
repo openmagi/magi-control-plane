@@ -2,6 +2,22 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 /**
+ * Docs are authored GitHub-native: inter-doc links are relative
+ * `./<slug>.md#frag`, which resolve on github.com but NOT on the
+ * rendered site (the route is `/docs/<slug>`, and a `.md` suffix is an
+ * unknown slug that 404s). Rewrite those links at render time so both
+ * surfaces work from one source. Only same-directory `./x.md` and bare
+ * `x.md` links are rewritten; absolute URLs, anchors, and mailto pass
+ * through untouched.
+ */
+function rewriteDocHref(href: string | undefined): string | undefined {
+  if (!href) return href
+  const m = /^(?:\.\/)?([a-z0-9-]+)\.md(#.*)?$/i.exec(href)
+  if (!m) return href
+  return `/docs/${m[1]}${m[2] ?? ""}`
+}
+
+/**
  * Q96: render a docs/{slug}.md file. The styling is intentionally
  * inline (not a global .prose stylesheet) so the marketing surface
  * stays decoupled from the console's typography.
@@ -46,7 +62,7 @@ export function DocsMarkdown({ source }: { source: string }) {
           ),
           a: ({ href, ...props }) => (
             <a
-              href={href}
+              href={rewriteDocHref(href)}
               className="text-[var(--color-accent)] underline-offset-2 hover:underline"
               {...props}
             />

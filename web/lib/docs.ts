@@ -15,12 +15,14 @@ import path from "node:path"
 
 export type DocSlug =
   | "getting-started"
+  | "tutorial"
   | "install"
   | "architecture"
   | "runtimes"
   | "policy-ir"
   | "verifiers"
   | "session-evidence"
+  | "session-evidence-threat-model"
   | "operator"
   | "api"
   | "cli"
@@ -41,6 +43,11 @@ export const DOCS_INDEX: ReadonlyArray<DocEntry> = [
     slug: "getting-started",
     title: "Getting started",
     summary: "Install, point Claude Code at the gate, see a deny verdict.",
+  },
+  {
+    slug: "tutorial",
+    title: "Your first real policy",
+    summary: "Author, enable, deny, issue evidence, allow, read the ledger.",
   },
   {
     slug: "install",
@@ -71,6 +78,11 @@ export const DOCS_INDEX: ReadonlyArray<DocEntry> = [
     slug: "session-evidence",
     title: "Session-evidence gate",
     summary: "Make a tool call depend on evidence recorded earlier this session.",
+  },
+  {
+    slug: "session-evidence-threat-model",
+    title: "Session-evidence threat model",
+    summary: "What the session-evidence gate does and does not defend against.",
   },
   {
     slug: "operator",
