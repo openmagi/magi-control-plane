@@ -114,12 +114,14 @@ Developer docs live under [`docs/`](docs/) and render on `cp.openmagi.ai/docs`.
 | | |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Install, point Claude Code at the gate, see a deny. |
+| [Your first real policy](docs/tutorial.md) | End-to-end: author, deny, issue evidence, allow, ledger. |
 | [Install](docs/install.md) | Full install guide, env vars, common failures. |
 | [Architecture](docs/architecture.md) | Three-layer model; packs, policies, rules. |
 | [Runtimes](docs/runtimes.md) | Claude Code hooks and the Codex adapter. |
 | [Policy IR](docs/policy-ir.md) | The IR schema, archetypes, and precedence. |
 | [Verifiers](docs/verifiers.md) | The wired verifiers and registering your own. |
 | [Session-evidence gate](docs/session-evidence.md) | Gate a tool on evidence from earlier this session. |
+| [Session-evidence threat model](docs/session-evidence-threat-model.md) | What that gate does and does not defend. |
 | [Operator](docs/operator.md) | Deploy, rotate keys, observability, backups. |
 | [API](docs/api.md) | Cloud REST reference. |
 | [CLI](docs/cli.md) | Every `magi-cp` command and exit code. |

@@ -15,15 +15,17 @@ describe("Q96 developer docs", () => {
   const docsDir = path.resolve(__dirname, "..", "..", "docs")
 
   it("DOCS_INDEX matches the on-disk docs set", () => {
-    expect(DOCS_INDEX.length).toBe(12)
+    expect(DOCS_INDEX.length).toBe(14)
     const expected = [
       "getting-started",
+      "tutorial",
       "install",
       "architecture",
       "runtimes",
       "policy-ir",
       "verifiers",
       "session-evidence",
+      "session-evidence-threat-model",
       "operator",
       "api",
       "cli",

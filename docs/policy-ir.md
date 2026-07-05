@@ -114,6 +114,80 @@ Both accept an optional `project_scope` so the rule only fires when the
 session cwd is inside the given directory. The ledger lives at
 `~/.magi-cp/session-evidence/`, outside any agent workspace.
 
+### PermissionPolicy
+
+The declarative permission rule, and the only archetype that also lowers
+to the Codex runtime. It compiles straight to CC
+`permissions.{allow,deny,ask}` with no gate-binary hop.
+
+```jsonc
+{
+  "id": "floor/no-rm-rf",
+  "description": "Never allow a recursive root delete.",
+  "trigger": { "host": "claude-code", "event": "PreToolUse", "matcher": "Bash" },
+  "permission": "deny",
+  "pattern": "Bash(rm -rf /*)",
+  "exclusive": true,
+  "version": "0.1",
+  "type": "permission"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `permission` | enum | `allow`, `deny`, or `ask`. |
+| `pattern` | string | A raw CC permission string, e.g. `Bash(rm -rf /*)`, `Read(/etc/**)`, `WebFetch(https://api.example.com/*)`. Validated against the CC permission grammar, so a malformed entry is rejected at author time. |
+| `exclusive` | bool | Default `true`. Pairs the compiled output with `allowManagedPermissionRulesOnly` so a user-level `permissions.allow` cannot loosen this floor. Set `false` to let a user-level rule override (for a managed `ask` you want overridable). |
+| `type` | `"permission"` | Union discriminator. |
+
+### Session-evidence pair
+
+An `EvidenceAuditPolicy` records evidence; an `EvidencePreconditionPolicy`
+consumes it. See [Session-evidence gate](./session-evidence.md) for the
+concept.
+
+```jsonc
+// records "a credible source was fetched" whenever WebFetch returns
+{
+  "id": "trade/audit-source",
+  "description": "Record a credible-source check on every fetch.",
+  "trigger": { "host": "claude-code", "event": "PostToolUse", "matcher": "WebFetch" },
+  "kind": "source_verified",
+  "extract": "url",
+  "judge": "domain-credibility",
+  "project_scope": "",
+  "type": "evidence_audit"
+}
+```
+
+```jsonc
+// blocks the trade tool until a "source_verified" pass exists this session
+{
+  "id": "trade/require-source",
+  "description": "Block execute_trade until a source was verified.",
+  "trigger": { "host": "claude-code", "event": "PreToolUse", "matcher": "execute_trade" },
+  "require_kind": "source_verified",
+  "require_verdict": "pass",
+  "reason": "Verify a credible source before trading.",
+  "action": "block",
+  "type": "evidence_precondition"
+}
+```
+
+**`EvidenceAuditPolicy`** fields: `kind` (the record name, `[a-z0-9_]+`),
+`extract` (currently `url`), `judge` (currently `domain-credibility`),
+`project_scope` (optional cwd prefix). Never blocks.
+
+**`EvidencePreconditionPolicy`** fields: `require_kind` (the record it
+demands), `require_verdict` (`pass`, `fail`, or `review`; default `pass`),
+`action` (`block` or `ask`), `reason`, `project_scope`. Its trigger event
+must be `PreToolUse` (the gate emits a `PreToolUse` decision); any other
+event is rejected at author time.
+
+> One trap worth calling out: `SubagentPolicy` disables a named subagent
+> and does not take a `tool_allowlist`. Supplying a non-empty allowlist is
+> rejected at validation (a 422), not silently ignored.
+
 ## Enforcement stamping
 
 The cloud stamps an `enforcement` label when a rule is written
