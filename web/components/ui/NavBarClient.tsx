@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useState, type ReactNode } from "react"
-import { LogoLockup } from "./LogoLockup"
+import { Logo } from "./Logo"
 
 export type NavItem = { href: string; label: string }
 
@@ -51,12 +51,18 @@ export default function NavBarClient({
       role="banner"
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
+      {/* Horizontal wordmark + product pill, matching the openmagi.ai nav
+          (which pairs the mark with a "Beta" pill). Here the pill names the
+          surface: "Control Plane". */}
       <Link
         href="/"
         aria-label={`${brand} home`}
-        className="hover:no-underline"
+        className="flex items-center gap-2 hover:no-underline"
       >
-        <LogoLockup size="md" />
+        <Logo className="h-7" />
+        <span className="rounded-md border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-[var(--color-accent-light)]">
+          Control Plane
+        </span>
       </Link>
 
       {/* Desktop nav */}
