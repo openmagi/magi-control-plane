@@ -180,23 +180,29 @@ export function EvidenceTab({
               return (
                 <div
                   key={row.id}
-                  className={`px-4 py-3.5 ${idx > 0 ? "border-t border-black/[0.05]" : ""}`}
+                  className={`px-4 py-5 ${idx > 0 ? "border-t border-black/[0.05]" : ""}`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-2">
-                        <Code className="text-sm truncate max-w-full">{row.name}</Code>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Code className="text-[13px] font-medium truncate max-w-full">{row.name}</Code>
                         <span
                           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${KIND_BADGE_TONE[row.kind]}`}
                         >
                           {kindLabel(row.kind, t)}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                      {/* Constrain the (often long, dense) descriptor to a
+                          readable measure so the eye scans check-to-check
+                          instead of tracking edge-to-edge lines. */}
+                      <p className="mt-2 max-w-[72ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
                         {row.description}
                       </p>
-                      <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
-                        {t("rules.checks.source")}:{" "}
+                      {/* Source + Used-by folded onto one compact meta line. */}
+                      <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
+                        <span className="font-semibold uppercase tracking-wider">
+                          {t("rules.checks.source")}
+                        </span>
                         {row.kind === "builtin" || row.kind === "custom" ? (
                           <Code>{row.source}</Code>
                         ) : (
@@ -207,23 +213,26 @@ export function EvidenceTab({
                             {row.source}
                           </Link>
                         )}
-                      </div>
-                      {row.used_by_policies.length > 0 && (row.kind === "builtin" || row.kind === "custom") && (
-                        <div className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
-                          {t("rules.checks.usedBy")}:{" "}
-                          {row.used_by_policies.map((pid, i) => (
-                            <span key={`${pid}:${i}`}>
-                              {i > 0 && ", "}
-                              <Link
-                                href={`/policies/${encodeURI(pid)}`}
-                                className="font-mono text-[var(--color-accent-light)] hover:underline"
-                              >
-                                {pid}
-                              </Link>
+                        {row.used_by_policies.length > 0 && (row.kind === "builtin" || row.kind === "custom") && (
+                          <>
+                            <span aria-hidden className="text-[var(--color-border-strong)]">·</span>
+                            <span className="font-semibold uppercase tracking-wider">
+                              {t("rules.checks.usedBy")}
                             </span>
-                          ))}
-                        </div>
-                      )}
+                            {row.used_by_policies.map((pid, i) => (
+                              <span key={`${pid}:${i}`}>
+                                {i > 0 && ", "}
+                                <Link
+                                  href={`/policies/${encodeURI(pid)}`}
+                                  className="font-mono text-[var(--color-accent-light)] hover:underline"
+                                >
+                                  {pid}
+                                </Link>
+                              </span>
+                            ))}
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
 
