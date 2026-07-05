@@ -278,7 +278,7 @@ function Hero({ c, isKo }: { c: HeroCopy; isKo: boolean }) {
       >
         <div className="grid gap-8 md:gap-6 lg:gap-10 md:grid-cols-[1.2fr_1fr] items-start">
           {/* Left: copy column */}
-          <div>
+          <div className="min-w-0">
             <div className="flex flex-wrap gap-2">
               {c.chips.map((chip) => <Chip key={chip}>{chip}</Chip>)}
             </div>
@@ -309,8 +309,11 @@ function Hero({ c, isKo }: { c: HeroCopy; isKo: boolean }) {
             </p>
           </div>
 
-          {/* Right: Claude Code TUI mock */}
-          <div className="w-full md:max-w-[560px] md:justify-self-end">
+          {/* Right: Claude Code TUI mock. min-w-0 lets the grid track shrink
+              below the terminal's max-content width so the <pre>'s
+              overflow-x-auto scrolls the code INTERNALLY instead of blowing
+              out the page to a horizontal scroll on mobile. */}
+          <div className="w-full min-w-0 md:max-w-[560px] md:justify-self-end">
             <TuiDemo c={c.tui} />
           </div>
         </div>
