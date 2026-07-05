@@ -2,6 +2,7 @@ import Link from "next/link"
 import { QuestionMarkCircleIcon } from "@heroicons/react/24/outline"
 import { getLocale, getT } from "@/lib/i18n/server"
 import { getWorkspaceData } from "../_data/workspace"
+import { CommandPaletteTrigger } from "./CommandPaletteTrigger"
 
 /**
  * Sticky page header inside the console main column. Mirrors
@@ -56,15 +57,18 @@ export async function RuntimeHeader() {
             <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${pillDotClass}`} />
             {pillLabel}
           </span>
-          <Link
-            href="/docs"
-            prefetch={false}
-            aria-label={t("nav.docs.help")}
-            title={t("nav.docs.help")}
-            className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-white hover:text-[var(--color-text-primary)] transition-colors"
-          >
-            <QuestionMarkCircleIcon aria-hidden="true" className="h-4 w-4" />
-          </Link>
+          <div className="ml-auto flex items-center gap-2">
+            <CommandPaletteTrigger label={t("command.placeholder")} />
+            <Link
+              href="/docs"
+              prefetch={false}
+              aria-label={t("nav.docs.help")}
+              title={t("nav.docs.help")}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-white hover:text-[var(--color-text-primary)] transition-colors"
+            >
+              <QuestionMarkCircleIcon aria-hidden="true" className="h-4 w-4" />
+            </Link>
+          </div>
         </div>
       </div>
     </div>
