@@ -78,6 +78,14 @@ describe("ConversationalCompose source invariants", () => {
     expect(src).toContain("newPolicy.conv.error.providerUnconfigured")
   })
 
+  it("PR-4: provider_error mapped to actionable copy in errorBubbleText", () => {
+    // A configured-but-failing provider (wrong key / rate-limit) surfaces as
+    // provider_error from the proxy. errorBubbleText must map it to an
+    // actionable i18n key so the operator knows to check their API key.
+    expect(src).toContain("provider_error")
+    expect(src).toContain("newPolicy.conv.error.providerError")
+  })
+
   it("Enter (without Shift) submits the input box", () => {
     expect(src).toMatch(/e\.key === "Enter"/)
     expect(src).toMatch(/!e\.shiftKey/)

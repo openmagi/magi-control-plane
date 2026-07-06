@@ -209,6 +209,13 @@ export async function POST(req: NextRequest) {
       }
       return j({ error: "server config" }, 503)
     }
+    // A configured provider that fails (wrong key, rate-limit, network error)
+    // returns 502 with "LLM provider error: ..." from the cloud. Classify it
+    // separately from infrastructure-level 502s so the dashboard can show an
+    // actionable "check your API key / quota" flash (R5-01).
+    if (status === 502 && /llm provider error/i.test(upstreamBody)) {
+      return j({ error: "provider_error" }, 502)
+    }
     if (status === 422) {
       return j({ error: "invalid_input" }, 422)
     }

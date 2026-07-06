@@ -54,6 +54,18 @@ describe("/api/policies/compile-interactive proxy", () => {
     expect(src).toMatch(/provider.*not configured/i)
   })
 
+  it("PR-4: classifies 502 'LLM provider error' as provider_error (wrong key / rate-limit)", () => {
+    // A configured-but-failing provider (wrong key, rate-limit, network error)
+    // comes back as cloud 502 with 'LLM provider error: ...' in the body.
+    // The proxy must classify this as provider_error - NOT as generic upstream -
+    // so the dashboard can show the actionable 'check your API key' flash.
+    expect(src).toContain("provider_error")
+    expect(src).toMatch(/llm provider error/i)
+    // Must be gated on the upstream status AND body pattern so infra-level
+    // 502s (network gateway errors) don't misclassify as key failures.
+    expect(src).toMatch(/status === 502/)
+  })
+
   it("forwards cloud 422 to the client (invalid_input)", () => {
     expect(src).toContain("status === 422")
     expect(src).toContain("invalid_input")
