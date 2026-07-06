@@ -193,3 +193,108 @@ def test_module_has_no_fastapi_or_web_imports() -> None:
     src = inspect.getsource(f)
     assert "fastapi" not in src.lower()
     assert "from ..cloud" not in src
+
+
+# ── REV-PR-1: anti-silent-downgrade (GAP-A) ───────────────────────────
+# classify_silent_downgrade fires when the operator asked to enforce
+# (block/stop) but the applied draft records only (audit) at an event
+# where NO enforce action is legal. movable_enforce_events computes the
+# in-bounds "move it earlier" steer from the verifier descriptor.
+
+def _step_draft(event: str, matcher: str, action: str, step: str) -> dict:
+    return {
+        "id": "x",
+        "type": "evidence",
+        "trigger": {"event": event, "matcher": matcher},
+        "requires": [{"kind": "step", "step": step, "verdict": "pass"}],
+        "action": action,
+    }
+
+
+def test_classify_silent_downgrade_block_intent_audit_at_stop() -> None:
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    finding = f.classify_silent_downgrade(
+        "block the final answer when citations are missing", draft
+    )
+    assert finding is not None
+    assert finding.cls is f.FeasibilityClass.degraded
+    assert finding.code == "enforce_downgraded_to_audit"
+    assert finding.detail.get("applied") == "audit"
+
+
+def test_classify_silent_downgrade_korean_intent() -> None:
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    finding = f.classify_silent_downgrade("인용 없으면 최종 답변 차단해줘", draft)
+    assert finding is not None
+    assert finding.code == "enforce_downgraded_to_audit"
+
+
+def test_classify_silent_downgrade_none_without_enforce_intent() -> None:
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    assert f.classify_silent_downgrade("경고만 남겨줘", draft) is None
+    assert f.classify_silent_downgrade("just record it please", draft) is None
+
+
+def test_classify_silent_downgrade_none_when_enforce_legal() -> None:
+    # PreToolUse+Bash: block IS legal, so this is review.py territory,
+    # not a silent downgrade. classify returns None.
+    draft = _step_draft("PreToolUse", "Bash", "audit", "privilege_scan")
+    assert f.classify_silent_downgrade(
+        "block any shell command that contains an RRN", draft
+    ) is None
+
+
+def test_classify_silent_downgrade_none_on_partial_draft() -> None:
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "Stop"},  # matcher missing
+        "action": "audit",
+    }
+    assert f.classify_silent_downgrade("block it", draft) is None
+
+
+def test_classify_silent_downgrade_none_when_action_not_audit() -> None:
+    draft = _step_draft("Stop", "*", "block", "citation_verify")
+    # action is block (illegal, caught elsewhere); not an audit downgrade.
+    assert f.classify_silent_downgrade("block it", draft) is None
+
+
+def test_copy_table_enforce_downgraded_bilingual() -> None:
+    entry = COPY_TABLE.get("enforce_downgraded_to_audit")
+    assert entry is not None
+    en, ko, alt = entry
+    assert en and ko and alt
+    # No em-dash characters anywhere (repo house rule).
+    for s in (en, ko, alt):
+        assert "—" not in s
+
+
+def test_movable_enforce_events_citation_verify_empty() -> None:
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    assert f.movable_enforce_events(draft) == ()
+
+
+def test_movable_enforce_events_privilege_scan() -> None:
+    # privilege_scan authored at Stop can move to PreToolUse (block legal).
+    draft = _step_draft("Stop", "*", "audit", "privilege_scan")
+    events = f.movable_enforce_events(draft)
+    assert "PreToolUse" in events
+    assert "Stop" not in events  # current event excluded
+
+
+def test_movable_enforce_events_non_step_draft_empty() -> None:
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "regex", "pattern": "x"}],
+        "action": "audit",
+    }
+    assert f.movable_enforce_events(draft) == ()
+
+
+def test_enforce_intent_re_matches_block_and_korean() -> None:
+    assert f.ENFORCE_INTENT_RE.search("please block this")
+    assert f.ENFORCE_INTENT_RE.search("인용 없으면 차단")
+    assert f.ENFORCE_INTENT_RE.search("prevent the tool from running")
+    assert not f.ENFORCE_INTENT_RE.search("record only please")
+    assert not f.ENFORCE_INTENT_RE.search("그냥 기록만")
