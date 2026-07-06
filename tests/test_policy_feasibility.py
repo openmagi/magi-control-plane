@@ -345,3 +345,23 @@ def test_af3_capability_boundary_lists_real_registered_verifiers():
 def test_af3_wired_verifier_steps_matches_registry():
     from magi_cp.verifier.descriptors import all_descriptors
     assert set(f._wired_verifier_steps()) == {d["step"] for d in all_descriptors()}
+
+
+# ── AF-4 (P1-9): rows 11-16 lexicon must not hijack in-scope requests ──
+
+def test_af4_rollback_command_block_not_hijacked():
+    # In-scope: block a git rollback COMMAND; not a retroactive-undo ask.
+    assert f.classify_intent("git 롤백 명령 실행되면 차단해줘") is None
+    assert f.classify_intent("block any bash that would retract a filing") is None
+
+
+def test_af4_genuine_out_of_scope_still_fires():
+    # Real retroactive-undo + cross-session intents must still classify.
+    assert f.classify_intent(
+        "roll back the tool call after it executes").code == "retroactive_undo"
+    assert f.classify_intent(
+        "undo the edit if it touches prod").code == "retroactive_undo"
+    assert f.classify_intent(
+        "이전 세션에서 뭐 했는지 기억해줘").code == "cross_session_state"
+    assert f.classify_intent(
+        "keep a running total across sessions").code == "cross_session_state"

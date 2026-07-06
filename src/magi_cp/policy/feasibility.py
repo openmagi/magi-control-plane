@@ -414,7 +414,13 @@ _INTENT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
             "인라인 출처",
         ),
     ),
-    # Row 13 - cross-session state
+    # Row 13 - cross-session state.
+    # NOTE (P1-9): bare "yesterday" can incidentally hijack an in-scope
+    # request ("block the script we talked about yesterday"), but it is also
+    # a genuine cross-session condition in "if it did the same thing
+    # yesterday". Disambiguating needs co-occurrence-with-a-state-cue logic
+    # (a design change bordering on the hijack-vs-advisory decision), so it
+    # is deferred; "yesterday" stays for now.
     (
         "cross_session_state",
         (
@@ -453,16 +459,21 @@ _INTENT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
             "예산 초과",
         ),
     ),
-    # Row 16 - retroactive undo
+    # Row 16 - retroactive undo.
+    # AF-4 (P1-9): bare "retract" and "롤백" were dropped - they are command
+    # nouns that fire on in-scope requests to BLOCK a rollback/retract
+    # command ("git 롤백 명령 실행되면 차단"). The remaining phrases describe
+    # undoing an action AFTER it ran, which is the genuinely inexpressible
+    # intent.
     (
         "retroactive_undo",
         (
             "roll back the tool call after",
             "undo the edit if",
-            "retract",
+            "undo it after",
             "실행된 뒤 되돌",
+            "실행 후 되돌",
             "소급 취소",
-            "롤백",
         ),
     ),
 )
