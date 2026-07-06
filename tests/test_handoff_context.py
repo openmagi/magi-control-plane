@@ -802,6 +802,10 @@ def test_run_command_permission_request_lifecycle_round_trips():
     assert merged["type"] == "run_command"
     # Trigger.event lands on the wider event, not the 3-bucket default.
     assert merged["trigger"]["event"] == "PermissionRequest"
+    # R3-01: the wider lifecycle must NOT be flagged as still-missing.
+    # Before Cluster A the run_command missing-fields gate rejected any
+    # non-bucket event, so the seed re-asked lifecycle forever.
+    assert "lifecycle" not in out["missing_fields"], out["missing_fields"]
     # Plain-language label landed in the summary.
     msg = out["assistant_message"]
     assert "permission-request" in msg
