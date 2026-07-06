@@ -3203,6 +3203,7 @@ def step_compile(
     draft_so_far: dict[str, Any] | None,
     answers: dict[str, str] | None,
     context: dict[str, Any] | None = None,
+    runtime_id: str | None = None,
 ) -> dict[str, Any]:
     """Drive one conversational turn.
 
@@ -3234,6 +3235,10 @@ def step_compile(
     plumbing).
     """
     ko = _detect_korean(history, draft_so_far)
+    effective_runtime = runtime_id or "claude-code"
+    # Feasibility findings populated during the turn (lazy module import below).
+    intent_finding = None   # IntentFinding | None
+    draft_finding = None    # FeasibilityFinding | None
     _validate_history(history)
     _validate_answers_shape(answers)
     # Pre-aggregate cap check: count just the raw client-supplied text
@@ -3327,7 +3332,23 @@ def step_compile(
     # The marker is consumed by the predicate; drop it before merge so
     # it never lands on the wire-shape draft.
     extracted.pop("__verifier_ambiguous__", None)
-    _merge_extracted_into_draft(draft, extracted)
+
+    # Feasibility - lazy import (one-way dep; avoids any import cycle).
+    from ..policy import feasibility as _feas  # noqa: PLC0415
+
+    # Intent check (rows 11-16): authoritative, magi_agent_only / not_expressible.
+    # Must run BEFORE the extractor merge so we can suppress seeding entirely.
+    intent_finding = _feas.classify_intent(latest_user_text)
+
+    if intent_finding is None:
+        # Normal path: merge extractor findings into the draft.
+        _merge_extracted_into_draft(draft, extracted)
+
+    # Draft-shape check (i) - after extractor merge (or skipped merge when
+    # intent_finding is set); evaluates rows 1-10 on the current draft.
+    _f1 = _feas.classify_draft(draft, effective_runtime)
+    if _f1 is not None:
+        draft_finding = _f1
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
     # answers / merging produced something larger than the input).
@@ -3404,7 +3425,9 @@ def step_compile(
     if verifier_is_ambiguous and isinstance(updates_raw, dict):
         for k in ("requires", "id", "description"):
             updates_raw.pop(k, None)
-    if isinstance(updates_raw, dict):
+    # When intent_finding is set the draft must not be seeded: skip the
+    # LLM merge entirely so the draft stays as the sanitized input.
+    if intent_finding is None and isinstance(updates_raw, dict):
         # Track which canonical fields the user just answered so the
         # LLM cannot overwrite them on this same turn.
         locked: set[FieldName] = set()
@@ -3803,6 +3826,12 @@ def step_compile(
     if ready_to_save:
         questions = []
 
+    # Draft-shape check (ii) - after LLM merge + auto-fill; most complete view.
+    # The last non-None finding wins (post-LLM-merge state is authoritative).
+    _f2 = _feas.classify_draft(draft, effective_runtime)
+    if _f2 is not None:
+        draft_finding = _f2
+
     # Q103 — deterministic assistant_message. The LLM's `assistant_message`
     # field was already extracted from `parsed` above; we discard it here
     # and replace with state-machine-driven copy. The pattern-match
@@ -3863,6 +3892,47 @@ def step_compile(
             and pointed_at_scripts):
         questions = [q for q in questions if q.id != "q_requires_body"]
 
+    # Feasibility prefix + wire field.
+    # Build the localized copy string from COPY_TABLE (en/ko + alternative).
+    def _feas_copy(code: str) -> str:
+        entry = _feas.COPY_TABLE.get(code)
+        if not entry:
+            return code
+        _en, _ko_str, _alt = entry
+        base = _ko_str if ko else _en
+        return base + (" " + _alt if _alt else "")
+
+    feasibility_wire = None
+
+    if intent_finding is not None:
+        # Rows 11-16: override assistant_message and clear questions.
+        _copy = _feas_copy(intent_finding.code)
+        assistant_message = _copy
+        questions = []
+        feasibility_wire = {
+            "runtime_id": effective_runtime,
+            "class": intent_finding.cls.value,
+            "code": intent_finding.code,
+            "explanation": _copy,
+            "alternatives": [],
+        }
+    elif draft_finding is not None:
+        _copy = _feas_copy(draft_finding.code)
+        if draft_finding.code != "cc_context_channel_excluded":
+            # Rows 2-10 (non-D59): prefix the assistant_message.
+            if assistant_message:
+                assistant_message = _copy + "\n\n" + assistant_message
+            else:
+                assistant_message = _copy
+        # Always populate the wire field (D59 message unchanged, wire present).
+        feasibility_wire = {
+            "runtime_id": effective_runtime,
+            "class": draft_finding.cls.value,
+            "code": draft_finding.code,
+            "explanation": _copy,
+            "alternatives": [],
+        }
+
     # If we have no draft (no answers, no LLM updates yet), the wire
     # `draft` field MUST be None per the brief so the client
     # distinguishes "haven't started" from "started, here it is".
@@ -3878,6 +3948,8 @@ def step_compile(
         # Single-policy path. The compound (evidence_gate) sub-flow sets
         # this True so the client routes the save to POST /policies/compound.
         "compound": False,
+        # Feasibility finding for the current draft/intent (None when native).
+        "feasibility": feasibility_wire,
     }
 
 

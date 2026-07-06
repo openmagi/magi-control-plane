@@ -228,6 +228,7 @@ def attach(
                 draft_so_far=req.draft_so_far,
                 answers=req.answers,
                 context=context,
+                runtime_id=req.runtime_id,          # NEW
             )
         except InteractiveInputError as e:
             raise HTTPException(422, str(e)) from e

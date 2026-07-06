@@ -137,6 +137,7 @@ class InteractiveCompileReq(BaseModel):
     answers: dict[str, str] | None = Field(
         default=None, max_length=_D55A_MAX_ANSWERS,
     )
+    runtime_id: Literal["claude-code", "codex"] | None = None
 
     @field_validator("answers")
     @classmethod
