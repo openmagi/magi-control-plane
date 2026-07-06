@@ -227,6 +227,34 @@ _BEHAVIOR_CHANNEL_EVENTS: frozenset[str] = frozenset({
 })
 
 
+# Lifecycle events for which Codex fires a hook AT ALL (F1 live-event set,
+# promoted here from the comment above so the coverage logic keys off code
+# instead of prose). A policy hosted on an event OUTSIDE this set saves
+# green but enforces ZERO times on Codex — the "false sense of coverage"
+# failure mode 4.1 warns about, one level up from the tool-matcher skip
+# set. ``SessionEnd`` / ``Notification`` are deliberately ABSENT (F1: "no
+# Notification/SessionEnd"); ``SessionEnd`` still rides Stop via Shim C, so
+# it is handled by its own downgrade before the not-live catch below.
+# ``PermissionRequest`` is Codex's ``PreToolUsePermissionRequest`` under
+# the canonical name (see ``_BEHAVIOR_CHANNEL_EVENTS``).
+# TODO(live-test): pin ``PermissionRequest`` == Codex
+# ``PreToolUsePermissionRequest`` against a real install before treating a
+# PermissionRequest-hosted policy as native on Codex (same protocol as the
+# 2026-07-01 F-series live tests; mirrors the D1/D2/D3 TODO convention).
+CODEX_LIVE_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+})
+
+
 def _prefixed(reason: str) -> str:
     """Stable ``MAGI: `` provenance marker, matching ``cc_shapes``."""
     return f"MAGI: {reason}"
@@ -343,6 +371,20 @@ def _coverage_status_for(p: AnyPolicy) -> tuple[str, str | None]:
     # verdict-time ContextInjection producer is wired into ``decide()``.
     if event == "PreToolUse" and isinstance(p, ContextInjectionPolicy):
         return ("enforced", "system_message")
+    # Event-level not-live catch. Placed AFTER every shim above (SessionEnd
+    # rides Stop, subagent lifecycle has its own downgrade, silent-skip
+    # tools their own) so only a genuinely-dead event — one Codex never
+    # fires a hook for (Notification, TaskCreated, FileChanged,
+    # InstructionsLoaded, CwdChanged, Elicitation, ...) — falls through
+    # here. Without this, such a policy reported ``enforced`` on Codex
+    # while firing zero times. ``event`` is non-empty here (native-surface
+    # archetypes returned above); the guard is belt-and-suspenders.
+    if event and event not in CODEX_LIVE_EVENTS:
+        return (
+            "codex_event_not_live",
+            "never fires on Codex; author on a live event or keep for "
+            "Claude Code",
+        )
     return ("enforced", None)
 
 
