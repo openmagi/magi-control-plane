@@ -16,8 +16,6 @@ Coverage:
 """
 from __future__ import annotations
 
-import pytest
-
 # Import create_app first to resolve circular-import ordering
 # (same pattern as test_handoff_context.py).
 from magi_cp.cloud.app import create_app  # noqa: F401
