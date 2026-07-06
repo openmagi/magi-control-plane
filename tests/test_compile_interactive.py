@@ -3126,3 +3126,78 @@ def test_rev_pr4_s4_run_command_draft_has_no_disclosure():
     }
     en = _build_assistant_message("S4_ready", rc_draft, ko=False)
     assert "does not block anything" not in en
+
+
+# ── AF-1 (P0-1): kill false "cannot be expressed" on extractor-seeded
+# illegal triples ─────────────────────────────────────────────────────
+
+def test_af1_verify_confirm_is_not_ask():
+    """'확인' meaning 'verify/check' must NOT extract the ask action (the
+    canonical few-shot '인용한 출처가 진짜인지 확인' produced Stop/*/ask)."""
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("인용한 출처가 진짜인지 확인하고 안 맞으면 경고만 띄워줘")
+    assert out.get("action") != "ask", out
+
+
+def test_af1_ask_still_extracts_with_object():
+    """A real ask-for-human intent still extracts ask."""
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    assert _extract_intent_from_text("사람 확인 받고 진행해줘").get("action") == "ask"
+    assert _extract_intent_from_text("ask a human before running").get("action") == "ask"
+    assert _extract_intent_from_text("승인 받고 실행해").get("action") == "ask"
+
+
+def test_af1_final_event_resets_default_tool_matcher():
+    """A verifier default tool matcher is widened to '*' when the operator
+    overrode the event to a non-tool-context event (Stop)."""
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("log PII in the final answer")
+    trig = out.get("trigger") or {}
+    assert trig.get("event") == "Stop", out
+    assert trig.get("matcher") == "*", out
+
+
+def test_af1_explicit_tool_at_final_event_not_reset():
+    """When the operator NAMES a tool, keep it (the illegal combo surfaces
+    honestly rather than being silently widened)."""
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("block Bash at the final answer")
+    trig = out.get("trigger") or {}
+    assert trig.get("event") == "Stop", out
+    assert trig.get("matcher") == "Bash", out
+
+
+def test_af1_tool_matcher_preserved_on_tool_event():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("block any shell command that contains an RRN")
+    trig = out.get("trigger") or {}
+    assert trig.get("event") == "PreToolUse", out
+    assert trig.get("matcher") == "Bash", out
+
+
+def test_af1_no_stale_finding_when_llm_repairs_to_legal():
+    """When the extractor seeds an illegal triple but the LLM repairs it to a
+    legal audit draft, the wire must carry NO feasibility finding (the stale
+    _f1 must not survive)."""
+    import json as _json, os as _os, tempfile as _tf
+    from fastapi.testclient import TestClient
+    from magi_cp.cloud.app import create_app
+    from magi_cp.llm.provider import FakeLlmProvider
+    _d = _tf.mkdtemp(); _p = _os.path.join(_d, "p.json"); open(_p, "w").write("[]")
+    _os.environ["MAGI_CP_ADMIN_API_KEY"] = "k"
+    # LLM emits the few-shot's own audit repair.
+    canned = _json.dumps({"assistant_message": "", "draft_updates": {"action": "audit"}, "questions": []})
+    app = create_app(dsn="sqlite:///:memory:", policy_store_path=_p,
+                     llm_compiler=FakeLlmProvider([canned]))
+    c = TestClient(app)
+    r = c.post("/policies/compile-interactive", headers={"X-Admin-Api-Key": "k"}, json={
+        "history": [{"role": "user",
+                     "content": "최종 답변에서 인용한 출처가 진짜인지 확인하고 안 맞으면 경고만 띄워줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["feasibility"] is None, body["feasibility"]
+    # And it must not carry the false "cannot be expressed" copy.
+    assert "표현할 수 없" not in (body["assistant_message"] or "")
+    assert "cannot be expressed" not in (body["assistant_message"] or "")

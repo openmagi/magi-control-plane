@@ -734,10 +734,18 @@ _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("block", (
         "차단", "막아", "block", "deny", "거부",
     )),
+    # AF-1 (P0-1): the ask family requires an ask-OBJECT. Bare "확인"
+    # (verify / check) and bare "ask" (as in "ask whether X is true")
+    # false-positived onto the ask action - the canonical few-shot
+    # "인용한 출처가 진짜인지 확인" wrongly extracted ask -> Stop/*/ask,
+    # a matrix-illegal triple that produced a false "cannot be expressed"
+    # banner. Only phrasings that name a human / approval / confirmation
+    # target survive (mirrors `_EGATE_ASK_RE`).
     ("ask", (
-        "사람 확인", "사람에게 묻", "사람에게 확인",
-        "묻기", "확인", "ask a human", "ask the human", "ask",
-        "human", "사람에게",
+        "사람 확인", "사람에게 묻", "사람에게 확인", "확인 받", "확인받",
+        "승인", "허가", "물어봐", "물어보",
+        "ask a human", "ask the human", "ask me", "ask for approval",
+        "require approval", "human approval", "prompt me",
     )),
     ("audit", (
         "기록", "감사", "남기고", "log", "record", "audit",
@@ -1002,6 +1010,25 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     if explicit_matcher is not None:
         out.setdefault("trigger", {})["matcher"] = explicit_matcher
 
+    # AF-1 (P0-1): coherence reset. A verifier's DEFAULT tool matcher
+    # (e.g. privilege_scan -> Bash) is meaningless once the operator
+    # overrides the event to a non-tool-context event (Stop and the
+    # other lifecycle events key hooks without a per-tool field), and it
+    # deterministically seeds an illegal tool@Stop triple that the
+    # feasibility layer then reports as "cannot be expressed". Widen it
+    # to "*" so the extractor never fabricates that illegal triple. Only
+    # when the matcher was the DEFAULT (the operator did not name a tool
+    # this turn) - an explicitly named tool at a final event stays put so
+    # the genuinely-illegal combination surfaces honestly.
+    if explicit_matcher is None:
+        _t = out.get("trigger")
+        if isinstance(_t, dict):
+            _ev = _t.get("event")
+            _mt = _t.get("matcher")
+            if (isinstance(_ev, str) and _ev not in _TOOL_CONTEXT_EVENTS
+                    and isinstance(_mt, str) and _mt not in ("", "*")):
+                _t["matcher"] = "*"
+
     explicit_action = _scan_first(user_text, _ACTION_KEYWORDS)
     if explicit_action is not None:
         out["action"] = explicit_action
@@ -1104,6 +1131,15 @@ _LIFECYCLE_TO_EVENT: dict[str, str] = {
     "pre_final":       "Stop",
 }
 _EVENT_TO_LIFECYCLE: dict[str, str] = {v: k for k, v in _LIFECYCLE_TO_EVENT.items()}
+
+# AF-1 (P0-1): the four events whose CC hook payload carries a per-tool
+# field. A tool-scoped matcher is only meaningful here; on every other
+# event CC keys the hook without a tool field, so a tool matcher there is
+# an incoherent (and matrix-illegal) shape. Mirrors matrix.py's
+# `_TOOL_CONTEXT_EVENTS_RC`.
+_TOOL_CONTEXT_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+})
 
 
 # ── plain-language scrubber ───────────────────────────────────────────
@@ -3394,11 +3430,13 @@ def step_compile(
         # Normal path: merge extractor findings into the draft.
         _merge_extracted_into_draft(draft, extracted)
 
-    # Draft-shape check (i) - after extractor merge (or skipped merge when
-    # intent_finding is set); evaluates rows 1-10 on the current draft.
-    _f1 = _feas.classify_draft(draft, effective_runtime)
-    if _f1 is not None:
-        draft_finding = _f1
+    # AF-1 (P0-1): the draft-shape feasibility finding is computed ONLY on
+    # the FINAL draft (after the LLM merge, `_f2` below). A pre-LLM check
+    # here classified a half-merged intermediate the operator never sees;
+    # when the LLM then repaired the draft to a legal shape, the stale
+    # pre-LLM finding survived and shipped a false "cannot be expressed"
+    # banner beside a saveable draft. The wire finding must reflect the
+    # draft that is actually offered for Save.
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
     # answers / merging produced something larger than the input).
@@ -3956,7 +3994,7 @@ def step_compile(
     # REV-PR-3 (GAP-A): anti-silent-downgrade finding. When the operator
     # asked to enforce (block/stop) but the applied draft records only
     # (audit) at an event where no enforce action is legal, surface the
-    # honest downgrade finding. It OUTRANKS _f1/_f2 so the fresher,
+    # honest downgrade finding. It OUTRANKS _f2 so the fresher,
     # copy-accurate finding replaces the stale `matrix_illegal_triple`
     # that an earlier extractor-block turn may have produced on a
     # now-legal audit draft. (intent_finding, rows 11-16, still outranks
