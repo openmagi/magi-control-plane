@@ -3393,3 +3393,295 @@ def test_wide_run_command_event_is_ready_to_save_end_to_end():
     assert body["ready_to_save"] is True, body["assistant_message"]
     qids = [q["id"] for q in body["questions"]]
     assert "q_lifecycle" not in qids, qids
+
+
+# ── R1-01 question-slice fix (Cluster B PR-2) ─────────────────────────
+
+
+def test_r1_01_llm_question_outside_slice_is_not_emitted():
+    """R1-01: an LLM-proposed question whose targets_field is outside the
+    canonical priority slice (missing[:MAX_QUESTIONS_PER_TURN]) must NOT
+    be emitted. Otherwise the user answers the shown question, but the
+    next-turn validator (which reconstructs the legal id set from the
+    same slice) would 422 with 'answer id was not in the previous
+    turn's questions'.
+
+    Setup: no draft yet, so lifecycle+matcher are the first two missing
+    fields. LLM proposes q_requires (index 2, outside the [:2] slice).
+    Expected: server ignores the out-of-slice proposal and falls back to
+    the canonical (q_lifecycle, q_matcher) pair.
+    """
+    canned = _llm_response(
+        message="ok",
+        updates={},
+        questions=[
+            {
+                "id": "q_requires",
+                "prompt": "what verifier?",
+                "kind": "single_select",
+                "targets_field": "requires",
+                "options": [],
+            },
+        ],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    qids = [q["id"] for q in r.json()["questions"]]
+    assert "q_requires" not in qids, (
+        "out-of-slice question must not be emitted", qids
+    )
+    assert "q_lifecycle" in qids, qids
+
+
+def test_r1_01_follow_up_answer_does_not_422():
+    """R1-01: after the slice-constrained turn, answering one of the
+    emitted questions on the next turn must succeed (no 422). This is the
+    downstream consequence: if an out-of-slice question had been emitted,
+    the user's answer would 422 because the validator only recognises
+    the slice.
+    """
+    # Turn 1: LLM proposes out-of-slice q_requires; server falls back to
+    # canonical (q_lifecycle, q_matcher).
+    canned1 = _llm_response(
+        message="ok",
+        updates={},
+        questions=[
+            {
+                "id": "q_requires",
+                "prompt": "verifier?",
+                "kind": "single_select",
+                "targets_field": "requires",
+                "options": [],
+            },
+        ],
+    )
+    # Turn 2: straightforward LLM stub, no questions proposed.
+    canned2 = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned1, canned2]))
+
+    r1 = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r1.status_code == 200, r1.text
+    draft1 = r1.json()["draft"]
+
+    # Turn 2: answer q_lifecycle (one of the actually emitted questions).
+    # Must succeed because q_lifecycle was in the prior turn's slice.
+    r2 = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": draft1,
+            "answers": {"q_lifecycle": "before_tool_use"},
+        },
+    )
+    assert r2.status_code == 200, (
+        "answering a slice-legal question must not 422", r2.text
+    )
+    assert r2.json()["draft"]["trigger"]["event"] == "PreToolUse"
+
+
+# ── R2-03 freeform regex validation (Cluster B PR-2) ─────────────────
+
+
+def test_r2_03_invalid_freeform_regex_is_rejected():
+    """R2-03: when the freeform body fallback fires (prior assistant turn
+    is a body question, latest user turn is the freeform answer) and the
+    answer is an invalid regex, the bad pattern must NOT be written to the
+    draft. The body question must re-fire (requires_body stays missing)
+    and ready_to_save must stay False.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    draft = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": ""}],
+        "action": "block",
+    }
+    # The freeform anchor "what pattern" must appear in the prior
+    # assistant turn so _looks_like_body_answer returns True.
+    history = [
+        {"role": "assistant",
+         "content": "Let me know what pattern to detect."},
+        {"role": "user",
+         "content": "(unclosed"},  # invalid regex
+    ]
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": history, "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["requires"][0]["pattern"] == "", (
+        "invalid regex must not land on the draft", body["draft"]
+    )
+    assert body["ready_to_save"] is False
+    assert "requires_body" in body["missing_fields"]
+
+
+def test_r2_03_invalid_freeform_regex_surfaces_error_line():
+    """R2-03: the assistant_message must contain the plain-language
+    does-not-compile notice (EN and KO variants both checked).
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+
+    draft = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": ""}],
+        "action": "block",
+    }
+    # EN path: anchor "what pattern" triggers the freeform fallback.
+    history_en = [
+        {"role": "assistant", "content": "Tell me what pattern to match."},
+        {"role": "user", "content": "(unclosed"},
+    ]
+    c_en = _client(llm_compiler=FakeLlmProvider([canned]))
+    r_en = c_en.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": history_en, "draft_so_far": draft, "answers": None},
+    )
+    msg_en = r_en.json()["assistant_message"]
+    # Must mention compile error; must NOT say "regex".
+    assert "compile" in msg_en.lower(), msg_en
+    assert "regex" not in msg_en.lower(), (
+        "error line must not leak internal term 'regex'", msg_en
+    )
+
+    # KO path: anchor "어떤 패턴을" triggers the freeform fallback.
+    history_ko = [
+        {"role": "assistant", "content": "어떤 패턴을 찾아야 하나요?"},
+        {"role": "user", "content": "(unclosed"},
+    ]
+    c_ko = _client(llm_compiler=FakeLlmProvider([canned]))
+    r_ko = c_ko.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": history_ko, "draft_so_far": draft, "answers": None},
+    )
+    msg_ko = r_ko.json()["assistant_message"]
+    assert "패턴" in msg_ko, msg_ko
+    assert "regex" not in msg_ko.lower(), (
+        "Korean error line must not leak internal term 'regex'", msg_ko
+    )
+
+
+def test_r2_03_valid_freeform_regex_lands_normally():
+    """R2-03 regression: a VALID freeform regex body still lands on the
+    draft without an error message.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    draft = {
+        "trigger": {
+            "host": "claude-code", "event": "PreToolUse", "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": ""}],
+        "action": "block",
+    }
+    history = [
+        {"role": "assistant", "content": "Tell me what pattern to detect."},
+        {"role": "user", "content": r"\brm -rf\b"},  # valid regex
+    ]
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": history, "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["requires"][0]["pattern"] == r"\brm -rf\b", (
+        "valid regex must land on the draft", body["draft"]
+    )
+    # No compile-error noise in the message.
+    assert "compile" not in body["assistant_message"].lower(), (
+        "no error expected for valid regex", body["assistant_message"]
+    )
+
+
+# ── R2-04 matcher case normalization (Cluster B PR-2) ────────────────
+
+
+def test_r2_04_lowercase_matcher_is_case_normalized():
+    """R2-04: the q_matcher answer writer must normalise lowercase tool
+    names to canonical PascalCase so 'bash' and 'webfetch' reach the
+    draft as 'Bash' and 'WebFetch'.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned] * 4))
+
+    for raw, expected in [
+        ("bash", "Bash"),
+        ("webfetch", "WebFetch"),
+        ("Bash", "Bash"),       # already canonical - no change
+        ("WebFetch", "WebFetch"),
+    ]:
+        r = c.post(
+            "/policies/compile-interactive",
+            headers=HEADERS,
+            json={
+                "history": [],
+                "draft_so_far": None,
+                "answers": {"q_matcher": raw},
+            },
+        )
+        assert r.status_code == 200, f"{raw}: {r.text}"
+        got = r.json()["draft"]["trigger"]["matcher"]
+        assert got == expected, f"raw={raw!r}: expected {expected!r}, got {got!r}"
+
+
+def test_r2_04_space_stripped_tool_name_is_normalized():
+    """R2-04: 'web fetch' (with space) maps to 'WebFetch'."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": None,
+            "answers": {"q_matcher": "web fetch"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    got = r.json()["draft"]["trigger"]["matcher"]
+    assert got == "WebFetch", got
+
+
+def test_r2_04_unknown_matcher_is_left_as_is_and_rejected():
+    """R2-04: an unknown matcher (not in _BUILTIN_TOOLS, not MCP) is left
+    as-is and rejected by the downstream legality check (the draft's
+    trigger.matcher stays empty). No PascalCase guessing for unknowns.
+    """
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [],
+            "draft_so_far": None,
+            "answers": {"q_matcher": "banana"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    trig = (r.json()["draft"] or {}).get("trigger") or {}
+    # The unknown value must NOT land as the matcher.
+    assert trig.get("matcher") != "banana", trig
