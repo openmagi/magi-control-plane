@@ -699,6 +699,19 @@ _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # sentence. Vocab is intentionally biased toward unambiguous phrases —
 # extraction false positives are operator-correctable in one click,
 # while bad partial matches lock the wizard onto the wrong path.
+# REV-PR-3 fix: negated-block cue. The extractor's block family is a plain
+# substring scan with no negation handling, so "don't block it, just record"
+# still extracts action=block. Before the anti-silent-downgrade restore
+# re-blocks at a block-legal event, skip when the operator clearly declined
+# enforcement - otherwise the "helpful" restore would produce enforcement the
+# operator explicitly refused (the exact dishonesty this feature removes).
+# Conservative by design: on a match we fall back to the LLM's action, which
+# is the pre-restore behavior.
+_BLOCK_NEGATION_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|never)\b|말고|하지\s*마|하지\s*말|막지\s*마|차단하지",
+    re.IGNORECASE,
+)
+
 _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # ── ARCHETYPE-level actions (multi-word, highest specificity) ────
     ("inject_context", (
@@ -2159,6 +2172,16 @@ def _build_assistant_message(
             body = (
                 f"Draft is ready. The id is `{rid}`. Click "
                 f"\"Save this policy\" on the right."
+            )
+        # REV-PR-4 (GAP-C): enforcement-level disclosure. An audit rule
+        # records but never blocks; say so plainly at Save time so a
+        # record-only policy is never mistaken for enforcement. Evidence
+        # archetypes only (run_command has no action axis).
+        if draft.get("action") == "audit" and not is_run_command:
+            body += (
+                " 참고: 이 규칙은 실패를 기록만 하고 아무것도 차단하지 않습니다."
+                if ko else
+                " Note: this rule records failures; it does not block anything."
             )
 
     if inject_rewrite_prefix and not body:
@@ -3727,6 +3750,42 @@ def step_compile(
             # on_signature_invalid, sentinel_re, ...) is intentionally
             # ignored. The whitelist is fail-closed.
 
+    # REV-PR-3 (GAP-A): anti-silent-downgrade block-restore. When the
+    # deterministic extractor's high-precision block family fired on THIS
+    # turn's text but the LLM merge overwrote the action with a weaker
+    # value, restore block IF it is matrix-legal at the draft's triple.
+    # The operator's explicit words outrank the LLM, mirroring the
+    # answers > LLM precedence. Scope: block ONLY - the `ask` keyword
+    # vocabulary ("확인", bare "ask") is false-positive-prone and the LLM
+    # overwrite currently rescues those mis-extractions, so restoring ask
+    # would regress the Korean canonical examples. An operator answer that
+    # locked on_missing this turn still wins (skip when locked).
+    #
+    # NOTE: at a block-legal event this removes the LLM's audit-rescue for a
+    # genuine block request - that is the point. But the extractor scan has
+    # no negation handling, so we FIRST skip when the operator declined
+    # enforcement ("don't block it, just record" / "차단하지 말고"); otherwise
+    # the restore would force enforcement they refused.
+    _on_missing_answered = bool(answers) and "q_on_missing" in (answers or {})
+    _block_negated = bool(_BLOCK_NEGATION_RE.search(latest_user_text or ""))
+    if (intent_finding is None
+            and extracted.get("action") == "block"
+            and not _block_negated
+            and not _on_missing_answered
+            and isinstance(draft.get("action"), str)
+            and draft.get("action") != "block"):
+        _rt = draft.get("trigger") or {}
+        _rev = _rt.get("event") if isinstance(_rt, dict) else None
+        _rmt = _rt.get("matcher") if isinstance(_rt, dict) else None
+        if _rev and _rmt:
+            from .matrix import validate_combination
+            try:
+                validate_combination(_rev, _rmt, "block")
+            except ValueError:
+                pass
+            else:
+                draft["action"] = "block"
+
     # Step 6: assistant_message is always empty at this point (the LLM's
     # value was discarded per Q103). The deterministic builder runs
     # below in Step 9 once `missing` + `ready_to_save` are computed.
@@ -3840,6 +3899,31 @@ def step_compile(
             for f in missing[:MAX_QUESTIONS_PER_TURN]
         ]
 
+    # REV-PR-3 (GAP-A prevention): filter q_on_missing options to the
+    # matrix-legal actions at the draft's triple so the operator can never
+    # click into an illegal combination that dead-ends in S3. `audit` is
+    # legal on every supported event, so the option list stays non-empty
+    # (at Stop only `audit` survives). Only filters when both event and
+    # matcher are known; leaves the question untouched otherwise.
+    _qm_trig = draft.get("trigger") or {}
+    _qm_event = _qm_trig.get("event") if isinstance(_qm_trig, dict) else None
+    _qm_matcher = _qm_trig.get("matcher") if isinstance(_qm_trig, dict) else None
+    if _qm_event and _qm_matcher:
+        from .matrix import validate_combination as _vc
+
+        def _action_legal(val: str) -> bool:
+            if val == "audit":
+                return True
+            try:
+                _vc(_qm_event, _qm_matcher, val)
+            except ValueError:
+                return False
+            return True
+
+        for _q in questions:
+            if _q.id == "q_on_missing" and _q.options:
+                _q.options = [o for o in _q.options if _action_legal(o.value)]
+
     # Step 8: ready_to_save is governed by the IR validator, not the
     # heuristic. The four-field check above is a fast-path
     # necessary-condition that drives the question loop; the IR
@@ -3868,6 +3952,18 @@ def step_compile(
     _f2 = _feas.classify_draft(draft, effective_runtime)
     if _f2 is not None:
         draft_finding = _f2
+
+    # REV-PR-3 (GAP-A): anti-silent-downgrade finding. When the operator
+    # asked to enforce (block/stop) but the applied draft records only
+    # (audit) at an event where no enforce action is legal, surface the
+    # honest downgrade finding. It OUTRANKS _f1/_f2 so the fresher,
+    # copy-accurate finding replaces the stale `matrix_illegal_triple`
+    # that an earlier extractor-block turn may have produced on a
+    # now-legal audit draft. (intent_finding, rows 11-16, still outranks
+    # this via the branch order below.)
+    _f3 = _feas.classify_silent_downgrade(latest_user_text, draft)
+    if _f3 is not None:
+        draft_finding = _f3
 
     # Q103 — deterministic assistant_message. The LLM's `assistant_message`
     # field was already extracted from `parsed` above; we discard it here
@@ -3974,6 +4070,21 @@ def step_compile(
         }
     elif draft_finding is not None:
         _copy = _feas_copy(draft_finding.code)
+        # REV-PR-3 (GAP-A): for the enforce downgrade, append the
+        # descriptor-driven "this check can also run at X, where block is
+        # available" steer when the verifier has an earlier enforce-capable
+        # lifecycle. Empty for single-lifecycle verifiers (citation_verify).
+        if draft_finding.code == "enforce_downgraded_to_audit":
+            _movable = _feas.movable_enforce_events(draft)
+            if _movable:
+                _evs = ", ".join(_movable)
+                _copy = _copy + (
+                    f" 이 검사는 {_evs} 시점에서도 실행할 수 있고, 그 시점에서는 "
+                    f"차단이 가능합니다."
+                    if ko else
+                    f" This check can also run at {_evs}, where block is "
+                    f"available."
+                )
         if draft_finding.code != "cc_context_channel_excluded":
             # Rows 2-10 (non-D59): prefix the assistant_message.
             if assistant_message:
@@ -3982,13 +4093,18 @@ def step_compile(
                 assistant_message = _copy
         # Build alternatives for codex silent_noop codes that can be
         # authored in Magi Agent instead (keep_for_cc + handoff).
-        # All other findings (degraded, matrix_illegal_triple, etc.) get [].
+        # The enforce downgrade also offers a Magi Agent handoff (its
+        # evidence gate CAN hold final delivery). All other findings
+        # (matrix_illegal_triple, etc.) get [].
         if draft_finding.code in _feas._CODEX_SILENT_NOOP_CODES:
             _intent_summary = _build_intent_summary()
             _alternatives = [
                 {"kind": "keep_for_cc"},
                 _feas.handoff_cta(_intent_summary, ko=ko),
             ]
+        elif draft_finding.code == "enforce_downgraded_to_audit":
+            _intent_summary = _build_intent_summary()
+            _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
         else:
             _alternatives = []
         # Always populate the wire field (D59 message unchanged, wire present).

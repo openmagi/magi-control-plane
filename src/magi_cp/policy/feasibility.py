@@ -26,7 +26,21 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import re
 import urllib.parse
+
+
+# ---------------------------------------------------------------------------
+# Enforce-intent lexicon (single source of truth; review.py aliases this)
+# ---------------------------------------------------------------------------
+# High-precision block-family verbs. Verbatim lift of the historical
+# review.py `_ENFORCE_INTENT_RE` so there is exactly one source of truth
+# going forward (REV-PR-2 aliases review.py's name to this).
+ENFORCE_INTENT_RE = re.compile(
+    r"\b(?:block|deny|stop|prevent|forbid|reject|refuse|require|must not|hold)\b"
+    r"|차단|막아|금지|거부|막기|못하게|하면\s*안",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +190,17 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
         "이 이벤트-매처-액션 조합은 지원되지 않습니다. "
         "현재 magi-cp에서 이 정책을 표현할 수 없습니다.",
         None,
+    ),
+    # REV-PR-1 (GAP-A) - operator asked to enforce, draft records only
+    "enforce_downgraded_to_audit": (
+        "You asked to block or stop this, but blocking is not available at "
+        "this point in the run. The draft uses audit instead: it records "
+        "every failure but does not stop anything. To actually hold delivery "
+        "on this check, author it as a Magi Agent gate.",
+        "차단을 요청하셨지만 이 시점에서는 차단 액션을 사용할 수 없습니다. "
+        "초안은 audit(기록)으로 작성되어 실패를 기록만 하고 실제로 막지는 "
+        "않습니다. 실제 전달을 막으려면 Magi Agent 게이트로 작성하세요.",
+        "Keep audit here to get a record of every failure.",
     ),
     # Row 11 - evidence catalog (Magi Agent only)
     "magi_evidence_catalog": (
@@ -571,6 +596,104 @@ def classify_intent(user_text: str) -> IntentFinding | None:
         return None
     cls = _INTENT_CLASS[code]
     return IntentFinding(cls=cls, code=code, detail={})
+
+
+# ---------------------------------------------------------------------------
+# classify_silent_downgrade (REV-PR-1, GAP-A)
+# ---------------------------------------------------------------------------
+
+
+def classify_silent_downgrade(
+    user_text: str,
+    draft: dict,
+) -> FeasibilityFinding | None:
+    """Detect an enforce-intent draft that records only (audit) where no
+    enforce action is legal.
+
+    Returns a ``degraded`` finding (code ``enforce_downgraded_to_audit``)
+    iff ALL of:
+
+      1. the draft triple (event, matcher, action) is complete,
+      2. the applied action is ``audit`` (records only),
+      3. the operator's text asks to enforce (``ENFORCE_INTENT_RE``),
+      4. NEITHER ``block`` NOR ``ask`` is matrix-legal at (event, matcher).
+
+    When an enforce action IS legal at the triple, this returns None: that
+    case is review.py's advisory territory (its advice is non-circular
+    there) plus the REV-PR-3 block-restore. Deterministic, no LLM, never
+    raises on a partial draft.
+    """
+    trigger = draft.get("trigger") or {}
+    event = trigger.get("event") if isinstance(trigger, dict) else None
+    matcher = trigger.get("matcher") if isinstance(trigger, dict) else None
+    action = draft.get("action")
+    if not (event and matcher and action):
+        return None
+    if action != "audit":
+        return None
+    if not ENFORCE_INTENT_RE.search(user_text or ""):
+        return None
+
+    # Lazy import - one-way dependency, avoids a cycle at module load.
+    from ..policy.matrix import validate_combination  # noqa: PLC0415
+
+    for cand in ("block", "ask"):
+        try:
+            validate_combination(event, matcher, cand)
+        except ValueError:
+            continue
+        # An enforce action is legal here - not a silent downgrade.
+        return None
+    return FeasibilityFinding(
+        cls=FeasibilityClass.degraded,
+        code="enforce_downgraded_to_audit",
+        detail={"event": event, "applied": "audit"},
+    )
+
+
+def movable_enforce_events(draft: dict) -> tuple[str, ...]:
+    """Descriptor-driven "move it earlier" steer for an enforce downgrade.
+
+    For an evidence draft whose first requirement is a wired verifier step,
+    return the sorted set of OTHER lifecycle events where that verifier can
+    fire AND ``block`` is matrix-legal. Empty for a single-lifecycle
+    verifier (e.g. citation_verify, Stop only), a non-step draft, or a
+    missing descriptor. Never raises.
+    """
+    trigger = draft.get("trigger") or {}
+    current_event = trigger.get("event") if isinstance(trigger, dict) else None
+    requires = draft.get("requires") or []
+    if not isinstance(requires, list) or not requires:
+        return ()
+    first = requires[0]
+    if not isinstance(first, dict):
+        return ()
+    step = first.get("step")
+    if first.get("kind") != "step" or not isinstance(step, str) or not step:
+        return ()
+
+    from ..policy.matrix import LEGAL_COMBINATIONS, MatcherClass  # noqa: PLC0415
+    from ..verifier.descriptors import get_descriptor  # noqa: PLC0415
+
+    descriptor = get_descriptor(step)
+    if descriptor is None:
+        return ()
+    _CLASS_MAP = {
+        "tool": MatcherClass.tool,
+        "no_tool": MatcherClass.wildcard,
+        "final": MatcherClass.wildcard,
+    }
+    out: set[str] = set()
+    for spec in descriptor.get("triggers") or []:
+        if not isinstance(spec, dict):
+            continue
+        ev = spec.get("event")
+        mapped = _CLASS_MAP.get(spec.get("matcher_class"))
+        if not isinstance(ev, str) or mapped is None or ev == current_event:
+            continue
+        if (ev, mapped, "block") in LEGAL_COMBINATIONS:
+            out.add(ev)
+    return tuple(sorted(out))
 
 
 # ---------------------------------------------------------------------------

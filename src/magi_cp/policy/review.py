@@ -32,8 +32,12 @@ enabled. `ok` is True iff there is no `error`-severity issue.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
+
+# REV-PR-2: the enforce lexicon lives in feasibility.py (single source of
+# truth). feasibility.py imports nothing from review at module load, so this
+# is cycle-free. The module-level name is preserved for existing references.
+from .feasibility import ENFORCE_INTENT_RE as _ENFORCE_INTENT_RE
 
 __all__ = ["review_policy_draft", "Issue", "SEVERITIES"]
 
@@ -54,13 +58,25 @@ def Issue(
 
 
 # ── deterministic integrity checks ────────────────────────────────────
-# Verbs that signal the operator asked for ENFORCEMENT (block/hold), used by
-# the single-rule action-vs-intent check (F3). Korean + English.
-_ENFORCE_INTENT_RE = re.compile(
-    r"\b(?:block|deny|stop|prevent|forbid|reject|refuse|require|must not|hold)\b"
-    r"|차단|막아|금지|거부|막기|못하게|하면\s*안",
-    re.IGNORECASE,
-)
+# The enforce lexicon (`_ENFORCE_INTENT_RE`) is imported at module top from
+# feasibility.py so it has exactly one source of truth.
+
+
+def _legal_enforce_actions(event: str, matcher: str) -> list[str]:
+    """Return the enforce actions (block/ask) matrix-legal at this triple.
+
+    Deterministic; empty when neither is legal (e.g. Stop, where the runtime
+    cannot rewind). Used so the advice never names an illegal action.
+    """
+    from .matrix import validate_combination
+    legal: list[str] = []
+    for cand in ("block", "ask"):
+        try:
+            validate_combination(event, matcher, cand)
+        except ValueError:
+            continue
+        legal.append(cand)
+    return legal
 
 
 def _compound_integrity(
@@ -159,11 +175,35 @@ def _single_rule_integrity(
     action = draft.get("action")
     if (isinstance(action, str) and action == "audit"
             and intent and _ENFORCE_INTENT_RE.search(intent)):
-        issues.append(Issue(
-            "warn", "action_intent_mismatch",
-            "Your description asks to block or stop something, but this rule "
-            "only records (audit). Use block or ask to enforce.",
-            params={"action": action}))
+        # REV-PR-2: cross-check the matrix so the advice never names an
+        # action that is illegal at this event. At Stop (and other
+        # audit-only events) neither block nor ask is legal, so the old
+        # "Use block or ask to enforce" was a circular dead end.
+        legal = _legal_enforce_actions(event, matcher) if event and matcher else None
+        if legal is None:
+            # No trigger yet: block may become legal once it lands. Keep the
+            # generic advice unchanged.
+            issues.append(Issue(
+                "warn", "action_intent_mismatch",
+                "Your description asks to block or stop something, but this "
+                "rule only records (audit). Use block or ask to enforce.",
+                params={"action": action}))
+        elif legal:
+            phrase = " or ".join(legal)
+            issues.append(Issue(
+                "warn", "action_intent_mismatch",
+                "Your description asks to block or stop something, but this "
+                f"rule only records (audit). Use {phrase} to enforce.",
+                params={"action": action, "legal": legal}))
+        else:
+            issues.append(Issue(
+                "warn", "enforce_not_available_here",
+                "Your description asks to block or stop something, but block "
+                "and ask are not available on this event. Audit (record only) "
+                "is the strongest action available here. To actually enforce, "
+                "move the check to an event where block is available, or "
+                "author it as a Magi Agent gate.",
+                params={"action": action, "event": event}))
     return issues
 
 

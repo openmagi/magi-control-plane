@@ -331,3 +331,241 @@ def test_e_rate_limit_intent_stops_seeding():
     assert "수 없습니다" in am or "표현" in am, (
         f"expected Korean copy in assistant_message but got: {am!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# REV-PR-3 (GAP-A): anti-silent-downgrade wiring
+# ---------------------------------------------------------------------------
+
+def _citation_audit_draft() -> dict:
+    return {
+        "id": "final-answer-citation-audit",
+        "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "citation_verify",
+                      "verdict": "pass"}],
+        "action": "audit",
+    }
+
+
+def test_f_downgrade_finding_on_block_intent_citation():
+    """Operator asks to block missing citations at the final answer; the LLM
+    (per its prompt) lands an audit draft at Stop -> the wire carries the
+    honest enforce_downgraded_to_audit finding, not a stale illegal triple,
+    and the draft stays saveable (audit is legal)."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "block the final answer when citations are missing"}],
+            "draft_so_far": _citation_audit_draft(),
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    f = body["feasibility"]
+    assert f is not None, body
+    assert f["code"] == "enforce_downgraded_to_audit", f
+    assert f["class"] == "degraded", f
+    # Magi Agent handoff offered as the in-bounds enforce route.
+    assert any(a.get("kind") == "magi_agent_handoff" for a in f["alternatives"]), f
+    # Draft is a legal audit policy -> saveable; the point is disclosure.
+    assert body["ready_to_save"] is True, body
+    # The downgrade copy is present in the message.
+    assert "audit" in body["assistant_message"].lower()
+
+
+def test_f_no_finding_on_audit_intent():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": "경고만 남겨줘"}],
+            "draft_so_far": _citation_audit_draft(),
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["feasibility"] is None
+
+
+def test_f_downgrade_finding_replaces_stale_illegal_triple():
+    """When the extractor lands block (illegal at Stop) but the LLM downgrades
+    to audit, the fresher enforce_downgraded_to_audit finding wins over the
+    stale matrix_illegal_triple."""
+    # LLM proposes audit for the action (mirrors the citation->audit mandate).
+    canned = _llm_response(message="ok", updates={"action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = _citation_audit_draft()
+    draft["action"] = "block"  # extractor/prior-turn block on an illegal triple
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "actually block it, don't just log"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    f = r.json()["feasibility"]
+    assert f is not None
+    assert f["code"] == "enforce_downgraded_to_audit", f
+
+
+def test_g_block_restore_when_legal():
+    """PreToolUse+Bash: operator says block, LLM proposes audit -> the server
+    restores the operator's explicit legal block."""
+    canned = _llm_response(message="ok", updates={"action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "bash-rrn-block", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "step", "step": "privilege_scan",
+                      "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "block any shell command that contains an RRN"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "block", body["draft"]
+    # A legal block is not a downgrade.
+    assert body["feasibility"] is None, body
+
+
+def test_g_no_restore_when_illegal_yields_finding():
+    """Stop+citation: operator says block, LLM proposes audit -> action stays
+    audit (block illegal) AND the downgrade finding fires."""
+    canned = _llm_response(message="ok", updates={"action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "block the final answer, don't just record"}],
+            "draft_so_far": _citation_audit_draft(),
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+    assert body["feasibility"]["code"] == "enforce_downgraded_to_audit"
+
+
+def test_h_q_on_missing_filtered_at_stop():
+    """A Stop draft missing on_missing must offer only 'audit' (block/ask are
+    illegal at Stop), so the operator cannot click into a dead end."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "cite", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "citation_verify",
+                      "verdict": "pass"}],
+        # no action -> q_on_missing will be asked
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": "verify citations at the end"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    qs = {q["id"]: q for q in body["questions"]}
+    if "q_on_missing" in qs:
+        vals = {o["value"] for o in (qs["q_on_missing"].get("options") or [])}
+        assert vals == {"audit"}, vals
+
+
+def test_i_intent_finding_outranks_downgrade():
+    """A rows 11-16 intent finding (rate limit) still wins over the downgrade
+    finding on the same audit-at-Stop draft."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "block calls if more than 5 per minute"}],
+            "draft_so_far": _citation_audit_draft(),
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    f = r.json()["feasibility"]
+    assert f is not None
+    assert f["code"] == "rate_limit_window", f
+
+
+def test_g_no_restore_on_negated_block():
+    """REV-PR-3 fix (review MEDIUM): 'don't block it, just record' must NOT
+    restore block at a block-legal event; the operator explicitly declined
+    enforcement, so the LLM's audit stands."""
+    canned = _llm_response(message="ok", updates={"action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "bash-rrn", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "step", "step": "privilege_scan",
+                      "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user",
+                         "content": "don't block it, just record RRN in shell"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+
+
+def test_g_no_restore_on_korean_negated_block():
+    canned = _llm_response(message="ok", updates={"action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "bash-rrn", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "step", "step": "privilege_scan",
+                      "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{"role": "user", "content": "차단하지 말고 기록만 해줘"}],
+            "draft_so_far": draft,
+            "answers": None,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["action"] == "audit"
