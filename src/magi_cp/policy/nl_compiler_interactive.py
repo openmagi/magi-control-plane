@@ -1280,6 +1280,69 @@ def _event_is_complete_for_archetype(draft: dict[str, Any] | None) -> bool:
     return event in _legal_events_for_archetype(draft)
 
 
+# ── Cluster A: reconciled lifecycle event set ─────────────────────────
+# The 3-bucket `_LIFECYCLE_TO_EVENT` map above is the vocabulary the
+# q_lifecycle SELECT offers the operator. It is NOT the set of events the
+# draft is allowed to CARRY: the extractor, the wizard handoff, and the IR
+# validator all legally write and accept a much wider event vocabulary
+# (SessionStart, PermissionRequest, ...). Historically five turn-engine
+# gates only accepted the 3 buckets, so a draft carrying a legally-wider
+# event was treated as still-missing its lifecycle (R2-01/R2-02/R3-01).
+#
+# WIDEN (Kevin's decision): completeness accepts the full archetype-legal
+# event set. The single source of truth for each archetype is imported,
+# never re-listed:
+#   evidence     -> policy.matrix.supported_events()
+#   run_command  -> handoff_context._RUN_COMMAND_LIFECYCLE_TO_EVENT values
+# Both imports are LAZY: `matrix` pulls in `ir`, and `handoff_context`
+# imports from THIS module at top level, so a module-scope import here
+# would be circular. By call time both modules are fully initialised.
+
+
+@lru_cache(maxsize=1)
+def _evidence_legal_events() -> frozenset[str]:
+    """Every matrix-legal hook event for the evidence archetype."""
+    from .matrix import supported_events  # noqa: PLC0415
+    return supported_events()
+
+
+@lru_cache(maxsize=1)
+def _run_command_legal_events() -> frozenset[str]:
+    """Every hook event the run_command archetype is legal on.
+
+    Mirrors page.tsx RUN_COMMAND_LEGAL_BY_LIFECYCLE 1:1 via the canonical
+    `_RUN_COMMAND_LIFECYCLE_TO_EVENT` map (values). A test asserts the two
+    stay in sync.
+    """
+    from .handoff_context import _RUN_COMMAND_LIFECYCLE_TO_EVENT  # noqa: PLC0415
+    return frozenset(_RUN_COMMAND_LIFECYCLE_TO_EVENT.values())
+
+
+def _legal_events_for_archetype(draft: dict[str, Any] | None) -> frozenset[str]:
+    """The set of hook events legal for this draft's archetype."""
+    if _is_run_command_draft(draft):
+        return _run_command_legal_events()
+    return _evidence_legal_events()
+
+
+def _event_is_complete_for_archetype(draft: dict[str, Any] | None) -> bool:
+    """True iff `draft.trigger.event` is a legal, fully-specified lifecycle
+    for this draft's archetype (run_command vs evidence).
+
+    The single predicate every turn-engine gate consults so all layers
+    agree on "is the when-clause set to a legal event". Widens acceptance
+    to the archetype-legal set WITHOUT touching the 3-bucket q_lifecycle
+    menu the operator sees.
+    """
+    if not isinstance(draft, dict):
+        return False
+    trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else None
+    event = trig.get("event") if isinstance(trig, dict) else None
+    if not (isinstance(event, str) and event):
+        return False
+    return event in _legal_events_for_archetype(draft)
+
+
 # ── plain-language scrubber ───────────────────────────────────────────
 # Catches the four most common internal-vocab leaks. Order matters:
 # longer phrases first so "llm_critic" doesn't get partially-matched
