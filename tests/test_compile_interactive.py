@@ -3685,3 +3685,147 @@ def test_r2_04_unknown_matcher_is_left_as_is_and_rejected():
     trig = (r.json()["draft"] or {}).get("trigger") or {}
     # The unknown value must NOT land as the matcher.
     assert trig.get("matcher") != "banana", trig
+
+
+# ── R1-02 non-destructive LLM requires merge (Cluster C) ─────────────
+
+
+def test_r1_02_llm_empty_body_does_not_wipe_filled_regex():
+    """Core regression: R1-02.
+
+    A draft has a FILLED verifier body (pattern="SSN-\\d+"). On the
+    next turn the LLM emits draft_updates={"requires":[{"kind":"regex",
+    "pattern":""}]} (empty body re-seed). The merge MUST preserve the
+    filled body; the empty-body item is dropped in favour of the
+    existing filled item. ready_to_save must remain True.
+
+    Before the fix this test FAILS because the wholesale replace wipes
+    the pattern and ready_to_save silently flips back to False.
+    """
+    # Draft is already complete with a filled regex body.
+    filled_draft = {
+        "id": "ssn-block",
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": r"SSN-\d+"}],
+        "action": "block",
+    }
+    # LLM re-emits an empty-body requires item (regression scenario).
+    canned = _llm_response(
+        message="ok",
+        updates={"requires": [{"kind": "regex", "pattern": ""}]},
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": filled_draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    draft = body["draft"]
+    # The filled pattern must be preserved.
+    assert draft["requires"][0]["pattern"] == r"SSN-\d+", draft
+    # The draft must still be ready to save (was not regressed).
+    assert body["ready_to_save"] is True, body
+
+
+def test_r1_02_genuine_correction_lands_new_nonempty_pattern():
+    """R1-02: a non-empty incoming pattern is a genuine LLM correction
+    and must land, replacing the previous pattern.
+    """
+    filled_draft = {
+        "id": "old-pattern",
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": r"OLD-\d+"}],
+        "action": "block",
+    }
+    canned = _llm_response(
+        message="ok",
+        updates={"requires": [{"kind": "regex", "pattern": r"NEW-\d+"}]},
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": filled_draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    # Non-empty correction must land.
+    assert draft["requires"][0]["pattern"] == r"NEW-\d+", draft
+
+
+def test_r1_02_empty_existing_slot_accepts_llm_empty_seed():
+    """R1-02: when the existing requires slot is itself empty (wizard
+    seed state), an incoming empty-body LLM item is accepted as today --
+    the seeded state is preserved, not blocked.
+    """
+    # Draft has a seeded (empty) regex item -- the wizard's state.
+    seeded_draft = {
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+        "requires": [{"kind": "regex", "pattern": ""}],
+    }
+    canned = _llm_response(
+        message="ok",
+        updates={"requires": [{"kind": "regex", "pattern": ""}]},
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": seeded_draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    # Seeded state persists (kind landed, body still empty).
+    assert draft["requires"][0]["kind"] == "regex", draft
+    assert draft["requires"][0]["pattern"] == "", draft
+
+
+def test_r1_02_sibling_trigger_matcher_cannot_be_blanked():
+    """Sibling-branch audit: trigger.matcher is already protected by the
+    `m.strip() and ...` non-empty guard in the trigger branch. An LLM
+    that sends matcher="" cannot blank a previously set matcher. This
+    test documents that no additional guard is needed in the trigger
+    branch (it only fills-when-valid, not fills-always).
+    """
+    # Draft already has matcher="Bash".
+    prior_draft = {
+        "trigger": {
+            "host": "claude-code",
+            "event": "PreToolUse",
+            "matcher": "Bash",
+        },
+    }
+    # LLM tries to blank the matcher.
+    canned = _llm_response(
+        message="ok",
+        updates={"trigger": {"event": "PreToolUse", "matcher": ""}},
+        questions=[],
+    )
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": prior_draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    trig = r.json()["draft"]["trigger"]
+    # The existing matcher is preserved -- the trigger branch already
+    # rejects empty matcher values via m.strip() check.
+    assert trig["matcher"] == "Bash", trig

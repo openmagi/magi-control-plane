@@ -1671,6 +1671,26 @@ def _requires_first_body_is_empty(draft: dict[str, Any]) -> bool:
     return True
 
 
+def _requires_item_body_is_empty(item: dict[str, Any]) -> bool:
+    """Return True iff the canonical requires-dict *item* has an empty body.
+
+    Companion to `_requires_first_body_is_empty` that operates on a single
+    item rather than the full draft. Used by the non-destructive LLM merge
+    to detect empty-body candidates before deciding whether to preserve the
+    existing filled body.
+    """
+    kind = item.get("kind") or ("step" if "step" in item else None)
+    if kind == "regex":
+        return not (isinstance(item.get("pattern"), str) and item["pattern"])
+    if kind == "llm_critic":
+        return not (isinstance(item.get("criterion"), str) and item["criterion"])
+    if kind == "shacl":
+        return not (isinstance(item.get("shape_ttl"), str) and item["shape_ttl"])
+    if kind == "step":
+        return not (isinstance(item.get("step"), str) and item["step"])
+    return True
+
+
 def _is_run_command_draft(draft: dict[str, Any] | None) -> bool:
     """True iff the draft carries the run_command archetype discriminator.
 
@@ -3970,7 +3990,32 @@ def step_compile(
                         clean.append({"step": ereq.step,
                                        "verdict": ereq.verdict})
                 if clean:
-                    draft["requires"] = clean
+                    # Non-destructive merge: an incoming LLM empty-body
+                    # item must not overwrite an existing filled-body item
+                    # (fill-empty-or-more-complete invariant). For each
+                    # index: if the incoming item has an empty body AND the
+                    # existing draft item at the same index has a filled
+                    # body, keep the existing item. Incoming items that
+                    # themselves are non-empty, or that fill a currently
+                    # empty slot, land normally.
+                    existing = draft.get("requires")
+                    if isinstance(existing, list) and existing:
+                        merged: list[dict[str, Any]] = []
+                        for i, incoming_item in enumerate(clean):
+                            if (
+                                i < len(existing)
+                                and _requires_item_body_is_empty(incoming_item)
+                                and isinstance(existing[i], dict)
+                                and not _requires_item_body_is_empty(existing[i])
+                            ):
+                                # Incoming is empty, existing is filled:
+                                # preserve the filled body the user supplied.
+                                merged.append(existing[i])
+                            else:
+                                merged.append(incoming_item)
+                        draft["requires"] = merged
+                    else:
+                        draft["requires"] = clean
                 continue
             if k in ("action", "on_missing") and isinstance(v, str):
                 # D65 P1 — verifier-only field; never land on a
