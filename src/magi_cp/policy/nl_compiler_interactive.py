@@ -3941,17 +3941,36 @@ def step_compile(
 
     feasibility_wire = None
 
+    # Build a plain-language intent summary for handoff CTAs.
+    # Reuse the extractor partial summary when it has content; otherwise
+    # fall back to a scrubbed, capped slice of the latest user turn.
+    # The summary must never carry internal jargon (matcher/regex/lifecycle),
+    # so it always passes through _to_plain_language.
+    def _build_intent_summary() -> str:
+        partial = _extracted_partial_summary(extracted, ko)
+        if partial:
+            return _to_plain_language(partial)[:200]
+        raw = (latest_user_text or "").strip()
+        return _to_plain_language(raw)[:200]
+
     if intent_finding is not None:
         # Rows 11-16: override assistant_message and clear questions.
         _copy = _feas_copy(intent_finding.code)
         assistant_message = _copy
         questions = []
+        # Build alternatives: magi_agent_only codes get a handoff CTA;
+        # not_expressible codes get an empty list (dead-end in both products).
+        if intent_finding.code in _feas._MAGI_AGENT_ONLY_CODES:
+            _intent_summary = _build_intent_summary()
+            _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
+        else:
+            _alternatives = []
         feasibility_wire = {
             "runtime_id": effective_runtime,
             "class": intent_finding.cls.value,
             "code": intent_finding.code,
             "explanation": _copy,
-            "alternatives": [],
+            "alternatives": _alternatives,
         }
     elif draft_finding is not None:
         _copy = _feas_copy(draft_finding.code)
@@ -3961,13 +3980,24 @@ def step_compile(
                 assistant_message = _copy + "\n\n" + assistant_message
             else:
                 assistant_message = _copy
+        # Build alternatives for codex silent_noop codes that can be
+        # authored in Magi Agent instead (keep_for_cc + handoff).
+        # All other findings (degraded, matrix_illegal_triple, etc.) get [].
+        if draft_finding.code in _feas._CODEX_SILENT_NOOP_CODES:
+            _intent_summary = _build_intent_summary()
+            _alternatives = [
+                {"kind": "keep_for_cc"},
+                _feas.handoff_cta(_intent_summary, ko=ko),
+            ]
+        else:
+            _alternatives = []
         # Always populate the wire field (D59 message unchanged, wire present).
         feasibility_wire = {
             "runtime_id": effective_runtime,
             "class": draft_finding.cls.value,
             "code": draft_finding.code,
             "explanation": _copy,
-            "alternatives": [],
+            "alternatives": _alternatives,
         }
 
     # infeasible_hint advisory append.
