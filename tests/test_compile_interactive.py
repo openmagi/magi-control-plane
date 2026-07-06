@@ -3079,3 +3079,50 @@ def test_compound_no_ask_cue_defaults_block():
         "draft_so_far": None, "answers": None,
     })
     assert r.json()["draft"]["gate"]["action"] == "block"
+
+
+def test_rev_pr4_s4_audit_draft_discloses_record_only():
+    """REV-PR-4 (GAP-C): a ready audit draft must disclose that it records
+    but does not block, so record-only is never mistaken for enforcement."""
+    from magi_cp.policy.nl_compiler_interactive import _build_assistant_message
+
+    audit_draft = {
+        "id": "cite-audit", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "citation_verify",
+                      "verdict": "pass"}],
+        "action": "audit",
+    }
+    en = _build_assistant_message("S4_ready", audit_draft, ko=False)
+    assert "does not block anything" in en
+    assert "Draft is ready" in en  # base ready line still present
+    ko = _build_assistant_message("S4_ready", audit_draft, ko=True)
+    assert "차단하지 않습니다" in ko
+    assert "초안 준비됐어요" in ko
+
+
+def test_rev_pr4_s4_block_draft_has_no_disclosure():
+    from magi_cp.policy.nl_compiler_interactive import _build_assistant_message
+
+    block_draft = {
+        "id": "rrn-block", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "step", "step": "privilege_scan",
+                      "verdict": "pass"}],
+        "action": "block",
+    }
+    en = _build_assistant_message("S4_ready", block_draft, ko=False)
+    assert "does not block anything" not in en
+    assert "Draft is ready" in en
+
+
+def test_rev_pr4_s4_run_command_draft_has_no_disclosure():
+    from magi_cp.policy.nl_compiler_interactive import _build_assistant_message
+
+    rc_draft = {
+        "id": "lint-after-edit", "type": "run_command",
+        "trigger": {"event": "PostToolUse", "matcher": "Edit"},
+        "command": "npm run lint", "runtime": "bash",
+    }
+    en = _build_assistant_message("S4_ready", rc_draft, ko=False)
+    assert "does not block anything" not in en

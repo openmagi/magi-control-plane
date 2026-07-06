@@ -2173,6 +2173,16 @@ def _build_assistant_message(
                 f"Draft is ready. The id is `{rid}`. Click "
                 f"\"Save this policy\" on the right."
             )
+        # REV-PR-4 (GAP-C): enforcement-level disclosure. An audit rule
+        # records but never blocks; say so plainly at Save time so a
+        # record-only policy is never mistaken for enforcement. Evidence
+        # archetypes only (run_command has no action axis).
+        if draft.get("action") == "audit" and not is_run_command:
+            body += (
+                " 참고: 이 규칙은 실패를 기록만 하고 아무것도 차단하지 않습니다."
+                if ko else
+                " Note: this rule records failures; it does not block anything."
+            )
 
     if inject_rewrite_prefix and not body:
         # Strip the trailing blank line we added for visual separation
