@@ -41,6 +41,29 @@ type T = (
   v?: Record<string, string | number>,
 ) => string
 
+/** PR-6: Discriminated union for the feasibility alternatives the server
+ *  may append to a turn. `keep_for_cc` is a static chip; `magi_agent_handoff`
+ *  carries a localized CTA and an optional deep-link route. */
+type FeasibilityAlternative =
+  | { kind: "keep_for_cc" }
+  | {
+      kind: "magi_agent_handoff"
+      route: string | null
+      intent_summary: string
+      cta: string
+    }
+
+/** PR-6: Wire shape of the per-turn feasibility object. Absent or null when
+ *  the policy compiles natively on the selected runtime (class = "native").
+ *  Non-null when the runtime cannot enforce the policy fully. */
+interface FeasibilityVM {
+  runtime_id: "claude-code" | "codex"
+  class: "native" | "degraded" | "silent_noop" | "magi-agent-only" | "not-expressible"
+  code: string
+  explanation: string
+  alternatives: FeasibilityAlternative[]
+}
+
 /** Mirror of D55a's wire response shape. */
 interface InteractiveTurnResponse {
   assistant_message: string
@@ -49,6 +72,9 @@ interface InteractiveTurnResponse {
   questions: QuestionVM[]
   needs_more: boolean
   ready_to_save: boolean
+  /** PR-6: runtime-gated feasibility. Null or absent when the policy
+   *  compiles natively on the selected runtime (nothing to surface). */
+  feasibility?: FeasibilityVM | null
 }
 
 /** G2 (IF-04): the server caps history at 16 turns (MAX_HISTORY_TURNS) and
@@ -201,6 +227,13 @@ export function ConversationalCompose({
    *  actionable copy, not a top-of-page banner"). We keep a flag so
    *  the input can re-enable for retry. */
   const [errored, setErrored] = useState(false)
+  /** PR-6: session-scoped runtime override. Sent with every turn so the
+   *  cloud can compute feasibility for the operator's chosen runtime.
+   *  Defaults to the primary runtime (claude-code). */
+  const [runtimeOverride, setRuntimeOverride] = useState<"claude-code" | "codex">("claude-code")
+  /** PR-6: last turn's feasibility verdict. Null when the policy compiles
+   *  natively (class = "native" or absent) or a new turn is in flight. */
+  const [feasibility, setFeasibility] = useState<FeasibilityVM | null>(null)
 
   // Fetch the policy-integrity review whenever a draft becomes ready.
   // Clears the verdict as soon as the draft is edited back to not-ready
@@ -460,6 +493,7 @@ export function ConversationalCompose({
 
     setPending(true)
     setErrored(false)
+    setFeasibility(null)
     // Build the next-history snapshot synchronously over the current
     // closure-captured `history`, then push the same array into BOTH
     // the optimistic setState AND the fetch wire body. The prior
@@ -498,6 +532,7 @@ export function ConversationalCompose({
           history: wireHistory,
           draft_so_far: draft,
           answers: params.answers,
+          runtime_id: runtimeOverride,
         }),
       })
       // Drop the response on the floor if a newer request started OR
@@ -569,6 +604,15 @@ export function ConversationalCompose({
           ? data.missing_fields.filter((f): f is string => typeof f === "string")
           : [],
       )
+      // PR-6: update feasibility from the server's per-turn wire object.
+      // Null or absent = native runtime (render nothing); any other class
+      // surfaces the banner + alternatives.
+      const fw = data.feasibility
+      if (fw != null && fw.class !== "native") {
+        setFeasibility(fw)
+      } else {
+        setFeasibility(null)
+      }
     } catch (e) {
       // AbortError is the normal cancellation path when a newer turn
       // started; swallow without surfacing an error bubble.
@@ -603,7 +647,7 @@ export function ConversationalCompose({
         if (answersSent) setPicks({})
       }
     }
-  }, [draft, t, locale])
+  }, [draft, t, locale, runtimeOverride])
 
   const onSendInput = useCallback(() => {
     const text = input.trim()
@@ -698,6 +742,29 @@ export function ConversationalCompose({
           />
         </div>
 
+        {/* PR-6: session-scoped runtime override selector */}
+        <div className="flex items-center gap-2 border-b border-black/[0.06] px-4 py-2">
+          <span className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+            {t("newPolicy.conv.runtimeOverride.label")}
+          </span>
+          <select
+            data-testid="conv-runtime-select"
+            value={runtimeOverride}
+            onChange={(e) =>
+              setRuntimeOverride(e.target.value as "claude-code" | "codex")
+            }
+            aria-label={t("newPolicy.conv.runtimeOverride.label")}
+            className={
+              "rounded-md border border-black/[0.08] bg-white px-2 py-0.5 " +
+              "text-[11px] text-[var(--color-text-primary)] " +
+              "focus:border-[var(--color-accent)] focus:outline-none"
+            }
+          >
+            <option value="claude-code">{t("runtime.name.claude-code")}</option>
+            <option value="codex">{t("runtime.name.codex")}</option>
+          </select>
+        </div>
+
         <div
           ref={scrollRef}
           role="log"
@@ -763,6 +830,13 @@ export function ConversationalCompose({
               <Skeleton className="h-4 w-40" />
               <Skeleton className="h-4 w-64" />
             </div>
+          )}
+
+          {/* PR-6: feasibility banner — surfaces when the current runtime
+           *  cannot fully enforce the compiled policy. Null when native or
+           *  when a new turn is in flight (cleared in sendTurn). */}
+          {feasibility && (
+            <FeasibilityBanner feasibility={feasibility} t={t} />
           )}
 
           {showStarters && (
@@ -866,6 +940,101 @@ export function ConversationalCompose({
           ?? null
         }
       />
+    </div>
+  )
+}
+
+/**
+ * PR-6: Feasibility banner.
+ *
+ * Renders below the last assistant turn when the server reports that the
+ * current runtime cannot fully enforce the compiled policy. Never renders
+ * for class "native" (that is the happy path — null feasibility state).
+ *
+ * Layout:
+ *   - Colored border: amber for non-enforcing paths (silent_noop,
+ *     not-expressible); verdigris for informational (degraded,
+ *     magi-agent-only).
+ *   - `explanation` from the server, rendered verbatim (already localized
+ *     server-side).
+ *   - `alternatives` as chips below the explanation:
+ *     - `keep_for_cc` -> static i18n chip
+ *     - `magi_agent_handoff` -> `cta` text; anchor when `route` is
+ *       non-null (opens in new tab), plain span otherwise.
+ */
+function FeasibilityBanner({ feasibility, t }: {
+  feasibility: FeasibilityVM
+  t: T
+}) {
+  const isWarning =
+    feasibility.class === "silent_noop" ||
+    feasibility.class === "not-expressible"
+  const bannerClass = isWarning
+    ? "border-amber-300 bg-amber-50 text-amber-900"
+    : "border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.04] text-[var(--color-text-primary)]"
+
+  return (
+    <div
+      data-testid="feasibility-banner"
+      data-class={feasibility.class}
+      className={`rounded-lg border p-3 text-xs leading-relaxed ${bannerClass}`}
+    >
+      <p className="m-0 whitespace-pre-wrap">{feasibility.explanation}</p>
+
+      {feasibility.alternatives.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {feasibility.alternatives.map((alt, i) => {
+            if (alt.kind === "keep_for_cc") {
+              return (
+                <span
+                  key={i}
+                  data-testid="feasibility-alt-keep-for-cc"
+                  className={
+                    "rounded-xl border border-black/[0.10] bg-white px-2.5 py-1 " +
+                    "text-[11px] font-medium text-[var(--color-text-primary)]"
+                  }
+                >
+                  {t("newPolicy.conv.feasibility.keepForCC")}
+                </span>
+              )
+            }
+            // magi_agent_handoff
+            return (
+              <span key={i} className="flex flex-col gap-0.5">
+                {alt.route ? (
+                  <a
+                    data-testid="feasibility-alt-handoff-link"
+                    href={alt.route}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={
+                      "rounded-xl border border-[var(--color-accent)]/50 " +
+                      "bg-[var(--color-accent)]/10 px-2.5 py-1 " +
+                      "text-[11px] font-medium text-[var(--color-accent)] " +
+                      "hover:bg-[var(--color-accent)]/20"
+                    }
+                  >
+                    {alt.cta}
+                  </a>
+                ) : (
+                  <span
+                    data-testid="feasibility-alt-handoff-text"
+                    className="text-[11px] text-[var(--color-text-secondary)]"
+                  >
+                    {alt.cta}
+                  </span>
+                )}
+                <span
+                  data-testid="feasibility-alt-intent-summary"
+                  className="px-1 text-[10px] text-[var(--color-text-tertiary)]"
+                >
+                  {alt.intent_summary}
+                </span>
+              </span>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

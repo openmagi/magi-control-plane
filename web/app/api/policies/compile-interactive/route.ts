@@ -148,6 +148,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── runtime_id ─────────────────────────────────────────────────────
+  // PR-6: optional runtime override. Must be one of the two known
+  // runtimes or absent; anything else is an operator error (400).
+  const KNOWN_RUNTIMES = ["claude-code", "codex"] as const
+  type KnownRuntime = (typeof KNOWN_RUNTIMES)[number]
+  const rawRuntimeId = obj.runtime_id
+  let runtimeId: KnownRuntime | null = null
+  if (rawRuntimeId !== undefined && rawRuntimeId !== null) {
+    if (
+      typeof rawRuntimeId !== "string" ||
+      !(KNOWN_RUNTIMES as readonly string[]).includes(rawRuntimeId)
+    ) {
+      return j(
+        { error: "invalid body", detail: "runtime_id must be claude-code or codex" },
+        400,
+      )
+    }
+    runtimeId = rawRuntimeId as KnownRuntime
+  }
+
   const key = adminKey()
   if (!key) {
     return j({ error: "server config" }, 503)
@@ -166,6 +186,7 @@ export async function POST(req: NextRequest) {
         history,
         draft_so_far: draft ?? null,
         answers: answers ?? null,
+        runtime_id: runtimeId ?? null,
       }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })

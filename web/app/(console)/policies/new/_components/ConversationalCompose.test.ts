@@ -661,3 +661,77 @@ describe("G2: history race + cap (IF-03/IF-04)", () => {
     expect(src).toContain("nextHistory.slice(-MAX_WIRE_TURNS)")
   })
 })
+
+describe("PR-6: runtime override + feasibility banner", () => {
+  const src = readFileSync(
+    path.join(__dirname, "ConversationalCompose.tsx"),
+    "utf-8",
+  )
+
+  it("declares session-scoped runtimeOverride state defaulting to claude-code", () => {
+    expect(src).toContain("runtimeOverride")
+    expect(src).toContain("setRuntimeOverride")
+    expect(src).toContain('"claude-code"')
+    expect(src).toContain('"codex"')
+    // Default must be the primary runtime.
+    expect(src).toMatch(/useState<[^>]+>\("claude-code"\)/)
+  })
+
+  it("renders a runtime override select with the correct testid", () => {
+    expect(src).toContain('data-testid="conv-runtime-select"')
+    expect(src).toContain("runtimeOverride")
+    expect(src).toContain("setRuntimeOverride")
+  })
+
+  it("includes runtime_id in every POST body (PR-6 wire contract)", () => {
+    // The compile-interactive POST must carry the operator's runtime choice
+    // so the cloud can compute the correct feasibility class.
+    expect(src).toContain("runtime_id: runtimeOverride")
+  })
+
+  it("adds runtimeOverride to sendTurn useCallback deps", () => {
+    // sendTurn closes over runtimeOverride; without the dep the POST body
+    // would silently carry the stale initial value after a switch.
+    expect(src).toMatch(/\[draft,\s*t,\s*locale,\s*runtimeOverride\]/)
+  })
+
+  it("clears feasibility state at the start of each new turn", () => {
+    // A stale banner from turn N must not linger while turn N+1 is in
+    // flight. setFeasibility(null) in sendTurn achieves this.
+    expect(src).toContain("setFeasibility(null)")
+  })
+
+  it("renders FeasibilityBanner when feasibility is non-null", () => {
+    expect(src).toContain("FeasibilityBanner")
+    expect(src).toContain("{feasibility && (")
+    expect(src).toContain("data-testid=\"feasibility-banner\"")
+    expect(src).toContain("data-class={feasibility.class}")
+  })
+
+  it("FeasibilityBanner shows explanation verbatim from the server", () => {
+    // explanation is already server-localized; we render it as-is.
+    expect(src).toContain("feasibility.explanation")
+  })
+
+  it("keep_for_cc alternative renders a static chip with i18n label", () => {
+    expect(src).toContain('data-testid="feasibility-alt-keep-for-cc"')
+    expect(src).toContain('"newPolicy.conv.feasibility.keepForCC"')
+  })
+
+  it("magi_agent_handoff with non-null route renders anchor + target=_blank", () => {
+    expect(src).toContain('data-testid="feasibility-alt-handoff-link"')
+    expect(src).toContain('target="_blank"')
+    expect(src).toContain("alt.route")
+  })
+
+  it("magi_agent_handoff with null route renders cta as plain text", () => {
+    expect(src).toContain('data-testid="feasibility-alt-handoff-text"')
+  })
+
+  it("feasibility is set to null when the server returns null or native class", () => {
+    // The guard: fw != null && fw.class !== "native"
+    expect(src).toContain("fw != null")
+    expect(src).toContain('fw.class !== "native"')
+    expect(src).toContain("setFeasibility(fw)")
+  })
+})

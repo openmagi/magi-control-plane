@@ -346,6 +346,10 @@ const KO_RAW = {
   "newPolicy.conv.error.upstream": "잠시 문제가 있었어요. 다시 보내 보세요.",
   "newPolicy.conv.retryLabel": "다시 시도",
 
+  /* ── PR-6: runtime override select + feasibility banner ─────────── */
+  "newPolicy.conv.runtimeOverride.label": "런타임",
+  "newPolicy.conv.feasibility.keepForCC": "Claude Code에서 계속 작동",
+
   /* ── D57g: handoff to conversational from any authoring screen ──── */
   "newPolicy.handoff.continueInChat": "대화로 이어서 만들기",
   "newPolicy.handoff.continueInChat.aria": "지금까지 입력한 내용을 대화형으로 이어서 만들기",
@@ -1460,6 +1464,10 @@ const EN: Record<keyof typeof KO_RAW, string> = {
   "newPolicy.conv.error.network": "Network hiccup. Try sending again in a moment.",
   "newPolicy.conv.error.upstream": "Something went wrong. Try sending again.",
   "newPolicy.conv.retryLabel": "Try again",
+
+  /* PR-6: runtime override select + feasibility banner */
+  "newPolicy.conv.runtimeOverride.label": "Runtime",
+  "newPolicy.conv.feasibility.keepForCC": "Keeps working on Claude Code",
 
   "newPolicy.handoff.continueInChat": "Continue in conversation",
   "newPolicy.handoff.continueInChat.aria": "Continue what you have so far in conversational mode",

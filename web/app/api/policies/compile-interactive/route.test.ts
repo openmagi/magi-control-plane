@@ -87,4 +87,28 @@ describe("/api/policies/compile-interactive proxy", () => {
     // error codes, never the raw text.
     expect(src).not.toMatch(/return\s+.*upstreamBody/)
   })
+
+  it("PR-6: validates runtime_id against the KNOWN_RUNTIMES set (rejects unknowns with 400)", () => {
+    // The proxy must enforce the runtime_id allowlist so unknown values
+    // never reach the cloud. KNOWN_RUNTIMES pins the two known values.
+    expect(src).toContain("KNOWN_RUNTIMES")
+    expect(src).toContain('"claude-code"')
+    expect(src).toContain('"codex"')
+    // Unknown runtime_id returns 400 before the cloud round-trip.
+    expect(src).toMatch(/runtime_id/)
+    expect(src).toContain("invalid body")
+  })
+
+  it("PR-6: forwards runtime_id to the cloud endpoint", () => {
+    // The forwarded body includes runtime_id so the cloud can compute the
+    // correct feasibility class for the operator's chosen runtime.
+    expect(src).toContain("runtime_id: runtimeId")
+  })
+
+  it("PR-6: absent runtime_id is accepted (optional field)", () => {
+    // The proxy must NOT 400 when runtime_id is absent from the body.
+    // The guard is: only reject when rawRuntimeId is non-null/non-undefined
+    // AND not in KNOWN_RUNTIMES.
+    expect(src).toMatch(/rawRuntimeId !== undefined && rawRuntimeId !== null/)
+  })
 })
