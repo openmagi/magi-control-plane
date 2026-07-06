@@ -74,6 +74,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 from ..cloud.nl_compiler import (
@@ -1106,6 +1107,69 @@ _LIFECYCLE_TO_EVENT: dict[str, str] = {
 _EVENT_TO_LIFECYCLE: dict[str, str] = {v: k for k, v in _LIFECYCLE_TO_EVENT.items()}
 
 
+# ── Cluster A: reconciled lifecycle event set ─────────────────────────
+# The 3-bucket `_LIFECYCLE_TO_EVENT` map above is the vocabulary the
+# q_lifecycle SELECT offers the operator. It is NOT the set of events the
+# draft is allowed to CARRY: the extractor, the wizard handoff, and the IR
+# validator all legally write and accept a much wider event vocabulary
+# (SessionStart, PermissionRequest, ...). Historically five turn-engine
+# gates only accepted the 3 buckets, so a draft carrying a legally-wider
+# event was treated as still-missing its lifecycle (R2-01/R2-02/R3-01).
+#
+# WIDEN (Kevin's decision): completeness accepts the full archetype-legal
+# event set. The single source of truth for each archetype is imported,
+# never re-listed:
+#   evidence     -> policy.matrix.supported_events()
+#   run_command  -> handoff_context._RUN_COMMAND_LIFECYCLE_TO_EVENT values
+# Both imports are LAZY: `matrix` pulls in `ir`, and `handoff_context`
+# imports from THIS module at top level, so a module-scope import here
+# would be circular. By call time both modules are fully initialised.
+
+
+@lru_cache(maxsize=1)
+def _evidence_legal_events() -> frozenset[str]:
+    """Every matrix-legal hook event for the evidence archetype."""
+    from .matrix import supported_events  # noqa: PLC0415
+    return supported_events()
+
+
+@lru_cache(maxsize=1)
+def _run_command_legal_events() -> frozenset[str]:
+    """Every hook event the run_command archetype is legal on.
+
+    Mirrors page.tsx RUN_COMMAND_LEGAL_BY_LIFECYCLE 1:1 via the canonical
+    `_RUN_COMMAND_LIFECYCLE_TO_EVENT` map (values). A test asserts the two
+    stay in sync.
+    """
+    from .handoff_context import _RUN_COMMAND_LIFECYCLE_TO_EVENT  # noqa: PLC0415
+    return frozenset(_RUN_COMMAND_LIFECYCLE_TO_EVENT.values())
+
+
+def _legal_events_for_archetype(draft: dict[str, Any] | None) -> frozenset[str]:
+    """The set of hook events legal for this draft's archetype."""
+    if _is_run_command_draft(draft):
+        return _run_command_legal_events()
+    return _evidence_legal_events()
+
+
+def _event_is_complete_for_archetype(draft: dict[str, Any] | None) -> bool:
+    """True iff `draft.trigger.event` is a legal, fully-specified lifecycle
+    for this draft's archetype (run_command vs evidence).
+
+    The single predicate every turn-engine gate consults so all layers
+    agree on "is the when-clause set to a legal event". Widens acceptance
+    to the archetype-legal set WITHOUT touching the 3-bucket q_lifecycle
+    menu the operator sees.
+    """
+    if not isinstance(draft, dict):
+        return False
+    trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else None
+    event = trig.get("event") if isinstance(trig, dict) else None
+    if not (isinstance(event, str) and event):
+        return False
+    return event in _legal_events_for_archetype(draft)
+
+
 # ── plain-language scrubber ───────────────────────────────────────────
 # Catches the four most common internal-vocab leaks. Order matters:
 # longer phrases first so "llm_critic" doesn't get partially-matched
@@ -1524,9 +1588,10 @@ def _run_command_missing_fields(draft: dict[str, Any]) -> list[FieldName]:
     """
     missing: list[FieldName] = []
     trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
-    event = trig.get("event") if isinstance(trig, dict) else None
     matcher = trig.get("matcher") if isinstance(trig, dict) else None
-    if not (isinstance(event, str) and event in _EVENT_TO_LIFECYCLE):
+    # Cluster A: accept the full run_command-legal event set (the values of
+    # `_RUN_COMMAND_LIFECYCLE_TO_EVENT`), not just the 3 q_lifecycle buckets.
+    if not _event_is_complete_for_archetype(draft):
         missing.append("lifecycle")
     if not (isinstance(matcher, str) and matcher.strip()):
         missing.append("matcher")
@@ -1593,13 +1658,13 @@ def _missing_fields_for_draft(draft: dict[str, Any] | None) -> list[FieldName]:
         return _run_command_missing_fields(draft)
     missing: list[FieldName] = []
     trig = draft.get("trigger") if isinstance(draft.get("trigger"), dict) else {}
-    event = trig.get("event") if isinstance(trig, dict) else None
     matcher = trig.get("matcher") if isinstance(trig, dict) else None
-    # lifecycle is present iff the trigger.event maps to a known
-    # lifecycle bucket. An unsupported event (e.g. UserPromptSubmit)
-    # counts as "still missing" so we re-ask rather than save a draft
-    # the wizard cannot round-trip.
-    if not (isinstance(event, str) and event in _EVENT_TO_LIFECYCLE):
+    # lifecycle is present iff the trigger.event is a legal event for this
+    # archetype (Cluster A: the full matrix-legal set, not just the 3
+    # q_lifecycle buckets). An unknown/illegal event still counts as
+    # "still missing" so we re-ask rather than save an unroundtrippable
+    # draft.
+    if not _event_is_complete_for_archetype(draft):
         missing.append("lifecycle")
     if not (isinstance(matcher, str) and matcher.strip()):
         missing.append("matcher")
@@ -1893,6 +1958,23 @@ _CONVERSATION_STATES: tuple[ConversationState, ...] = (
 )
 
 
+def _terminal_state(draft: dict[str, Any]) -> ConversationState:
+    """S4_ready iff the draft both round-trips the IR validator AND has no
+    remaining missing fields; otherwise S3_id_pending.
+
+    Cluster A (R2-01): the state machine derives its terminal completeness
+    from `_missing_fields_for_draft` (the same gate that governs
+    ready_to_save) so the state and the missing-fields list can never
+    contradict. For a fully-specified 3-bucket draft this is identical to
+    the old IR-only decision (missing-fields is empty), so the common case
+    is unchanged.
+    """
+    ok, _err = _draft_passes_ir_validator(draft)
+    if ok and not _missing_fields_for_draft(draft):
+        return "S4_ready"
+    return "S3_id_pending"
+
+
 def _conversation_state(draft: dict[str, Any] | None) -> ConversationState:
     """Compute the conversation state given the current draft.
 
@@ -1917,8 +1999,7 @@ def _conversation_state(draft: dict[str, Any] | None) -> ConversationState:
             return "S0_intent_unknown"
         if not draft.get("id"):
             return "S2_body_filled"
-        ok, _err = _draft_passes_ir_validator(draft)
-        return "S4_ready" if ok else "S3_id_pending"
+        return _terminal_state(draft)
     # Evidence archetype.
     requires = draft.get("requires")
     if not (isinstance(requires, list) and requires):
@@ -1927,8 +2008,7 @@ def _conversation_state(draft: dict[str, Any] | None) -> ConversationState:
         return "S1_verifier_selected"
     if not draft.get("id"):
         return "S2_body_filled"
-    ok, _err = _draft_passes_ir_validator(draft)
-    return "S4_ready" if ok else "S3_id_pending"
+    return _terminal_state(draft)
 
 
 def _should_apply_ambiguity_disambiguation(
@@ -2660,7 +2740,12 @@ def _sanitize_draft_so_far(raw: dict[str, Any] | None) -> dict[str, Any]:
     if raw_trig is not None:
         trig: dict[str, Any] = {"host": "claude-code"}
         ev = raw_trig.get("event")
-        if isinstance(ev, str) and ev in _EVENT_TO_LIFECYCLE:
+        # Cluster A: keep any event legal for this draft's archetype (the
+        # wider matrix-legal / run_command set), NOT just the 3 buckets, so
+        # the operator's deliberate wider "when" is not silently deleted on
+        # the next echo (R2-02). Genuinely illegal/unknown events are still
+        # dropped: we widen to the LEGAL set, not to anything.
+        if isinstance(ev, str) and ev in _legal_events_for_archetype(raw):
             trig["event"] = ev
         m = raw_trig.get("matcher")
         if isinstance(m, str) and m.strip() and len(m) <= 256 \
@@ -3468,8 +3553,9 @@ def step_compile(
     #   * `requires` items are individually validated via
     #     `_coerce_evidence_req` + `EvidenceReq.validate()`; a
     #     malformed item is dropped rather than written.
-    #   * `trigger.event` is restricted to `_EVENT_TO_LIFECYCLE`;
-    #     `trigger.matcher` is restricted to `_matcher_is_legal`.
+    #   * `trigger.event` is restricted to the archetype-legal event set
+    #     (`_legal_events_for_archetype`); `trigger.matcher` is restricted
+    #     to `_matcher_is_legal`.
     #   * `action` / `on_missing` are restricted to `_ON_MISSING_VALUES`.
     #   * `id` is validated via `_validate_id`.
     updates_raw = parsed.get("draft_updates")
@@ -3594,8 +3680,12 @@ def step_compile(
                 if not isinstance(trig, dict):
                     trig = {}
                 ev = v.get("event")
+                # Cluster A: accept any event legal for this draft's
+                # archetype (the wider set), not just the 3 buckets, so the
+                # LLM can confirm an operator's wider lifecycle. Draft is
+                # used (not `v`) so the run_command discriminator is honored.
                 if (isinstance(ev, str)
-                        and ev in _EVENT_TO_LIFECYCLE
+                        and ev in _legal_events_for_archetype(draft)
                         and "lifecycle" not in locked):
                     trig["event"] = ev
                 m = v.get("matcher")
