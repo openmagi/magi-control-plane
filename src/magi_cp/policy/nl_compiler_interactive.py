@@ -162,6 +162,29 @@ _RC_SCRIPT_ID_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
 # `/scripts/foo.py` while still matching `/scripts`, `/scripts.`,
 # `/scripts,`, `/scripts)`, and `/scripts/`-at-end-of-string.
 _SCRIPTS_LINK_RE = re.compile(r"(?<![A-Za-z0-9_])/scripts(?!/?[A-Za-z0-9_])")
+
+# Closed set of valid infeasible_hint category tokens.
+# Any value not in this set (including non-str) is dropped silently.
+_INFEASIBLE_HINT_ALLOWED: frozenset[str] = frozenset({
+    "magi_evidence_catalog",
+    "magi_source_citation",
+    "cross_session_state",
+    "rate_limit_window",
+    "token_budget",
+    "retroactive_undo",
+    "other_out_of_scope",
+})
+
+# Server-owned copy for the other_out_of_scope hint category (EN / KO).
+_INFEASIBLE_OTHER_EN = (
+    "This may be outside what a policy here can express; "
+    "consider a Magi Agent capability or a different configuration option."
+)
+_INFEASIBLE_OTHER_KO = (
+    "이 요청은 정책으로 표현할 수 있는 범위를 벗어날 수 있습니다. "
+    "Magi Agent 기능이나 다른 설정 옵션을 확인해 보세요."
+)
+
 # D65 P1 — verifier-intent verb heuristic. The conversational compiler
 # proposes `type: "run_command"` when the user describes a RUNNABLE
 # action, but a phrasing like "ensure pytest passes before the final
@@ -2346,6 +2369,23 @@ key `type` (the wire shape uses `kind` historically and you may emit
 either — the server normalises). Do NOT use the word "kind" in any
 user-facing prose.
 
+Infeasibility advisory: when the user's request is genuinely outside what
+a cp hook policy can express today (not expressible as a hook policy, and
+not a misunderstanding of the verifier vocabulary), you MAY add this optional
+top-level key to your JSON response:
+  "infeasible_hint": "<category>"
+Use ONLY one of these exact category values:
+  magi_evidence_catalog  - full evidence-ledger grounding (Magi Agent only)
+  magi_source_citation   - inline per-claim source citations (Magi Agent only)
+  cross_session_state    - cross-session memory or historical state
+  rate_limit_window      - time-window rate limiting (per-minute / per-hour)
+  token_budget           - token or cost budgets
+  retroactive_undo       - reversing a tool call after it executed
+  other_out_of_scope     - anything else outside the expressibility contract
+The server will surface a server-owned explanation to the operator. Do NOT
+use infeasible_hint to block a request that IS expressible - use it ONLY
+when no hook policy archetype can fulfil the intent.
+
 Hard rules for the user-facing strings (assistant_message +
 question.prompt + option.label + option.hint):
   - NEVER use the words "regex", "shacl", "matcher", "lifecycle",
@@ -2363,25 +2403,7 @@ question.prompt + option.label + option.hint):
     questions needed) and a confirmation assistant_message that
     summarizes the draft in plain language.
 
-D59 archetype hint — context injection availability:
-  - The "inject extra context" archetype (action="inject_context", IR
-    type="context_injection") is ONLY meaningful when the chosen
-    hook accepts the additionalContext channel. The following four
-    hook events use a SPECIALIZED output channel and silently drop
-    additionalContext at runtime, so DO NOT propose inject_context
-    for them:
-      Elicitation        — uses elicitationDecision (MCP accept / decline)
-      ElicitationResult  — overrides the action / content before the
-                           MCP response is sent
-      WorktreeCreate     — returns a worktree path via worktreePath
-      MessageDisplay     — display-only; no model-context channel
-    If the user's intent points at one of those four AND they ask
-    for inject_context, propose either:
-      (a) the audit archetype (record the trigger to the ledger), or
-      (b) the structured wizard ("This needs a different output
-          channel — please switch to the structured wizard so you can
-          pick the right archetype for this hook").
-    Audit ("record only") remains legal on all four events.
+{capability_boundary}
 
 D65 archetype hint — runnable actions (run_command):
   - When the user describes a RUNNABLE action — they want the hook to
@@ -2467,18 +2489,23 @@ policy."""
 
 def _build_messages(*, nonce: str, history: list[dict[str, str]] | None,
                     draft_so_far: dict[str, Any] | None,
-                    answers: dict[str, str] | None) -> list[LlmMessage]:
+                    answers: dict[str, str] | None,
+                    runtime_id: str | None = None) -> list[LlmMessage]:
     """Compose the chat-completion message list sent to the compiler LLM.
 
     History entries are fenced — assistant turns are NOT trusted by role
     alone; a prior assistant turn could carry user-controlled text that
     a careless caller pasted in verbatim.
     """
+    from magi_cp.policy import feasibility as _feasibility_mod  # lazy import
     sys_msg: LlmMessage = {
         "role": "system",
         "content": _SYSTEM_INTERACTIVE_TMPL.format(
             nonce=nonce,
             max_questions=MAX_QUESTIONS_PER_TURN,
+            capability_boundary=_feasibility_mod.render_capability_boundary(
+                runtime_id or "claude-code"
+            ),
         ),
     }
     msgs: list[LlmMessage] = [sys_msg]
@@ -3368,9 +3395,19 @@ def step_compile(
     messages = _build_messages(
         nonce=nonce, history=history,
         draft_so_far=draft, answers=answers,
+        runtime_id=effective_runtime,
     )
     raw = provider.complete(messages)
     parsed = _parse_json_response(raw, kind="interactive")
+
+    # infeasible_hint - LLM advisory channel (UNTRUSTED, advisory only).
+    # Extract and validate against the closed set; anything outside is dropped.
+    _raw_hint = parsed.get("infeasible_hint") if isinstance(parsed, dict) else None
+    _hint: str | None = (
+        _raw_hint
+        if (isinstance(_raw_hint, str) and _raw_hint in _INFEASIBLE_HINT_ALLOWED)
+        else None
+    )
 
     # Q103 — the LLM's `assistant_message` is intentionally discarded.
     # The state-machine builder (`_build_assistant_message`, called
@@ -3932,6 +3969,23 @@ def step_compile(
             "explanation": _copy,
             "alternatives": [],
         }
+
+    # infeasible_hint advisory append.
+    # ADVISORY ONLY: never wipes draft, clears questions, or changes
+    # ready_to_save.  A prompt-injected blanket hint degrades to a
+    # noisy suggestion line, never a denial of service.
+    # Deterministic intent_finding outranks the LLM advisory hint:
+    # if the lexicon already fired this turn the hint is suppressed.
+    if _hint is not None and intent_finding is None:
+        if _hint == "other_out_of_scope":
+            _hint_suggestion = _INFEASIBLE_OTHER_KO if ko else _INFEASIBLE_OTHER_EN
+        else:
+            _hint_suggestion = _feas_copy(_hint)
+        if _hint_suggestion:
+            if assistant_message:
+                assistant_message = assistant_message + "\n\n" + _hint_suggestion
+            else:
+                assistant_message = _hint_suggestion
 
     # If we have no draft (no answers, no LLM updates yet), the wire
     # `draft` field MUST be None per the brief so the client
