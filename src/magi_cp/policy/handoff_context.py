@@ -1391,6 +1391,7 @@ def build_handoff_turn(
     draft_ir: dict[str, Any] | None,
     origin: str | None = None,
     locale_hint: str | None = None,
+    runtime_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the first conversational turn for a seeded handoff.
 
@@ -1567,6 +1568,53 @@ def build_handoff_turn(
 
     wire_draft: dict[str, Any] | None = merged if merged else None
 
+    # Feasibility check at the wizard -> conversational handoff seam.
+    # OFFLINE: no LLM call.  Only draft-shape findings (rows 1-10) apply.
+    # Mirrors the feasibility_wire shape emitted by nl_compiler_interactive.
+    feasibility_wire: dict[str, Any] | None = None
+    if wire_draft is not None:
+        from . import feasibility as _feas  # noqa: PLC0415
+
+        effective_runtime = runtime_id or "claude-code"
+        finding = _feas.classify_draft(wire_draft, effective_runtime)
+        if finding is not None:
+            # Localize explanation from COPY_TABLE (ko follows locale_hint
+            # / _detect_korean result already computed above).
+            entry = _feas.COPY_TABLE.get(finding.code)
+            if entry:
+                _en, _ko_str, _alt = entry
+                base = _ko_str if ko else _en
+                explanation = base + (" " + _alt if _alt else "")
+            else:
+                explanation = finding.code
+
+            # Build alternatives per the handoff-parity rule:
+            #   codex silent_noop codes -> [keep_for_cc, magi_agent_handoff]
+            #   all other findings     -> []
+            if finding.code in _feas._CODEX_SILENT_NOOP_CODES:
+                # Build a minimal, scrubbed intent_summary from the draft.
+                trig_ = wire_draft.get("trigger") or {}
+                _event = trig_.get("event") if isinstance(trig_, dict) else None
+                _matcher = trig_.get("matcher") if isinstance(trig_, dict) else None
+                _action = wire_draft.get("action")
+                parts = [p for p in [_event, _matcher, _action] if p]
+                raw_summary = ("authored in the wizard: " + "/".join(parts)) if parts else "authored in the wizard"
+                intent_summary = _to_plain_language(raw_summary)[:200]
+                alternatives: list[dict[str, Any]] = [
+                    {"kind": "keep_for_cc"},
+                    _feas.handoff_cta(intent_summary, ko=ko),
+                ]
+            else:
+                alternatives = []
+
+            feasibility_wire = {
+                "runtime_id": effective_runtime,
+                "class": finding.cls.value,
+                "code": finding.code,
+                "explanation": explanation,
+                "alternatives": alternatives,
+            }
+
     return {
         "assistant_message": assistant_message,
         "draft": wire_draft,
@@ -1574,6 +1622,7 @@ def build_handoff_turn(
         "questions": [q.to_dict() for q in questions],
         "needs_more": needs_more,
         "ready_to_save": ready_to_save,
+        "feasibility": feasibility_wire,
     }
 
 

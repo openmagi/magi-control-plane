@@ -293,6 +293,7 @@ def attach(
                 draft_ir=req.draft_ir,
                 origin=req.origin,
                 locale_hint=req.locale,
+                runtime_id=req.runtime_id,
             )
         except HandoffContextError as e:
             raise HTTPException(422, str(e)) from e

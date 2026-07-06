@@ -214,6 +214,7 @@ class HandoffContextReq(BaseModel):
     draft_ir: dict | None = None
     origin: Literal["guided", "advanced", "review"] | None = None
     locale: Literal["ko", "en"] | None = None
+    runtime_id: Literal["claude-code", "codex"] | None = None
 
 
 # D53b: replay-against-last-24h dry-run authoring affordance.
