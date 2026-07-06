@@ -217,6 +217,13 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "Global availability switch for the Codex CLI runtime adapter (default ON). When on, the dashboard runtime picker allows a switch to Codex; this only makes Codex selectable (a tenant reaches the Codex path only when its runtime_id is codex). Set an explicit falsy value (0/false/off) to disable the adapter, after which the Claude Code path is byte-identical.",
   },
   {
+    name: "MAGI_CP_MAGI_AGENT_CONSOLE_URL",
+    group: "cloud",
+    default: "(unset)",
+    ko: "Magi Agent 콘솔의 베이스 URL. 대화형 정책 저작에서 요청이 magi-cp 훅으로는 표현 불가하고 Magi Agent에서 저작 가능할 때(증거 원장·인라인 인용·세션 간 상태), handoff CTA가 이 URL의 /customize로 링크합니다. 설정하지 않으면 CTA는 링크 없이 텍스트로만 표시됩니다(magi-agent 미배포 셀프호스터가 죽은 링크를 보지 않도록).",
+    en: "Base URL of the Magi Agent console. When a conversational authoring request is not expressible as a magi-cp hook but IS authorable in Magi Agent (evidence ledger, inline citation, cross-session state), the handoff CTA links to this URL's /customize. Unset renders the CTA as plain text with no link, so a self-hoster without a magi-agent deployment never sees a dead link.",
+  },
+  {
     name: "MAGI_CP_RUNTIME",
     group: "local",
     default: "(auto)",
