@@ -5,6 +5,7 @@ import { Sidebar } from "./_components/Sidebar"
 import { SidebarClient } from "./_components/SidebarClient"
 import { RuntimeHeader } from "./_components/RuntimeHeader"
 import { CommandPalette, type Command } from "./_components/CommandPalette"
+import { ViewTransitions } from "./_components/ViewTransitions"
 import { getWorkspaceData } from "./_data/workspace"
 
 /**
@@ -44,7 +45,7 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
   ]
 
   return (
-    <div className="flex min-h-screen bg-[var(--surface-console)]"><CommandPalette commands={commands} placeholder={t("command.placeholder")} emptyLabel={t("command.empty")} />
+    <div className="flex min-h-screen bg-[var(--surface-console)]"><ViewTransitions /><CommandPalette commands={commands} placeholder={t("command.placeholder")} emptyLabel={t("command.empty")} />
       <SidebarClient
         openMenuLabel={t("nav.openMenu")}
         closeMenuLabel={t("nav.closeMenu")}
