@@ -107,8 +107,30 @@ def _run_command_allowed() -> bool:
     return raw.strip() != "0"
 
 
+# ── Magi Agent console URL for handoff CTAs.
+# Design brief: 2026-07-06-magi-cp-authoring-feasibility-runtime-awareness (private planning repo)
+#
+# When MAGI_CP_MAGI_AGENT_CONSOLE_URL is set, the feasibility wire includes a
+# deep-link into the Magi Agent Customize flow, pre-populated with the operator
+# intent summary. When unset (the self-host default), the CTA is text-only so
+# operators without a magi-agent deployment never see a dead link.
+_MAGI_AGENT_CONSOLE_URL_ENV = "MAGI_CP_MAGI_AGENT_CONSOLE_URL"
+
+
+def magi_agent_console_url() -> str | None:
+    """Base URL of the Magi Agent console for handoff CTAs. Unset by
+    default (self-hosters without a magi-agent deployment get a text-only
+    CTA, never a dead link)."""
+    raw = os.environ.get(_MAGI_AGENT_CONSOLE_URL_ENV)
+    if raw is None:
+        return None
+    raw = raw.strip().rstrip("/")
+    return raw or None
+
+
 __all__ = [
     "pack_centric_runtime_enabled",
     "codex_runtime_enabled",
     "_run_command_allowed",
+    "magi_agent_console_url",
 ]

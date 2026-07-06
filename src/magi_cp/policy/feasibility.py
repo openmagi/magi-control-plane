@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import urllib.parse
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +241,81 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
         "Use PreToolUse with block action to stop execution before it starts.",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Magi Agent handoff CTA copy (EN / KO, with-route / without-route)
+# Lives here so all operator copy is co-located with COPY_TABLE.
+# ---------------------------------------------------------------------------
+
+# CTA text keyed by (ko: bool, route_present: bool).
+# EN/KO outer, route-present inner.
+_HANDOFF_CTA: dict[tuple[bool, bool], str] = {
+    (False, True): (
+        "Author this in Magi Agent Customize to get this capability."
+    ),
+    (False, False): (
+        "Author this behaviour in Magi Agent Customize to get this capability."
+    ),
+    (True, True): (
+        "Magi Agent Customize에서 이 동작을 설정하면 이 기능을 사용할 수 있습니다."
+    ),
+    (True, False): (
+        "Magi Agent Customize에서 이 동작을 설정하면 이 기능을 사용할 수 있습니다."
+    ),
+}
+
+# Codes that belong to magi_agent_only and get a handoff CTA.
+_MAGI_AGENT_ONLY_CODES: frozenset[str] = frozenset({
+    "magi_evidence_catalog",
+    "magi_source_citation",
+    "cross_session_state",
+})
+
+# Codex silent-noop draft codes that get both keep_for_cc + handoff.
+_CODEX_SILENT_NOOP_CODES: frozenset[str] = frozenset({
+    "codex_matcher_inert",
+    "codex_event_not_live",
+})
+
+
+def magi_agent_route(intent_summary: str) -> str | None:
+    """Return a deep-link URL into the Magi Agent Customize flow, or None.
+
+    When MAGI_CP_MAGI_AGENT_CONSOLE_URL is unset (the default), returns None
+    so callers emit a text-only CTA rather than a dead link.
+
+    The ``?intent=`` query parameter carries a URL-encoded plain-language
+    summary of what the operator intended.  The magi-agent side may use it
+    to pre-populate the compose widget; today it silently ignores unknown
+    query params.
+
+    Args:
+        intent_summary - plain-language, scrubbed one-line summary of the
+                         operator intent (jargon already stripped).
+    """
+    from ..config import magi_agent_console_url  # noqa: PLC0415
+
+    base = magi_agent_console_url()
+    if base is None:
+        return None
+    return f"{base}/customize?intent={urllib.parse.quote(intent_summary)}"
+
+
+def handoff_cta(intent_summary: str, *, ko: bool) -> dict:
+    """Build a ``magi_agent_handoff`` alternatives entry.
+
+    Returns a dict with keys ``kind``, ``route`` (may be None), ``intent_summary``,
+    and ``cta`` (localized CTA string).
+    """
+    route = magi_agent_route(intent_summary)
+    cta = _HANDOFF_CTA[(ko, route is not None)]
+    return {
+        "kind": "magi_agent_handoff",
+        "route": route,
+        "intent_summary": intent_summary,
+        "cta": cta,
+    }
 
 
 # ---------------------------------------------------------------------------
