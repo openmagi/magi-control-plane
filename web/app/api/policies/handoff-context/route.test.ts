@@ -196,4 +196,74 @@ describe("/api/policies/handoff-context proxy", () => {
     expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)
       .mock.calls.length).toBe(0)
   })
+
+  // ── runtime_id forwarding (PR-7) ─────────────────────────────────────
+
+  it("forwards valid runtime_id to the cloud", async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(
+        JSON.stringify({ assistant_message: "ok", feasibility: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const r = await callRoute({
+      wizard_state: { lifecycle: "before_tool_use", toolScope: "Read" },
+      draft_ir: null,
+      runtime_id: "codex",
+    })
+    expect(r.status).toBe(200)
+    const [, init] = fetchSpy.mock.calls[0]!
+    const sentBody = JSON.parse(init.body as string)
+    expect(sentBody.runtime_id).toBe("codex")
+  })
+
+  it("returns 400 for an invalid runtime_id value", async () => {
+    globalThis.fetch = vi.fn() as unknown as typeof fetch
+    const r = await callRoute({
+      wizard_state: {},
+      draft_ir: null,
+      runtime_id: "gpt-4o",
+    })
+    expect(r.status).toBe(400)
+    const body = await r.json()
+    expect(body.error).toBe("invalid body")
+    // Cloud must NOT have been contacted.
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls.length).toBe(0)
+  })
+
+  it("omits runtime_id from cloud body when absent in request", async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(
+        JSON.stringify({}), { status: 200 },
+      ),
+    )
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    await callRoute({
+      wizard_state: {},
+      draft_ir: null,
+    })
+    const [, init] = fetchSpy.mock.calls[0]!
+    const sentBody = JSON.parse(init.body as string)
+    expect(sentBody.runtime_id).toBeUndefined()
+  })
+
+  it("accepts claude-code as a valid runtime_id", async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response(
+        JSON.stringify({}), { status: 200 },
+      ),
+    )
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const r = await callRoute({
+      wizard_state: {},
+      draft_ir: null,
+      runtime_id: "claude-code",
+    })
+    expect(r.status).toBe(200)
+    const [, init] = fetchSpy.mock.calls[0]!
+    const sentBody = JSON.parse(init.body as string)
+    expect(sentBody.runtime_id).toBe("claude-code")
+  })
 })

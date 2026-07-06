@@ -107,6 +107,25 @@ export async function POST(req: NextRequest) {
       locale = localeRaw
     }
   }
+  // runtime_id is optional. Validate against the known set; anything
+  // else is a caller error (400), mirroring compile-interactive route.ts.
+  const KNOWN_RUNTIMES = ["claude-code", "codex"] as const
+  type KnownRuntime = (typeof KNOWN_RUNTIMES)[number]
+  const rawRuntimeId = body.runtime_id
+  let runtimeId: KnownRuntime | null = null
+  if (rawRuntimeId !== undefined && rawRuntimeId !== null) {
+    if (
+      typeof rawRuntimeId !== "string" ||
+      !(KNOWN_RUNTIMES as readonly string[]).includes(rawRuntimeId)
+    ) {
+      return j(
+        { error: "invalid body", detail: "runtime_id must be claude-code or codex" },
+        400,
+      )
+    }
+    runtimeId = rawRuntimeId as KnownRuntime
+  }
+
   // Cheap upper-bound: any single input over MAX_STATE_BYTES UTF-8 bytes
   // is refused before the cloud round-trip. The cloud enforces the same
   // bound canonically (UTF-8 byte count). Counting JS string code
@@ -131,6 +150,7 @@ export async function POST(req: NextRequest) {
     }
     if (origin) cloudBody.origin = origin
     if (locale) cloudBody.locale = locale
+    if (runtimeId) cloudBody.runtime_id = runtimeId
     r = await fetch(`${cloudUrl()}/policies/handoff-context`, {
       method: "POST",
       headers: {
