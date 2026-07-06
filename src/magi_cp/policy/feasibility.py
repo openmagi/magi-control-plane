@@ -33,12 +33,29 @@ import urllib.parse
 # ---------------------------------------------------------------------------
 # Enforce-intent lexicon (single source of truth; review.py aliases this)
 # ---------------------------------------------------------------------------
-# High-precision block-family verbs. Verbatim lift of the historical
-# review.py `_ENFORCE_INTENT_RE` so there is exactly one source of truth
-# going forward (REV-PR-2 aliases review.py's name to this).
+# High-precision block-family verbs. Single source of truth; review.py
+# aliases this. AF-2 (P1-5): bare "stop" was dropped because it
+# false-positives on the Stop hook name ("log it at the stop event"); the
+# remaining verbs are unambiguous enforce requests.
 ENFORCE_INTENT_RE = re.compile(
-    r"\b(?:block|deny|stop|prevent|forbid|reject|refuse|require|must not|hold)\b"
+    r"\b(?:block|deny|prevent|forbid|reject|refuse|require|must not|hold)\b"
     r"|차단|막아|금지|거부|막기|못하게|하면\s*안",
+    re.IGNORECASE,
+)
+
+# AF-2 (P1-4/P1-5): negated-BLOCK cue. Shared by the extractor (to
+# suppress a false block extraction) and by `classify_silent_downgrade`
+# (so the downgrade banner never fires on "don't block, just record").
+# The negation must actually target a BLOCK verb: "don't block" is a
+# block-negation, but "block it, don't just record" negates the record,
+# not the block, so it must NOT match. The English arm requires a block
+# verb within two words of the negation; the Korean arms match the
+# block-stem-plus-negation shapes ("차단하지 말", "차단은 하지 마",
+# "막지 마").
+BLOCK_NEGATION_RE = re.compile(
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?(?:block|deny|refuse|forbid)"
+    r"|(?:차단|막)\S*\s*(?:하지\s*마|하지\s*말|말고)"
+    r"|차단하지|막지\s*마",
     re.IGNORECASE,
 )
 
@@ -631,7 +648,13 @@ def classify_silent_downgrade(
         return None
     if action != "audit":
         return None
-    if not ENFORCE_INTENT_RE.search(user_text or ""):
+    text = user_text or ""
+    if not ENFORCE_INTENT_RE.search(text):
+        return None
+    # AF-2 (P1-5): "차단하지 말고 기록만" asks for the OPPOSITE of enforcement;
+    # the enforce token is a negated false positive. Do not claim the
+    # operator asked to block.
+    if BLOCK_NEGATION_RE.search(text):
         return None
 
     # Lazy import - one-way dependency, avoids a cycle at module load.

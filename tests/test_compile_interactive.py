@@ -3179,11 +3179,17 @@ def test_af1_no_stale_finding_when_llm_repairs_to_legal():
     """When the extractor seeds an illegal triple but the LLM repairs it to a
     legal audit draft, the wire must carry NO feasibility finding (the stale
     _f1 must not survive)."""
-    import json as _json, os as _os, tempfile as _tf
+    import json as _json
+    import os as _os
+    import tempfile as _tf
+
     from fastapi.testclient import TestClient
     from magi_cp.cloud.app import create_app
     from magi_cp.llm.provider import FakeLlmProvider
-    _d = _tf.mkdtemp(); _p = _os.path.join(_d, "p.json"); open(_p, "w").write("[]")
+    _d = _tf.mkdtemp()
+    _p = _os.path.join(_d, "p.json")
+    with open(_p, "w") as _fh:
+        _fh.write("[]")
     _os.environ["MAGI_CP_ADMIN_API_KEY"] = "k"
     # LLM emits the few-shot's own audit repair.
     canned = _json.dumps({"assistant_message": "", "draft_updates": {"action": "audit"}, "questions": []})
@@ -3201,3 +3207,22 @@ def test_af1_no_stale_finding_when_llm_repairs_to_legal():
     # And it must not carry the false "cannot be expressed" copy.
     assert "표현할 수 없" not in (body["assistant_message"] or "")
     assert "cannot be expressed" not in (body["assistant_message"] or "")
+
+
+# ── AF-2 (P1-4): negated block must not extract action=block ──────────
+
+def test_af2_negated_block_en_extracts_audit_not_block():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("don't block it, just record web fetches")
+    assert out.get("action") != "block", out
+
+
+def test_af2_negated_block_ko_extracts_audit_not_block():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("기록만 하고 차단은 하지 마")
+    assert out.get("action") != "block", out
+
+
+def test_af2_plain_block_still_extracts_block():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    assert _extract_intent_from_text("block rm -rf").get("action") == "block"

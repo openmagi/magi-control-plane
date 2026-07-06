@@ -707,8 +707,13 @@ _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # operator explicitly refused (the exact dishonesty this feature removes).
 # Conservative by design: on a match we fall back to the LLM's action, which
 # is the pre-restore behavior.
+# MUST stay in sync with `feasibility.BLOCK_NEGATION_RE` (kept as a local copy
+# rather than an import to avoid the module-load cycle the feasibility import
+# is lazily deferred for). classify_silent_downgrade uses feasibility's copy.
 _BLOCK_NEGATION_RE = re.compile(
-    r"\b(?:don'?t|do\s+not|never)\b|말고|하지\s*마|하지\s*말|막지\s*마|차단하지",
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?(?:block|deny|refuse|forbid)"
+    r"|(?:차단|막)\S*\s*(?:하지\s*마|하지\s*말|말고)"
+    r"|차단하지|막지\s*마",
     re.IGNORECASE,
 )
 
@@ -1030,6 +1035,13 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
                 _t["matcher"] = "*"
 
     explicit_action = _scan_first(user_text, _ACTION_KEYWORDS)
+    # AF-2 (P1-4): a negated block ("don't block it, just record" /
+    # "차단은 하지 마") still hits the block substring. Do not seed the
+    # very action the operator declined - re-scan without the block family
+    # so a co-occurring record / ask verb wins; leave action unset if none.
+    if explicit_action == "block" and _BLOCK_NEGATION_RE.search(user_text):
+        _non_block = tuple((k, v) for k, v in _ACTION_KEYWORDS if k != "block")
+        explicit_action = _scan_first(user_text, _non_block)
     if explicit_action is not None:
         out["action"] = explicit_action
 

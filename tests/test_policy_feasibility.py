@@ -298,3 +298,31 @@ def test_enforce_intent_re_matches_block_and_korean() -> None:
     assert f.ENFORCE_INTENT_RE.search("prevent the tool from running")
     assert not f.ENFORCE_INTENT_RE.search("record only please")
     assert not f.ENFORCE_INTENT_RE.search("그냥 기록만")
+
+
+# ── AF-2 (P1-5): classify_silent_downgrade must not over-trigger ──────
+
+def test_af2_downgrade_none_on_negated_enforce():
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    assert f.classify_silent_downgrade("차단하지 말고 기록만 남겨줘", draft) is None
+    assert f.classify_silent_downgrade("don't block it, just record", draft) is None
+
+
+def test_af2_downgrade_none_on_stop_event_name():
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    # "at the stop event" names the hook, it is not an enforce request.
+    assert f.classify_silent_downgrade(
+        "just log citation coverage at the stop event", draft) is None
+
+
+def test_af2_enforce_intent_re_drops_bare_stop_keeps_block():
+    assert f.ENFORCE_INTENT_RE.search("please block this")
+    assert f.ENFORCE_INTENT_RE.search("prevent the fetch")
+    assert f.ENFORCE_INTENT_RE.search("인용 없으면 차단")
+    assert not f.ENFORCE_INTENT_RE.search("log it at the stop event")
+
+
+def test_af2_block_negation_re_matches():
+    assert f.BLOCK_NEGATION_RE.search("don't block it")
+    assert f.BLOCK_NEGATION_RE.search("차단하지 말고 기록만")
+    assert not f.BLOCK_NEGATION_RE.search("block it")
