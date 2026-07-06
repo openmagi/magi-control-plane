@@ -326,3 +326,22 @@ def test_af2_block_negation_re_matches():
     assert f.BLOCK_NEGATION_RE.search("don't block it")
     assert f.BLOCK_NEGATION_RE.search("차단하지 말고 기록만")
     assert not f.BLOCK_NEGATION_RE.search("block it")
+
+
+# ── AF-3 (P1-8): capability boundary must advertise cp's REAL verifiers ──
+
+def test_af3_capability_boundary_lists_real_registered_verifiers():
+    from magi_cp.verifier.descriptors import all_descriptors
+    real = {d["step"] for d in all_descriptors()}
+    text = render_capability_boundary("claude-code")
+    # Every genuinely-registered verifier appears.
+    for step in real:
+        assert step in text, f"{step} missing from boundary"
+    # None of the magi-agent-only verifiers cp does NOT register appear.
+    for phantom in ("test_run", "git_diff", "code_diagnostics", "commit_checkpoint"):
+        assert phantom not in text, f"{phantom} wrongly advertised"
+
+
+def test_af3_wired_verifier_steps_matches_registry():
+    from magi_cp.verifier.descriptors import all_descriptors
+    assert set(f._wired_verifier_steps()) == {d["step"] for d in all_descriptors()}

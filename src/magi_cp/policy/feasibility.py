@@ -723,14 +723,24 @@ def movable_enforce_events(draft: dict) -> tuple[str, ...]:
 # render_capability_boundary
 # ---------------------------------------------------------------------------
 
-# The 5 wired evidence verifiers (closed set; expressible via evidence_gate).
-_WIRED_VERIFIERS: tuple[str, ...] = (
-    "privilege_scan",
-    "test_run",
-    "git_diff",
-    "code_diagnostics",
-    "commit_checkpoint",
-)
+def _wired_verifier_steps() -> tuple[str, ...]:
+    """The verifier step names ACTUALLY registered in this cp deployment.
+
+    AF-3 (P1-8): the capability boundary previously advertised a hardcoded
+    list (test_run, git_diff, code_diagnostics, commit_checkpoint) that cp
+    does NOT register - those are magi-agent verifiers. A policy naming one
+    of them reported "Draft is ready" then 422'd at Save. Deriving the list
+    from the descriptor registry keeps the boundary truthful and drift-free.
+    """
+    try:
+        from ..verifier.descriptors import all_descriptors  # noqa: PLC0415
+        steps = sorted(
+            d["step"] for d in all_descriptors()
+            if isinstance(d, dict) and isinstance(d.get("step"), str) and d["step"]
+        )
+    except Exception:  # pragma: no cover - defensive; registry always present
+        return ()
+    return tuple(steps)
 
 # Inert read-family tool names used in the Codex capability boundary text.
 _CODEX_INERT_READ_TOOLS: tuple[str, ...] = (
@@ -816,7 +826,7 @@ def render_capability_boundary(runtime_id: str) -> str:
         "The following evidence verifiers are wired and can be required by "
         "an evidence-gate policy:"
     )
-    for v in _WIRED_VERIFIERS:
+    for v in _wired_verifier_steps():
         lines.append(f"  - {v}")
     lines.append("")
     lines.append(
