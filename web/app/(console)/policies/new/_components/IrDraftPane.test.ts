@@ -341,3 +341,29 @@ describe("IrDraftPane matrix-aware enforce advice (REV-PR-2)", () => {
     expect(slice).not.toContain("—")
   })
 })
+
+describe("PR-5 R4-02: IrDraftPane pending-gated Save CTA", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("declares a pending prop on the public interface", () => {
+    // R4-02: the parent ConversationalCompose passes pending so the Save
+    // CTA can be frozen while a correction turn is in-flight.
+    expect(src).toMatch(/pending\?:\s*boolean/)
+  })
+
+  it("destructures pending (with a default) in the function signature", () => {
+    // The default of false makes the prop optional for existing callers
+    // (handoff-only / guided / advanced modes) that have no pending state.
+    expect(src).toMatch(/pending\s*=\s*false/)
+  })
+
+  it("applies disabled={pending} to the Save button", () => {
+    // The Save CTA must be disabled while pending=true so the operator
+    // cannot submit a superseded pre-correction draft.
+    const saveIdx = src.indexOf('data-testid="ir-draft-save"')
+    expect(saveIdx).toBeGreaterThan(-1)
+    // disabled must appear within 400 chars of the testid (same element).
+    const saveBlock = src.slice(saveIdx - 200, saveIdx + 400)
+    expect(saveBlock).toMatch(/disabled=\{pending\}/)
+  })
+})
