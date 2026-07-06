@@ -1822,6 +1822,23 @@ def _apply_answer_to_draft(draft: dict[str, Any], field: FieldName,
         # convention.
         if not v or len(v) > 256:
             return draft
+        # R2-04: normalise simple tool names to canonical PascalCase so
+        # "bash" / "webfetch" / "web fetch" reach the same canonical
+        # form as "Bash" / "WebFetch". Only runs for plain tokens (no
+        # "|" alternation, no "mcp__" prefix) so we never mutate a
+        # composite matcher or MCP tool that looks intentional. Unknown
+        # tokens are left as-is and rejected downstream.
+        if "|" not in v and not v.startswith("mcp__"):
+            try:
+                from .matrix import _BUILTIN_TOOLS as _BT
+                _collapsed = v.replace(" ", "").lower()
+                _canon = next(
+                    (t for t in _BT if t.lower() == _collapsed), None
+                )
+                if _canon is not None:
+                    v = _canon
+            except Exception:
+                pass
         if not _matcher_is_legal(v):
             return draft
         trig = draft.get("trigger")
@@ -3893,6 +3910,11 @@ def step_compile(
     # the latest user turn is non-empty AND the prior assistant turn
     # appears to be the body-question, copy that text into the body
     # field directly. This unblocks Save without depending on the LLM.
+    # R2-03: carry an error forward to assistant_message when the
+    # freeform body is an invalid pattern. Initialised to None; set
+    # below if the freeform write is rejected.
+    _freeform_body_error: str | None = None
+
     if (missing
             and missing[0] == "requires_body"
             and latest_user_text
@@ -3907,9 +3929,28 @@ def step_compile(
                 "step":       "step",
             }.get(kind)
             if target_key and not reqs[0].get(target_key):
-                reqs[0][target_key] = latest_user_text.strip()
-                draft["requires"] = reqs
-                missing = _missing_fields_for_draft(draft)
+                body_val = latest_user_text.strip()
+                # R2-03: validate regex patterns identically to the
+                # canonical answer writer (_apply_answer_to_draft's
+                # requires_body branch). An invalid pattern must NOT
+                # land on the draft - leave the body empty so the body
+                # question re-fires, and surface an explicit error line.
+                if kind == "regex":
+                    try:
+                        re.compile(body_val)
+                    except re.error:
+                        _freeform_body_error = (
+                            "입력한 패턴이 올바르지 않습니다 - "
+                            "다른 패턴을 입력해 주세요."
+                            if ko else
+                            "That pattern does not compile - "
+                            "please try another."
+                        )
+                        body_val = None  # skip the write
+                if body_val is not None:
+                    reqs[0][target_key] = body_val
+                    draft["requires"] = reqs
+                    missing = _missing_fields_for_draft(draft)
 
     # #100 UX follow-up: ID and description should NOT be the thing
     # that blocks Save. When everything else is filled and only `id`
@@ -3958,8 +3999,16 @@ def step_compile(
             q_type = q.get("kind") or q.get("type")
             if targets not in _CANONICAL_FIELDS:
                 continue
-            if targets not in missing:
-                # Don't re-ask a field that's already populated.
+            # R1-01: only accept an LLM-proposed question whose
+            # targets_field falls within the canonical priority slice
+            # (missing[:MAX_QUESTIONS_PER_TURN]). The validator on the
+            # next turn reconstructs the legal answer-id set from the
+            # same slice, so a question outside that slice would cause
+            # the user's answer to 422 on the following turn. Questions
+            # outside the slice fall through to the canonical fallback.
+            if targets not in missing[:MAX_QUESTIONS_PER_TURN]:
+                # Field is either already populated (outside missing)
+                # or is missing but not yet in the priority slice.
                 continue
             if not isinstance(qid, str) or qid != f"q_{targets}":
                 # Reject id collisions: the answer-validation contract
@@ -4070,6 +4119,16 @@ def step_compile(
         ambiguous=verifier_is_ambiguous,
         validator_error=validator_error,
     )
+
+    # R2-03: if the freeform body fallback rejected an invalid pattern,
+    # prepend the explicit error line so the operator understands why
+    # Save is still disabled and the body question re-fires.
+    if _freeform_body_error:
+        err_line = _to_plain_language(_freeform_body_error)
+        assistant_message = (
+            f"{err_line}\n\n{assistant_message}"
+            if assistant_message else err_line
+        )
 
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty
