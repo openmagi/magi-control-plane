@@ -591,6 +591,65 @@ def test_unconfigured_provider_503_with_compile_endpoint_body_shape():
     assert "LLM providers not configured" in r.text
 
 
+def test_provider_error_compile_interactive_maps_to_502():
+    """A configured but failing provider (wrong key, rate-limit, network error)
+    returns 502 - NOT 500 - so the proxy can classify it as provider_error
+    and show the actionable 'check your API key' flash (R5-01)."""
+    from magi_cp.llm.provider import LlmProviderError
+
+    class _BadKeyProvider:
+        def complete(self, messages):  # noqa: ANN001
+            raise LlmProviderError("anthropic http error: 401 invalid api key")
+
+    c = _client(llm_compiler=_BadKeyProvider())
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 502, r.text
+    assert "LLM provider error" in r.text
+    # The upstream body is truncated so env-var secrets or full error
+    # blobs don't leak through to the client.
+    assert "invalid api key" in r.text
+
+
+def test_provider_error_compile_endpoint_maps_to_502():
+    """Same contract for the one-shot /policies/compile endpoint (R5-01)."""
+    from magi_cp.llm.provider import LlmProviderError
+
+    class _BadKeyProvider:
+        def complete(self, messages):  # noqa: ANN001
+            raise LlmProviderError("openai http error: 429 rate limit exceeded")
+
+    # Reviewer won't be called because compiler raises first.
+    c = _client(llm_compiler=_BadKeyProvider(), llm_reviewer=_BadKeyProvider())
+
+    r = c.post(
+        "/policies/compile",
+        headers=HEADERS,
+        json={"nl": "block bash when citation_verify fails"},
+    )
+    assert r.status_code == 502, r.text
+    assert "LLM provider error" in r.text
+
+
+def test_unconfigured_provider_503_unchanged_after_pr4():
+    """Provider-None (no provider configured at all) must STILL return 503
+    with the existing wording so the provider_unconfigured proxy branch
+    stays intact (regression guard for R5-01 fix, PR-4)."""
+    c = _client(llm_compiler=None)
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None, "answers": None},
+    )
+    assert r.status_code == 503
+    assert "LLM providers not configured" in r.text
+
+
 def test_malformed_answer_id_422():
     """An answer whose question_id wasn't asked last turn rejects.
 
