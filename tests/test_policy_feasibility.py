@@ -1,0 +1,195 @@
+"""PR-2: deterministic feasibility classifier.
+
+Covers the full decision table (design 2026-07-06-magi-cp-authoring-
+feasibility-runtime-awareness-design.md Section 2.3): draft-shape checks
+(rows 1-10) via ``classify_draft`` and intent-lexicon checks (rows 11-16)
+via ``classify_intent``. The classifier is pure and deterministic - the
+LLM never computes a feasibility verdict.
+"""
+from __future__ import annotations
+
+import pytest
+
+from magi_cp.policy import feasibility as f
+from magi_cp.policy.feasibility import (
+    COPY_TABLE,
+    classify_draft,
+    classify_intent,
+    render_capability_boundary,
+)
+
+
+def _verdict(finding) -> tuple[str, str] | None:
+    return None if finding is None else (finding.cls.value, finding.code)
+
+
+def _draft(event: str, matcher: str, action: str = "audit",
+           **extra) -> dict:
+    d = {"trigger": {"event": event, "matcher": matcher}, "action": action}
+    d.update(extra)
+    return d
+
+
+# ── classify_draft: decision table rows 1-10 ──────────────────────────
+
+@pytest.mark.parametrize("draft, runtime, expected", [
+    # Row 1 - inject_context on an excluded event (any runtime).
+    (_draft("Stop", "*", "inject_context"), "claude-code",
+     ("degraded", "cc_context_channel_excluded")),
+    (_draft("SubagentStop", "*", "inject_context"), "codex",
+     ("degraded", "cc_context_channel_excluded")),
+    # Row 2 - Bash/Edit/... on codex translate and fire (native).
+    (_draft("PreToolUse", "Bash", "block"), "codex", None),
+    (_draft("PreToolUse", "Edit", "block"), "codex", None),
+    (_draft("PreToolUse", "Task", "block"), "codex", None),
+    # Row 3 - read-family tool on codex fires zero times.
+    (_draft("PreToolUse", "Read"), "codex",
+     ("silent_noop", "codex_matcher_inert")),
+    (_draft("PreToolUse", "Grep"), "codex",
+     ("silent_noop", "codex_matcher_inert")),
+    # Row 4 - the compiler's own source_allowlist default lands
+    # PreToolUse+WebFetch, which is the self-inflicted silent_noop.
+    (_draft("PreToolUse", "WebFetch"), "codex",
+     ("silent_noop", "codex_matcher_inert")),
+    # PostToolUse+WebFetch (prompt_injection_screen default) IS live on
+    # codex - PostToolUse fires; inertness only bites PreToolUse.
+    (_draft("PostToolUse", "WebFetch"), "codex", None),
+    # Row 5 - event Codex never fires.
+    (_draft("Notification", "*"), "codex",
+     ("silent_noop", "codex_event_not_live")),
+    (_draft("FileChanged", "*"), "codex",
+     ("silent_noop", "codex_event_not_live")),
+    # Row 6 - SessionEnd rides Stop on codex (inform, not warn).
+    (_draft("SessionEnd", "*"), "codex",
+     ("degraded", "codex_no_session_end")),
+    # Row 7 - subagent lifecycle fanout gap.
+    (_draft("SubagentStart", "*"), "codex",
+     ("degraded", "codex_internal_subagent_gap")),
+    # Row 8 - ask downgrades to block on codex at these events.
+    (_draft("PostToolUse", "Bash", "ask"), "codex",
+     ("degraded", "codex_ask_downgrades_to_block")),
+    # Row 10 - an illegal matrix triple, any runtime.
+    (_draft("Stop", "*", "block"), "claude-code",
+     ("not-expressible", "matrix_illegal_triple")),
+])
+def test_classify_draft_rows(draft, runtime, expected) -> None:
+    assert _verdict(classify_draft(draft, runtime)) == expected
+
+
+def test_claude_code_is_not_subject_to_codex_rules() -> None:
+    # A read-family tool that is silent_noop on codex is native on CC.
+    assert classify_draft(_draft("PreToolUse", "Read"), "claude-code") is None
+    assert classify_draft(_draft("Notification", "*"), "claude-code") is None
+    # Bash on CC is native.
+    assert classify_draft(_draft("PreToolUse", "Bash", "block"),
+                          "claude-code") is None
+
+
+def test_legal_triple_is_native() -> None:
+    # audit on Stop is legal (unlike block on Stop).
+    assert classify_draft(_draft("Stop", "*", "audit"), "claude-code") is None
+
+
+def test_partial_draft_never_raises() -> None:
+    # Missing action / matcher must not blow up the matrix check.
+    assert classify_draft({"trigger": {"event": "PreToolUse"}},
+                          "claude-code") is None
+    assert classify_draft({}, "codex") is None
+    assert classify_draft({"trigger": {}}, "codex") is None
+
+
+def test_none_runtime_treated_as_claude_code() -> None:
+    # A codex-only silent_noop must not fire when runtime is unset.
+    assert classify_draft(_draft("PreToolUse", "Read"), None) is None
+
+
+# ── classify_intent: decision table rows 11-16 ────────────────────────
+
+@pytest.mark.parametrize("text, expected", [
+    # Row 11 - evidence beyond the 5 wired verifiers.
+    ("only if the evidence ledger shows the tests actually ran",
+     ("magi-agent-only", "magi_evidence_catalog")),
+    ("증거 원장을 보고 판단해줘", ("magi-agent-only", "magi_evidence_catalog")),
+    # Row 12 - inline per-claim citations.
+    ("cite each claim inline in the answer",
+     ("magi-agent-only", "magi_source_citation")),
+    ("문장별 인용을 본문에 달아줘",
+     ("magi-agent-only", "magi_source_citation")),
+    # Row 13 - cross-session state.
+    ("block it if it did the same thing yesterday",
+     ("magi-agent-only", "cross_session_state")),
+    ("세션들에 걸쳐 누적된 걸 봐줘",
+     ("magi-agent-only", "cross_session_state")),
+    # Row 14 - rate limits.
+    ("분당 5번으로 제한해줘", ("not-expressible", "rate_limit_window")),
+    ("limit to 5 calls per minute", ("not-expressible", "rate_limit_window")),
+    # Row 15 - token/cost budget.
+    ("stop after $2 of token budget", ("not-expressible", "token_budget")),
+    ("토큰 한도를 걸어줘", ("not-expressible", "token_budget")),
+    # Row 16 - retroactive undo.
+    ("roll back the tool call after it ran",
+     ("not-expressible", "retroactive_undo")),
+])
+def test_classify_intent_rows(text, expected) -> None:
+    assert _verdict(classify_intent(text)) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "block bash with an RRN",           # normal privilege_scan draft
+    "확인",                              # bare ambiguous verb
+    "verify the citations at the end",   # citation_verify audit, not inline
+    "audit every WebFetch",              # normal draft intent
+    "",                                  # empty
+])
+def test_classify_intent_precision_guards(text) -> None:
+    assert classify_intent(text) is None
+
+
+# ── copy table + capability boundary ──────────────────────────────────
+
+_ALL_CODES = [
+    "cc_context_channel_excluded", "codex_matcher_inert",
+    "codex_event_not_live", "codex_no_session_end",
+    "codex_internal_subagent_gap", "codex_ask_downgrades_to_block",
+    "matrix_illegal_triple", "magi_evidence_catalog",
+    "magi_source_citation", "cross_session_state", "rate_limit_window",
+    "token_budget", "retroactive_undo",
+]
+
+
+@pytest.mark.parametrize("code", _ALL_CODES)
+def test_copy_table_has_en_and_ko_for_every_code(code) -> None:
+    assert code in COPY_TABLE
+    # Entry shape is (english, korean, in_bounds_alternative | None).
+    entry = COPY_TABLE[code]
+    assert len(entry) == 3
+    en, ko, alt = entry
+    assert en and isinstance(en, str)
+    assert ko and isinstance(ko, str)
+    # KO copy must actually contain Hangul.
+    assert any("가" <= ch <= "힣" for ch in ko)
+    # The alternative slot is either a non-empty string or None.
+    assert alt is None or (isinstance(alt, str) and alt)
+
+
+def test_capability_boundary_claude_code_lists_all_8_excluded_events() -> None:
+    text = render_capability_boundary("claude-code")
+    for ev in ("Elicitation", "ElicitationResult", "WorktreeCreate",
+               "MessageDisplay", "Stop", "StopFailure", "SessionEnd",
+               "SubagentStop"):
+        assert ev in text
+
+
+def test_capability_boundary_codex_adds_live_events_and_inert_tools() -> None:
+    text = render_capability_boundary("codex")
+    assert "PreToolUse" in text
+    assert "Read" in text  # an inert read-family tool named
+
+
+# ── structural: no fastapi / web imports (deterministic core) ─────────
+
+def test_module_has_no_fastapi_or_web_imports() -> None:
+    import inspect
+    src = inspect.getsource(f)
+    assert "fastapi" not in src.lower()
+    assert "from ..cloud" not in src
