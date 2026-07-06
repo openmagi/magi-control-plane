@@ -233,3 +233,67 @@ def test_review_endpoint_accepts_locale():
                json={"draft": _gate(), "intent": "x", "locale": "ko"})
     assert r.status_code == 200, r.text
     assert "checked" in r.json()
+
+
+# ── REV-PR-2: matrix-aware enforce advice (GAP-B) ─────────────────────
+# The single-rule action-vs-intent check must never advise an action that
+# is matrix-illegal at the draft's (event, matcher). At Stop, block and
+# ask are both illegal, so "Use block or ask to enforce" is a dead end.
+
+def _single(event, matcher, action, **over):
+    d = {
+        "id": "r1", "type": "evidence",
+        "trigger": {"event": event, "matcher": matcher},
+        "requires": [{"kind": "step", "step": "citation_verify",
+                      "verdict": "pass"}],
+        "action": action,
+    }
+    d.update(over)
+    return d
+
+
+def test_review_enforce_not_available_at_stop():
+    v = review_policy_draft(
+        _single("Stop", "*", "audit"),
+        intent="block the final answer when citations are missing",
+    )
+    codes = {i["code"] for i in v["issues"]}
+    assert "enforce_not_available_here" in codes
+    assert "action_intent_mismatch" not in codes
+    for i in v["issues"]:
+        assert "Use block or ask" not in i["message"]
+
+
+def test_review_mismatch_names_only_legal_actions():
+    # PostToolUse + WebFetch: block legal, ask illegal -> advise block only.
+    v = review_policy_draft(
+        _single("PostToolUse", "WebFetch", "audit",
+                requires=[{"kind": "step", "step": "prompt_injection_screen",
+                           "verdict": "pass"}]),
+        intent="block fetched content that contains an injection",
+    )
+    mism = [i for i in v["issues"] if i["code"] == "action_intent_mismatch"]
+    assert len(mism) == 1
+    assert mism[0]["params"].get("legal") == ["block"]
+    assert "Use block to enforce" in mism[0]["message"]
+    assert "or ask" not in mism[0]["message"]
+
+
+def test_review_mismatch_unchanged_when_event_missing():
+    # No event/matcher -> keep the generic advice (block may be legal once
+    # the trigger lands).
+    v = review_policy_draft(
+        {"id": "r1", "action": "audit"},
+        intent="block this",
+    )
+    codes = {i["code"] for i in v["issues"]}
+    assert "action_intent_mismatch" in codes
+    assert "enforce_not_available_here" not in codes
+
+
+def test_review_no_enforce_intent_no_issue():
+    v = review_policy_draft(_single("Stop", "*", "audit"),
+                            intent="just record citations")
+    codes = {i["code"] for i in v["issues"]}
+    assert "enforce_not_available_here" not in codes
+    assert "action_intent_mismatch" not in codes

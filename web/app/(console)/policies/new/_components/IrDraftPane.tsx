@@ -540,10 +540,24 @@ function localizeReviewIssue(iss: ReviewIssue, ko: boolean): string {
       return ko
         ? "도구 시점을 대상으로 하지만 도구를 지정하지 않아, 특정 작업에 매칭되지 않습니다."
         : "This rule targets a tool event but names no tool, so it will not match a specific action."
-    case "action_intent_mismatch":
-      return ko
-        ? "설명은 차단/중지를 요구하는데 이 규칙은 기록(audit)만 합니다. 차단하려면 block 또는 ask 를 쓰세요."
+    case "action_intent_mismatch": {
+      // REV-PR-2: name only the matrix-legal enforce actions when the
+      // server computed them; fall back to the static sentence otherwise.
+      const legal = Array.isArray(iss.params?.legal)
+        ? (iss.params?.legal as string[])
+        : null
+      const en = legal && legal.length
+        ? `Your description asks to block or stop something, but this rule only records (audit). Use ${legal.join(" or ")} to enforce.`
         : "Your description asks to block or stop something, but this rule only records (audit). Use block or ask to enforce."
+      const koStr = legal && legal.length
+        ? `설명은 차단/중지를 요구하는데 이 규칙은 기록(audit)만 합니다. 차단하려면 ${legal.join(" 또는 ")} 를 쓰세요.`
+        : "설명은 차단/중지를 요구하는데 이 규칙은 기록(audit)만 합니다. 차단하려면 block 또는 ask 를 쓰세요."
+      return ko ? koStr : en
+    }
+    case "enforce_not_available_here":
+      return ko
+        ? "설명은 차단/중지를 요구하지만 이 시점에서는 block 과 ask 를 쓸 수 없습니다. 여기서는 audit(기록)이 가장 강한 동작입니다. 실제로 막으려면 block 이 가능한 시점으로 옮기거나 Magi Agent 게이트로 작성하세요."
+        : "Your description asks to block or stop something, but block and ask are not available on this event. Audit (record only) is the strongest action available here. To actually enforce, move the check to an event where block is available, or author it as a Magi Agent gate."
     default:
       return iss.message
   }

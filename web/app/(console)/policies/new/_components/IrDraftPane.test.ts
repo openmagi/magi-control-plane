@@ -321,3 +321,23 @@ describe("H3 (IF-13): dry-run disabled for compound drafts", () => {
     expect(src).toContain("disabled={!readyToSave || compound}")
   })
 })
+
+describe("IrDraftPane matrix-aware enforce advice (REV-PR-2)", () => {
+  const src = read("IrDraftPane.tsx")
+
+  it("localizes the new enforce_not_available_here review code", () => {
+    expect(src).toContain('case "enforce_not_available_here"')
+  })
+
+  it("renders action_intent_mismatch from params.legal when present", () => {
+    expect(src).toContain("iss.params?.legal")
+  })
+
+  it("keeps enforce copy free of em-dashes", () => {
+    // Guard the repo-wide no-em-dash rule on the new operator copy.
+    const start = src.indexOf('case "enforce_not_available_here"')
+    expect(start).toBeGreaterThan(-1)
+    const slice = src.slice(start, start + 600)
+    expect(slice).not.toContain("—")
+  })
+})
