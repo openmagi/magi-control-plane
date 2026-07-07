@@ -381,6 +381,23 @@ _EGATE_ASK_RE = re.compile(
 # forever. Fetch tools are excluded (the gate must not block the fetch that
 # produces the evidence, which would deadlock the gate) - same policy as the
 # intent extractor above.
+def _scan_matcher_answer(user_text: str) -> str | None:
+    """AF-16 (P2-9): pick a legal tool matcher named in a freeform answer.
+
+    Unlike `_scan_gate_tool` (compound gate; excludes fetch tools to avoid a
+    deadlock) this is the general single-policy matcher answer, so WebFetch /
+    WebSearch are allowed. mcp tools win over bare builtins. Returns None when
+    nothing legal is named."""
+    raw = user_text or ""
+    for m in _EGATE_MCP_TOOL_RE.findall(raw):
+        if _matcher_is_legal(m):
+            return m
+    for m in _EGATE_BARE_TOOL_RE.findall(raw):
+        if _matcher_is_legal(m):
+            return m
+    return None
+
+
 def _scan_gate_tool(user_text: str) -> str | None:
     """Pick a legal gated tool from freeform text: an explicit mcp__ tool,
     else the first non-fetch bare tool. None if nothing legal is named."""
@@ -4162,6 +4179,31 @@ def step_compile(
             if target_key and not reqs[0].get(target_key):
                 reqs[0][target_key] = latest_user_text.strip()
                 draft["requires"] = reqs
+                missing = _missing_fields_for_draft(draft)
+
+    # AF-16 (P2-9): freeform matcher answer fallback. The extractor's matcher
+    # vocabulary is only WebFetch/Bash/Edit, and the dashboard has no
+    # text-answer channel bound to q_matcher, so naming any other tool
+    # (Grep / Write / Read / an mcp tool) in freeform chat otherwise relies
+    # on the LLM to land it. When matcher is still missing and the latest
+    # turn names a legal tool, set it deterministically. Only fires when the
+    # draft has no matcher yet, so an incidental tool mention in a
+    # confirmation ("yes the Bash rule looks good") never clobbers a chosen
+    # matcher.
+    if ("matcher" in missing and not _is_run_command_draft(draft)):
+        _trig = draft.get("trigger")
+        _has_matcher = (
+            isinstance(_trig, dict)
+            and isinstance(_trig.get("matcher"), str)
+            and _trig.get("matcher").strip()
+        )
+        if not _has_matcher:
+            _mt = _scan_matcher_answer(latest_user_text)
+            if _mt is not None:
+                if not isinstance(_trig, dict):
+                    _trig = {}
+                    draft["trigger"] = _trig
+                _trig["matcher"] = _mt
                 missing = _missing_fields_for_draft(draft)
 
     # #100 UX follow-up: ID and description should NOT be the thing

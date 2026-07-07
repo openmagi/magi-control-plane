@@ -970,3 +970,71 @@ def test_af15_matcher_question_uses_canonical_prompt():
     body = r.json()
     qs = [q for q in body["questions"] if q["id"] == "q_matcher"]
     assert qs and qs[0]["prompt"] == canonical.to_dict()["prompt"], qs
+
+
+# ── AF-16 (P2-9): deterministic freeform matcher answer fallback ──────
+
+def test_af16_freeform_grep_answer_lands_matcher():
+    """When q_matcher is pending and the operator answers 'Grep' in freeform
+    chat (a tool the 3-tool extractor vocab misses), it lands deterministically
+    without depending on the LLM."""
+    # Turn 1 seeded a draft missing the matcher; the FakeLlm proposes nothing.
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "PreToolUse"},  # no matcher yet
+        "requires": [{"kind": "regex", "pattern": "secret"}],
+        "action": "block",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [
+            {"role": "assistant", "content": "Which action should this apply to?"},
+            {"role": "user", "content": "Grep"},
+        ],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["draft"].get("trigger") or {}).get("matcher") == "Grep", body["draft"]
+    assert "matcher" not in body["missing_fields"], body
+
+
+def test_af16_freeform_mcp_tool_answer_lands():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "PreToolUse"},
+        "requires": [{"kind": "regex", "pattern": "secret"}],
+        "action": "block",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [
+            {"role": "assistant", "content": "Which action should this apply to?"},
+            {"role": "user", "content": "mcp__github__create_issue"},
+        ],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["draft"].get("trigger") or {}).get("matcher") == "mcp__github__create_issue", body["draft"]
+
+
+def test_af16_no_false_matcher_when_not_pending():
+    """When matcher is already set, an incidental tool mention does not
+    overwrite it."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": "secret"}],
+        "action": "block",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "yes the Grep rule looks good"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    assert (r.json()["draft"].get("trigger") or {}).get("matcher") == "Bash", r.json()["draft"]
