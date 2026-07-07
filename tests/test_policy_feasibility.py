@@ -378,3 +378,24 @@ def test_af9_copy_table_no_matcher_triple_jargon():
             assert "additionalcontext" not in low, code
             # "matcher" as a bare internal term must not appear.
             assert "matcher" not in low, code
+
+
+# ── AF-13 (P2-7): KO/EN lexicon symmetry ──────────────────────────────
+
+def test_af13_enforce_re_matches_common_korean_verbs():
+    assert f.ENFORCE_INTENT_RE.search("그 명령을 중단시켜")
+    assert f.ENFORCE_INTENT_RE.search("멈춰줘")
+
+
+def test_af13_downgrade_fires_on_korean_enforce_verb():
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    fnd = f.classify_silent_downgrade("인용 없으면 최종 답변 중단시켜", draft)
+    assert fnd is not None and fnd.code == "enforce_downgraded_to_audit"
+
+
+def test_af13_codex_event_not_live_ko_enumerates_events():
+    en, ko, _alt = COPY_TABLE["codex_event_not_live"]
+    # KO must enumerate the same live-event list as EN, not truncate to '등'.
+    for ev in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit",
+               "Stop", "PreCompact", "PermissionRequest"):
+        assert ev in ko, ev

@@ -39,7 +39,7 @@ import urllib.parse
 # remaining verbs are unambiguous enforce requests.
 ENFORCE_INTENT_RE = re.compile(
     r"\b(?:block|deny|prevent|forbid|reject|refuse|require|must not|hold)\b"
-    r"|차단|막아|금지|거부|막기|못하게|하면\s*안",
+    r"|차단|막아|금지|거부|막기|못하게|하면\s*안|중단|멈춰|멈추",
     re.IGNORECASE,
 )
 
@@ -146,8 +146,10 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
         "PostCompact, PermissionRequest) or keep for Claude Code only.",
         "Codex는 이 라이프사이클 이벤트에 훅을 발생시키지 않습니다. "
         "정책은 저장되지만 Codex에서 적용 횟수가 0이 됩니다. "
-        "Codex 라이브 이벤트(PreToolUse, PostToolUse, SessionStart 등)를 사용하거나 "
-        "Claude Code 전용으로 유지하세요.",
+        "Codex 라이브 이벤트(PreToolUse, PostToolUse, SessionStart, "
+        "UserPromptSubmit, Stop, SubagentStart, SubagentStop, PreCompact, "
+        "PostCompact, PermissionRequest)를 사용하거나 Claude Code 전용으로 "
+        "유지하세요.",
         "Author on PreToolUse, PostToolUse, or UserPromptSubmit instead.",
     ),
     # Row 6 - SessionEnd on Codex

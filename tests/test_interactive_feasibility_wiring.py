@@ -730,3 +730,125 @@ def test_af9_inject_context_on_legal_event_steers_not_morphs():
     assert r.status_code == 200, r.text
     am = r.json()["assistant_message"] or ""
     assert ("full editor" in am) or ("고급 편집기" in am), am
+
+
+# ── AF-10 (P2-10): movable steer only names authorable events ─────────
+
+def test_af10_movable_steer_omits_unauthorable_event():
+    """privilege_scan authored at Stop can fire at PreToolUse, PostToolUse
+    AND UserPromptSubmit (all block-legal), but the conversational flow can
+    only author the 3 buckets. The chat steer must NOT name UserPromptSubmit."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "privilege_scan", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block PII at the final answer"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "UserPromptSubmit" not in am, am
+    # A block-legal bucketed event is still offered.
+    assert ("PreToolUse" in am) or ("PostToolUse" in am), am
+
+
+# ── AF-11 (P1-8ii): ready_to_save consults the verifier registry ──────
+
+def test_af11_unregistered_verifier_not_ready_to_save():
+    """A draft that names a verifier cp does not register must NOT report
+    ready_to_save (it would 422 at Save). It reports needs_more instead."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "phantom", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "test_run", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "require tests ran"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_save"] is False, body
+
+
+def test_af11_registered_verifier_still_ready():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "cite-audit", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "citation_verify", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "audit citations"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ready_to_save"] is True, r.json()
+
+
+def test_af11_regex_kind_unaffected():
+    """A non-step requirement (regex) is not a registry concern."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "rm-block", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": r"\brm -rf\b"}],
+        "action": "block",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block rm -rf"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ready_to_save"] is True, r.json()
+
+
+# ── AF-12 (P2-4): compound path runs feasibility ─────────────────────
+
+def test_af12_compound_response_has_feasibility_key():
+    """Wire-shape parity: the compound path always carries a feasibility key
+    (null when native), like the single-policy path."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before mcp__trading__execute_trade runs"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("compound") is True, body
+    assert "feasibility" in body, body
+
+
+def test_af12_compound_codex_surfaces_inert_finding():
+    """On Codex, a compound whose gated tool is inert surfaces a feasibility
+    finding instead of silently authoring an unenforced policy."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    # Gate a codex-inert tool (Read: dispatched as a shell sub-action on
+    # Codex). WebFetch cannot be gated (it produces the evidence), so Read is
+    # the reachable inert-gate case.
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before Read runs"}],
+        "draft_so_far": None, "answers": None,
+        "runtime_id": "codex",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("compound") is True, body
+    assert body.get("feasibility") is not None, body
+    assert body["feasibility"]["runtime_id"] == "codex", body["feasibility"]
+    assert body["feasibility"]["code"] == "codex_matcher_inert", body["feasibility"]
