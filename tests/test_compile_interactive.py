@@ -3324,3 +3324,72 @@ def test_af6_negated_prevent_not_extracted():
     from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
     out = _extract_intent_from_text("don't prevent it, just record")
     assert out.get("action") != "block", out
+# ── Cluster A: wider lifecycle round-trips through step_compile ────────
+
+
+def test_wide_evidence_event_is_ready_to_save_end_to_end():
+    """A complete SessionStart evidence draft passed as draft_so_far must
+    survive the sanitize-on-entry pass with its event intact, report no
+    missing lifecycle, ask no q_lifecycle, and flip ready_to_save=True.
+
+    Before Cluster A the entry sanitizer deleted the wider event and the
+    missing-fields gate re-listed 'lifecycle', so Save stayed disabled and
+    the lifecycle dropdown re-appeared even though the IR validator already
+    accepted SessionStart."""
+    draft = {
+        "id": "sess-scan",
+        "version": "0.1",
+        "trigger": {
+            "host": "claude-code", "event": "SessionStart", "matcher": "*",
+        },
+        "requires": [
+            {"kind": "llm_critic", "criterion": "the session context is safe"},
+        ],
+        "action": "audit",
+    }
+    canned = _llm_response(message="Draft ready.", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["trigger"]["event"] == "SessionStart", body["draft"]
+    assert "lifecycle" not in body["missing_fields"], body["missing_fields"]
+    assert body["ready_to_save"] is True, body["assistant_message"]
+    assert body["needs_more"] is False
+    qids = [q["id"] for q in body["questions"]]
+    assert "q_lifecycle" not in qids, qids
+
+
+def test_wide_run_command_event_is_ready_to_save_end_to_end():
+    """A complete PermissionRequest run_command draft round-trips: no
+    missing lifecycle, no q_lifecycle, ready_to_save=True."""
+    draft = {
+        "type": "run_command",
+        "id": "perm-audit",
+        "version": "0.1",
+        "trigger": {
+            "host": "claude-code", "event": "PermissionRequest", "matcher": "*",
+        },
+        "command": "echo hi",
+        "runtime": "bash",
+    }
+    canned = _llm_response(message="Draft ready.", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+
+    r = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": draft, "answers": None},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["trigger"]["event"] == "PermissionRequest", body["draft"]
+    assert "lifecycle" not in body["missing_fields"], body["missing_fields"]
+    assert body["ready_to_save"] is True, body["assistant_message"]
+    qids = [q["id"] for q in body["questions"]]
+    assert "q_lifecycle" not in qids, qids
