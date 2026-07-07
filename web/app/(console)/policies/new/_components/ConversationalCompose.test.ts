@@ -735,3 +735,70 @@ describe("PR-6: runtime override + feasibility banner", () => {
     expect(src).toContain("setFeasibility(fw)")
   })
 })
+
+describe("PR-5: frontend lifecycle / staleness (Cluster E)", () => {
+  const src = readFileSync(
+    path.join(__dirname, "ConversationalCompose.tsx"),
+    "utf-8",
+  )
+
+  it("R4-01: mountedRef.current = true is assigned inside the effect body (not only at useRef init)", () => {
+    // React StrictMode double-invokes effects; the cleanup sets
+    // mountedRef.current = false, so the next mount must restore it to
+    // true at the TOP of the effect body. If the assignment only appears
+    // in `useRef(true)` (which runs once on first mount), every
+    // subsequent response bails at the !mountedRef.current guard and
+    // `pending` sticks true (permanent spinner in npm run dev).
+    //
+    // Strip comments before scanning so comment prose that references
+    // the pattern does not false-positive the position check.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "")
+    // The assignment form `mountedRef.current = true` must be present
+    // (the initializer form is `useRef(true)`, no assignment).
+    expect(stripped).toMatch(/mountedRef\.current\s*=\s*true/)
+    // The true assignment must appear before the false assignment so the
+    // effect body restores the flag before cleanup tears it down.
+    const trueIdx = stripped.indexOf("mountedRef.current = true")
+    const falseIdx = stripped.indexOf("mountedRef.current = false")
+    expect(trueIdx).toBeGreaterThan(-1)
+    expect(falseIdx).toBeGreaterThan(-1)
+    expect(trueIdx).toBeLessThan(falseIdx)
+  })
+
+  it("R4-02: passes pending prop to IrDraftPane", () => {
+    // pending must flow into IrDraftPane so the Save CTA can be
+    // disabled while a correction turn is in-flight.
+    expect(src).toContain("pending={pending}")
+    // The IrDraftPane invocation must include the prop.
+    const paneIdx = src.indexOf("<IrDraftPane")
+    expect(paneIdx).toBeGreaterThan(-1)
+    const paneBlock = src.slice(paneIdx, paneIdx + 800)
+    expect(paneBlock).toContain("pending={pending}")
+  })
+
+  it("R4-03: runtime onChange calls setFeasibility(null)", () => {
+    // When the operator switches runtimes, the stale feasibility banner
+    // from the prior runtime must be cleared immediately.
+    // Locate the onChange block for the runtime select (contains
+    // setRuntimeOverride(e.target.value)), then assert setFeasibility(null)
+    // appears in a 300-char window around it.
+    const runtimeIdx = src.indexOf("setRuntimeOverride(e.target.value")
+    expect(runtimeIdx).toBeGreaterThan(-1)
+    // Scan the 300-char window around the setRuntimeOverride call.
+    const window = src.slice(runtimeIdx - 200, runtimeIdx + 100)
+    expect(window).toContain("setFeasibility(null)")
+  })
+
+  it("R4-03: runtime select has disabled={pending} gate", () => {
+    // The select must be frozen while a turn is in-flight so the
+    // operator cannot switch runtimes mid-request. The select element
+    // closes with ">" after the className; scan 800 chars to reach it
+    // (the onChange block + comment are between the testid and disabled).
+    const selectIdx = src.indexOf('data-testid="conv-runtime-select"')
+    expect(selectIdx).toBeGreaterThan(-1)
+    const selectBlock = src.slice(selectIdx, selectIdx + 800)
+    expect(selectBlock).toMatch(/disabled=\{pending\}/)
+  })
+})

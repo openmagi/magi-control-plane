@@ -312,6 +312,12 @@ export function ConversationalCompose({
   const composingRef = useRef(false)
 
   useEffect(() => {
+    // R4-01: restore on (re)mount. React StrictMode double-invokes
+    // effects, so the cleanup's `mountedRef.current = false` runs first
+    // and the next mount must flip it back to true. Without this every
+    // sendTurn / seed response bails at the `!mountedRef.current` guard
+    // and `pending` sticks true (permanent spinner in `npm run dev`).
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
       // The aliased view (`abortRef`) is what the source-level test
@@ -327,8 +333,9 @@ export function ConversationalCompose({
   // /api/policies/handoff-context, and mount the response as the FIRST
   // assistant turn (replacing the canned intro). The seed-applied ref
   // is consulted on every render so a remount (HMR, locale switch)
-  // never re-fires the handoff — UNLESS the previous attempt errored
-  // (we flip seedAppliedRef back so a retry can re-attempt).
+  // never re-fires the handoff. On error the ref is reset to false
+  // (R4-07: this allows re-seeding if the initialSeed PROP changes,
+  // but does NOT auto-retry within the same session; see inline note).
   const seedAppliedRef = useRef(false)
   useEffect(() => {
     if (seedAppliedRef.current) return
@@ -397,9 +404,12 @@ export function ConversationalCompose({
               : prev,
           )
           setErrored(true)
-          // Allow the next user reply (or an explicit reload) to
-          // re-seed: flip the applied flag back so a remount can
-          // re-attempt without losing the URL handoff state.
+          // R4-07 (documented intentional): resetting seedAppliedRef
+          // allows a re-seed if the `initialSeed` PROP changes (which
+          // re-runs this effect). It does NOT trigger a retry within the
+          // same session because the effect's deps are [initialSeed];
+          // an unchanged prop will not re-run the effect. Recovery within
+          // the same session requires a page reload with a fresh seed URL.
           seedAppliedRef.current = false
           return
         }
@@ -447,6 +457,7 @@ export function ConversationalCompose({
             : prev,
         )
         setErrored(true)
+        // R4-07: same intentional-inert note as the HTTP-error branch above.
         seedAppliedRef.current = false
       } finally {
         if (mountedRef.current && myId === reqIdRef.current) {
@@ -750,14 +761,22 @@ export function ConversationalCompose({
           <select
             data-testid="conv-runtime-select"
             value={runtimeOverride}
-            onChange={(e) =>
+            onChange={(e) => {
+              // R4-03: clear the stale feasibility banner from the prior
+              // runtime immediately; the next turn will fetch a fresh one.
+              setFeasibility(null)
               setRuntimeOverride(e.target.value as "claude-code" | "codex")
-            }
+            }}
+            // R4-03: freeze the select while a turn is in flight so the
+            // operator cannot switch runtimes mid-request (which would
+            // send the new runtime but show the old runtime's feasibility).
+            disabled={pending}
             aria-label={t("newPolicy.conv.runtimeOverride.label")}
             className={
               "rounded-md border border-black/[0.08] bg-white px-2 py-0.5 " +
               "text-[11px] text-[var(--color-text-primary)] " +
-              "focus:border-[var(--color-accent)] focus:outline-none"
+              "focus:border-[var(--color-accent)] focus:outline-none " +
+              "disabled:cursor-not-allowed disabled:opacity-50"
             }
           >
             <option value="claude-code">{t("runtime.name.claude-code")}</option>
@@ -931,6 +950,9 @@ export function ConversationalCompose({
         review={review}
         reviewPending={reviewPending}
         reviewError={reviewError}
+        // R4-02: gate Save while a correction turn is in-flight so the
+        // operator cannot persist a pre-correction (superseded) draft.
+        pending={pending}
         // P4: feed the pack picker's extractor the operator's first
         // message so a named work context ("리서치", "coding safety")
         // pre-selects the matching pack.

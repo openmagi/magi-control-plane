@@ -93,6 +93,11 @@ export interface IrDraftPaneProps {
   /** F2: true when the review request failed - renders a neutral
    *  "couldn't check (you can still save)" row, not a hidden surface. */
   reviewError?: boolean
+  /** R4-02: true while a conversational turn is in-flight. The Save CTA
+   *  is disabled when pending so the operator cannot persist a
+   *  pre-correction (superseded) draft. Optional so existing non-
+   *  conversational callers are unaffected. */
+  pending?: boolean
   /** Optional test id for the root container. */
   testId?: string
 }
@@ -581,7 +586,7 @@ function localizeReviewSummary(code: string, ok: boolean, ko: boolean): string {
 export function IrDraftPane({
   t, locale, draft, readyToSave, saveAction, missingFields,
   suggestedPackText, packCentric = false, review, reviewPending = false,
-  reviewError = false, testId,
+  reviewError = false, pending = false, testId,
 }: IrDraftPaneProps) {
   const ko = locale === "ko"
   const action = actionFromDraft(draft)
@@ -935,6 +940,11 @@ export function IrDraftPane({
             variant="primary"
             size="lg"
             data-testid="ir-draft-save"
+            // R4-02: disable while a correction turn is in-flight so
+            // the operator cannot persist a superseded (pre-correction)
+            // draft. The form is already gated on readyToSave && draft
+            // but pending adds the in-flight guard.
+            disabled={pending}
             className="text-base px-5 shadow-md motion-safe:animate-pulse"
           >
             {t("newPolicy.conv.saveReady")}
