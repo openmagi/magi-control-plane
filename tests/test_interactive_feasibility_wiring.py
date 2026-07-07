@@ -716,3 +716,17 @@ def test_af8_concrete_request_not_hijacked_by_pack_steer():
     assert r.status_code == 200, r.text
     am = r.json()["assistant_message"] or ""
     assert "/policy-packs" not in am, am
+
+
+# ── AF-9 (P1-7): steer for non-evidence archetypes authored in chat ──
+
+def test_af9_inject_context_on_legal_event_steers_not_morphs():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "inject context before each bash"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert ("full editor" in am) or ("고급 편집기" in am), am

@@ -129,14 +129,13 @@ class IntentFinding:
 COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
     # Row 1 - inject_context on excluded events
     "cc_context_channel_excluded": (
-        "The inject_context action is not delivered on this event. "
-        "The runtime drops any additionalContext silently. "
-        "Use a context injection on a supported event such as UserPromptSubmit "
-        "or PreToolUse to reach the model.",
-        "이 이벤트에서는 inject_context 액션이 전달되지 않습니다. "
-        "런타임이 additionalContext를 무시합니다. "
-        "UserPromptSubmit 또는 PreToolUse 같은 지원 이벤트에서 컨텍스트 주입을 사용하세요.",
-        "Use inject_context on UserPromptSubmit or SessionStart.",
+        "Injected context is not delivered on this event - the runtime drops "
+        "it silently. Inject context on a supported event such as "
+        "UserPromptSubmit or PreToolUse to reach the model.",
+        "이 이벤트에서는 주입한 컨텍스트가 전달되지 않고 런타임이 조용히 "
+        "무시합니다. UserPromptSubmit 또는 PreToolUse 같은 지원 이벤트에서 "
+        "컨텍스트를 주입하세요.",
+        "Inject context on UserPromptSubmit or SessionStart instead.",
     ),
     # Row 5 - event not in live set on Codex
     "codex_event_not_live": (
@@ -191,22 +190,23 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
     # Row 3 - PreToolUse + silent-skip tool on Codex
     "codex_matcher_inert": (
         "This tool has no direct equivalent in Codex. "
-        "A PreToolUse hook with this matcher fires zero times on Codex - "
-        "the policy is saved but unenforced. "
-        "Codex dispatches reads as exec_command sub-actions rather than "
+        "A before-a-tool-runs rule targeting this tool fires zero times on "
+        "Codex - the policy is saved but unenforced. "
+        "Codex dispatches reads as shell sub-actions rather than "
         "discrete tool events.",
         "이 툴은 Codex에서 직접 대응하는 항목이 없습니다. "
-        "이 매처를 사용한 PreToolUse 훅은 Codex에서 0번 실행됩니다. "
+        "이 툴을 대상으로 한 도구 실행 전 규칙은 Codex에서 0번 실행됩니다. "
         "정책은 저장되지만 적용되지 않습니다.",
-        "Use matcher 'exec_command' or 'apply_patch' to target Codex "
-        "shell and file operations.",
+        "Target Codex shell and file operations by their Codex tool names "
+        "instead.",
     ),
     # Row 10 - matrix illegal triple
     "matrix_illegal_triple": (
-        "This event-matcher-action combination is not supported. "
-        "The policy cannot be expressed in magi-cp today.",
-        "이 이벤트-매처-액션 조합은 지원되지 않습니다. "
-        "현재 magi-cp에서 이 정책을 표현할 수 없습니다.",
+        "This combination of when the check runs, what it applies to, and "
+        "what it does is not supported. The policy cannot be authored as "
+        "described.",
+        "이 검사가 실행되는 시점, 적용 대상, 동작의 조합은 지원되지 않습니다. "
+        "설명하신 대로는 정책을 만들 수 없습니다.",
         None,
     ),
     # GAP-A / AF-5 - operator asked to enforce (block or pause for

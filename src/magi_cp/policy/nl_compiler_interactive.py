@@ -4165,6 +4165,31 @@ def step_compile(
                     if assistant_message else _steer
                 )
 
+    # AF-9 (P1-7): non-evidence archetype steer. inject_context /
+    # input_rewrite intents on a LEGAL event silently morphed into an
+    # evidence rule (the wizard asks for a block/ask/record action, which is
+    # meaningless for these archetypes). The excluded-event inject path is
+    # already reinterpreted honestly (rewrite marker); every other case gets
+    # a deterministic steer to the full editor instead of the silent morph.
+    _arch = draft.get("action")
+    if (_arch in ("inject_context", "input_rewrite")
+            and not extracted.get("__inject_context_rewritten__")):
+        _label = ("context injection" if _arch == "inject_context"
+                  else "input rewriting")
+        _label_ko = ("컨텍스트 주입" if _arch == "inject_context"
+                     else "입력 재작성")
+        _asteer = (
+            f"{_label_ko}은(는) 아직 대화형으로 만들 수 없습니다. 고급 "
+            f"편집기에서 작성해 주세요."
+            if ko else
+            f"Authoring {_label} is not available in chat yet. Please use the "
+            f"full editor for it."
+        )
+        assistant_message = (
+            f"{_asteer}\n\n{assistant_message}"
+            if assistant_message else _asteer
+        )
+
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty
     # (neither inline `command` nor `script_path` set), and the LLM

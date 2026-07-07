@@ -365,3 +365,16 @@ def test_af4_genuine_out_of_scope_still_fires():
         "이전 세션에서 뭐 했는지 기억해줘").code == "cross_session_state"
     assert f.classify_intent(
         "keep a running total across sessions").code == "cross_session_state"
+
+
+# ── AF-9 (P2-6): honesty copy must not leak internal jargon ───────────
+
+def test_af9_copy_table_no_matcher_triple_jargon():
+    for code, (en, ko, _alt) in COPY_TABLE.items():
+        for s in (en, ko):
+            low = s.lower()
+            assert "event-matcher-action" not in low, code
+            assert "이벤트-매처-액션" not in s, code
+            assert "additionalcontext" not in low, code
+            # "matcher" as a bare internal term must not appear.
+            assert "matcher" not in low, code
