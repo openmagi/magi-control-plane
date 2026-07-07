@@ -3836,6 +3836,28 @@ def step_compile(
             else:
                 draft["action"] = "block"
 
+    # AF-5 (P1-1/P1-2): deterministic enforce-downgrade. When the FINAL draft
+    # still carries an enforce action (block or ask) that is matrix-illegal
+    # at its triple, Save would 422 and the operator would hit a raw
+    # validator dead-end (S3). Downgrade to audit (legal on every event) so
+    # the draft is saveable, and remember the requested action so the honest
+    # enforce_downgraded_to_audit finding fires below regardless of whether
+    # the latest turn still carries an enforce word. The server owns this
+    # rewrite; the notice + Magi Agent handoff keep it honest.
+    _enforce_downgraded_from: str | None = None
+    _dg_act = draft.get("action")
+    if _dg_act in ("block", "ask"):
+        _dt = draft.get("trigger") or {}
+        _dev = _dt.get("event") if isinstance(_dt, dict) else None
+        _dmt = _dt.get("matcher") if isinstance(_dt, dict) else None
+        if _dev and _dmt:
+            from .matrix import validate_combination
+            try:
+                validate_combination(_dev, _dmt, _dg_act)
+            except ValueError:
+                _enforce_downgraded_from = _dg_act
+                draft["action"] = "audit"
+
     # Step 6: assistant_message is always empty at this point (the LLM's
     # value was discarded per Q103). The deterministic builder runs
     # below in Step 9 once `missing` + `ready_to_save` are computed.
@@ -4014,6 +4036,22 @@ def step_compile(
     _f3 = _feas.classify_silent_downgrade(latest_user_text, draft)
     if _f3 is not None:
         draft_finding = _f3
+    elif _enforce_downgraded_from is not None:
+        # AF-5: the server forced the downgrade this turn (the requested
+        # block/ask was illegal). classify_silent_downgrade may not re-detect
+        # it if the latest turn no longer carries an enforce word (e.g. the
+        # action came from a prior turn), so synthesize the honest finding
+        # directly from the downgrade flag.
+        _dt2 = draft.get("trigger") or {}
+        draft_finding = _feas.FeasibilityFinding(
+            cls=_feas.FeasibilityClass.degraded,
+            code="enforce_downgraded_to_audit",
+            detail={
+                "event": (_dt2.get("event") if isinstance(_dt2, dict) else "") or "",
+                "applied": "audit",
+                "requested": _enforce_downgraded_from,
+            },
+        )
 
     # Q103 — deterministic assistant_message. The LLM's `assistant_message`
     # field was already extracted from `parsed` above; we discard it here

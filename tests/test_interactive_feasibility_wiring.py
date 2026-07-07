@@ -241,8 +241,12 @@ def test_c_rt_none_explicit_same_as_absent():
 # (d) matrix_illegal_triple
 # ---------------------------------------------------------------------------
 
-def test_d_matrix_illegal_triple():
-    """Stop+*+block is an illegal combination; feasibility surfaces the finding."""
+def test_d_illegal_block_at_stop_is_downgraded_not_dead_end():
+    """AF-5: Stop+*+block is illegal, but instead of a matrix_illegal_triple
+    dead-end the server now deterministically downgrades it to a saveable
+    audit draft and surfaces the honest enforce_downgraded_to_audit finding.
+    (matrix_illegal_triple still covers non-enforce illegal shapes such as an
+    explicit tool matcher at Stop; see the classify_draft unit tests.)"""
     canned = _llm_response(message="ok", updates={}, questions=[])
     c = _client(llm_compiler=FakeLlmProvider([canned]))
 
@@ -266,8 +270,13 @@ def test_d_matrix_illegal_triple():
 
     assert body["feasibility"] is not None, body
     f = body["feasibility"]
-    assert f["code"] == "matrix_illegal_triple", f
+    assert f["code"] == "enforce_downgraded_to_audit", f
     assert f["runtime_id"] == "claude-code", f
+    assert body["draft"]["action"] == "audit", body["draft"]
+    # Not a matrix_illegal_triple dead-end: the draft is coherent and the
+    # wizard proceeds to ask for an id (normal flow) rather than surfacing a
+    # raw validator error.
+    assert "illegal combination" not in (body["assistant_message"] or "")
 
 
 # ---------------------------------------------------------------------------
@@ -569,3 +578,66 @@ def test_g_no_restore_on_korean_negated_block():
     )
     assert r.status_code == 200, r.text
     assert r.json()["draft"]["action"] == "audit"
+
+
+# ── AF-5 (P1-1/P1-2): deterministic enforce-downgrade for block AND ask ──
+
+def _priv_scan_draft(event, matcher, action):
+    return {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": event, "matcher": matcher},
+        "requires": [{"kind": "step", "step": "privilege_scan", "verdict": "pass"}],
+        "action": action,
+    }
+
+
+def test_af5_block_kept_at_stop_is_downgraded_deterministically():
+    """LLM keeps block at Stop (audit-only). The server must downgrade to
+    audit, surface the honest finding, and keep the draft saveable - never a
+    matrix_illegal_triple / S3 dead-end."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "block the final answer when citations are missing"}],
+        "draft_so_far": _citation_audit_draft(),  # Stop/*/audit seed
+        "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+    assert body["feasibility"]["code"] == "enforce_downgraded_to_audit", body["feasibility"]
+    assert body["ready_to_save"] is True, body
+    assert "표현할 수 없" not in (body["assistant_message"] or "")
+    assert "illegal combination" not in (body["assistant_message"] or "")
+
+
+def test_af5_ask_at_illegal_event_downgraded():
+    """ask at PostToolUse (ask illegal there) downgrades to audit with the
+    honest finding rather than dead-ending."""
+    canned = _llm_response(message="ok", updates={"action": "ask"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = _priv_scan_draft("PostToolUse", "Bash", "ask")
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "require approval after each bash call"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+    assert body["feasibility"]["code"] == "enforce_downgraded_to_audit", body["feasibility"]
+
+
+def test_af5_legal_block_not_downgraded():
+    """A legal block (PreToolUse/Bash) is untouched."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = _priv_scan_draft("PreToolUse", "Bash", "block")
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block RRN in shell"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "block", body["draft"]
+    assert body["feasibility"] is None, body

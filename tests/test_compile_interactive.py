@@ -960,9 +960,12 @@ def test_verifier_phrasing_still_produces_evidence_not_run_command():
     for forbidden in ("command", "script_path", "runtime", "args",
                        "timeout_ms", "fail_closed"):
         assert forbidden not in draft, (forbidden, draft)
-    # Evidence-archetype fields landed.
+    # Evidence-archetype fields landed. (The test's point is that a
+    # verifier phrasing stays evidence, not run_command; the requested
+    # block at Stop is honestly downgraded to audit by AF-5 since block is
+    # not available there.)
     assert draft["requires"][0]["kind"] == "regex"
-    assert draft["action"] == "block"
+    assert draft["action"] == "audit"
 
 
 def test_run_command_full_walkthrough_passes_ir_validator():
@@ -1756,8 +1759,12 @@ def test_q100_deterministic_extraction_does_not_overwrite_existing_draft():
     )
     body = r.json()
     draft = body["draft"]
+    # The extractor's source_allowlist guess must NOT overwrite the prior
+    # citation_verify commitment - that is what this test guards.
     assert draft["requires"][0]["step"] == "citation_verify"
-    assert draft["action"] == "block"
+    # The prior draft's block at Stop is illegal, so AF-5 honestly downgrades
+    # it to audit (extraction precedence is unaffected by that repair).
+    assert draft["action"] == "audit"
 
 
 # ── Q103 — conversation state model ───────────────────────────────────

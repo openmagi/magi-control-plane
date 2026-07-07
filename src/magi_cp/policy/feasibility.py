@@ -208,15 +208,17 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
         "현재 magi-cp에서 이 정책을 표현할 수 없습니다.",
         None,
     ),
-    # REV-PR-1 (GAP-A) - operator asked to enforce, draft records only
+    # GAP-A / AF-5 - operator asked to enforce (block or pause for
+    # approval), draft records only because no enforce action is available
+    # at this point in the run.
     "enforce_downgraded_to_audit": (
-        "You asked to block or stop this, but blocking is not available at "
-        "this point in the run. The draft uses audit instead: it records "
+        "You asked to block or pause for approval, but neither is available "
+        "at this point in the run. The draft uses audit instead: it records "
         "every failure but does not stop anything. To actually hold delivery "
         "on this check, author it as a Magi Agent gate.",
-        "차단을 요청하셨지만 이 시점에서는 차단 액션을 사용할 수 없습니다. "
-        "초안은 audit(기록)으로 작성되어 실패를 기록만 하고 실제로 막지는 "
-        "않습니다. 실제 전달을 막으려면 Magi Agent 게이트로 작성하세요.",
+        "차단이나 승인 대기를 요청하셨지만 이 시점에서는 둘 다 사용할 수 "
+        "없습니다. 초안은 audit(기록)으로 작성되어 실패를 기록만 하고 실제로 "
+        "막지는 않습니다. 실제 전달을 막으려면 Magi Agent 게이트로 작성하세요.",
         "Keep audit here to get a record of every failure.",
     ),
     # Row 11 - evidence catalog (Magi Agent only)
