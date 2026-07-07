@@ -53,9 +53,10 @@ ENFORCE_INTENT_RE = re.compile(
 # block-stem-plus-negation shapes ("차단하지 말", "차단은 하지 마",
 # "막지 마").
 BLOCK_NEGATION_RE = re.compile(
-    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?(?:block|deny|refuse|forbid)"
-    r"|(?:차단|막)\S*\s*(?:하지\s*마|하지\s*말|말고)"
-    r"|차단하지|막지\s*마",
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:block|deny|refuse|forbid|prevent|reject)"
+    r"|(?:차단|막|금지)\S*\s*(?:하지\s*마|하지\s*말|말고|안)"
+    r"|차단하지|막지\s*마|금지하지",
     re.IGNORECASE,
 )
 

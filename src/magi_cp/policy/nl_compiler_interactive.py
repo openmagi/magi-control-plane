@@ -711,9 +711,10 @@ _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # rather than an import to avoid the module-load cycle the feasibility import
 # is lazily deferred for). classify_silent_downgrade uses feasibility's copy.
 _BLOCK_NEGATION_RE = re.compile(
-    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?(?:block|deny|refuse|forbid)"
-    r"|(?:차단|막)\S*\s*(?:하지\s*마|하지\s*말|말고)"
-    r"|차단하지|막지\s*마",
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:block|deny|refuse|forbid|prevent|reject)"
+    r"|(?:차단|막|금지)\S*\s*(?:하지\s*마|하지\s*말|말고|안)"
+    r"|차단하지|막지\s*마|금지하지",
     re.IGNORECASE,
 )
 
@@ -736,8 +737,14 @@ _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "run_command",
     )),
     # ── EVIDENCE-only actions (block / ask / audit) ──────────────────
+    # AF-6 (P1-3): the block family is aligned with the enforce verbs in
+    # feasibility.ENFORCE_INTENT_RE so "prevent/forbid/reject/refuse/금지/
+    # 못하게" also extract as block and reach the restore + downgrade
+    # machinery. "require" is intentionally EXCLUDED - "require approval"
+    # is an ask intent (handled by the ask family below).
     ("block", (
-        "차단", "막아", "block", "deny", "거부",
+        "차단", "막아", "막기", "block", "deny", "거부",
+        "prevent", "forbid", "reject", "refuse", "금지", "못하게", "하면 안",
     )),
     # AF-1 (P0-1): the ask family requires an ask-OBJECT. Bare "확인"
     # (verify / check) and bare "ask" (as in "ask whether X is true")

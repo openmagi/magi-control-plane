@@ -3233,3 +3233,35 @@ def test_af2_negated_block_ko_extracts_audit_not_block():
 def test_af2_plain_block_still_extracts_block():
     from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
     assert _extract_intent_from_text("block rm -rf").get("action") == "block"
+
+
+# ── AF-6 (P1-3): extractor block family aligned with enforce verbs ────
+
+def test_af6_prevent_forbid_reject_extract_block():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    assert _extract_intent_from_text(
+        "prevent shell commands that contain an RRN").get("action") == "block"
+    assert _extract_intent_from_text(
+        "forbid fetching from evil.com").get("action") == "block"
+    assert _extract_intent_from_text(
+        "reject the tool call if it touches prod").get("action") == "block"
+
+
+def test_af6_korean_enforce_verbs_extract_block():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    assert _extract_intent_from_text("그 명령을 금지해줘").get("action") == "block"
+    assert _extract_intent_from_text("못하게 해줘").get("action") == "block"
+
+
+def test_af6_require_approval_stays_ask_not_block():
+    # "require approval" is an ASK intent - must not be captured by the
+    # widened block family.
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    assert _extract_intent_from_text(
+        "require approval before running bash").get("action") == "ask"
+
+
+def test_af6_negated_prevent_not_extracted():
+    from magi_cp.policy.nl_compiler_interactive import _extract_intent_from_text
+    out = _extract_intent_from_text("don't prevent it, just record")
+    assert out.get("action") != "block", out
