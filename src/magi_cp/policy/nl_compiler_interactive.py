@@ -381,6 +381,23 @@ _EGATE_ASK_RE = re.compile(
 # forever. Fetch tools are excluded (the gate must not block the fetch that
 # produces the evidence, which would deadlock the gate) - same policy as the
 # intent extractor above.
+def _scan_matcher_answer(user_text: str) -> str | None:
+    """AF-16 (P2-9): pick a legal tool matcher named in a freeform answer.
+
+    Unlike `_scan_gate_tool` (compound gate; excludes fetch tools to avoid a
+    deadlock) this is the general single-policy matcher answer, so WebFetch /
+    WebSearch are allowed. mcp tools win over bare builtins. Returns None when
+    nothing legal is named."""
+    raw = user_text or ""
+    for m in _EGATE_MCP_TOOL_RE.findall(raw):
+        if _matcher_is_legal(m):
+            return m
+    for m in _EGATE_BARE_TOOL_RE.findall(raw):
+        if _matcher_is_legal(m):
+            return m
+    return None
+
+
 def _scan_gate_tool(user_text: str) -> str | None:
     """Pick a legal gated tool from freeform text: an explicit mcp__ tool,
     else the first non-fetch bare tool. None if nothing legal is named."""
@@ -989,6 +1006,26 @@ def _auto_description_for_draft(draft: dict[str, Any], ko: bool) -> str:
         f"Check {step} at {event} on {matcher or '*'} and {action} "
         f"the result."
     )
+
+
+def _extractor_found_inscope(extracted: dict[str, Any]) -> bool:
+    """AF-14: True when the extractor produced a coherent in-scope authoring
+    intent this turn - a wired-verifier step or a concrete enforcement
+    action. Used to decide whether a rows-11-16 intent finding should ride as
+    an advisory note (in-scope present) or hijack the turn (nothing in-scope).
+    A bare matcher is intentionally NOT enough (rate-limit's "web fetches"
+    would match WebFetch without being an expressible policy)."""
+    if not isinstance(extracted, dict):
+        return False
+    # Any concrete archetype action (block / ask / audit / inject_context /
+    # input_rewrite / run_command) is an in-scope authoring intent.
+    action = extracted.get("action")
+    if isinstance(action, str) and action:
+        return True
+    for r in (extracted.get("requires") or []):
+        if isinstance(r, dict) and r.get("kind") == "step" and r.get("step"):
+            return True
+    return False
 
 
 def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
@@ -3705,11 +3742,23 @@ def step_compile(
     # Feasibility - lazy import (one-way dep; avoids any import cycle).
     from ..policy import feasibility as _feas  # noqa: PLC0415
 
-    # Intent check (rows 11-16): authoritative, magi_agent_only / not_expressible.
-    # Must run BEFORE the extractor merge so we can suppress seeding entirely.
+    # Intent check (rows 11-16): magi_agent_only / not_expressible.
     intent_finding = _feas.classify_intent(latest_user_text)
 
-    if intent_finding is None:
+    # AF-14 (P1-9 / section-6 hybrid): a rows-11-16 finding normally
+    # SUPPRESSES the turn (skip extraction + clear questions). But when the
+    # SAME turn also carries a coherent in-scope authoring intent - a wired
+    # verifier or a concrete enforcement action - suppressing it turns a
+    # lexicon false positive ("block the script we discussed yesterday")
+    # into a dead-end. In that case the finding rides as an ADVISORY note
+    # alongside normal authoring instead of hijacking the turn. A pure
+    # out-of-scope request (no action, no verifier) still suppresses.
+    _intent_advisory = (
+        intent_finding is not None and _extractor_found_inscope(extracted)
+    )
+    _intent_suppresses = intent_finding is not None and not _intent_advisory
+
+    if not _intent_suppresses:
         # Normal path: merge extractor findings into the draft.
         _merge_extracted_into_draft(draft, extracted)
 
@@ -3809,7 +3858,7 @@ def step_compile(
             updates_raw.pop(k, None)
     # When intent_finding is set the draft must not be seeded: skip the
     # LLM merge entirely so the draft stays as the sanitized input.
-    if intent_finding is None and isinstance(updates_raw, dict):
+    if not _intent_suppresses and isinstance(updates_raw, dict):
         # Track which canonical fields the user just answered so the
         # LLM cannot overwrite them on this same turn.
         locked: set[FieldName] = set()
@@ -4119,7 +4168,7 @@ def step_compile(
     # the restore would force enforcement they refused.
     _on_missing_answered = bool(answers) and "q_on_missing" in (answers or {})
     _block_negated = bool(_BLOCK_NEGATION_RE.search(latest_user_text or ""))
-    if (intent_finding is None
+    if (not _intent_suppresses
             and extracted.get("action") == "block"
             and not _block_negated
             and not _on_missing_answered
@@ -4218,6 +4267,31 @@ def step_compile(
                     draft["requires"] = reqs
                     missing = _missing_fields_for_draft(draft)
 
+    # AF-16 (P2-9): freeform matcher answer fallback. The extractor's matcher
+    # vocabulary is only WebFetch/Bash/Edit, and the dashboard has no
+    # text-answer channel bound to q_matcher, so naming any other tool
+    # (Grep / Write / Read / an mcp tool) in freeform chat otherwise relies
+    # on the LLM to land it. When matcher is still missing and the latest
+    # turn names a legal tool, set it deterministically. Only fires when the
+    # draft has no matcher yet, so an incidental tool mention in a
+    # confirmation ("yes the Bash rule looks good") never clobbers a chosen
+    # matcher.
+    if ("matcher" in missing and not _is_run_command_draft(draft)):
+        _trig = draft.get("trigger")
+        _has_matcher = (
+            isinstance(_trig, dict)
+            and isinstance(_trig.get("matcher"), str)
+            and _trig.get("matcher").strip()
+        )
+        if not _has_matcher:
+            _mt = _scan_matcher_answer(latest_user_text)
+            if _mt is not None:
+                if not isinstance(_trig, dict):
+                    _trig = {}
+                    draft["trigger"] = _trig
+                _trig["matcher"] = _mt
+                missing = _missing_fields_for_draft(draft)
+
     # #100 UX follow-up: ID and description should NOT be the thing
     # that blocks Save. When everything else is filled and only `id`
     # (and optionally `description`) is missing, server-side
@@ -4284,17 +4358,16 @@ def step_compile(
                 continue
             if q_type not in ("single_select", "multi_select", "text"):
                 continue
-            # Use the LLM's prompt text but the canonical options so
-            # the IR-merge path stays type-safe even if the LLM made
-            # up a value label.
+            # AF-15 (P2-8): the LLM's `questions` list still decides WHICH
+            # field to ask (targets_field, ordering), but the prompt STRING
+            # and options are pinned to the canonical server-authored
+            # question. This closes the last LLM-authored channel to the
+            # operator - a prompt-injected model can no longer surface
+            # arbitrary instructions phrased as a "question" - and is
+            # consistent with Q103 (the server owns all operator-facing
+            # copy; the LLM's assistant_message is already discarded).
             canonical = _canonical_question_for(targets)
-            accepted.append(Question(
-                id=canonical.id,
-                prompt=_to_plain_language(prompt),
-                kind=canonical.kind,
-                targets_field=canonical.targets_field,
-                options=canonical.options,
-            ))
+            accepted.append(canonical)
         questions = accepted
     if not questions and missing:
         # Fallback: ask the first MAX_QUESTIONS_PER_TURN missing
@@ -4539,13 +4612,34 @@ def step_compile(
         raw = (latest_user_text or "").strip()
         return _to_plain_language(raw)[:200]
 
-    if intent_finding is not None:
-        # Rows 11-16: override assistant_message and clear questions.
+    if _intent_suppresses:
+        # Rows 11-16, pure out-of-scope: override assistant_message and
+        # clear questions.
         _copy = _feas_copy(intent_finding.code)
         assistant_message = _copy
         questions = []
         # Build alternatives: magi_agent_only codes get a handoff CTA;
         # not_expressible codes get an empty list (dead-end in both products).
+        if intent_finding.code in _feas._MAGI_AGENT_ONLY_CODES:
+            _intent_summary = _build_intent_summary()
+            _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
+        else:
+            _alternatives = []
+        feasibility_wire = {
+            "runtime_id": effective_runtime,
+            "class": intent_finding.cls.value,
+            "code": intent_finding.code,
+            "explanation": _copy,
+            "alternatives": _alternatives,
+        }
+    elif _intent_advisory:
+        # AF-14: the turn ALSO carried a coherent in-scope intent, so the
+        # rows-11-16 finding rides as an advisory note (prefixed) while
+        # normal authoring (draft + questions) continues untouched.
+        _copy = _feas_copy(intent_finding.code)
+        assistant_message = (
+            f"{_copy}\n\n{assistant_message}" if assistant_message else _copy
+        )
         if intent_finding.code in _feas._MAGI_AGENT_ONLY_CODES:
             _intent_summary = _build_intent_summary()
             _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
@@ -4643,7 +4737,7 @@ def step_compile(
     # time. Server-owned copy + CTA (the D75 prompt hint is dead because
     # Q103 discards the LLM's assistant_message). Overrides the S0 question
     # flow without persisting a draft, exactly like the pack hint intended.
-    if (intent_finding is None
+    if (not _intent_suppresses
             and not _is_run_command_draft(draft)
             and not _is_evidence_gate_draft(draft)
             and not draft.get("requires")

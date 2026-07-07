@@ -465,17 +465,21 @@ _INTENT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     # Row 16 - retroactive undo.
-    # AF-4 (P1-9): bare "retract" and "롤백" were dropped - they are command
-    # nouns that fire on in-scope requests to BLOCK a rollback/retract
-    # command ("git 롤백 명령 실행되면 차단"). The remaining phrases describe
-    # undoing an action AFTER it ran, which is the genuinely inexpressible
-    # intent.
+    # AF-14 (section-6 hybrid): the command nouns "retract" / "롤백" are back.
+    # AF-4 removed them because they hijacked in-scope "block a rollback
+    # command" requests, but the hybrid hijack semantics (a rows-11-16
+    # finding rides as advisory when the turn also carries an in-scope block
+    # action) now handles that safely - "git 롤백 명령 차단" keeps its block
+    # authoring AND gets the advisory note. A bare "roll back my changes"
+    # (no in-scope action) still suppresses honestly.
     (
         "retroactive_undo",
         (
             "roll back the tool call after",
             "undo the edit if",
             "undo it after",
+            "retract",
+            "롤백",
             "실행된 뒤 되돌",
             "실행 후 되돌",
             "소급 취소",
