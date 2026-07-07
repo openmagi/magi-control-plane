@@ -4222,17 +4222,16 @@ def step_compile(
                 continue
             if q_type not in ("single_select", "multi_select", "text"):
                 continue
-            # Use the LLM's prompt text but the canonical options so
-            # the IR-merge path stays type-safe even if the LLM made
-            # up a value label.
+            # AF-15 (P2-8): the LLM's `questions` list still decides WHICH
+            # field to ask (targets_field, ordering), but the prompt STRING
+            # and options are pinned to the canonical server-authored
+            # question. This closes the last LLM-authored channel to the
+            # operator - a prompt-injected model can no longer surface
+            # arbitrary instructions phrased as a "question" - and is
+            # consistent with Q103 (the server owns all operator-facing
+            # copy; the LLM's assistant_message is already discarded).
             canonical = _canonical_question_for(targets)
-            accepted.append(Question(
-                id=canonical.id,
-                prompt=_to_plain_language(prompt),
-                kind=canonical.kind,
-                targets_field=canonical.targets_field,
-                options=canonical.options,
-            ))
+            accepted.append(canonical)
         questions = accepted
     if not questions and missing:
         # Fallback: ask the first MAX_QUESTIONS_PER_TURN missing
