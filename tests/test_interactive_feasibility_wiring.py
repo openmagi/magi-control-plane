@@ -755,3 +755,60 @@ def test_af10_movable_steer_omits_unauthorable_event():
     assert "UserPromptSubmit" not in am, am
     # A block-legal bucketed event is still offered.
     assert ("PreToolUse" in am) or ("PostToolUse" in am), am
+
+
+# ── AF-11 (P1-8ii): ready_to_save consults the verifier registry ──────
+
+def test_af11_unregistered_verifier_not_ready_to_save():
+    """A draft that names a verifier cp does not register must NOT report
+    ready_to_save (it would 422 at Save). It reports needs_more instead."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "phantom", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "test_run", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "require tests ran"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_save"] is False, body
+
+
+def test_af11_registered_verifier_still_ready():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "cite-audit", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "citation_verify", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "audit citations"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ready_to_save"] is True, r.json()
+
+
+def test_af11_regex_kind_unaffected():
+    """A non-step requirement (regex) is not a registry concern."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "rm-block", "type": "evidence",
+        "trigger": {"event": "PreToolUse", "matcher": "Bash"},
+        "requires": [{"kind": "regex", "pattern": r"\brm -rf\b"}],
+        "action": "block",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block rm -rf"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ready_to_save"] is True, r.json()

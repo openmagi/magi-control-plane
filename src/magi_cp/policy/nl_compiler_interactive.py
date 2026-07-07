@@ -1753,9 +1753,34 @@ def _draft_passes_ir_validator(draft: dict[str, Any]) -> tuple[bool, str | None]
         # us safe against future drift).
         from .ir import policy_from_dict
         policy_from_dict(draft)
-        return True, None
     except (ValueError, KeyError, TypeError) as e:
         return False, str(e)
+
+    # AF-11 (P1-8ii): the IR loader accepts any step name, but PUT /policies
+    # rejects a step the verifier registry does not resolve (a 422 AFTER the
+    # wizard said "Draft is ready"). Consult the registry here so an
+    # unregistered verifier reports needs-more instead. Tolerant: a
+    # `preview:`-prefixed step, a custom verifier with no descriptor, or a
+    # non-step requirement contributes no constraint (mirrors
+    # validate_policy_against_descriptors' skip rules); on any lookup error
+    # we fall through to "ready" rather than block a valid draft.
+    try:
+        from ..verifier.descriptors import get_descriptor
+        for r in (draft.get("requires") or []):
+            if not isinstance(r, dict):
+                continue
+            if r.get("kind") != "step":
+                continue
+            step = r.get("step")
+            if not isinstance(step, str) or not step or step.startswith("preview:"):
+                continue
+            if get_descriptor(step) is None:
+                return False, (
+                    f"the check '{step}' is not one of the available verifiers"
+                )
+    except Exception:  # pragma: no cover - defensive; never block on lookup
+        pass
+    return True, None
 
 
 def _questions_we_would_have_asked(prior_draft: dict[str, Any] | None,
