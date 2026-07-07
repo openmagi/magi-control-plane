@@ -812,3 +812,43 @@ def test_af11_regex_kind_unaffected():
     })
     assert r.status_code == 200, r.text
     assert r.json()["ready_to_save"] is True, r.json()
+
+
+# ── AF-12 (P2-4): compound path runs feasibility ─────────────────────
+
+def test_af12_compound_response_has_feasibility_key():
+    """Wire-shape parity: the compound path always carries a feasibility key
+    (null when native), like the single-policy path."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before mcp__trading__execute_trade runs"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("compound") is True, body
+    assert "feasibility" in body, body
+
+
+def test_af12_compound_codex_surfaces_inert_finding():
+    """On Codex, a compound whose gated tool is inert surfaces a feasibility
+    finding instead of silently authoring an unenforced policy."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    # Gate a codex-inert tool (Read: dispatched as a shell sub-action on
+    # Codex). WebFetch cannot be gated (it produces the evidence), so Read is
+    # the reachable inert-gate case.
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "require a credible source before Read runs"}],
+        "draft_so_far": None, "answers": None,
+        "runtime_id": "codex",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("compound") is True, body
+    assert body.get("feasibility") is not None, body
+    assert body["feasibility"]["runtime_id"] == "codex", body["feasibility"]
+    assert body["feasibility"]["code"] == "codex_matcher_inert", body["feasibility"]

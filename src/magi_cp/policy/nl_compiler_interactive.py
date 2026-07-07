@@ -3262,11 +3262,55 @@ def _build_compound_message(
     )
 
 
+def _compound_feasibility(
+    finalized: dict[str, Any], runtime_id: str, ko: bool,
+) -> dict[str, Any] | None:
+    """AF-12 (P2-4): classify each expanded compound member for the runtime
+    and return the worst finding as a wire dict, or None when every member is
+    native. Never raises (an incomplete / unexpandable draft yields None)."""
+    from ..policy import feasibility as _feas
+    from ..policy.compound import expand_compound_draft
+    try:
+        members = expand_compound_draft(finalized)
+    except (ValueError, KeyError, TypeError):
+        return None
+    _rank = {
+        "not-expressible": 4, "silent_noop": 3,
+        "magi-agent-only": 2, "degraded": 1, "native": 0,
+    }
+    worst = None
+    worst_rank = -1
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        f = _feas.classify_draft(m, runtime_id)
+        if f is None:
+            continue
+        r = _rank.get(f.cls.value, 0)
+        if r > worst_rank:
+            worst, worst_rank = f, r
+    if worst is None:
+        return None
+    entry = _feas.COPY_TABLE.get(worst.code)
+    explanation = (
+        ((entry[1] if ko else entry[0]) + ((" " + entry[2]) if entry[2] else ""))
+        if entry else worst.code
+    )
+    return {
+        "runtime_id": runtime_id,
+        "class": worst.cls.value,
+        "code": worst.code,
+        "explanation": explanation,
+        "alternatives": [],
+    }
+
+
 def _step_compile_compound(
     *, draft: dict[str, Any], seed: dict[str, Any] | None,
     answers: dict[str, str] | None, ko: bool,
     context: dict[str, Any] | None = None,
     latest_user_text: str = "",
+    runtime_id: str = "claude-code",
 ) -> dict[str, Any]:
     """Author a compound evidence_gate draft for one turn, deterministically.
 
@@ -3369,6 +3413,21 @@ def _step_compile_compound(
     # emit it so the client can round-trip it, but strip the placeholder
     # empty gate.matcher so a half-draft can't be POSTed as-is.
     wire_draft: dict[str, Any] = dict(finalized)
+    # AF-12 (P2-4): run feasibility over the expanded members so the compound
+    # path is honest about runtime (e.g. a WebFetch gate is inert on Codex)
+    # instead of silently authoring an unenforced policy. Only meaningful once
+    # the gate tool is chosen (expansion needs it); before that, native/None.
+    feasibility_wire = (
+        _compound_feasibility(finalized, runtime_id, ko) if has_matcher else None
+    )
+    if feasibility_wire is not None:
+        _fexp = feasibility_wire.get("explanation")
+        if _fexp:
+            assistant_message = (
+                f"{_fexp}\n\n{assistant_message}"
+                if assistant_message else _fexp
+            )
+
     return {
         "assistant_message": assistant_message,
         "draft": wire_draft,
@@ -3377,6 +3436,8 @@ def _step_compile_compound(
         "needs_more": not ready,
         "ready_to_save": ready,
         "compound": True,
+        # Wire-shape parity with the single-policy path (null when native).
+        "feasibility": feasibility_wire,
     }
 
 
@@ -3478,6 +3539,7 @@ def step_compile(
         return _step_compile_compound(
             draft=sanitized, seed=_compound_seed, answers=answers, ko=ko,
             context=context, latest_user_text=_compound_latest,
+            runtime_id=effective_runtime,
         )
 
     # Step 2: apply answers FIRST so the user's explicit clicks take
