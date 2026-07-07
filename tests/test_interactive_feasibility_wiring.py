@@ -852,3 +852,74 @@ def test_af12_compound_codex_surfaces_inert_finding():
     assert body.get("feasibility") is not None, body
     assert body["feasibility"]["runtime_id"] == "codex", body["feasibility"]
     assert body["feasibility"]["code"] == "codex_matcher_inert", body["feasibility"]
+
+
+# ── AF-14 (§6-2): hybrid rows-11-16 hijack semantics ─────────────────
+
+def test_af14_yesterday_block_request_is_advisory_not_dead_end():
+    """'block the deploy script we talked about yesterday': the row-13
+    'yesterday' lexicon fires, but the operator also expressed an in-scope
+    block intent. The finding rides as advisory; authoring continues (the
+    block action is seeded, questions are asked) - no dead-end."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "block the deploy script we talked about yesterday"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # In-scope block intent survived (not suppressed).
+    assert body["draft"] is not None and body["draft"].get("action") == "block", body
+    assert body["questions"] != [], body  # still authoring, not a dead-end
+    # The out-of-scope note still surfaces as advisory feasibility.
+    assert body["feasibility"] is not None
+    assert body["feasibility"]["code"] == "cross_session_state", body["feasibility"]
+
+
+def test_af14_rollback_command_block_is_advisory():
+    """'git 롤백 명령 실행되면 차단해줘': the request carries a concrete
+    authoring action, so the retroactive_undo lexicon rides as advisory (not
+    a hijack) - authoring continues (draft present, questions asked)."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "git 롤백 명령 실행되면 차단해줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Not hijacked: authoring continues rather than a cleared dead-end.
+    assert body["draft"] is not None, body
+    assert body["questions"] != [], body
+    # The out-of-scope note still surfaces as advisory.
+    assert body["feasibility"]["code"] == "retroactive_undo", body["feasibility"]
+
+
+def test_af14_pure_out_of_scope_still_suppressed():
+    """A pure cross-session request (no in-scope action/verifier) is still
+    suppressed to the honest not-expressible / magi-handoff note."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "keep a running total across sessions"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["questions"] == [], body
+    assert body["feasibility"]["code"] == "cross_session_state", body["feasibility"]
+
+
+def test_af14_genuine_retroactive_undo_suppressed():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "roll back the tool call after it executes"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["questions"] == [], body
+    assert body["feasibility"]["code"] == "retroactive_undo", body["feasibility"]

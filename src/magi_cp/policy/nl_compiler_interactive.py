@@ -991,6 +991,26 @@ def _auto_description_for_draft(draft: dict[str, Any], ko: bool) -> str:
     )
 
 
+def _extractor_found_inscope(extracted: dict[str, Any]) -> bool:
+    """AF-14: True when the extractor produced a coherent in-scope authoring
+    intent this turn - a wired-verifier step or a concrete enforcement
+    action. Used to decide whether a rows-11-16 intent finding should ride as
+    an advisory note (in-scope present) or hijack the turn (nothing in-scope).
+    A bare matcher is intentionally NOT enough (rate-limit's "web fetches"
+    would match WebFetch without being an expressible policy)."""
+    if not isinstance(extracted, dict):
+        return False
+    # Any concrete archetype action (block / ask / audit / inject_context /
+    # input_rewrite / run_command) is an in-scope authoring intent.
+    action = extracted.get("action")
+    if isinstance(action, str) and action:
+        return True
+    for r in (extracted.get("requires") or []):
+        if isinstance(r, dict) and r.get("kind") == "step" and r.get("step"):
+            return True
+    return False
+
+
 def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     """Deterministic intent extractor. Reads the user's freeform text
     and returns a partial draft_updates dict with whatever can be
@@ -3668,11 +3688,23 @@ def step_compile(
     # Feasibility - lazy import (one-way dep; avoids any import cycle).
     from ..policy import feasibility as _feas  # noqa: PLC0415
 
-    # Intent check (rows 11-16): authoritative, magi_agent_only / not_expressible.
-    # Must run BEFORE the extractor merge so we can suppress seeding entirely.
+    # Intent check (rows 11-16): magi_agent_only / not_expressible.
     intent_finding = _feas.classify_intent(latest_user_text)
 
-    if intent_finding is None:
+    # AF-14 (P1-9 / section-6 hybrid): a rows-11-16 finding normally
+    # SUPPRESSES the turn (skip extraction + clear questions). But when the
+    # SAME turn also carries a coherent in-scope authoring intent - a wired
+    # verifier or a concrete enforcement action - suppressing it turns a
+    # lexicon false positive ("block the script we discussed yesterday")
+    # into a dead-end. In that case the finding rides as an ADVISORY note
+    # alongside normal authoring instead of hijacking the turn. A pure
+    # out-of-scope request (no action, no verifier) still suppresses.
+    _intent_advisory = (
+        intent_finding is not None and _extractor_found_inscope(extracted)
+    )
+    _intent_suppresses = intent_finding is not None and not _intent_advisory
+
+    if not _intent_suppresses:
         # Normal path: merge extractor findings into the draft.
         _merge_extracted_into_draft(draft, extracted)
 
@@ -3772,7 +3804,7 @@ def step_compile(
             updates_raw.pop(k, None)
     # When intent_finding is set the draft must not be seeded: skip the
     # LLM merge entirely so the draft stays as the sanitized input.
-    if intent_finding is None and isinstance(updates_raw, dict):
+    if not _intent_suppresses and isinstance(updates_raw, dict):
         # Track which canonical fields the user just answered so the
         # LLM cannot overwrite them on this same turn.
         locked: set[FieldName] = set()
@@ -4057,7 +4089,7 @@ def step_compile(
     # the restore would force enforcement they refused.
     _on_missing_answered = bool(answers) and "q_on_missing" in (answers or {})
     _block_negated = bool(_BLOCK_NEGATION_RE.search(latest_user_text or ""))
-    if (intent_finding is None
+    if (not _intent_suppresses
             and extracted.get("action") == "block"
             and not _block_negated
             and not _on_missing_answered
@@ -4435,13 +4467,34 @@ def step_compile(
         raw = (latest_user_text or "").strip()
         return _to_plain_language(raw)[:200]
 
-    if intent_finding is not None:
-        # Rows 11-16: override assistant_message and clear questions.
+    if _intent_suppresses:
+        # Rows 11-16, pure out-of-scope: override assistant_message and
+        # clear questions.
         _copy = _feas_copy(intent_finding.code)
         assistant_message = _copy
         questions = []
         # Build alternatives: magi_agent_only codes get a handoff CTA;
         # not_expressible codes get an empty list (dead-end in both products).
+        if intent_finding.code in _feas._MAGI_AGENT_ONLY_CODES:
+            _intent_summary = _build_intent_summary()
+            _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
+        else:
+            _alternatives = []
+        feasibility_wire = {
+            "runtime_id": effective_runtime,
+            "class": intent_finding.cls.value,
+            "code": intent_finding.code,
+            "explanation": _copy,
+            "alternatives": _alternatives,
+        }
+    elif _intent_advisory:
+        # AF-14: the turn ALSO carried a coherent in-scope intent, so the
+        # rows-11-16 finding rides as an advisory note (prefixed) while
+        # normal authoring (draft + questions) continues untouched.
+        _copy = _feas_copy(intent_finding.code)
+        assistant_message = (
+            f"{_copy}\n\n{assistant_message}" if assistant_message else _copy
+        )
         if intent_finding.code in _feas._MAGI_AGENT_ONLY_CODES:
             _intent_summary = _build_intent_summary()
             _alternatives = [_feas.handoff_cta(_intent_summary, ko=ko)]
@@ -4539,7 +4592,7 @@ def step_compile(
     # time. Server-owned copy + CTA (the D75 prompt hint is dead because
     # Q103 discards the LLM's assistant_message). Overrides the S0 question
     # flow without persisting a draft, exactly like the pack hint intended.
-    if (intent_finding is None
+    if (not _intent_suppresses
             and not _is_run_command_draft(draft)
             and not _is_evidence_gate_draft(draft)
             and not draft.get("requires")

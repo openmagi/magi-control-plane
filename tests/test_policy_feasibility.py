@@ -347,12 +347,16 @@ def test_af3_wired_verifier_steps_matches_registry():
     assert set(f._wired_verifier_steps()) == {d["step"] for d in all_descriptors()}
 
 
-# ── AF-4 (P1-9): rows 11-16 lexicon must not hijack in-scope requests ──
+# ── AF-4 / AF-14 (P1-9): rows 11-16 lexicon + hybrid hijack semantics ──
 
-def test_af4_rollback_command_block_not_hijacked():
-    # In-scope: block a git rollback COMMAND; not a retroactive-undo ask.
-    assert f.classify_intent("git 롤백 명령 실행되면 차단해줘") is None
-    assert f.classify_intent("block any bash that would retract a filing") is None
+def test_af14_rollback_command_still_classifies_at_lexicon_level():
+    # AF-14 re-added the command nouns "롤백" / "retract": at the classify
+    # layer they DO fire (the hybrid hijack handling in step_compile demotes
+    # them to advisory when an in-scope action is present; see the wiring
+    # tests). This asserts the lexicon fires so the advisory note exists.
+    assert f.classify_intent("git 롤백 명령 실행되면 차단해줘").code == "retroactive_undo"
+    assert f.classify_intent(
+        "block any bash that would retract a filing").code == "retroactive_undo"
 
 
 def test_af4_genuine_out_of_scope_still_fires():
