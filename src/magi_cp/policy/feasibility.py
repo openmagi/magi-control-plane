@@ -33,12 +33,30 @@ import urllib.parse
 # ---------------------------------------------------------------------------
 # Enforce-intent lexicon (single source of truth; review.py aliases this)
 # ---------------------------------------------------------------------------
-# High-precision block-family verbs. Verbatim lift of the historical
-# review.py `_ENFORCE_INTENT_RE` so there is exactly one source of truth
-# going forward (REV-PR-2 aliases review.py's name to this).
+# High-precision block-family verbs. Single source of truth; review.py
+# aliases this. AF-2 (P1-5): bare "stop" was dropped because it
+# false-positives on the Stop hook name ("log it at the stop event"); the
+# remaining verbs are unambiguous enforce requests.
 ENFORCE_INTENT_RE = re.compile(
-    r"\b(?:block|deny|stop|prevent|forbid|reject|refuse|require|must not|hold)\b"
+    r"\b(?:block|deny|prevent|forbid|reject|refuse|require|must not|hold)\b"
     r"|차단|막아|금지|거부|막기|못하게|하면\s*안",
+    re.IGNORECASE,
+)
+
+# AF-2 (P1-4/P1-5): negated-BLOCK cue. Shared by the extractor (to
+# suppress a false block extraction) and by `classify_silent_downgrade`
+# (so the downgrade banner never fires on "don't block, just record").
+# The negation must actually target a BLOCK verb: "don't block" is a
+# block-negation, but "block it, don't just record" negates the record,
+# not the block, so it must NOT match. The English arm requires a block
+# verb within two words of the negation; the Korean arms match the
+# block-stem-plus-negation shapes ("차단하지 말", "차단은 하지 마",
+# "막지 마").
+BLOCK_NEGATION_RE = re.compile(
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:block|deny|refuse|forbid|prevent|reject)"
+    r"|(?:차단|막|금지)\S*\s*(?:하지\s*마|하지\s*말|말고|안)"
+    r"|차단하지|막지\s*마|금지하지",
     re.IGNORECASE,
 )
 
@@ -111,14 +129,13 @@ class IntentFinding:
 COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
     # Row 1 - inject_context on excluded events
     "cc_context_channel_excluded": (
-        "The inject_context action is not delivered on this event. "
-        "The runtime drops any additionalContext silently. "
-        "Use a context injection on a supported event such as UserPromptSubmit "
-        "or PreToolUse to reach the model.",
-        "이 이벤트에서는 inject_context 액션이 전달되지 않습니다. "
-        "런타임이 additionalContext를 무시합니다. "
-        "UserPromptSubmit 또는 PreToolUse 같은 지원 이벤트에서 컨텍스트 주입을 사용하세요.",
-        "Use inject_context on UserPromptSubmit or SessionStart.",
+        "Injected context is not delivered on this event - the runtime drops "
+        "it silently. Inject context on a supported event such as "
+        "UserPromptSubmit or PreToolUse to reach the model.",
+        "이 이벤트에서는 주입한 컨텍스트가 전달되지 않고 런타임이 조용히 "
+        "무시합니다. UserPromptSubmit 또는 PreToolUse 같은 지원 이벤트에서 "
+        "컨텍스트를 주입하세요.",
+        "Inject context on UserPromptSubmit or SessionStart instead.",
     ),
     # Row 5 - event not in live set on Codex
     "codex_event_not_live": (
@@ -173,33 +190,36 @@ COPY_TABLE: dict[str, tuple[str, str, str | None]] = {
     # Row 3 - PreToolUse + silent-skip tool on Codex
     "codex_matcher_inert": (
         "This tool has no direct equivalent in Codex. "
-        "A PreToolUse hook with this matcher fires zero times on Codex - "
-        "the policy is saved but unenforced. "
-        "Codex dispatches reads as exec_command sub-actions rather than "
+        "A before-a-tool-runs rule targeting this tool fires zero times on "
+        "Codex - the policy is saved but unenforced. "
+        "Codex dispatches reads as shell sub-actions rather than "
         "discrete tool events.",
         "이 툴은 Codex에서 직접 대응하는 항목이 없습니다. "
-        "이 매처를 사용한 PreToolUse 훅은 Codex에서 0번 실행됩니다. "
+        "이 툴을 대상으로 한 도구 실행 전 규칙은 Codex에서 0번 실행됩니다. "
         "정책은 저장되지만 적용되지 않습니다.",
-        "Use matcher 'exec_command' or 'apply_patch' to target Codex "
-        "shell and file operations.",
+        "Target Codex shell and file operations by their Codex tool names "
+        "instead.",
     ),
     # Row 10 - matrix illegal triple
     "matrix_illegal_triple": (
-        "This event-matcher-action combination is not supported. "
-        "The policy cannot be expressed in magi-cp today.",
-        "이 이벤트-매처-액션 조합은 지원되지 않습니다. "
-        "현재 magi-cp에서 이 정책을 표현할 수 없습니다.",
+        "This combination of when the check runs, what it applies to, and "
+        "what it does is not supported. The policy cannot be authored as "
+        "described.",
+        "이 검사가 실행되는 시점, 적용 대상, 동작의 조합은 지원되지 않습니다. "
+        "설명하신 대로는 정책을 만들 수 없습니다.",
         None,
     ),
-    # REV-PR-1 (GAP-A) - operator asked to enforce, draft records only
+    # GAP-A / AF-5 - operator asked to enforce (block or pause for
+    # approval), draft records only because no enforce action is available
+    # at this point in the run.
     "enforce_downgraded_to_audit": (
-        "You asked to block or stop this, but blocking is not available at "
-        "this point in the run. The draft uses audit instead: it records "
+        "You asked to block or pause for approval, but neither is available "
+        "at this point in the run. The draft uses audit instead: it records "
         "every failure but does not stop anything. To actually hold delivery "
         "on this check, author it as a Magi Agent gate.",
-        "차단을 요청하셨지만 이 시점에서는 차단 액션을 사용할 수 없습니다. "
-        "초안은 audit(기록)으로 작성되어 실패를 기록만 하고 실제로 막지는 "
-        "않습니다. 실제 전달을 막으려면 Magi Agent 게이트로 작성하세요.",
+        "차단이나 승인 대기를 요청하셨지만 이 시점에서는 둘 다 사용할 수 "
+        "없습니다. 초안은 audit(기록)으로 작성되어 실패를 기록만 하고 실제로 "
+        "막지는 않습니다. 실제 전달을 막으려면 Magi Agent 게이트로 작성하세요.",
         "Keep audit here to get a record of every failure.",
     ),
     # Row 11 - evidence catalog (Magi Agent only)
@@ -397,7 +417,13 @@ _INTENT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
             "인라인 출처",
         ),
     ),
-    # Row 13 - cross-session state
+    # Row 13 - cross-session state.
+    # NOTE (P1-9): bare "yesterday" can incidentally hijack an in-scope
+    # request ("block the script we talked about yesterday"), but it is also
+    # a genuine cross-session condition in "if it did the same thing
+    # yesterday". Disambiguating needs co-occurrence-with-a-state-cue logic
+    # (a design change bordering on the hijack-vs-advisory decision), so it
+    # is deferred; "yesterday" stays for now.
     (
         "cross_session_state",
         (
@@ -436,16 +462,21 @@ _INTENT_VOCAB: tuple[tuple[str, tuple[str, ...]], ...] = (
             "예산 초과",
         ),
     ),
-    # Row 16 - retroactive undo
+    # Row 16 - retroactive undo.
+    # AF-4 (P1-9): bare "retract" and "롤백" were dropped - they are command
+    # nouns that fire on in-scope requests to BLOCK a rollback/retract
+    # command ("git 롤백 명령 실행되면 차단"). The remaining phrases describe
+    # undoing an action AFTER it ran, which is the genuinely inexpressible
+    # intent.
     (
         "retroactive_undo",
         (
             "roll back the tool call after",
             "undo the edit if",
-            "retract",
+            "undo it after",
             "실행된 뒤 되돌",
+            "실행 후 되돌",
             "소급 취소",
-            "롤백",
         ),
     ),
 )
@@ -631,7 +662,13 @@ def classify_silent_downgrade(
         return None
     if action != "audit":
         return None
-    if not ENFORCE_INTENT_RE.search(user_text or ""):
+    text = user_text or ""
+    if not ENFORCE_INTENT_RE.search(text):
+        return None
+    # AF-2 (P1-5): "차단하지 말고 기록만" asks for the OPPOSITE of enforcement;
+    # the enforce token is a negated false positive. Do not claim the
+    # operator asked to block.
+    if BLOCK_NEGATION_RE.search(text):
         return None
 
     # Lazy import - one-way dependency, avoids a cycle at module load.
@@ -700,14 +737,24 @@ def movable_enforce_events(draft: dict) -> tuple[str, ...]:
 # render_capability_boundary
 # ---------------------------------------------------------------------------
 
-# The 5 wired evidence verifiers (closed set; expressible via evidence_gate).
-_WIRED_VERIFIERS: tuple[str, ...] = (
-    "privilege_scan",
-    "test_run",
-    "git_diff",
-    "code_diagnostics",
-    "commit_checkpoint",
-)
+def _wired_verifier_steps() -> tuple[str, ...]:
+    """The verifier step names ACTUALLY registered in this cp deployment.
+
+    AF-3 (P1-8): the capability boundary previously advertised a hardcoded
+    list (test_run, git_diff, code_diagnostics, commit_checkpoint) that cp
+    does NOT register - those are magi-agent verifiers. A policy naming one
+    of them reported "Draft is ready" then 422'd at Save. Deriving the list
+    from the descriptor registry keeps the boundary truthful and drift-free.
+    """
+    try:
+        from ..verifier.descriptors import all_descriptors  # noqa: PLC0415
+        steps = sorted(
+            d["step"] for d in all_descriptors()
+            if isinstance(d, dict) and isinstance(d.get("step"), str) and d["step"]
+        )
+    except Exception:  # pragma: no cover - defensive; registry always present
+        return ()
+    return tuple(steps)
 
 # Inert read-family tool names used in the Codex capability boundary text.
 _CODEX_INERT_READ_TOOLS: tuple[str, ...] = (
@@ -793,7 +840,7 @@ def render_capability_boundary(runtime_id: str) -> str:
         "The following evidence verifiers are wired and can be required by "
         "an evidence-gate policy:"
     )
-    for v in _WIRED_VERIFIERS:
+    for v in _wired_verifier_steps():
         lines.append(f"  - {v}")
     lines.append("")
     lines.append(

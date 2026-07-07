@@ -298,3 +298,83 @@ def test_enforce_intent_re_matches_block_and_korean() -> None:
     assert f.ENFORCE_INTENT_RE.search("prevent the tool from running")
     assert not f.ENFORCE_INTENT_RE.search("record only please")
     assert not f.ENFORCE_INTENT_RE.search("그냥 기록만")
+
+
+# ── AF-2 (P1-5): classify_silent_downgrade must not over-trigger ──────
+
+def test_af2_downgrade_none_on_negated_enforce():
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    assert f.classify_silent_downgrade("차단하지 말고 기록만 남겨줘", draft) is None
+    assert f.classify_silent_downgrade("don't block it, just record", draft) is None
+
+
+def test_af2_downgrade_none_on_stop_event_name():
+    draft = _step_draft("Stop", "*", "audit", "citation_verify")
+    # "at the stop event" names the hook, it is not an enforce request.
+    assert f.classify_silent_downgrade(
+        "just log citation coverage at the stop event", draft) is None
+
+
+def test_af2_enforce_intent_re_drops_bare_stop_keeps_block():
+    assert f.ENFORCE_INTENT_RE.search("please block this")
+    assert f.ENFORCE_INTENT_RE.search("prevent the fetch")
+    assert f.ENFORCE_INTENT_RE.search("인용 없으면 차단")
+    assert not f.ENFORCE_INTENT_RE.search("log it at the stop event")
+
+
+def test_af2_block_negation_re_matches():
+    assert f.BLOCK_NEGATION_RE.search("don't block it")
+    assert f.BLOCK_NEGATION_RE.search("차단하지 말고 기록만")
+    assert not f.BLOCK_NEGATION_RE.search("block it")
+
+
+# ── AF-3 (P1-8): capability boundary must advertise cp's REAL verifiers ──
+
+def test_af3_capability_boundary_lists_real_registered_verifiers():
+    from magi_cp.verifier.descriptors import all_descriptors
+    real = {d["step"] for d in all_descriptors()}
+    text = render_capability_boundary("claude-code")
+    # Every genuinely-registered verifier appears.
+    for step in real:
+        assert step in text, f"{step} missing from boundary"
+    # None of the magi-agent-only verifiers cp does NOT register appear.
+    for phantom in ("test_run", "git_diff", "code_diagnostics", "commit_checkpoint"):
+        assert phantom not in text, f"{phantom} wrongly advertised"
+
+
+def test_af3_wired_verifier_steps_matches_registry():
+    from magi_cp.verifier.descriptors import all_descriptors
+    assert set(f._wired_verifier_steps()) == {d["step"] for d in all_descriptors()}
+
+
+# ── AF-4 (P1-9): rows 11-16 lexicon must not hijack in-scope requests ──
+
+def test_af4_rollback_command_block_not_hijacked():
+    # In-scope: block a git rollback COMMAND; not a retroactive-undo ask.
+    assert f.classify_intent("git 롤백 명령 실행되면 차단해줘") is None
+    assert f.classify_intent("block any bash that would retract a filing") is None
+
+
+def test_af4_genuine_out_of_scope_still_fires():
+    # Real retroactive-undo + cross-session intents must still classify.
+    assert f.classify_intent(
+        "roll back the tool call after it executes").code == "retroactive_undo"
+    assert f.classify_intent(
+        "undo the edit if it touches prod").code == "retroactive_undo"
+    assert f.classify_intent(
+        "이전 세션에서 뭐 했는지 기억해줘").code == "cross_session_state"
+    assert f.classify_intent(
+        "keep a running total across sessions").code == "cross_session_state"
+
+
+# ── AF-9 (P2-6): honesty copy must not leak internal jargon ───────────
+
+def test_af9_copy_table_no_matcher_triple_jargon():
+    for code, (en, ko, _alt) in COPY_TABLE.items():
+        for s in (en, ko):
+            low = s.lower()
+            assert "event-matcher-action" not in low, code
+            assert "이벤트-매처-액션" not in s, code
+            assert "additionalcontext" not in low, code
+            # "matcher" as a bare internal term must not appear.
+            assert "matcher" not in low, code

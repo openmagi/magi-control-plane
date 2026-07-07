@@ -707,8 +707,14 @@ _LIFECYCLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # operator explicitly refused (the exact dishonesty this feature removes).
 # Conservative by design: on a match we fall back to the LLM's action, which
 # is the pre-restore behavior.
+# MUST stay in sync with `feasibility.BLOCK_NEGATION_RE` (kept as a local copy
+# rather than an import to avoid the module-load cycle the feasibility import
+# is lazily deferred for). classify_silent_downgrade uses feasibility's copy.
 _BLOCK_NEGATION_RE = re.compile(
-    r"\b(?:don'?t|do\s+not|never)\b|말고|하지\s*마|하지\s*말|막지\s*마|차단하지",
+    r"(?:don'?t|do\s+not|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:block|deny|refuse|forbid|prevent|reject)"
+    r"|(?:차단|막|금지)\S*\s*(?:하지\s*마|하지\s*말|말고|안)"
+    r"|차단하지|막지\s*마|금지하지",
     re.IGNORECASE,
 )
 
@@ -731,18 +737,87 @@ _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "run_command",
     )),
     # ── EVIDENCE-only actions (block / ask / audit) ──────────────────
+    # AF-6 (P1-3): the block family is aligned with the enforce verbs in
+    # feasibility.ENFORCE_INTENT_RE so "prevent/forbid/reject/refuse/금지/
+    # 못하게" also extract as block and reach the restore + downgrade
+    # machinery. "require" is intentionally EXCLUDED - "require approval"
+    # is an ask intent (handled by the ask family below).
     ("block", (
-        "차단", "막아", "block", "deny", "거부",
+        "차단", "막아", "막기", "block", "deny", "거부",
+        "prevent", "forbid", "reject", "refuse", "금지", "못하게", "하면 안",
     )),
+    # AF-1 (P0-1): the ask family requires an ask-OBJECT. Bare "확인"
+    # (verify / check) and bare "ask" (as in "ask whether X is true")
+    # false-positived onto the ask action - the canonical few-shot
+    # "인용한 출처가 진짜인지 확인" wrongly extracted ask -> Stop/*/ask,
+    # a matrix-illegal triple that produced a false "cannot be expressed"
+    # banner. Only phrasings that name a human / approval / confirmation
+    # target survive (mirrors `_EGATE_ASK_RE`).
     ("ask", (
-        "사람 확인", "사람에게 묻", "사람에게 확인",
-        "묻기", "확인", "ask a human", "ask the human", "ask",
-        "human", "사람에게",
+        "사람 확인", "사람에게 묻", "사람에게 확인", "확인 받", "확인받",
+        "승인", "허가", "물어봐", "물어보",
+        "ask a human", "ask the human", "ask me", "ask for approval",
+        "require approval", "human approval", "prompt me",
     )),
     ("audit", (
         "기록", "감사", "남기고", "log", "record", "audit",
     )),
 )
+
+# AF-8 (P1-10): deterministic pack-context lexicon. The D75 prompt asked
+# the LLM to answer a context-shaped request ("research mode") with a pack
+# suggestion in assistant_message, but Q103 discards that field, so the hint
+# was dead code. The server owns the suggestion now (mirrors the
+# disambiguation-menu pattern). Narrow, high-precision phrases only.
+_PACK_CONTEXT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("research-mode", (
+        "research mode", "리서치 모드", "리서치 세션", "research session",
+    )),
+    ("coding-safety", (
+        "coding safety", "coding session", "코딩 세션", "코딩 안전",
+    )),
+    ("compliance-audit", (
+        "compliance audit", "compliance mode", "컴플라이언스 감사",
+        "컴플라이언스 모드",
+    )),
+    ("permissive-observe", (
+        "observe mode", "observation mode", "관찰 모드", "일단 지켜보",
+    )),
+    ("strict-block", (
+        "strict mode", "엄격 모드", "전부 차단하는 묶음",
+    )),
+)
+
+# Short plain-language bundle description per pack (EN, KO).
+_PACK_BLURB: dict[str, tuple[str, str]] = {
+    "research-mode": (
+        "citation verify, source allowlist, and prompt-injection screening",
+        "인용 검증, 허용 도메인, 프롬프트 인젝션 검사",
+    ),
+    "coding-safety": (
+        "a privilege scan on Bash and structured output on the final answer",
+        "Bash 권한 스캔과 최종 답변 형식 검증",
+    ),
+    "compliance-audit": (
+        "all five prebuilt checks in record-only mode",
+        "5개 기본 검사를 모두 기록 전용으로",
+    ),
+    "permissive-observe": (
+        "a first-time, visibility-first bundle",
+        "처음 도입용 관찰 우선 묶음",
+    ),
+    "strict-block": (
+        "a block-first curated bundle",
+        "차단 우선 큐레이션 묶음",
+    ),
+}
+
+
+def _scan_pack_intent(user_text: str) -> str | None:
+    """Return the built-in pack id a context-shaped request points at, else
+    None. High-precision; false negatives are acceptable."""
+    return _scan_first(user_text, _PACK_CONTEXT_KEYWORDS)
+
 
 # Condition KIND keywords.
 #
@@ -1002,7 +1077,33 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
     if explicit_matcher is not None:
         out.setdefault("trigger", {})["matcher"] = explicit_matcher
 
+    # AF-1 (P0-1): coherence reset. A verifier's DEFAULT tool matcher
+    # (e.g. privilege_scan -> Bash) is meaningless once the operator
+    # overrides the event to a non-tool-context event (Stop and the
+    # other lifecycle events key hooks without a per-tool field), and it
+    # deterministically seeds an illegal tool@Stop triple that the
+    # feasibility layer then reports as "cannot be expressed". Widen it
+    # to "*" so the extractor never fabricates that illegal triple. Only
+    # when the matcher was the DEFAULT (the operator did not name a tool
+    # this turn) - an explicitly named tool at a final event stays put so
+    # the genuinely-illegal combination surfaces honestly.
+    if explicit_matcher is None:
+        _t = out.get("trigger")
+        if isinstance(_t, dict):
+            _ev = _t.get("event")
+            _mt = _t.get("matcher")
+            if (isinstance(_ev, str) and _ev not in _TOOL_CONTEXT_EVENTS
+                    and isinstance(_mt, str) and _mt not in ("", "*")):
+                _t["matcher"] = "*"
+
     explicit_action = _scan_first(user_text, _ACTION_KEYWORDS)
+    # AF-2 (P1-4): a negated block ("don't block it, just record" /
+    # "차단은 하지 마") still hits the block substring. Do not seed the
+    # very action the operator declined - re-scan without the block family
+    # so a co-occurring record / ask verb wins; leave action unset if none.
+    if explicit_action == "block" and _BLOCK_NEGATION_RE.search(user_text):
+        _non_block = tuple((k, v) for k, v in _ACTION_KEYWORDS if k != "block")
+        explicit_action = _scan_first(user_text, _non_block)
     if explicit_action is not None:
         out["action"] = explicit_action
 
@@ -1104,6 +1205,15 @@ _LIFECYCLE_TO_EVENT: dict[str, str] = {
     "pre_final":       "Stop",
 }
 _EVENT_TO_LIFECYCLE: dict[str, str] = {v: k for k, v in _LIFECYCLE_TO_EVENT.items()}
+
+# AF-1 (P0-1): the four events whose CC hook payload carries a per-tool
+# field. A tool-scoped matcher is only meaningful here; on every other
+# event CC keys the hook without a tool field, so a tool matcher there is
+# an incoherent (and matrix-illegal) shape. Mirrors matrix.py's
+# `_TOOL_CONTEXT_EVENTS_RC`.
+_TOOL_CONTEXT_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+})
 
 
 # ── plain-language scrubber ───────────────────────────────────────────
@@ -3394,11 +3504,13 @@ def step_compile(
         # Normal path: merge extractor findings into the draft.
         _merge_extracted_into_draft(draft, extracted)
 
-    # Draft-shape check (i) - after extractor merge (or skipped merge when
-    # intent_finding is set); evaluates rows 1-10 on the current draft.
-    _f1 = _feas.classify_draft(draft, effective_runtime)
-    if _f1 is not None:
-        draft_finding = _f1
+    # AF-1 (P0-1): the draft-shape feasibility finding is computed ONLY on
+    # the FINAL draft (after the LLM merge, `_f2` below). A pre-LLM check
+    # here classified a half-merged intermediate the operator never sees;
+    # when the LLM then repaired the draft to a legal shape, the stale
+    # pre-LLM finding survived and shipped a false "cannot be expressed"
+    # banner beside a saveable draft. The wire finding must reflect the
+    # draft that is actually offered for Save.
 
     # Step 3: post-merge aggregate text cap (defense in depth in case
     # answers / merging produced something larger than the input).
@@ -3786,6 +3898,28 @@ def step_compile(
             else:
                 draft["action"] = "block"
 
+    # AF-5 (P1-1/P1-2): deterministic enforce-downgrade. When the FINAL draft
+    # still carries an enforce action (block or ask) that is matrix-illegal
+    # at its triple, Save would 422 and the operator would hit a raw
+    # validator dead-end (S3). Downgrade to audit (legal on every event) so
+    # the draft is saveable, and remember the requested action so the honest
+    # enforce_downgraded_to_audit finding fires below regardless of whether
+    # the latest turn still carries an enforce word. The server owns this
+    # rewrite; the notice + Magi Agent handoff keep it honest.
+    _enforce_downgraded_from: str | None = None
+    _dg_act = draft.get("action")
+    if _dg_act in ("block", "ask"):
+        _dt = draft.get("trigger") or {}
+        _dev = _dt.get("event") if isinstance(_dt, dict) else None
+        _dmt = _dt.get("matcher") if isinstance(_dt, dict) else None
+        if _dev and _dmt:
+            from .matrix import validate_combination
+            try:
+                validate_combination(_dev, _dmt, _dg_act)
+            except ValueError:
+                _enforce_downgraded_from = _dg_act
+                draft["action"] = "audit"
+
     # Step 6: assistant_message is always empty at this point (the LLM's
     # value was discarded per Q103). The deterministic builder runs
     # below in Step 9 once `missing` + `ready_to_save` are computed.
@@ -3956,7 +4090,7 @@ def step_compile(
     # REV-PR-3 (GAP-A): anti-silent-downgrade finding. When the operator
     # asked to enforce (block/stop) but the applied draft records only
     # (audit) at an event where no enforce action is legal, surface the
-    # honest downgrade finding. It OUTRANKS _f1/_f2 so the fresher,
+    # honest downgrade finding. It OUTRANKS _f2 so the fresher,
     # copy-accurate finding replaces the stale `matrix_illegal_triple`
     # that an earlier extractor-block turn may have produced on a
     # now-legal audit draft. (intent_finding, rows 11-16, still outranks
@@ -3964,6 +4098,22 @@ def step_compile(
     _f3 = _feas.classify_silent_downgrade(latest_user_text, draft)
     if _f3 is not None:
         draft_finding = _f3
+    elif _enforce_downgraded_from is not None:
+        # AF-5: the server forced the downgrade this turn (the requested
+        # block/ask was illegal). classify_silent_downgrade may not re-detect
+        # it if the latest turn no longer carries an enforce word (e.g. the
+        # action came from a prior turn), so synthesize the honest finding
+        # directly from the downgrade flag.
+        _dt2 = draft.get("trigger") or {}
+        draft_finding = _feas.FeasibilityFinding(
+            cls=_feas.FeasibilityClass.degraded,
+            code="enforce_downgraded_to_audit",
+            detail={
+                "event": (_dt2.get("event") if isinstance(_dt2, dict) else "") or "",
+                "applied": "audit",
+                "requested": _enforce_downgraded_from,
+            },
+        )
 
     # Q103 — deterministic assistant_message. The LLM's `assistant_message`
     # field was already extracted from `parsed` above; we discard it here
@@ -3980,6 +4130,65 @@ def step_compile(
         ambiguous=verifier_is_ambiguous,
         validator_error=validator_error,
     )
+
+    # AF-7 (P1-6): out-of-bucket lifecycle steer. The extractor recognises
+    # ~27 CC events but conversational completion only round-trips the three
+    # buckets (before/after a tool, just before the final answer). An event
+    # outside those buckets was silently reported as "lifecycle missing" and
+    # dropped by the sanitizer on echo, so the operator's intent to author on
+    # e.g. PermissionRequest / SessionStart vanished with no word. Surface an
+    # honest steer to the full editor instead. Evidence archetype only
+    # (run_command / compound carry their own event handling) and skipped
+    # when the inject_context guardrail already reinterpreted this turn.
+    if (not _is_run_command_draft(draft)
+            and not _is_evidence_gate_draft(draft)
+            and not extracted.get("__inject_context_rewritten__")):
+        _obt = draft.get("trigger") or {}
+        _obe = _obt.get("event") if isinstance(_obt, dict) else None
+        if (isinstance(_obe, str) and _obe and _obe not in _EVENT_TO_LIFECYCLE):
+            try:
+                from .ir import _SUPPORTED_EVENTS
+            except ImportError:  # pragma: no cover - defensive
+                _SUPPORTED_EVENTS = frozenset()
+            if _obe in _SUPPORTED_EVENTS:
+                _steer = (
+                    f"대화형 저작은 세 시점(도구 실행 전, 도구 실행 후, "
+                    f"최종 답변 직전)만 다룹니다. `{_obe}` 시점에 규칙을 "
+                    f"만들려면 고급 편집기를 사용하세요."
+                    if ko else
+                    f"Conversational authoring covers three points: before a "
+                    f"tool runs, after a tool runs, and just before the final "
+                    f"answer. To author a rule at `{_obe}`, use the full editor."
+                )
+                assistant_message = (
+                    f"{_steer}\n\n{assistant_message}"
+                    if assistant_message else _steer
+                )
+
+    # AF-9 (P1-7): non-evidence archetype steer. inject_context /
+    # input_rewrite intents on a LEGAL event silently morphed into an
+    # evidence rule (the wizard asks for a block/ask/record action, which is
+    # meaningless for these archetypes). The excluded-event inject path is
+    # already reinterpreted honestly (rewrite marker); every other case gets
+    # a deterministic steer to the full editor instead of the silent morph.
+    _arch = draft.get("action")
+    if (_arch in ("inject_context", "input_rewrite")
+            and not extracted.get("__inject_context_rewritten__")):
+        _label = ("context injection" if _arch == "inject_context"
+                  else "input rewriting")
+        _label_ko = ("컨텍스트 주입" if _arch == "inject_context"
+                     else "입력 재작성")
+        _asteer = (
+            f"{_label_ko}은(는) 아직 대화형으로 만들 수 없습니다. 고급 "
+            f"편집기에서 작성해 주세요."
+            if ko else
+            f"Authoring {_label} is not available in chat yet. Please use the "
+            f"full editor for it."
+        )
+        assistant_message = (
+            f"{_asteer}\n\n{assistant_message}"
+            if assistant_message else _asteer
+        )
 
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty
@@ -4137,6 +4346,44 @@ def step_compile(
     # `draft` field MUST be None per the brief so the client
     # distinguishes "haven't started" from "started, here it is".
     wire_draft: dict[str, Any] | None = draft if draft else None
+
+    # AF-8 (P1-10): deterministic pack steering. When the operator names a
+    # CONTEXT (a built-in pack's domain) rather than a specific check, and no
+    # concrete policy material has been authored, point them at the pack that
+    # already bundles the relevant policies instead of building one rule at a
+    # time. Server-owned copy + CTA (the D75 prompt hint is dead because
+    # Q103 discards the LLM's assistant_message). Overrides the S0 question
+    # flow without persisting a draft, exactly like the pack hint intended.
+    if (intent_finding is None
+            and not _is_run_command_draft(draft)
+            and not _is_evidence_gate_draft(draft)
+            and not draft.get("requires")
+            and not draft.get("action")
+            and feasibility_wire is None):
+        _pack_id = _scan_pack_intent(latest_user_text)
+        if _pack_id is not None:
+            _blurb_en, _blurb_ko = _PACK_BLURB.get(_pack_id, ("", ""))
+            if ko:
+                assistant_message = (
+                    f"개별 정책을 하나씩 만들기보다, 준비된 정책 묶음이 이 "
+                    f"경우에 더 맞습니다. `{_pack_id}` 묶음이 {_blurb_ko}을(를) "
+                    f"한 번에 켭니다. /policy-packs/{_pack_id} 에서 켜세요. "
+                    f"직접 개별 정책을 만들고 싶으시면 원하는 검사를 한 줄로 "
+                    f"말씀해 주세요."
+                )
+            else:
+                assistant_message = (
+                    f"A ready-made pack fits this better than building one "
+                    f"rule at a time. The `{_pack_id}` pack enables "
+                    f"{_blurb_en} together - turn it on at "
+                    f"/policy-packs/{_pack_id}. If you would rather build one "
+                    f"policy here, tell me the specific check you want in one "
+                    f"line."
+                )
+            questions = []
+            wire_draft = None
+            needs_more = True
+            ready_to_save = False
 
     return {
         "assistant_message": assistant_message,

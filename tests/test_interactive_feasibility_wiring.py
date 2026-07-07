@@ -241,8 +241,12 @@ def test_c_rt_none_explicit_same_as_absent():
 # (d) matrix_illegal_triple
 # ---------------------------------------------------------------------------
 
-def test_d_matrix_illegal_triple():
-    """Stop+*+block is an illegal combination; feasibility surfaces the finding."""
+def test_d_illegal_block_at_stop_is_downgraded_not_dead_end():
+    """AF-5: Stop+*+block is illegal, but instead of a matrix_illegal_triple
+    dead-end the server now deterministically downgrades it to a saveable
+    audit draft and surfaces the honest enforce_downgraded_to_audit finding.
+    (matrix_illegal_triple still covers non-enforce illegal shapes such as an
+    explicit tool matcher at Stop; see the classify_draft unit tests.)"""
     canned = _llm_response(message="ok", updates={}, questions=[])
     c = _client(llm_compiler=FakeLlmProvider([canned]))
 
@@ -266,8 +270,13 @@ def test_d_matrix_illegal_triple():
 
     assert body["feasibility"] is not None, body
     f = body["feasibility"]
-    assert f["code"] == "matrix_illegal_triple", f
+    assert f["code"] == "enforce_downgraded_to_audit", f
     assert f["runtime_id"] == "claude-code", f
+    assert body["draft"]["action"] == "audit", body["draft"]
+    # Not a matrix_illegal_triple dead-end: the draft is coherent and the
+    # wizard proceeds to ask for an id (normal flow) rather than surfacing a
+    # raw validator error.
+    assert "illegal combination" not in (body["assistant_message"] or "")
 
 
 # ---------------------------------------------------------------------------
@@ -569,3 +578,155 @@ def test_g_no_restore_on_korean_negated_block():
     )
     assert r.status_code == 200, r.text
     assert r.json()["draft"]["action"] == "audit"
+
+
+# ── AF-5 (P1-1/P1-2): deterministic enforce-downgrade for block AND ask ──
+
+def _priv_scan_draft(event, matcher, action):
+    return {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": event, "matcher": matcher},
+        "requires": [{"kind": "step", "step": "privilege_scan", "verdict": "pass"}],
+        "action": action,
+    }
+
+
+def test_af5_block_kept_at_stop_is_downgraded_deterministically():
+    """LLM keeps block at Stop (audit-only). The server must downgrade to
+    audit, surface the honest finding, and keep the draft saveable - never a
+    matrix_illegal_triple / S3 dead-end."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "block the final answer when citations are missing"}],
+        "draft_so_far": _citation_audit_draft(),  # Stop/*/audit seed
+        "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+    assert body["feasibility"]["code"] == "enforce_downgraded_to_audit", body["feasibility"]
+    assert body["ready_to_save"] is True, body
+    assert "표현할 수 없" not in (body["assistant_message"] or "")
+    assert "illegal combination" not in (body["assistant_message"] or "")
+
+
+def test_af5_ask_at_illegal_event_downgraded():
+    """ask at PostToolUse (ask illegal there) downgrades to audit with the
+    honest finding rather than dead-ending."""
+    canned = _llm_response(message="ok", updates={"action": "ask"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = _priv_scan_draft("PostToolUse", "Bash", "ask")
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "require approval after each bash call"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "audit", body["draft"]
+    assert body["feasibility"]["code"] == "enforce_downgraded_to_audit", body["feasibility"]
+
+
+def test_af5_legal_block_not_downgraded():
+    """A legal block (PreToolUse/Bash) is untouched."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = _priv_scan_draft("PreToolUse", "Bash", "block")
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block RRN in shell"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["draft"]["action"] == "block", body["draft"]
+    assert body["feasibility"] is None, body
+
+
+# ── AF-7 (P1-6): honest steer for out-of-bucket lifecycle events ──────
+
+def test_af7_out_of_bucket_event_gets_honest_steer():
+    """An event outside the 3 conversational buckets (PermissionRequest)
+    must not silently morph; the operator gets an honest steer to the full
+    editor."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "권한 요청이 있을 때 기록 남겨줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "PermissionRequest" in am, am
+    assert ("고급 편집기" in am) or ("full editor" in am), am
+
+
+def test_af7_in_bucket_event_no_steer():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "verify citations at the final answer"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "full editor" not in am and "고급 편집기" not in am, am
+
+
+# ── AF-8 (P1-10): deterministic pack steering (revive dead D75) ───────
+
+def test_af8_research_mode_steers_to_pack():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "set up research mode"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    am = body["assistant_message"] or ""
+    assert "research-mode" in am, am
+    assert "/policy-packs" in am, am
+    assert body["questions"] == [], body
+    assert body["draft"] is None, body
+
+
+def test_af8_coding_session_korean_steers_to_pack():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "코딩 세션 안전하게 해줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "coding-safety" in am, am
+
+
+def test_af8_concrete_request_not_hijacked_by_pack_steer():
+    """A concrete request that names a check/tool stays on the normal path
+    even if it mentions 'research'."""
+    canned = _llm_response(message="ok", updates={"trigger": {"event": "PreToolUse", "matcher": "WebFetch"}, "action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "리서치 목적으로 외부 web search 출처를 audit 로그로 남겨줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "/policy-packs" not in am, am
+
+
+# ── AF-9 (P1-7): steer for non-evidence archetypes authored in chat ──
+
+def test_af9_inject_context_on_legal_event_steers_not_morphs():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "inject context before each bash"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert ("full editor" in am) or ("고급 편집기" in am), am
