@@ -4076,6 +4076,40 @@ def step_compile(
         validator_error=validator_error,
     )
 
+    # AF-7 (P1-6): out-of-bucket lifecycle steer. The extractor recognises
+    # ~27 CC events but conversational completion only round-trips the three
+    # buckets (before/after a tool, just before the final answer). An event
+    # outside those buckets was silently reported as "lifecycle missing" and
+    # dropped by the sanitizer on echo, so the operator's intent to author on
+    # e.g. PermissionRequest / SessionStart vanished with no word. Surface an
+    # honest steer to the full editor instead. Evidence archetype only
+    # (run_command / compound carry their own event handling) and skipped
+    # when the inject_context guardrail already reinterpreted this turn.
+    if (not _is_run_command_draft(draft)
+            and not _is_evidence_gate_draft(draft)
+            and not extracted.get("__inject_context_rewritten__")):
+        _obt = draft.get("trigger") or {}
+        _obe = _obt.get("event") if isinstance(_obt, dict) else None
+        if (isinstance(_obe, str) and _obe and _obe not in _EVENT_TO_LIFECYCLE):
+            try:
+                from .ir import _SUPPORTED_EVENTS
+            except ImportError:  # pragma: no cover - defensive
+                _SUPPORTED_EVENTS = frozenset()
+            if _obe in _SUPPORTED_EVENTS:
+                _steer = (
+                    f"대화형 저작은 세 시점(도구 실행 전, 도구 실행 후, "
+                    f"최종 답변 직전)만 다룹니다. `{_obe}` 시점에 규칙을 "
+                    f"만들려면 고급 편집기를 사용하세요."
+                    if ko else
+                    f"Conversational authoring covers three points: before a "
+                    f"tool runs, after a tool runs, and just before the final "
+                    f"answer. To author a rule at `{_obe}`, use the full editor."
+                )
+                assistant_message = (
+                    f"{_steer}\n\n{assistant_message}"
+                    if assistant_message else _steer
+                )
+
     # D65 — run_command archetype, script-not-uploaded fallback. When
     # the draft has committed to run_command but the body is empty
     # (neither inline `command` nor `script_path` set), and the LLM

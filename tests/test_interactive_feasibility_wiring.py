@@ -641,3 +641,33 @@ def test_af5_legal_block_not_downgraded():
     body = r.json()
     assert body["draft"]["action"] == "block", body["draft"]
     assert body["feasibility"] is None, body
+
+
+# ── AF-7 (P1-6): honest steer for out-of-bucket lifecycle events ──────
+
+def test_af7_out_of_bucket_event_gets_honest_steer():
+    """An event outside the 3 conversational buckets (PermissionRequest)
+    must not silently morph; the operator gets an honest steer to the full
+    editor."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "권한 요청이 있을 때 기록 남겨줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "PermissionRequest" in am, am
+    assert ("고급 편집기" in am) or ("full editor" in am), am
+
+
+def test_af7_in_bucket_event_no_steer():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "verify citations at the final answer"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "full editor" not in am and "고급 편집기" not in am, am
