@@ -112,6 +112,19 @@ def test_dry_run_rejects_invalid_ir_with_422(client):
     assert r.status_code == 422, r.text
 
 
+def test_dry_run_stray_trigger_key_returns_422_not_500(client):
+    """A trigger dict with an extra/unknown key causes Trigger(**raw["trigger"])
+    to raise TypeError (unexpected keyword argument). Before PR-4 this escaped
+    the except clause and became a 500. After PR-4 it must be caught and
+    returned as 422 - same as other IR validation failures (R5-02)."""
+    bad = _evidence_ir()
+    bad["trigger"]["stray_key"] = "unexpected"
+    r = client.post(
+        "/policies/dry-run", json={"ir": bad}, headers=HEADERS_ADMIN,
+    )
+    assert r.status_code == 422, r.text
+
+
 def test_dry_run_rejects_unknown_event_with_422(client):
     bad = _evidence_ir(event="BogusEvent")
     r = client.post(

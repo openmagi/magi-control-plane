@@ -7,6 +7,7 @@ import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
+from ...llm.provider import LlmProviderError
 from ..deps import require_admin_key
 from ..schemas import (
     CompileReq, DryRunReq, HandoffContextReq, InteractiveCompileReq,
@@ -138,6 +139,11 @@ def attach(
                 prior_turns=[t.model_dump() for t in (req.prior_turns or [])],
                 verifier_registry=verifier_registry,
             )
+        except LlmProviderError as e:
+            # Wrong key, rate-limit, network error, or max_tokens truncation.
+            # 502 lets the proxy classify this separately from a mis-wired
+            # provider (503) so the dashboard shows an actionable flash.
+            raise HTTPException(502, f"LLM provider error: {str(e)[:200]}") from e
         except PrecheckError as e:
             raise HTTPException(422, f"precheck: {e}") from e
         except ValueError as e:
@@ -230,6 +236,11 @@ def attach(
                 context=context,
                 runtime_id=req.runtime_id,          # NEW
             )
+        except LlmProviderError as e:
+            # Wrong key, rate-limit, network error, or max_tokens truncation.
+            # 502 lets the proxy classify this separately from a mis-wired
+            # provider (503) so the dashboard shows an actionable flash.
+            raise HTTPException(502, f"LLM provider error: {str(e)[:200]}") from e
         except InteractiveInputError as e:
             raise HTTPException(422, str(e)) from e
         except PrecheckError as e:
@@ -337,7 +348,7 @@ def attach(
         # / regex / SHACL lint failure.
         try:
             policy = _deserialize_policy_from_api(req.ir)
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, TypeError) as e:
             raise HTTPException(422, str(e)) from e
 
         # Gate 2: tenancy resolution. The route is admin-key gated

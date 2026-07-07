@@ -1094,6 +1094,9 @@ function errorBubbleText(
   if (code === "provider_unconfigured") {
     return t("newPolicy.conv.error.providerUnconfigured")
   }
+  if (code === "provider_error") {
+    return t("newPolicy.conv.error.providerError")
+  }
   if (code === "invalid_input" || code === "invalid policy") {
     return t("newPolicy.conv.error.invalidInput")
   }
