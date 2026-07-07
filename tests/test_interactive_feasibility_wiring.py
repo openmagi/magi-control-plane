@@ -730,3 +730,28 @@ def test_af9_inject_context_on_legal_event_steers_not_morphs():
     assert r.status_code == 200, r.text
     am = r.json()["assistant_message"] or ""
     assert ("full editor" in am) or ("고급 편집기" in am), am
+
+
+# ── AF-10 (P2-10): movable steer only names authorable events ─────────
+
+def test_af10_movable_steer_omits_unauthorable_event():
+    """privilege_scan authored at Stop can fire at PreToolUse, PostToolUse
+    AND UserPromptSubmit (all block-legal), but the conversational flow can
+    only author the 3 buckets. The chat steer must NOT name UserPromptSubmit."""
+    canned = _llm_response(message="ok", updates={"action": "block"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    draft = {
+        "id": "x", "type": "evidence",
+        "trigger": {"event": "Stop", "matcher": "*"},
+        "requires": [{"kind": "step", "step": "privilege_scan", "verdict": "pass"}],
+        "action": "audit",
+    }
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "block PII at the final answer"}],
+        "draft_so_far": draft, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "UserPromptSubmit" not in am, am
+    # A block-legal bucketed event is still offered.
+    assert ("PreToolUse" in am) or ("PostToolUse" in am), am

@@ -4284,7 +4284,15 @@ def step_compile(
         # available" steer when the verifier has an earlier enforce-capable
         # lifecycle. Empty for single-lifecycle verifiers (citation_verify).
         if draft_finding.code == "enforce_downgraded_to_audit":
-            _movable = _feas.movable_enforce_events(draft)
+            # AF-10 (P2-10): the helper is honest about the RUNTIME (every
+            # block-legal lifecycle for the verifier), but the conversational
+            # flow can only author the three buckets. Restrict the steer to
+            # events this flow can actually complete so it never points at an
+            # unauthorable one (e.g. UserPromptSubmit for privilege_scan).
+            _movable = tuple(
+                ev for ev in _feas.movable_enforce_events(draft)
+                if ev in _EVENT_TO_LIFECYCLE
+            )
             if _movable:
                 _evs = ", ".join(_movable)
                 _copy = _copy + (
