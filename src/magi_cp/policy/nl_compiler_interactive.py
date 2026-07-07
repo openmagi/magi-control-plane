@@ -764,6 +764,61 @@ _ACTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
 )
 
+# AF-8 (P1-10): deterministic pack-context lexicon. The D75 prompt asked
+# the LLM to answer a context-shaped request ("research mode") with a pack
+# suggestion in assistant_message, but Q103 discards that field, so the hint
+# was dead code. The server owns the suggestion now (mirrors the
+# disambiguation-menu pattern). Narrow, high-precision phrases only.
+_PACK_CONTEXT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("research-mode", (
+        "research mode", "리서치 모드", "리서치 세션", "research session",
+    )),
+    ("coding-safety", (
+        "coding safety", "coding session", "코딩 세션", "코딩 안전",
+    )),
+    ("compliance-audit", (
+        "compliance audit", "compliance mode", "컴플라이언스 감사",
+        "컴플라이언스 모드",
+    )),
+    ("permissive-observe", (
+        "observe mode", "observation mode", "관찰 모드", "일단 지켜보",
+    )),
+    ("strict-block", (
+        "strict mode", "엄격 모드", "전부 차단하는 묶음",
+    )),
+)
+
+# Short plain-language bundle description per pack (EN, KO).
+_PACK_BLURB: dict[str, tuple[str, str]] = {
+    "research-mode": (
+        "citation verify, source allowlist, and prompt-injection screening",
+        "인용 검증, 허용 도메인, 프롬프트 인젝션 검사",
+    ),
+    "coding-safety": (
+        "a privilege scan on Bash and structured output on the final answer",
+        "Bash 권한 스캔과 최종 답변 형식 검증",
+    ),
+    "compliance-audit": (
+        "all five prebuilt checks in record-only mode",
+        "5개 기본 검사를 모두 기록 전용으로",
+    ),
+    "permissive-observe": (
+        "a first-time, visibility-first bundle",
+        "처음 도입용 관찰 우선 묶음",
+    ),
+    "strict-block": (
+        "a block-first curated bundle",
+        "차단 우선 큐레이션 묶음",
+    ),
+}
+
+
+def _scan_pack_intent(user_text: str) -> str | None:
+    """Return the built-in pack id a context-shaped request points at, else
+    None. High-precision; false negatives are acceptable."""
+    return _scan_first(user_text, _PACK_CONTEXT_KEYWORDS)
+
+
 # Condition KIND keywords.
 #
 # Q101 expansion: the guided wizard offers 5 condition kinds — none /
@@ -4266,6 +4321,44 @@ def step_compile(
     # `draft` field MUST be None per the brief so the client
     # distinguishes "haven't started" from "started, here it is".
     wire_draft: dict[str, Any] | None = draft if draft else None
+
+    # AF-8 (P1-10): deterministic pack steering. When the operator names a
+    # CONTEXT (a built-in pack's domain) rather than a specific check, and no
+    # concrete policy material has been authored, point them at the pack that
+    # already bundles the relevant policies instead of building one rule at a
+    # time. Server-owned copy + CTA (the D75 prompt hint is dead because
+    # Q103 discards the LLM's assistant_message). Overrides the S0 question
+    # flow without persisting a draft, exactly like the pack hint intended.
+    if (intent_finding is None
+            and not _is_run_command_draft(draft)
+            and not _is_evidence_gate_draft(draft)
+            and not draft.get("requires")
+            and not draft.get("action")
+            and feasibility_wire is None):
+        _pack_id = _scan_pack_intent(latest_user_text)
+        if _pack_id is not None:
+            _blurb_en, _blurb_ko = _PACK_BLURB.get(_pack_id, ("", ""))
+            if ko:
+                assistant_message = (
+                    f"개별 정책을 하나씩 만들기보다, 준비된 정책 묶음이 이 "
+                    f"경우에 더 맞습니다. `{_pack_id}` 묶음이 {_blurb_ko}을(를) "
+                    f"한 번에 켭니다. /policy-packs/{_pack_id} 에서 켜세요. "
+                    f"직접 개별 정책을 만들고 싶으시면 원하는 검사를 한 줄로 "
+                    f"말씀해 주세요."
+                )
+            else:
+                assistant_message = (
+                    f"A ready-made pack fits this better than building one "
+                    f"rule at a time. The `{_pack_id}` pack enables "
+                    f"{_blurb_en} together - turn it on at "
+                    f"/policy-packs/{_pack_id}. If you would rather build one "
+                    f"policy here, tell me the specific check you want in one "
+                    f"line."
+                )
+            questions = []
+            wire_draft = None
+            needs_more = True
+            ready_to_save = False
 
     return {
         "assistant_message": assistant_message,

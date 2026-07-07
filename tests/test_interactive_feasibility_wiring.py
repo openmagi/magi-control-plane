@@ -671,3 +671,48 @@ def test_af7_in_bucket_event_no_steer():
     assert r.status_code == 200, r.text
     am = r.json()["assistant_message"] or ""
     assert "full editor" not in am and "고급 편집기" not in am, am
+
+
+# ── AF-8 (P1-10): deterministic pack steering (revive dead D75) ───────
+
+def test_af8_research_mode_steers_to_pack():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "set up research mode"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    am = body["assistant_message"] or ""
+    assert "research-mode" in am, am
+    assert "/policy-packs" in am, am
+    assert body["questions"] == [], body
+    assert body["draft"] is None, body
+
+
+def test_af8_coding_session_korean_steers_to_pack():
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user", "content": "코딩 세션 안전하게 해줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "coding-safety" in am, am
+
+
+def test_af8_concrete_request_not_hijacked_by_pack_steer():
+    """A concrete request that names a check/tool stays on the normal path
+    even if it mentions 'research'."""
+    canned = _llm_response(message="ok", updates={"trigger": {"event": "PreToolUse", "matcher": "WebFetch"}, "action": "audit"}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned]))
+    r = c.post("/policies/compile-interactive", headers=HEADERS, json={
+        "history": [{"role": "user",
+                     "content": "리서치 목적으로 외부 web search 출처를 audit 로그로 남겨줘"}],
+        "draft_so_far": None, "answers": None,
+    })
+    assert r.status_code == 200, r.text
+    am = r.json()["assistant_message"] or ""
+    assert "/policy-packs" not in am, am
