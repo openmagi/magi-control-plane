@@ -403,6 +403,41 @@ def create_app(
 from ..config import _run_command_allowed  # noqa: E402,F401
 
 
+def _resolve_llm_provider_optional(env_var: str) -> "object | None":
+    """Boot-safe wrapper around ``_resolve_llm_provider_from_env``.
+
+    The LLM compiler / reviewer are OPTIONAL — ``/policies/compile`` returns
+    503 when absent, and the rest of the control plane (dashboard, policies,
+    packs, HITL, ledger, gate compile) does not need them. So a provider that
+    is wired-but-unconfigured must NOT take the whole cloud down.
+
+    This is the fix for the self-host boot crash: the served
+    docker-compose.yml defaults ``MAGI_CP_LLM_COMPILER`` to
+    ``anthropic_default`` (and the reviewer to ``openai_default``), but a
+    fresh install has no ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY``, so the
+    eager key check in the provider ``__init__`` raised ``LlmProviderError``
+    at ``uvicorn --factory`` boot → the container crash-looped (restarting,
+    unhealthy). Treat any resolution failure (missing key, bad import path,
+    factory raise) as "no provider configured": log a warning and return
+    None so the cloud boots and ``/policies/compile`` reports its honest 503
+    until the operator adds a key (via .env or the Settings key store) and
+    restarts.
+    """
+    try:
+        return _resolve_llm_provider_from_env(env_var)
+    except Exception as e:  # pragma: no cover - exercised via boot test
+        import logging
+        logging.getLogger(__name__).warning(
+            "magi-cp: %s is set but its provider could not be constructed "
+            "(%s); /policies/compile will return 503 until it is configured. "
+            "Add the provider's API key (e.g. ANTHROPIC_API_KEY / "
+            "OPENAI_API_KEY in .env, or via the dashboard Settings key "
+            "store) and restart the cloud service.",
+            env_var, e,
+        )
+        return None
+
+
 def _build_production_app() -> FastAPI:
     """Construct the app with all v1.1+ wirings.
 
@@ -443,8 +478,8 @@ def _build_production_app() -> FastAPI:
         )
     app = create_app(
         verifier_registry=reg,
-        llm_compiler=_resolve_llm_provider_from_env("MAGI_CP_LLM_COMPILER"),
-        llm_reviewer=_resolve_llm_provider_from_env("MAGI_CP_LLM_REVIEWER"),
+        llm_compiler=_resolve_llm_provider_optional("MAGI_CP_LLM_COMPILER"),
+        llm_reviewer=_resolve_llm_provider_optional("MAGI_CP_LLM_REVIEWER"),
     )
     attach_metrics(app)
     # D57e P0: saved-policy drift sweep at boot. After the registry +
