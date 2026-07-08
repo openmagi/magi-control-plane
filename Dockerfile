@@ -27,9 +27,18 @@ COPY --from=build /build/src /app/src
 ENV PYTHONPATH=/app/src
 ENV MAGI_CP_KEY_DIR=/data/keys
 ENV MAGI_CP_DSN=sqlite:////data/magi-cp.sqlite
-# /home/magi is on the read-only root FS in the compose run — pin the policy
-# store onto the /data volume so PUT /policies/{id} can actually persist.
+# /home/magi is on the read-only root FS in the compose run (read_only: true).
+# EVERY on-disk store defaults to ~/.magi-cp/* (i.e. /home/magi/.magi-cp) — which
+# is unwritable there — so each must be pinned onto the /data volume or its first
+# write (POST /policy-packs, /custom-verifiers, a policy-group save, the boot
+# pack-centric floor migration, a /scripts upload) fails with a read-only
+# PermissionError → 500. Pin them in the IMAGE (not the compose) so a user who
+# preserved an older docker-compose.yml on upgrade still gets a writable layout.
 ENV MAGI_CP_POLICY_STORE=/data/policies.json
+ENV MAGI_CP_PACK_STORE=/data/packs.json
+ENV MAGI_CP_CUSTOM_VERIFIER_STORE=/data/custom_verifiers.json
+ENV MAGI_CP_POLICY_GROUP_STORE=/data/policy-groups.json
+ENV MAGI_CP_SCRIPT_STORE_DIR=/data
 ENV MAGI_CP_SERVE=1
 VOLUME ["/data"]
 USER 10001
