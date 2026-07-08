@@ -271,6 +271,14 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "LLM provider for the IR review step. Catches dangerous compile output.",
   },
   {
+    name: "MAGI_CP_CLAUDE_CLI_MODEL",
+    group: "cloud",
+    default: "(unset)",
+    allowed: "model alias or id",
+    ko: "API 키 없이 로컬 claude CLI(구독 인증) 폴백을 쓸 때의 모델. 미설정 시 CLI 기본 모델을 따릅니다.",
+    en: "Model for the local claude CLI (subscription-auth) fallback used when no API key is set. When unset, the CLI's own default model is used.",
+  },
+  {
     name: "MAGI_CP_STALE_ENDPOINT_SECONDS",
     group: "cloud",
     default: "300",
