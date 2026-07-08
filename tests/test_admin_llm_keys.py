@@ -85,10 +85,12 @@ def test_get_returns_unset_when_store_empty() -> None:
     r = c.get("/admin/llm-keys", headers=HDR_ADMIN)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body == {
-        "anthropic": {"set": False, "last4": None},
-        "openai": {"set": False, "last4": None},
-    }
+    assert body["anthropic"] == {"set": False, "last4": None}
+    assert body["openai"] == {"set": False, "last4": None}
+    # Advisory subscription-auth signal: present + boolean. Its exact value
+    # depends on whether the `claude` CLI is on PATH in the test env, so we
+    # assert the type/presence rather than a fixed value.
+    assert isinstance(body["claude_cli_active"], bool)
 
 
 def test_get_returns_last4_only_never_raw_key() -> None:
@@ -101,6 +103,10 @@ def test_get_returns_last4_only_never_raw_key() -> None:
     assert body["anthropic"]["last4"] == "1234"
     assert body["openai"]["set"] is True
     assert body["openai"]["last4"] == "5678"
+    # Precedence: with API keys set, the CLI subscription fallback is inert
+    # (an API-key provider always wins), so the advisory flag is False even
+    # if `claude` happens to be on PATH.
+    assert body["claude_cli_active"] is False
     # Defense in depth: the raw value must never appear anywhere in the
     # response body. A buggy dev who reaches for `raw=` would catch it
     # here.

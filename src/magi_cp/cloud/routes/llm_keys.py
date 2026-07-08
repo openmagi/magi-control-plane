@@ -25,6 +25,20 @@ def attach(app: FastAPI, *, llm_keys_lock) -> None:
     def _llm_status_payload() -> dict:
         from ..llm_key_store import status as _status
         s = _status()
+        # Subscription-auth fallback signal: the local `claude` CLI powers the
+        # compiler/reviewer only when it is on PATH AND no API key is set (see
+        # _resolve_llm_provider_optional precedence). Advisory boolean for the
+        # dashboard to show "Running on your Claude subscription (no API key)".
+        claude_cli_active = False
+        try:
+            from ...llm.claude_cli_provider import claude_cli_available
+            claude_cli_active = bool(
+                claude_cli_available()
+                and not s["anthropic_set"]
+                and not s["openai_set"]
+            )
+        except Exception:
+            claude_cli_active = False
         return {
             "anthropic": {
                 "set": s["anthropic_set"],
@@ -34,6 +48,7 @@ def attach(app: FastAPI, *, llm_keys_lock) -> None:
                 "set": s["openai_set"],
                 "last4": s["openai_last4"],
             },
+            "claude_cli_active": claude_cli_active,
         }
 
     def _rebuild_provider_singletons() -> None:

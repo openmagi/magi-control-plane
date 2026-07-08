@@ -403,6 +403,35 @@ def create_app(
 from ..config import _run_command_allowed  # noqa: E402,F401
 
 
+def _claude_cli_fallback() -> "object | None":
+    """Build a ClaudeCliProvider iff the local `claude` CLI is available.
+
+    Self-host single-user fallback: when no API-key provider is configured,
+    an operator who has run ``claude login`` can power the compiler/reviewer
+    with their existing Claude subscription. Lazy-imports the provider module
+    so a normal boot (with an API key) never pays for it, and never crashes
+    boot: any construction error is logged and swallowed (return None).
+    """
+    try:
+        from ..llm.claude_cli_provider import (
+            claude_cli_available,
+            claude_cli_default,
+        )
+    except Exception:  # pragma: no cover - import guard, keeps boot safe
+        return None
+    if not claude_cli_available():
+        return None
+    try:
+        return claude_cli_default()
+    except Exception as e:  # pragma: no cover - never crash boot
+        import logging
+        logging.getLogger(__name__).warning(
+            "magi-cp: claude CLI is present but its provider could not be "
+            "constructed (%s); falling back to the honest 503 path.", e,
+        )
+        return None
+
+
 def _resolve_llm_provider_optional(env_var: str) -> "object | None":
     """Boot-safe wrapper around ``_resolve_llm_provider_from_env``.
 
@@ -423,19 +452,36 @@ def _resolve_llm_provider_optional(env_var: str) -> "object | None":
     until the operator adds a key (via .env or the Settings key store) and
     restarts.
     """
+    import logging
+    resolved: object | None = None
     try:
-        return _resolve_llm_provider_from_env(env_var)
+        resolved = _resolve_llm_provider_from_env(env_var)
     except Exception as e:  # pragma: no cover - exercised via boot test
-        import logging
         logging.getLogger(__name__).warning(
             "magi-cp: %s is set but its provider could not be constructed "
-            "(%s); /policies/compile will return 503 until it is configured. "
-            "Add the provider's API key (e.g. ANTHROPIC_API_KEY / "
-            "OPENAI_API_KEY in .env, or via the dashboard Settings key "
-            "store) and restart the cloud service.",
+            "(%s); attempting the local claude CLI fallback before "
+            "reporting 503. Add the provider's API key (e.g. "
+            "ANTHROPIC_API_KEY / OPENAI_API_KEY in .env, or via the "
+            "dashboard Settings key store) and restart the cloud service.",
             env_var, e,
         )
-        return None
+        resolved = None
+
+    # Precedence rule (Kevin: "API key 등록 안한 경우에만 폴백"): a working
+    # API-key provider ALWAYS wins. Only when the env resolution yielded None
+    # (var unset, or wired-but-key-missing) do we try the subscription-auth
+    # CLI. This gives BOTH the compiler and reviewer the fallback.
+    if resolved is not None:
+        return resolved
+
+    fallback = _claude_cli_fallback()
+    if fallback is not None:
+        logging.getLogger(__name__).info(
+            "magi-cp: no API key configured; using the local claude CLI "
+            "(subscription auth) for %s.", env_var,
+        )
+        return fallback
+    return None
 
 
 def _build_production_app() -> FastAPI:

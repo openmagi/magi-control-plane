@@ -70,10 +70,16 @@ def test_resolve_llm_provider_optional_returns_none_on_factory_raise(
         "magi_cp.llm.anthropic_provider:anthropic_default",
     )
     app_mod = importlib.import_module("magi_cp.cloud.app")
+    # The claude CLI subscription fallback only fires when `claude` is on PATH.
+    # This test asserts the honest-503 path when no fallback is available, so
+    # force the CLI absent (CI has no `claude` binary anyway).
+    monkeypatch.setattr(app_mod, "_claude_cli_fallback", lambda: None)
     assert app_mod._resolve_llm_provider_optional("MAGI_CP_LLM_COMPILER") is None
 
 
 def test_resolve_llm_provider_optional_none_when_unset(monkeypatch, _clean_env):
     monkeypatch.delenv("MAGI_CP_LLM_COMPILER", raising=False)
     app_mod = importlib.import_module("magi_cp.cloud.app")
+    # Same precondition: no claude CLI => the 503 path is intact.
+    monkeypatch.setattr(app_mod, "_claude_cli_fallback", lambda: None)
     assert app_mod._resolve_llm_provider_optional("MAGI_CP_LLM_COMPILER") is None
