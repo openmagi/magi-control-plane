@@ -88,6 +88,42 @@ def codex_runtime_enabled() -> bool:
     return raw.strip().lower() not in _FALSY
 
 
+# ── Rollout gate for the Hermes CLI runtime adapter.
+# Design brief: 2026-07-06-magi-cp-hermes-runtime-adapter-design (private planning repo)
+#
+# Default ON (no-default-OFF policy, design Section 10 P1+), mirroring
+# ``codex_runtime_enabled`` exactly. This is a GLOBAL AVAILABILITY switch,
+# not an auto-migration: with it ON the dispatcher still returns ``"cc"``
+# for every tenant whose ``tenants.runtime_id`` is not ``"hermes"``, so
+# existing CC/Codex tenants are byte-identical. Flipping it ON only makes
+# the Hermes runtime SELECTABLE; a tenant reaches the Hermes path only by
+# explicitly choosing it (``tenants.runtime_id = "hermes"`` /
+# ``MAGI_CP_RUNTIME=hermes`` / snake_case payload sniff). Operators roll the
+# whole adapter back with an explicit falsy token (``0`` / ``false`` /
+# ``no`` / ``off`` / empty); that is the global kill switch and reverts the
+# dispatcher to "CC/Codex only".
+_HERMES_RUNTIME_ENV = "MAGI_CP_HERMES_RUNTIME_ENABLED"
+
+
+def hermes_runtime_enabled() -> bool:
+    """Return True unless MAGI_CP_HERMES_RUNTIME_ENABLED is set to an
+    explicit falsy value.
+
+    Default-ON (no-default-OFF policy): unset returns True, so the Hermes
+    runtime adapter is globally AVAILABLE. Per-tenant routing still flows
+    through ``tenants.runtime_id`` (default ``"claude-code"``), so this only
+    makes Hermes selectable, not active for existing tenants. The only way
+    to disable the adapter globally (dispatcher forced to skip the Hermes
+    tier) is an explicit falsy value: ``0`` / ``false`` / ``no`` / ``off``
+    (case-insensitive) or the empty string. Any other value (including the
+    truthy tokens) keeps it ON. Mirrors ``codex_runtime_enabled``.
+    """
+    raw = os.environ.get(_HERMES_RUNTIME_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _FALSY
+
+
 # ── Run-command surface gate.
 _ALLOW_RUN_COMMAND_ENV = "MAGI_CP_ALLOW_RUN_COMMAND"
 
@@ -131,6 +167,7 @@ def magi_agent_console_url() -> str | None:
 __all__ = [
     "pack_centric_runtime_enabled",
     "codex_runtime_enabled",
+    "hermes_runtime_enabled",
     "_run_command_allowed",
     "magi_agent_console_url",
 ]
