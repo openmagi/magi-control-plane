@@ -1,0 +1,25 @@
+{
+  "name": "magi-cp-gate",
+  "version": "1",
+  "description": "Magi Control Plane enforcement gate (frozen dispatcher; policy lives in magi-cp)",
+  "hooks": [
+    {
+      "name": "magi-gate-tool-call",
+      "event": "tool_call",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "sha256": "<computed>"
+    },
+    {
+      "name": "magi-gate-session-start",
+      "event": "session_start",
+      "path": "hooks/magi-gate-session-start.ts",
+      "sha256": "<computed>"
+    },
+    {
+      "name": "magi-gate-session-shutdown",
+      "event": "session_shutdown",
+      "path": "hooks/magi-gate-session-shutdown.ts",
+      "sha256": "<computed>"
+    }
+  ]
+}
