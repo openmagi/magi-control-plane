@@ -755,6 +755,9 @@ def main() -> int:
     if runtime == "codex":
         from ..runtime.codex import run_codex_gate
         return run_codex_gate(raw_stripped)
+    elif runtime == "gjc":
+        from ..runtime.gjc import run_gjc_gate
+        return run_gjc_gate(raw_stripped)
 
     # ── Claude Code path (byte-identical to the legacy cli). ──────────
     if not raw_stripped:
