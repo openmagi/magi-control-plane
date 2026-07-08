@@ -11,7 +11,8 @@ Subcommands:
   mcp            run the stdio MCP server
   keys           rotate / list / revoke Ed25519 signing keys (W7b)
   share          turn a Claude Code run into a public share link
-  install        install the runtime adapter surface (Codex / Claude Code)
+  install        install the runtime adapter surface (Codex / Claude Code / gjc)
+  doctor         run installation health checks for all runtimes
 """
 from __future__ import annotations
 import sys
@@ -63,8 +64,18 @@ def main(argv: list[str] | None = None) -> int:
         from .share import cli as share_cli
         return share_cli(rest)
     if cmd == "install":
+        # Route gjc installs to the gjc installer; everything else to codex.
+        if "--runtime" in rest:
+            idx = rest.index("--runtime")
+            if idx + 1 < len(rest) and rest[idx + 1] == "gjc":
+                from ..local.gjc_install import cli as gjc_install_cli
+                return gjc_install_cli(rest)
         from ..local.codex_install import cli as install_cli
         return install_cli(rest)
+    if cmd == "doctor":
+        # Run health checks for all installed runtimes.
+        from ..local.gjc_install import doctor_cli as gjc_doctor_cli
+        return gjc_doctor_cli(rest)
     print(f"unknown subcommand: {cmd!r}", file=sys.stderr)
     return _help(explicit=False)
 
