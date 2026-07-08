@@ -16,7 +16,6 @@ whole control plane down. Regression guard for that boot crash.
 from __future__ import annotations
 
 import importlib
-import os
 
 import pytest
 
