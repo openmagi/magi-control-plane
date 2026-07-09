@@ -46,3 +46,6 @@ _devpols.json
 _devdb/
 .vercel
 .env*.local
+
+# QA harness reports (generated on each run, not committed)
+.qa-report/

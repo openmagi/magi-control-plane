@@ -5,7 +5,7 @@
   "language": "en",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "fake_empty",
+  "engine": "cassette",
   "stable": true,
   "known_limitation": false,
   "target_ir": {
