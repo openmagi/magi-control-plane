@@ -29,6 +29,8 @@ import json
 import sys
 
 from .trait import (
+    CoveragePolicyStatus,
+    CoverageReport,
     HookEvent,
     InstallPaths,
     ManagedConfigBundle,
@@ -81,6 +83,152 @@ _GJC_EVENT_TO_CANONICAL: dict[str, str] = {
     "session_before_compact": "PreCompact",          # v1.5
     "session_compact":        "PostCompact",         # v1.5
 }
+
+# ── gjc live hook-event set (§7 event coverage matrix) ──────────────────────
+#
+# Events that gjc fires a blocking ``tool_call`` (or lifecycle equivalent)
+# plugin hook for in v1.  A policy whose hosting event is in this set
+# reports ``"enforced"`` (possibly with a downgrade note for partial-match
+# events); one whose event is outside this set reports
+# ``"gjc_event_not_live"`` (no hook ever fires → H1 honesty rule).
+#
+# Full Match rows (§7): PreToolUse, PostToolUse, SessionStart, SessionEnd.
+# Partial rows (separate downgrade notes, handled before the frozenset check):
+#   Stop            → gjc_stop_observe_only  (observer; no block result)
+#   SubagentStart   → gjc_subagent_via_task_tool (parent-side Task hook)
+#   SubagentStop    → gjc_subagent_via_task_tool (parent-side Task hook)
+GJC_LIVE_EVENTS: frozenset[str] = frozenset({
+    "PreToolUse",
+    "PostToolUse",
+    "SessionStart",
+    "SessionEnd",
+})
+
+# SubagentStart / SubagentStop reach gjc via the parent-side Task/subagent
+# tool_call hook, not a dedicated lifecycle event.
+_GJC_SUBAGENT_LIFECYCLE_EVENTS: frozenset[str] = frozenset({
+    "SubagentStart",
+    "SubagentStop",
+})
+
+
+def _policy_event_matcher_gjc(p: object) -> tuple[str, str]:
+    """(event, matcher) for a hook-producing policy.
+
+    Native-surface archetypes (Permission / Mcp / Subagent) have no
+    trigger and are handled before this is called, identical in
+    structure to the Codex ``_policy_event_matcher`` helper
+    (``runtime/codex.py:303-312``).
+    """
+    from ..policy.ir import ContextInjectionPolicy  # noqa: PLC0415
+
+    if isinstance(p, ContextInjectionPolicy):
+        return (p.event, p.matcher)
+    trig = getattr(p, "trigger", None)
+    if trig is not None:
+        return (getattr(trig, "event", ""), getattr(trig, "matcher", ""))
+    return ("", "")
+
+
+def _coverage_status_for_gjc(p: object) -> tuple[str, str | None]:
+    """Per-policy gjc coverage ``(status, downgrade)``.
+
+    Implements every row of the §8.1 ledger:
+
+    PermissionPolicy:
+      - ``ask``    → ``gjc_no_ask_tier`` downgrade "deny-with-guidance"
+                     (D3: gjc has no native ask tier)
+      - deny/allow → ``"enforced"`` (hook path; target-less PreToolUse
+                     hook fires for every tool call)
+
+    McpGatingPolicy:
+      → ``gjc_mcp_naming_pending`` until G-L6 pins MCP tool naming.
+
+    SubagentPolicy:
+      → ``"enforced"`` + downgrade ``"gjc_subagent_via_task_tool"``
+        (parent-side gate on the ``task``/``subagent`` tool call;
+        §4.4 mapping; §8.1 row 4).
+
+    ContextInjectionPolicy:
+      → ``gjc_no_context_channel`` unsupported in v1
+        (no additionalContext on ``tool_call`` return; §8.1 row 5).
+
+    InputRewritePolicy:
+      → ``gjc_no_input_rewrite`` unsupported — renders red via
+        ``coverage_cell`` (no rewrite channel on gjc; §4.5 / §8.1 row 6).
+
+    EvidencePolicy / RunCommandPolicy / EvidenceAuditPolicy /
+    EvidencePreconditionPolicy (hook-producing archetypes):
+      - ``Stop``              → ``"enforced"`` + ``"gjc_stop_observe_only"``
+                                (observe-only, no block result; §7 / H1)
+      - SubagentStart / Stop  → ``"enforced"`` + ``"gjc_subagent_via_task_tool"``
+      - event not in live set → ``"gjc_event_not_live"`` (H1: never fires)
+      - otherwise             → ``"enforced"``
+
+    Honesty rules (§8.2):
+      H1: never emit ``"enforced"`` for a policy whose hook cannot fire.
+          ``gjc_stop_observe_only`` and ``gjc_event_not_live`` enforce this.
+      H2: dropped side channels (updated_input etc.) → ledger marker on
+          the policy that produced them (``gjc_no_input_rewrite``).
+    """
+    from ..policy.ir import (  # noqa: PLC0415
+        ContextInjectionPolicy,
+        InputRewritePolicy,
+        McpGatingPolicy,
+        PermissionPolicy,
+        SubagentPolicy,
+    )
+
+    # ── Native-surface archetypes (no trigger) ────────────────────────────
+    if isinstance(p, PermissionPolicy):
+        if p.permission == "ask":
+            # D3: gjc has no native ask tier; block + guidance instead.
+            return ("gjc_no_ask_tier", "deny-with-guidance")
+        # deny / allow: target-less tool_call hook fires for every tool;
+        # the gate evaluates the pattern, so this is a real hook enforcement.
+        return ("enforced", None)
+
+    if isinstance(p, McpGatingPolicy):
+        # MCP tool naming in gjc is unconfirmed pending G-L6; the hook
+        # path exists but matcher precision is pending.
+        return ("gjc_mcp_naming_pending", None)
+
+    if isinstance(p, SubagentPolicy):
+        # gjc routes subagent spawns through the Task tool (D2/§4.4);
+        # the gate fires on the parent-side tool_call for task/subagent.
+        return ("enforced", "gjc_subagent_via_task_tool")
+
+    if isinstance(p, ContextInjectionPolicy):
+        # gjc tool_call return shape is {block, reason} only; no
+        # additionalContext channel exists in v1 (§4.5 / §8.1 row 5).
+        return ("gjc_no_context_channel", None)
+
+    if isinstance(p, InputRewritePolicy):
+        # gjc has no updatedInput (rewrite) channel (§4.5 / §8.1 row 6).
+        # Renders red via coverage_cell — NOT a downgrade, an actual gap.
+        return ("gjc_no_input_rewrite", None)
+
+    # ── Hook-producing archetypes (EvidencePolicy, RunCommandPolicy,
+    #    EvidenceAuditPolicy, EvidencePreconditionPolicy) ─────────────────
+    event, _matcher = _policy_event_matcher_gjc(p)
+
+    # Stop fires in gjc but only as an observer; no block result
+    # (§7 / §9.1 "observe-only").  H1: report enforced + downgrade, not
+    # bare enforced (which would imply blocking capability).
+    if event == "Stop":
+        return ("enforced", "gjc_stop_observe_only")
+
+    # SubagentStart / SubagentStop reach gjc via the parent-side
+    # task/subagent tool_call hook (not a dedicated lifecycle event).
+    if event in _GJC_SUBAGENT_LIFECYCLE_EVENTS:
+        return ("enforced", "gjc_subagent_via_task_tool")
+
+    # Events not live in gjc at all → H1: must not emit "enforced".
+    if event and event not in GJC_LIVE_EVENTS:
+        return ("gjc_event_not_live", None)
+
+    return ("enforced", None)
+
 
 # Prefix shared with other drivers (cc_shapes / codex._prefixed).
 _PREFIX = "MAGI: "
@@ -213,13 +361,44 @@ class GjcDriver:
 
         return compile_to_gjc_bundle(ir)
 
-    def coverage_report(self, ir: list):  # type: ignore[override]
+    def coverage_report(self, ir: list) -> CoverageReport:
         """Per-policy gjc coverage report.
 
-        Full implementation in U5 (gjc coverage golden). Stub raises.
+        Mirrors ``CodexDriver.coverage_report`` (``runtime/codex.py:678-711``).
+        Every IR policy is passed through ``_coverage_status_for_gjc`` which
+        implements the §8.1 ledger; the result is a ``CoverageReport`` with
+        one ``CoveragePolicyStatus`` entry per policy.
+
+        Hook-producing archetypes (EvidencePolicy / RunCommandPolicy /
+        EvidenceAuditPolicy / EvidencePreconditionPolicy) report
+        ``"enforced"`` unless their hosting event trips a gap marker:
+
+          - ``gjc_stop_observe_only``: Stop is observe-only in gjc v1
+            (§7, §9.1); the hook fires but cannot block.
+          - ``gjc_subagent_via_task_tool``: SubagentStart / SubagentStop are
+            not dedicated lifecycle events in gjc; they are reached via the
+            parent-side ``task``/``subagent`` tool_call hook.
+          - ``gjc_event_not_live``: the hosting event is not in the gjc
+            live-events set; the hook can never fire (H1 honesty rule).
+
+        Native-surface archetypes:
+          - ``PermissionPolicy`` with ``ask`` → ``gjc_no_ask_tier``
+            (deny-with-guidance downgrade; D3).
+          - ``PermissionPolicy`` with deny/allow → ``enforced`` (hook).
+          - ``McpGatingPolicy`` → ``gjc_mcp_naming_pending`` (G-L6 pending).
+          - ``SubagentPolicy``  → ``enforced`` + ``gjc_subagent_via_task_tool``.
+          - ``ContextInjectionPolicy`` → ``gjc_no_context_channel`` (v1 gap).
+          - ``InputRewritePolicy``     → ``gjc_no_input_rewrite`` (no rewrite
+            channel; renders red via ``coverage_cell``).
         """
-        raise NotImplementedError(
-            "coverage_report not yet implemented for gjc (U5 / PR-3)"
+        policies: list[CoveragePolicyStatus] = []
+        for p in ir:
+            status, downgrade = _coverage_status_for_gjc(p)
+            policies.append(CoveragePolicyStatus(
+                policy_id=p.id, status=status, downgrade=downgrade,
+            ))
+        return CoverageReport(
+            runtime_id=self.runtime_id, policies=tuple(policies),
         )
 
     def default_install_paths(self) -> InstallPaths:
@@ -280,4 +459,10 @@ def run_gjc_gate(raw_stripped: str) -> int:
     return 0
 
 
-__all__ = ["GjcDriver", "_GJC_TO_CC_TOOL", "run_gjc_gate"]
+__all__ = [
+    "GjcDriver",
+    "GJC_LIVE_EVENTS",
+    "_GJC_TO_CC_TOOL",
+    "_coverage_status_for_gjc",
+    "run_gjc_gate",
+]
