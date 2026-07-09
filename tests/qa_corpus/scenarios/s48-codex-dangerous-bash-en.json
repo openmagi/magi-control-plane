@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "s48-codex-dangerous-bash-en",
+  "category": "infeasible_runtime",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": "codex",
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [
+      {
+        "step": "privilege_scan",
+        "verdict": "pass"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block dangerous bash",
+      "note": "Bash maps to codex native; save"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S48",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "compound-gate-ask-tool-ko",
+  "category": "archetype_compound",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "거래 실행 전에 신뢰할 수 있는 출처를 확인해야 해, 없으면 승인 받고 진행해",
+      "note": "compound gate action=ask, tool matcher"
+    }
+  ],
+  "provenance": {
+    "source": "lane4-compound",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

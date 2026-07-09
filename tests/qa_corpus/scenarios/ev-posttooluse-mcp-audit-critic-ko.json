@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-posttooluse-mcp-audit-critic-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PostToolUse",
+      "matcher": "mcp__trading__execute"
+    },
+    "requires": [
+      {
+        "kind": "llm_critic",
+        "criterion": "the trade was justified"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "mcp 도구 실행 후 AI 심사 결과를 기록만 남겨줘",
+      "note": "audit/mcp_tool/llm_critic at PostToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

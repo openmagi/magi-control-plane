@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "s49-codex-citation-stop-en",
+  "category": "infeasible_runtime",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": "codex",
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "Stop",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "step": "citation_verify",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "verify citations on the final answer, just log failures",
+      "note": "Stop in CODEX_LIVE_EVENTS; save Stop/*/audit"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S49",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

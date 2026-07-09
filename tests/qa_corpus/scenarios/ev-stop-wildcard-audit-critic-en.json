@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-stop-wildcard-audit-critic-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "Stop",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "kind": "llm_critic",
+        "criterion": "the answer avoids sycophancy"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "at the final answer, have an AI judge check tone and just record the verdict",
+      "note": "audit/wildcard/llm_critic at Stop"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

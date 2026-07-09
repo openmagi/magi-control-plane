@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s47-codex-webfetch-block-en",
+  "category": "infeasible_runtime",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": "codex",
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": "codex_matcher_inert",
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block WebFetch outside our domains",
+      "note": "codex_matcher_inert; steer (P2-5)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S47",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

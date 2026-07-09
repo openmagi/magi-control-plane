@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s7-block-citations-stop-en",
+  "category": "enforce_verb",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block the final answer if citations are missing",
+      "note": "block at Stop illegal; deterministic downgrade+steer (P1-1)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S7",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}
