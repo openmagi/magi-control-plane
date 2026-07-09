@@ -207,7 +207,9 @@ def test_get_tenant_runtime_reports_disabled_when_flag_off(cloud, monkeypatch):
     assert body["runtime_id"] == "claude-code"
     assert body["codex_enabled"] is False
     ids = {rt["id"] for rt in body["runtimes"]}
-    assert ids == {"claude-code", "codex"}
+    # gjc joined _KNOWN_RUNTIMES (PR-5/U7); the picker lists all three
+    # regardless of per-runtime switch flags.
+    assert ids == {"claude-code", "codex", "gjc"}
     cc = next(rt for rt in body["runtimes"] if rt["id"] == "claude-code")
     assert cc["enforced"] == 4 and cc["total"] == 4
 
