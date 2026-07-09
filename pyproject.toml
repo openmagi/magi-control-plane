@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10", "hypothesis>=6"]
 nli = ["transformers>=4.40", "torch>=2.2"]
 # v2.0-W8a: Postgres driver for multi-node / HA deploys. SQLite is the default
 # single-node DSN; install with `pip install -e .[postgres]` to switch.
