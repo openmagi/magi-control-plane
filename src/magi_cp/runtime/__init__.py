@@ -3,11 +3,14 @@
 The ``HookRuntime`` trait (``trait.py``) is the seam that decouples what a
 coding-agent runtime speaks on stdin from what Magi enforces. Three drivers
 implement it today: ``cc.py`` (Claude Code, the reference runtime),
-``codex.py`` (Codex CLI, behind ``MAGI_CP_CODEX_RUNTIME_ENABLED``), and
-``hermes.py`` (Hermes CLI, behind ``MAGI_CP_HERMES_RUNTIME_ENABLED``).
+``codex.py`` (Codex CLI, behind ``MAGI_CP_CODEX_RUNTIME_ENABLED``),
+``hermes.py`` (Hermes CLI, behind ``MAGI_CP_HERMES_RUNTIME_ENABLED``), and
+``gjc.py`` (Gajae-Code, behind ``MAGI_CP_GJC_RUNTIME_ENABLED``).
 
-Design briefs: 2026-06-30-codex-runtime-adapter-design +
-2026-07-06-magi-cp-hermes-runtime-adapter-design (private planning repo).
+Design briefs:
+  2026-06-30-codex-runtime-adapter-design (Codex driver)
+  2026-07-06-magi-cp-hermes-runtime-adapter-design (Hermes driver)
+  2026-07-08-magi-cp-gajae-code-runtime-adapter-design (gjc driver, §4.6)
 """
 from __future__ import annotations
 
@@ -29,10 +32,15 @@ from .trait import (
 def get_runtime(runtime_id: str) -> HookRuntime:
     """Return the ``HookRuntime`` driver for ``runtime_id``.
 
-    Accepts both the short dispatcher token (``"cc"`` / ``"codex"`` /
-    ``"hermes"``) and the canonical ``runtime_id`` (``"claude-code"`` /
-    ``"codex"`` / ``"hermes"``). The Codex and Hermes driver imports are
-    lazy so the CC hot path never touches those modules.
+    Accepts both short dispatcher tokens and canonical ``runtime_id`` values:
+      - ``"cc"`` / ``"claude-code"`` / ``"claude_code"`` / ``"claudecode"``
+        -> ``CCDriver``
+      - ``"codex"`` -> ``CodexDriver``
+      - ``"hermes"`` -> ``HermesDriver``
+      - ``"gjc"`` / ``"gajae-code"`` / ``"gajae_code"`` -> ``GjcDriver``
+
+    Imports are lazy so the CC hot path never touches the Codex, Hermes,
+    or gjc modules.
     """
     key = (runtime_id or "").strip().lower()
     if key in ("cc", "claude-code", "claude_code", "claudecode"):
@@ -44,6 +52,9 @@ def get_runtime(runtime_id: str) -> HookRuntime:
     if key == "hermes":
         from .hermes import HermesDriver
         return HermesDriver()
+    if key in ("gjc", "gajae-code", "gajae_code"):
+        from .gjc import GjcDriver
+        return GjcDriver()
     raise ValueError(f"unknown runtime id: {runtime_id!r}")
 
 

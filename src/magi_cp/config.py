@@ -124,6 +124,41 @@ def hermes_runtime_enabled() -> bool:
     return raw.strip().lower() not in _FALSY
 
 
+# ── Rollout gate for the Gajae-Code (gjc) runtime adapter.
+# Design brief: 2026-07-08-magi-cp-gajae-code-runtime-adapter-design
+# (Section 4.6: D5 — default-ON with explicit-falsy kill, mirroring Codex.)
+#
+# Default ON.  This is a GLOBAL AVAILABILITY switch, not an auto-migration:
+# with it ON the dispatcher still returns "cc" for every tenant whose
+# tenants.runtime_id is "claude-code" (the column default), so existing
+# CC tenants are byte-identical.  Flipping the default ON only makes the gjc
+# runtime SELECTABLE (per-tenant routing still defaults every tenant to
+# claude-code, cloud/tenants.py:192-201).  Operators roll the adapter back
+# with an explicit falsy token (``0`` / ``false`` / ``no`` / ``off`` /
+# empty); that is the global kill switch and reverts the dispatcher to
+# "CC + Codex + Hermes only".
+_GJC_RUNTIME_ENV = "MAGI_CP_GJC_RUNTIME_ENABLED"
+
+
+def gjc_runtime_enabled() -> bool:
+    """Return True unless MAGI_CP_GJC_RUNTIME_ENABLED is set to an
+    explicit falsy value.
+
+    Default-ON (D5): unset returns True, so the gjc runtime adapter is
+    globally AVAILABLE.  The only way to disable it globally (dispatcher
+    forced to skip the gjc tier) is an explicit falsy value: ``0`` /
+    ``false`` / ``no`` / ``off`` (case-insensitive) or the empty string.
+    Any other value (including truthy tokens ``1`` / ``true`` / ``yes`` /
+    ``on``) keeps it ON.
+
+    Mirrors ``codex_runtime_enabled()`` exactly (D5 locked decision).
+    """
+    raw = os.environ.get(_GJC_RUNTIME_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _FALSY
+
+
 # ── Run-command surface gate.
 _ALLOW_RUN_COMMAND_ENV = "MAGI_CP_ALLOW_RUN_COMMAND"
 
