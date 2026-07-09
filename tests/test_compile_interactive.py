@@ -2343,16 +2343,21 @@ _Q101_KIND_NONE_PHRASES: list[str] = [
 
 
 @pytest.mark.parametrize("phrase", _Q101_KIND_NONE_PHRASES)
-def test_q101_condition_kind_none_phrase_drops_requires(phrase):
-    """kind=none phrases drop the requires array entirely. The
-    archetype-only path is signalled via the
-    `__condition_kind_none__` marker.
+def test_q101_condition_kind_none_phrase_emits_record_only_signal(phrase):
+    """kind=none phrases select the record-only ("emit signal")
+    archetype: the extractor emits the EXPLICIT none signal - an empty
+    `requires: []` list - plus the `__condition_kind_none__` marker, and
+    pins action=audit (a "no check" is coherent only with record). The
+    empty list is what makes an audit-only draft authorable while an
+    ABSENT requires still reads as half-built (see
+    `_is_record_only_draft`).
     """
     from magi_cp.policy.nl_compiler_interactive import (
         _extract_intent_from_text,
     )
     out = _extract_intent_from_text(phrase)
-    assert "requires" not in out, (phrase, out)
+    assert out.get("requires") == [], (phrase, out)
+    assert out.get("action") == "audit", (phrase, out)
     assert out.get("__condition_kind_none__") is True, (phrase, out)
 
 
@@ -3829,3 +3834,244 @@ def test_r1_02_sibling_trigger_matcher_cannot_be_blanked():
     # The existing matcher is preserved -- the trigger branch already
     # rejects empty matcher values via m.strip() check.
     assert trig["matcher"] == "Bash", trig
+
+
+# ── Audit-only (record-only, "emit signal") authorable in the wizard ──
+# QA-harness finding: an audit-only policy with no verifier
+# (`requires: []`, action=audit) is a valid saveable IR but was
+# UNAUTHORABLE through the wizard - `_missing_fields_for_draft` always
+# demanded a non-empty requires so `ready_to_save` never flipped, and
+# q_requires offered no "no check" option. These tests lock the fix.
+
+
+def test_q_requires_offers_none_option():
+    """q_requires now offers a 5th "just record, no check" option so the
+    operator can SELECT the record-only archetype (previously only the 4
+    verifier kinds were selectable)."""
+    from magi_cp.policy.nl_compiler_interactive import _question_for_field
+
+    for ko in (True, False):
+        q = _question_for_field("requires", ko)
+        assert q.id == "q_requires"
+        values = [o.value for o in (q.options or [])]
+        assert values == ["regex", "llm_critic", "shacl", "step", "none"], (
+            ko, values
+        )
+
+
+def test_audit_only_via_none_answer_reaches_ready_to_save():
+    """Drive the wizard to a record-only policy by answering
+    q_requires="none". ready_to_save flips True with requires == [] and
+    action == "audit", and the saved IR round-trips."""
+    canned_each = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned_each] * 4))
+
+    # Turn 1: lifecycle.
+    d = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None,
+              "answers": {"q_lifecycle": "before_tool_use"}},
+    ).json()["draft"]
+    assert d["trigger"]["event"] == "PreToolUse"
+
+    # Turn 2: matcher.
+    d = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": d,
+              "answers": {"q_matcher": "Bash"}},
+    ).json()["draft"]
+    assert d["trigger"]["matcher"] == "Bash"
+
+    # Turn 3: requires="none" - the record-only choice. This must set an
+    # EXPLICIT empty requires list AND coerce action=audit AND NOT ask a
+    # q_requires_body follow-up.
+    body = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": d,
+              "answers": {"q_requires": "none"}},
+    ).json()
+    d = body["draft"]
+    assert d["requires"] == [], d
+    assert d["action"] == "audit", d
+    assert "requires_body" not in body["missing_fields"], body
+    assert not any(q["id"] == "q_requires_body" for q in body["questions"]), \
+        body
+
+    # id is auto-synthesised once behavioral fields are filled, so
+    # ready_to_save flips on this same turn.
+    assert body["ready_to_save"] is True, body
+    assert body["missing_fields"] == [], body
+
+    # The saved IR round-trips cleanly through the loader.
+    from magi_cp.policy.ir import policy_from_dict
+    p = policy_from_dict(d)
+    assert p.action == "audit"
+    assert p.requires == []
+
+
+def test_audit_only_via_freeform_phrase_reaches_ready_to_save():
+    """A freeform "record only, no check" phrasing is recognised by the
+    deterministic extractor and drives the wizard to the same record-only
+    draft (requires == [], action == "audit", ready_to_save True)."""
+    canned = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned] * 2))
+
+    # "before a tool runs on Bash, just record it - no check needed."
+    body = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={
+            "history": [{
+                "role": "user",
+                "content": (
+                    "도구 실행 전에 bash 작업을 검사 없이 그냥 기록만 해줘"
+                ),
+            }],
+            "draft_so_far": None,
+            "answers": None,
+        },
+    ).json()
+    d = body["draft"] or {}
+    assert d.get("requires") == [], d
+    assert d.get("action") == "audit", d
+    assert d["trigger"]["event"] == "PreToolUse", d
+    assert d["trigger"]["matcher"] == "Bash", d
+    assert body["ready_to_save"] is True, body
+
+    from magi_cp.policy.ir import policy_from_dict
+    p = policy_from_dict(d)
+    assert p.action == "audit" and p.requires == []
+
+
+def test_absent_requires_without_none_signal_still_missing():
+    """KEY SAFETY TEST. A genuinely half-built draft - requires ABSENT
+    with NO explicit none signal - must still report `requires` missing
+    and NOT save. Only a deliberate none choice writes the empty list, so
+    an unintended empty-requires draft can never slip through."""
+    from magi_cp.policy.nl_compiler_interactive import (
+        _missing_fields_for_draft,
+        _is_record_only_draft,
+    )
+
+    half_built = {
+        "id": "half-built",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                    "matcher": "Bash"},
+        "action": "audit",
+        # requires key deliberately ABSENT.
+    }
+    assert not _is_record_only_draft(half_built)
+    assert "requires" in _missing_fields_for_draft(half_built)
+
+    # Explicit empty list + audit IS the record-only signal.
+    record_only = dict(half_built, requires=[])
+    assert _is_record_only_draft(record_only)
+    assert "requires" not in _missing_fields_for_draft(record_only)
+
+
+def test_none_plus_block_cannot_reach_ready_to_save():
+    """A "none + block" combination is a contradiction (block on what?).
+    The answer path coerces action=audit when requires="none", so the
+    empty list can never co-exist with block; and even a hand-forged
+    `requires: [] + action: block` draft is NOT treated as record-only
+    (the gate requires action==audit), so `requires` reports missing and
+    the draft cannot save."""
+    from magi_cp.policy.nl_compiler_interactive import (
+        _apply_answer_to_draft,
+        _is_record_only_draft,
+        _missing_fields_for_draft,
+    )
+
+    # Answer path: even if a block was already on the draft, choosing
+    # none coerces it to audit.
+    draft = {
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                    "matcher": "Bash"},
+        "action": "block",
+    }
+    _apply_answer_to_draft(draft, "requires", "none")
+    assert draft["requires"] == []
+    assert draft["action"] == "audit", draft
+
+    # Hand-forged contradiction: empty requires + block is NOT record-only.
+    forged = {
+        "id": "forged",
+        "trigger": {"host": "claude-code", "event": "PreToolUse",
+                    "matcher": "Bash"},
+        "requires": [],
+        "action": "block",
+    }
+    assert not _is_record_only_draft(forged)
+    assert "requires" in _missing_fields_for_draft(forged)
+
+
+def test_none_state_survives_a_turn_round_trip():
+    """The record-only state (explicit empty requires + audit) is echoed
+    back to the client as `draft_so_far` and must survive the sanitizer +
+    merge on the next turn without a spurious `requires` row reappearing
+    or the empty list being stripped."""
+    canned_each = _llm_response(message="ok", updates={}, questions=[])
+    c = _client(llm_compiler=FakeLlmProvider([canned_each] * 4))
+
+    d = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": None,
+              "answers": {"q_lifecycle": "before_tool_use"}},
+    ).json()["draft"]
+    d = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": d,
+              "answers": {"q_matcher": "Bash"}},
+    ).json()["draft"]
+    d = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": d,
+              "answers": {"q_requires": "none"}},
+    ).json()["draft"]
+    assert d["requires"] == [] and d["action"] == "audit"
+
+    # Echo the record-only draft back with an empty follow-up turn: the
+    # none state must persist (no verifier row re-introduced, list kept).
+    body = c.post(
+        "/policies/compile-interactive",
+        headers=HEADERS,
+        json={"history": [], "draft_so_far": d, "answers": None},
+    ).json()
+    d2 = body["draft"]
+    assert d2["requires"] == [], d2
+    assert d2["action"] == "audit", d2
+    assert body["ready_to_save"] is True, body
+
+
+def test_verifier_kind_paths_still_work_regression():
+    """Regression: the 4 verifier-kind paths still seed an empty-body
+    requires row and report requires_body missing (they are NOT swept
+    into the record-only branch)."""
+    from magi_cp.policy.nl_compiler_interactive import (
+        _apply_answer_to_draft,
+        _missing_fields_for_draft,
+        _is_record_only_draft,
+    )
+
+    for kind, body_key in (
+        ("regex", "pattern"),
+        ("llm_critic", "criterion"),
+        ("shacl", "shape_ttl"),
+        ("step", "step"),
+    ):
+        draft = {
+            "trigger": {"host": "claude-code", "event": "PreToolUse",
+                        "matcher": "Bash"},
+            "action": "block",
+        }
+        _apply_answer_to_draft(draft, "requires", kind)
+        assert isinstance(draft["requires"], list) and len(draft["requires"]) == 1
+        assert not _is_record_only_draft(draft), kind
+        # Empty body -> requires_body still reported missing.
+        assert "requires_body" in _missing_fields_for_draft(draft), kind
