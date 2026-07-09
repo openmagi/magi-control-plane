@@ -88,6 +88,13 @@ class Scenario(TypedDict):
     stable: bool
     known_limitation: bool
     target_ir: dict[str, Any] | None
+    # Optional. For compound (evidence_gate / archetype_compound) scenarios
+    # the saved policy is expanded MEMBER-WISE (design Section 6.3) so
+    # target_ir stays null and the O1 round-trip oracle does not apply. The
+    # one operator decision the compound wizard still needs is the gated tool
+    # (q_matcher). This field supplies that legal gated-tool matcher so the
+    # scripted answerer can drive a compound scenario to a member-wise save.
+    compound_gate_matcher: str | None
     expected: Expected
     phrasings: list[Phrasing]
     provenance: Provenance
@@ -246,6 +253,22 @@ def validate_scenario(
                 f"scenario {sid!r} target_ir is not loadable via "
                 f"policy_from_dict: {exc}"
             ) from exc
+
+    # compound_gate_matcher (optional): a legal gated-tool matcher the
+    # scripted answerer supplies for a compound (member-wise) save. Only
+    # meaningful when target_ir is null (compound archetype).
+    cgm = s.get("compound_gate_matcher")
+    if cgm is not None:
+        if not isinstance(cgm, str) or not cgm.strip():
+            raise ValueError(
+                f"scenario {sid!r} compound_gate_matcher must be a non-empty "
+                f"string when present"
+            )
+        if target_ir is not None:
+            raise ValueError(
+                f"scenario {sid!r} compound_gate_matcher is only valid with a "
+                f"null target_ir (compound member-wise save)"
+            )
 
     # uniqueness.
     if all_ids is not None:

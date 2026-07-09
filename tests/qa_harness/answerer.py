@@ -50,9 +50,17 @@ class ScriptedAnswerer:
         target_ir: dict[str, Any] | None,
         *,
         expected_outcome: str,
+        compound_gate_matcher: str | None = None,
     ) -> None:
         self._target = target_ir
         self._expected_outcome = expected_outcome
+        # For compound (evidence_gate) scenarios the saved policy is expanded
+        # member-wise (design Section 6.3) so target_ir is null and the O1
+        # round-trip oracle does not apply. The one operator decision the
+        # compound wizard still needs is the gated tool (q_matcher). This
+        # field supplies that legal gated-tool matcher so the answerer can
+        # drive a compound scenario to a member-wise save.
+        self._compound_gate_matcher = compound_gate_matcher
         # Track answered question ids to detect repeated asks.
         self._answered: set[str] = set()
 
@@ -85,6 +93,16 @@ class ScriptedAnswerer:
             # Dead-end: O3 oracle will flag this; stop so the runner can
             # report the oracle failure rather than looping forever.
             return {"stop": "no_questions_no_steer"}
+
+        # Compound (evidence_gate) scenario: target_ir is null by design
+        # (member-wise oracle), but the compound wizard needs the gated tool.
+        # Answer the emitted q_matcher with the scenario's compound gate
+        # matcher via the answers path (the same wire the real UI sends).
+        if wire.get("compound") and self._compound_gate_matcher:
+            for q in questions:
+                if q.get("id") == "q_matcher":
+                    m = self._compound_gate_matcher
+                    return {"answers": {"q_matcher": m}, "label_bubble": m}
 
         if self._target is None:
             # Non-authoring scenario: no target to script from; stop.
@@ -132,11 +150,29 @@ class ScriptedAnswerer:
             return {"answers": {qid: lifecycle_value}, "label_bubble": label}
 
         if qid == "q_matcher":
-            # text question: provide the matcher directly.
+            # The record-only (audit-only, requires=[]) archetype has no
+            # verifier and runs on the fake_empty lane (no cassette, no LLM
+            # merge). There, a free-text userText matcher is never applied
+            # (the extractor only recognises named tools, not "*"), so route
+            # q_matcher through the ANSWERS path (the real UI pill wire,
+            # answers={"q_matcher": "*"}) which _apply_answer_to_draft applies
+            # deterministically. For verifier-bearing (cassette-lane) targets
+            # the recorded cassette expects the matcher as a userText turn, so
+            # keep the free-text move there to preserve the cassette key.
+            if self._target_is_record_only():
+                return {"answers": {qid: target_matcher}, "label_bubble": target_matcher}
             return {"userText": target_matcher}
 
         if qid == "q_requires":
             # single_select: pick the kind of the first requires entry.
+            # Record-only ("emit signal") archetype: an explicit empty
+            # requires list plus action=audit means the operator wants the
+            # trigger recorded with NO verifier. Pick the "none" option
+            # (added by the audit-only production fix) so the draft becomes
+            # the record-only archetype and reaches ready_to_save.
+            if self._target_is_record_only():
+                label = _find_option_label(q, "none")
+                return {"answers": {qid: "none"}, "label_bubble": label}
             if not target_requires:
                 # No requires specified: pick 'step' as a safe default.
                 req_kind = "step"
@@ -169,12 +205,32 @@ class ScriptedAnswerer:
             return {"answers": {qid: target_action}, "label_bubble": label}
 
         if qid == "q_id":
-            # text question: provide the target id.
+            # For record-only (fake_empty-lane) targets, route q_id through the
+            # ANSWERS path so the id validator in _apply_answer_to_draft lands
+            # it deterministically without an LLM merge. For verifier-bearing
+            # (cassette-lane) targets keep the free-text move so the recorded
+            # cassette key is preserved.
             target_id = target.get("id", "qa-target")
+            if self._target_is_record_only():
+                return {"answers": {qid: target_id}, "label_bubble": target_id}
             return {"userText": target_id}
 
         # Unknown question id.
         return None
+
+    def _target_is_record_only(self) -> bool:
+        """True iff the target is the audit-only record-only archetype:
+        an EXPLICIT empty requires list plus action=audit. These targets
+        must be authored via the q_requires "none" (record-only) option.
+        """
+        target = self._target
+        if target is None:
+            return False
+        requires = target.get("requires")
+        if not (isinstance(requires, list) and len(requires) == 0):
+            return False
+        action = target.get("action") or target.get("on_missing")
+        return isinstance(action, str) and action == "audit"
 
 
 def _find_option_label(q: dict[str, Any], value: str) -> str:

@@ -5,9 +5,9 @@
   "language": "ko",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "cassette",
-  "stable": false,
-  "known_limitation": true,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
   "target_ir": null,
   "expected": {
     "outcome": "saved",
@@ -16,14 +16,14 @@
   },
   "phrasings": [
     {
-      "text": "거래 실행 전에 신뢰할 수 있는 출처를 확인해야 해, 없으면 승인 받고 진행해",
-      "note": "compound gate action=ask, tool matcher"
+      "text": "도구 실행 전에 신뢰할 수 있는 출처를 확인해야 해, 없으면 승인 받고 진행해",
+      "note": "compound gate action=ask; q_matcher supplied via answers path (member-wise save)"
     }
   ],
   "provenance": {
     "source": "lane4-compound",
     "generated_by": "hand",
-    "reviewed": true,
-    "known_limitation_note": "Compound evidence_gate scenario cannot be completed through the wizard: the wizard emits q_matcher but answering it (via userText or pill) does not update gate.matcher - the field stays empty and q_matcher loops infinitely. Candidate live bug: the evidence_gate compound wizard does not wire q_matcher answers to the gate.matcher sub-field. The O4 oracle catches this as a loop (3+ consecutive turns with identical fingerprint). To fix: the evidence_gate wizard must process q_matcher answers and update gate.matcher."
-  }
+    "reviewed": true
+  },
+  "compound_gate_matcher": "mcp__trading__execute_trade"
 }

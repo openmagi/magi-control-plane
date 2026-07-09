@@ -5,9 +5,9 @@
   "language": "ko",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "cassette",
-  "stable": false,
-  "known_limitation": true,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
   "target_ir": {
     "id": "qa-target",
     "description": "",
@@ -26,14 +26,13 @@
   },
   "phrasings": [
     {
-      "text": "최종 응답 시점에 기록만 남겨줘",
-      "note": "audit/wildcard at Stop via _LIFECYCLE_KEYWORDS"
+      "text": "최종 응답 시점에 기록만 남겨줘 검사 없이 기록만 남겨줘",
+      "note": "record-only (emit-signal) archetype: names the wide event, \"no check\" cue drives requires=[] + action=audit; answerer supplies matcher/id deterministically"
     }
   ],
   "provenance": {
     "source": "lane2-wide-event",
     "generated_by": "hand",
-    "reviewed": true,
-    "known_limitation_note": "Wizard requires a non-empty requires list to reach ready_to_save; no builtin verifier fires at this wide-event lifecycle; emit-signal (requires=[]) cannot be authored through the wizard. Candidate flow gap: wizard completeness check does not support the emit-signal archetype (requires=[], action=audit)."
+    "reviewed": true
   }
 }

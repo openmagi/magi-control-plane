@@ -5,9 +5,9 @@
   "language": "ko",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "cassette",
-  "stable": false,
-  "known_limitation": true,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
   "target_ir": {
     "id": "qa-target",
     "description": "",
@@ -18,8 +18,8 @@
     },
     "requires": [
       {
-        "step": "privilege_scan",
-        "verdict": "pass"
+        "kind": "llm_critic",
+        "criterion": "no privilege escalation in the failed tool output"
       }
     ],
     "action": "block"
@@ -31,8 +31,8 @@
   },
   "phrasings": [
     {
-      "text": "도구 실행 실패 후 mcp__trading__execute 는 권한 검사로 차단해줘",
-      "note": "block/mcp_tool/step at PostToolUseFailure"
+      "text": "도구 실행 실패 후 AI 판단으로 차단해줘",
+      "note": "PostToolUseFailure + mcp_tool + block; llm_critic privilege criterion (step verifier privilege_scan is illegal at PostToolUseFailure per descriptor endorsement, so the privilege intent is expressed as an llm_critic which fires at any event)"
     }
   ],
   "provenance": {
