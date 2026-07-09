@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "s6-citation-stop-audit-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "Stop",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "step": "citation_verify",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "최종 답변에서 인용한 출처가 진짜인지 확인하고 안 맞으면 경고만 띄워줘",
+      "note": "system-prompt few-shot #2; P0-1 repro; must save Stop/*/audit"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S6",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

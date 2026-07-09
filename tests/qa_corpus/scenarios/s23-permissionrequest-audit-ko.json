@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s23-permissionrequest-audit-ko",
+  "category": "wide_event",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "권한 요청이 있을 때 기록 남겨줘",
+      "note": "wide-event lifecycle gap; steer to wizard (P1-6)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S23",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s45-research-mode-en",
+  "category": "pack_shaped",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "pack_cta",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "set up research mode",
+      "note": "pack steering (P1-10)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S45",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

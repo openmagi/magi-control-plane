@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s8-pii-stop-block-ko",
+  "category": "enforce_verb",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "최종 답변에 PII 있으면 차단해",
+      "note": "privilege_scan default Bash + Stop override illegal; steer (P0-1 cluster)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S8",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

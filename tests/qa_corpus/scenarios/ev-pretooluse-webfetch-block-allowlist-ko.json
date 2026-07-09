@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-pretooluse-webfetch-block-allowlist-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "WebFetch"
+    },
+    "requires": [
+      {
+        "step": "source_allowlist",
+        "verdict": "pass"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "허용된 도메인만 fetch 가능하게 해줘, 아니면 도구 실행 전에 차단",
+      "note": "block/tool WebFetch/step source_allowlist at PreToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

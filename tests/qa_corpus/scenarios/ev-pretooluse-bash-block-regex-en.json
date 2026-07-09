@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-pretooluse-bash-block-regex-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [
+      {
+        "kind": "regex",
+        "pattern": "\\d{6}-\\d{7}"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block any shell command that contains an RRN like 000000-0000000",
+      "note": "block/tool/regex at PreToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

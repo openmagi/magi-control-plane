@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "s13-negated-block-fetch-en",
+  "category": "negated_enforce",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "WebFetch"
+    },
+    "requires": [
+      {
+        "step": "source_allowlist",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "don't block it, just record web fetches",
+      "note": "negated enforce -> audit at PreToolUse/WebFetch (P1-4)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S13",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

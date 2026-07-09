@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "adv-junk-json-en",
+  "category": "malformed",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "rejected_422",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "(client sends non-JSON garbage as answer content)",
+      "note": "malformed answer shape -> 422"
+    }
+  ],
+  "provenance": {
+    "source": "lane6-adversarial",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

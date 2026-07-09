@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "compound-bare-tool-en",
+  "category": "archetype_compound",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "before execute_trade runs, require a verified source",
+      "note": "bare tool name as matcher (freeform scan)"
+    }
+  ],
+  "provenance": {
+    "source": "lane4-compound",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

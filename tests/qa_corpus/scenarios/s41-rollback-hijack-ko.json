@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s41-rollback-hijack-ko",
+  "category": "overtrigger_bait",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "git 롤백 명령 실행되면 차단해줘",
+      "note": "row 16 롤백 hijack (P1-9)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S41",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

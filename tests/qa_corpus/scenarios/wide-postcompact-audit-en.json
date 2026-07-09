@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "wide-postcompact-audit-en",
+  "category": "wide_event",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PostCompact",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "step": "prompt_injection_screen",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "after compaction just record it",
+      "note": "audit/wildcard at PostCompact via _LIFECYCLE_KEYWORDS"
+    }
+  ],
+  "provenance": {
+    "source": "lane2-wide-event",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

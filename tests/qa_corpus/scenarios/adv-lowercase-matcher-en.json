@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "adv-lowercase-matcher-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [
+      {
+        "step": "privilege_scan",
+        "verdict": "pass"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block bash before it runs when it contains a secret",
+      "note": "lowercase 'bash' normalizes to Bash (R2-04)"
+    }
+  ],
+  "provenance": {
+    "source": "lane6-adversarial",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s46-coding-session-ko",
+  "category": "pack_shaped",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "pack_cta",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "코딩 세션 안전하게 해줘",
+      "note": "pack steering (P1-10)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S46",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

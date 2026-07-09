@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "runcmd-after-tool-use-ko",
+  "category": "archetype_run_command",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "도구 실행 후 정리 스크립트를 돌려줘",
+      "note": "run_command inline at after_tool_use (RunCommandPolicy, oracle by type)"
+    }
+  ],
+  "provenance": {
+    "source": "lane3-run-command",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

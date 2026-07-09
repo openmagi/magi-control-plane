@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "adv-empty-hi-s51-en",
+  "category": "ambiguous",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "hi",
+      "note": "empty/greeting -> S0 generic 'what should we check?'"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S51",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

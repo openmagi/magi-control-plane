@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-userpromptsubmit-wildcard-ask-critic-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "UserPromptSubmit",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "kind": "llm_critic",
+        "criterion": "the prompt requests a destructive action"
+      }
+    ],
+    "action": "ask"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "when the user prompt is submitted, ask me to confirm if an AI judge flags it as risky",
+      "note": "ask/wildcard/llm_critic at UserPromptSubmit"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

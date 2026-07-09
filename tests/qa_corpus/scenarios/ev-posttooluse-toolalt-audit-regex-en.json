@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-posttooluse-toolalt-audit-regex-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PostToolUse",
+      "matcher": "Bash|Edit"
+    },
+    "requires": [
+      {
+        "kind": "regex",
+        "pattern": "prod\\.ya?ml"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "after Bash or Edit run, just record any diff that matches a prod-config path",
+      "note": "audit/tool_alt/regex at PostToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "compound-gate-block-mcp-en",
+  "category": "archetype_compound",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "require a credible source before mcp__trading__execute runs, block it otherwise",
+      "note": "compound gate action=block, mcp matcher"
+    }
+  ],
+  "provenance": {
+    "source": "lane4-compound",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s40-yesterday-hijack-en",
+  "category": "overtrigger_bait",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block the deploy script we talked about yesterday",
+      "note": "row 13 cross_session_state hijack; hybrid advisory (P1-9/AF-14)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S40",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

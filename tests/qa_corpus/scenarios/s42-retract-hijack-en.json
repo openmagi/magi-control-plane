@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s42-retract-hijack-en",
+  "category": "overtrigger_bait",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block any bash that would retract a filing",
+      "note": "row 16 retract hijack (P1-9)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S42",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}
