@@ -80,3 +80,80 @@ def test_blank_stdin_falls_back_to_cc(codex_on):
 
 def test_malformed_json_is_not_a_codex_signal(codex_on):
     assert detect_runtime(b"not json at all", env={}) == "cc"
+
+
+# ── Hermes tier (design 2026-07-06 Section 3.5) ──────────────────────────
+# A Hermes-shaped envelope carries a snake_case ``hook_event_name`` (one of
+# Hermes's VALID_HOOKS) AND the Hermes-specific ``extra`` key; CC/Codex both
+# use PascalCase event names and never send ``extra``.
+_HERMES_PAYLOAD = (
+    b'{"hook_event_name":"pre_tool_call","tool_name":"terminal",'
+    b'"extra":{"turn_id":"t-1"}}'
+)
+
+
+@pytest.fixture
+def hermes_on(monkeypatch):
+    """Flip both availability switches ON so the Hermes tiers are live."""
+    monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("MAGI_CP_HERMES_RUNTIME_ENABLED", "1")
+
+
+def test_hermes_env_token_selects_hermes(hermes_on):
+    assert detect_runtime(_CC_PAYLOAD, env={"MAGI_CP_RUNTIME": "hermes"}) == \
+        "hermes"
+
+
+def test_hermes_snake_case_payload_sniff(hermes_on):
+    assert detect_runtime(_HERMES_PAYLOAD, env={}) == "hermes"
+
+
+def test_hermes_sniff_requires_extra_key(hermes_on):
+    """A snake_case event WITHOUT the Hermes ``extra`` key is not a
+    confident Hermes signal → CC fallback."""
+    payload = b'{"hook_event_name":"pre_tool_call","tool_name":"terminal"}'
+    assert detect_runtime(payload, env={}) == "cc"
+
+
+def test_hermes_kill_switch_disables_only_hermes_tiers(monkeypatch):
+    """An explicit falsy MAGI_CP_HERMES_RUNTIME_ENABLED disables the Hermes
+    env token + sniff, but leaves CC/Codex routing untouched."""
+    monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("MAGI_CP_HERMES_RUNTIME_ENABLED", "0")
+    # Hermes env token no longer wins → falls through to CC fallback.
+    assert detect_runtime(
+        _CC_PAYLOAD, env={"MAGI_CP_RUNTIME": "hermes"}
+    ) == "cc"
+    # Hermes payload sniff no longer fires → CC fallback.
+    assert detect_runtime(_HERMES_PAYLOAD, env={}) == "cc"
+    # Codex routing is completely unaffected by the Hermes kill switch.
+    assert detect_runtime(
+        _CODEX_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}
+    ) == "codex"
+    assert detect_runtime(_CODEX_PAYLOAD, env={}) == "codex"
+
+
+def test_codex_env_token_beats_hermes_payload(hermes_on):
+    """Codex env token is checked before the Hermes tiers (tier order)."""
+    assert detect_runtime(
+        _HERMES_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}
+    ) == "codex"
+
+
+# ── CC / Codex byte-equivalence regression with Hermes flag OFF ──────────
+def test_cc_and_codex_routing_unchanged_with_hermes_off(monkeypatch):
+    """Turning the Hermes availability switch OFF must leave every existing
+    CC and Codex routing decision byte-identical (additive-only proof)."""
+    monkeypatch.setenv("MAGI_CP_CODEX_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("MAGI_CP_HERMES_RUNTIME_ENABLED", "0")
+    # Exact re-run of the Codex tier suite with Hermes off.
+    assert detect_runtime(_CODEX_PAYLOAD, env={"MAGI_CP_RUNTIME": "cc"}) == "cc"
+    assert detect_runtime(_CC_PAYLOAD, env={"MAGI_CP_RUNTIME": "codex"}) == "codex"
+    assert detect_runtime(
+        _CODEX_PAYLOAD, env={"CLAUDE_CODE_SESSION_ID": "x"}
+    ) == "codex"
+    assert detect_runtime(
+        _CC_PAYLOAD, env={"CLAUDE_CODE_SESSION_ID": "x"}
+    ) == "cc"
+    assert detect_runtime(_CC_PAYLOAD, env={}) == "cc"
+    assert detect_runtime(b"", env={}) == "cc"

@@ -1,12 +1,13 @@
 """magi-cp runtime drivers.
 
 The ``HookRuntime`` trait (``trait.py``) is the seam that decouples what a
-coding-agent runtime speaks on stdin from what Magi enforces. Two drivers
-implement it today: ``cc.py`` (Claude Code, the reference runtime) and
-``codex.py`` (Codex CLI, default-off behind
-``MAGI_CP_CODEX_RUNTIME_ENABLED``).
+coding-agent runtime speaks on stdin from what Magi enforces. Three drivers
+implement it today: ``cc.py`` (Claude Code, the reference runtime),
+``codex.py`` (Codex CLI, behind ``MAGI_CP_CODEX_RUNTIME_ENABLED``), and
+``hermes.py`` (Hermes CLI, behind ``MAGI_CP_HERMES_RUNTIME_ENABLED``).
 
-Design brief: 2026-06-30-codex-runtime-adapter-design (private planning repo).
+Design briefs: 2026-06-30-codex-runtime-adapter-design +
+2026-07-06-magi-cp-hermes-runtime-adapter-design (private planning repo).
 """
 from __future__ import annotations
 
@@ -28,10 +29,10 @@ from .trait import (
 def get_runtime(runtime_id: str) -> HookRuntime:
     """Return the ``HookRuntime`` driver for ``runtime_id``.
 
-    Accepts both the short dispatcher token (``"cc"`` / ``"codex"``) and
-    the canonical ``runtime_id`` (``"claude-code"`` / ``"codex"``). The
-    Codex driver import is lazy so the CC hot path never touches the
-    Codex module.
+    Accepts both the short dispatcher token (``"cc"`` / ``"codex"`` /
+    ``"hermes"``) and the canonical ``runtime_id`` (``"claude-code"`` /
+    ``"codex"`` / ``"hermes"``). The Codex and Hermes driver imports are
+    lazy so the CC hot path never touches those modules.
     """
     key = (runtime_id or "").strip().lower()
     if key in ("cc", "claude-code", "claude_code", "claudecode"):
@@ -40,6 +41,9 @@ def get_runtime(runtime_id: str) -> HookRuntime:
     if key == "codex":
         from .codex import CodexDriver
         return CodexDriver()
+    if key == "hermes":
+        from .hermes import HermesDriver
+        return HermesDriver()
     raise ValueError(f"unknown runtime id: {runtime_id!r}")
 
 
