@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s38-token-limit-ko",
+  "category": "out_of_scope",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "infeasible",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "토큰 한도 넘으면 멈춰줘",
+      "note": "row 15 not-expressible"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S38",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

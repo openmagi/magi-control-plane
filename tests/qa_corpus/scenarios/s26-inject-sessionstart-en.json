@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s26-inject-sessionstart-en",
+  "category": "out_of_scope",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "inject context at session start",
+      "note": "inject_context morph; steer (P1-7)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S26",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

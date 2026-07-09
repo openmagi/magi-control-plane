@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "s11-log-pii-final-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "Stop",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "step": "privilege_scan",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "log PII in the final answer",
+      "note": "pure audit; must save Stop/*/audit not false not-expressible (P0-1)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S11",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

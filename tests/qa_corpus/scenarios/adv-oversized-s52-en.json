@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "adv-oversized-s52-en",
+  "category": "malformed",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "rejected_422",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block bash very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload very long payload ",
+      "note": "oversized turn -> pre-aggregate cap 422"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S52",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

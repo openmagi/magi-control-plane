@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "adv-invalid-regex-en",
+  "category": "malformed",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block bash if it matches ([bad",
+      "note": "invalid freeform regex; must not dead-end (R2-03)"
+    }
+  ],
+  "provenance": {
+    "source": "lane6-adversarial",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-pretooluse-bash-block-privilege-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [
+      {
+        "step": "privilege_scan",
+        "verdict": "pass"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "셸 명령에 주민등록번호가 들어가면 실행 전에 차단해줘",
+      "note": "block/tool/step privilege_scan at PreToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

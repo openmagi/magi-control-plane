@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s15-negated-overtrigger-ko",
+  "category": "overtrigger_bait",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": true,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "차단하지 말고 기록만 남겨줘",
+      "note": "GAP-A over-trigger guard on negated enforce (P1-5)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S15",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

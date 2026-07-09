@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "runcmd-subagent-stop-ko",
+  "category": "archetype_run_command",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "서브에이전트 종료 후 결과 수집 스크립트를 돌려줘",
+      "note": "run_command inline at subagent_stop (RunCommandPolicy, oracle by type)"
+    }
+  ],
+  "provenance": {
+    "source": "lane3-run-command",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

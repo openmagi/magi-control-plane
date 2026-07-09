@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s37-rate-limit-en",
+  "category": "out_of_scope",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "infeasible",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "rate limit web fetches to 5 per minute",
+      "note": "row 14 not-expressible"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S37",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

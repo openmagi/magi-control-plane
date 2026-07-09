@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "runcmd-session-start-ko",
+  "category": "archetype_run_command",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "세션 시작할 때 부트스트랩 스크립트를 실행해줘",
+      "note": "run_command inline at session_start (RunCommandPolicy, oracle by type)"
+    }
+  ],
+  "provenance": {
+    "source": "lane3-run-command",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

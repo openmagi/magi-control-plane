@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-userpromptsubmit-wildcard-audit-injection-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "UserPromptSubmit",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "step": "prompt_injection_screen",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "사용자 프롬프트 제출 시점에 인젝션 검사를 기록만 해줘",
+      "note": "audit/wildcard/step prompt_injection_screen at UserPromptSubmit"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-pretooluse-bash-audit-regex-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [
+      {
+        "kind": "regex",
+        "pattern": ".*"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "도구 실행 전에 셸 명령을 기록만 해줘, 차단은 하지 말고",
+      "note": "audit/tool/regex at PreToolUse"
+    }
+  ],
+  "provenance": {
+    "source": "lane1-grid",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "s10-posttool-ask-ko",
+  "category": "enforce_verb",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "도구 실행 후에 사람 확인 받아줘",
+      "note": "PostToolUse + ask illegal; steer (P1-2)"
+    }
+  ],
+  "provenance": {
+    "source": "audit-S10",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

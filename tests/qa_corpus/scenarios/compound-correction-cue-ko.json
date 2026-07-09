@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "compound-correction-cue-ko",
+  "category": "archetype_compound",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "거래 전에 출처 확인해줘. 아니 승인 말고 그냥 차단으로 바꿔줘",
+      "note": "correction cue mid-flow (_EGATE_CHANGE_RE)"
+    }
+  ],
+  "provenance": {
+    "source": "lane4-compound",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

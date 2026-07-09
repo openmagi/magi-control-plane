@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "runcmd-session-end-en",
+  "category": "archetype_run_command",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "run our cleanup command at session end",
+      "note": "run_command inline at session_end (RunCommandPolicy, oracle by type)"
+    }
+  ],
+  "provenance": {
+    "source": "lane3-run-command",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

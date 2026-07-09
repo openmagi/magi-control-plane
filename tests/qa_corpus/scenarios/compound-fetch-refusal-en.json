@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "compound-fetch-refusal-en",
+  "category": "archetype_compound",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "gate on WebFetch itself running as the producer before the trade",
+      "note": "fetch tool in gate position, refusal expected (_EGATE_FETCH_TOOLS)"
+    }
+  ],
+  "provenance": {
+    "source": "lane4-compound",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}
