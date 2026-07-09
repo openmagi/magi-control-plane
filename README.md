@@ -13,7 +13,7 @@
 ![status](https://img.shields.io/badge/status-early%20beta-f97316)
 ![install](https://img.shields.io/badge/install-Docker-2563eb)
 ![CLI](https://img.shields.io/badge/CLI-magi--cp-7c3aed)
-![runtimes](https://img.shields.io/badge/runtimes-Claude%20Code%20%2B%20Codex-16a34a)
+![runtimes](https://img.shields.io/badge/runtimes-CC%20%C2%B7%20Codex%20%C2%B7%20gjc%20%C2%B7%20Hermes-16a34a)
 ![ledger](https://img.shields.io/badge/ledger-Ed25519%20signed-0891b2)
 ![license](https://img.shields.io/badge/license-Apache--2.0-111827)
 
@@ -89,7 +89,8 @@ magi-cp cloud                run the FastAPI cloud server
 magi-cp mcp                  stdio MCP server
 magi-cp keys                 Ed25519 signing-key lifecycle
 magi-cp share <sessionId>    package a Claude Code run as a public share link
-magi-cp install              install the runtime adapter (Codex / Claude Code)
+magi-cp install              install a runtime adapter (Claude Code / Codex / gjc)
+magi-cp doctor               health-check the installed runtimes
 ```
 
 Full reference: [CLI](docs/cli.md).
@@ -117,7 +118,7 @@ Developer docs live under [`docs/`](docs/) and render on `cp.openmagi.ai/docs`.
 | [Your first real policy](docs/tutorial.md) | End-to-end: author, deny, issue evidence, allow, ledger. |
 | [Install](docs/install.md) | Full install guide, env vars, common failures. |
 | [Architecture](docs/architecture.md) | Three-layer model; packs, policies, rules. |
-| [Runtimes](docs/runtimes.md) | Claude Code hooks and the Codex adapter. |
+| [Runtimes](docs/runtimes.md) | Claude Code, Codex, Gajae-Code, and Hermes adapters. |
 | [Policy IR](docs/policy-ir.md) | The IR schema, archetypes, and precedence. |
 | [Verifiers](docs/verifiers.md) | The wired verifiers and registering your own. |
 | [Session-evidence gate](docs/session-evidence.md) | Gate a tool on evidence from earlier this session. |

@@ -1,8 +1,30 @@
 # Runtimes
 
-The gate enforces the same Policy IR across two host runtimes: **Claude
-Code** and **Codex**. The gate auto-detects which one it is talking to
-from the incoming hook payload; force it with `MAGI_CP_RUNTIME=cc|codex`.
+The gate enforces the same Policy IR across four host runtimes: **Claude
+Code**, **Codex**, **Gajae-Code** (`gjc`), and **Hermes**. One authored
+policy, whichever runtime the agent runs under.
+
+## How a runtime is selected
+
+Each request resolves to exactly one runtime, in this order:
+
+1. **Explicit override**: `MAGI_CP_RUNTIME` (`cc` / `codex` / `gjc` /
+   `hermes`, plus aliases like `gajae`). Managed configs set this so the
+   sandbox never guesses. A runtime named here but disabled degrades to
+   `cc` rather than routing.
+2. **Payload sniff**: the drivers are disjoint by construction. A `gjc`
+   payload carries `gjc_event`, a Codex payload carries
+   `matcher_aliases` / `turn_id`, a Hermes payload is snake_case with an
+   `extra` key, and Claude Code is the fallback. First match wins (gjc,
+   then Codex, then Hermes).
+
+Each non-CC runtime has an availability flag, all **default-on**
+(`MAGI_CP_{CODEX,GJC,HERMES}_RUNTIME_ENABLED`; set an explicit falsy value
+to force `cc` as a kill switch). Default-on means "selectable", not
+"applied": a tenant whose `runtime_id` is the default `claude-code` still
+routes to CC until it is switched. The dashboard runtime picker
+(`/settings`) currently exposes Claude Code and Codex; `gjc` and `hermes`
+are selected via `MAGI_CP_RUNTIME` or a managed config.
 
 ## Claude Code
 
@@ -51,6 +73,39 @@ hook channel (the `EvidencePolicy` verifier gate, `ContextInjectionPolicy`
 via `additionalContext`, and the session-evidence pair) are Claude Code
 only today. `PermissionPolicy` is the archetype that lowers cleanly to
 both.
+
+## Gajae-Code (gjc)
+
+Gajae-Code is governed through a frozen shim: a small, pinned bundle the
+agent's tool calls pass through, which dispatches to the gate via
+`magi-cp gate --runtime gjc`. On stdin the shim sends a `tool_call`
+envelope carrying a `gjc_event`; on stdout the gate returns
+`{"block": true, "reason": "MAGI: ..."}` for a deny (an `ask` is
+downgraded to a deny-with-guidance) or an empty body for allow. No policy
+logic lives in the shim; the gate binary stays the single evaluator.
+
+Unmapped tool names pass through raw (an `ssh` stays `ssh`), so nothing
+slips past the matcher silently. Install the shim bundle and run the
+health checks with:
+
+```bash
+magi-cp install --runtime gjc
+magi-cp doctor
+```
+
+## Hermes
+
+Hermes (`NousResearch/hermes-agent`) speaks a declarative shell-hook wire
+that is already Claude-Code-compatible on the block channel, so the driver
+needs no verdict-field remap. It does carry a tool-name normalization
+table over Hermes's ~70-name registry (the CC-mappable core is ~20); every
+other name passes through raw under an "allow + audit" posture, tagged
+`hermes_unmapped_tool`, so an unmapped call is recorded rather than
+silently allowed.
+
+Hermes is a driver-level runtime today: detection and the gate contract
+are wired, selected via `MAGI_CP_RUNTIME=hermes` or a managed config.
+There is no dedicated first-party installer yet (unlike Codex and gjc).
 
 ## See also
 
