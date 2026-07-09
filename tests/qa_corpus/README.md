@@ -85,15 +85,24 @@ equal the `id` field.
 Registered verifier steps: `citation_verify, privilege_scan, source_allowlist,
 structured_output, prompt_injection_screen`.
 
-## Recording flag
+## Cassette files
 
-Cassettes for `engine=cassette` scenarios are recorded, not committed by this
-PR (see the harness design PR-D). To re-record after a legitimate
-compiler-prompt or flow change:
+Authored cassettes live in `tests/qa_corpus/cassettes/<scenario_id>.json`.
+They are hand-written JSON documents (generated_by: "authored") whose
+`compiler` list maps sha256 message-digest keys to canned LLM response strings.
+No live LLM is called in CI.
+
+## Re-recording cassettes
+
+To re-record after a legitimate compiler-prompt or flow change:
 
 ```
 MAGI_CP_QA_RECORD=1 PYTHONPATH=src python3 -m pytest tests/test_qa_corpus_replay.py -k <id>
 ```
 
-A stale cassette surfaces as a loud keyed miss with this actionable message,
-never a silent stale pass.
+A stale cassette surfaces as a loud keyed miss with an actionable error
+message, never a silent stale pass.  The key derivation is
+sha256(canonical_JSON(nonce-normalised messages)), so changing the system
+prompt text requires re-recording.  The `_make_fence_nonce()` monkeypatch in
+`tests/conftest.py` (fixture `qa_nonce_counter`) pins the nonce to a
+deterministic counter so authored cassettes remain stable across runs.

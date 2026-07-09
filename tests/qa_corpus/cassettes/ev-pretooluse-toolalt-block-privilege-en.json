@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "4506937208bf89bfce49916e53e1016c7518a73e4796925f5f8060f884ea00ea",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"privilege_scan\", \"verdict\": \"pass\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"Bash|Edit\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

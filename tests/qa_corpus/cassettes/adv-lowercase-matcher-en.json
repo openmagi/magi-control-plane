@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "be5dce1510f93dee40d726446b73a1a54167a5c8e529d8d1adda6f1585e7e256",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"privilege_scan\", \"verdict\": \"pass\"}]}, \"questions\": []}"
+    },
+    {
+      "key": "0785a5997572d800e36efc226b42068daf08c05efb9cb821515331acbd5b2e0e",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

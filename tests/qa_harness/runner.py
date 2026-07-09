@@ -69,17 +69,18 @@ class _InfiniteFakeLlmProvider:
         return self._EMPTY
 
 
-def _make_client() -> TestClient:
-    """Build a TestClient with an infinite-empty-response LLM provider."""
+def _make_client(llm_compiler: object | None = None) -> TestClient:
+    """Build a TestClient with the given LLM provider (or infinite-empty default)."""
     os.environ.setdefault("MAGI_CP_ADMIN_API_KEY", ADMIN_KEY)
     d = tempfile.mkdtemp(prefix="magi-qa-runner-")
     store_path = os.path.join(d, "policies.json")
     with open(store_path, "w") as f:
         f.write("[]")
+    provider = llm_compiler if llm_compiler is not None else _InfiniteFakeLlmProvider()
     app = create_app(
         dsn="sqlite:///:memory:",
         policy_store_path=store_path,
-        llm_compiler=_InfiniteFakeLlmProvider(),
+        llm_compiler=provider,
     )
     return TestClient(app)
 
@@ -188,6 +189,7 @@ def run_scenario(
     phrasing_idx: int = 0,
     *,
     client: TestClient | None = None,
+    llm_compiler: object | None = None,
 ) -> TranscriptRecord:
     """Run one scenario-phrasing and return a TranscriptRecord.
 
@@ -220,7 +222,7 @@ def run_scenario(
     def _fail(exc: OracleFailure) -> None:
         record.oracle_failures.append(exc)
 
-    c = client or _make_client()
+    c = client or _make_client(llm_compiler=llm_compiler)
     answerer = ScriptedAnswerer(target_ir, expected_outcome=expected_outcome)
 
     # Conversation state.
@@ -512,7 +514,16 @@ def _classify_steer(reason: str, wire: dict[str, Any]) -> str:
         return "pack_cta"
     if reason.startswith("feasibility:"):
         code = reason.split(":", 1)[1]
-        if "infeasible" in code or "not_expressible" in code:
+        # Check both the code (e.g. "not_expressible") and the class field
+        # (e.g. "not-expressible") from the wire, since codes like
+        # "rate_limit_window" carry class="not-expressible".
+        feas = wire.get("feasibility") or {}
+        feas_class = feas.get("class", "")
+        if (
+            "infeasible" in code
+            or "not_expressible" in code
+            or "not-expressible" in feas_class
+        ):
             return "infeasible"
         return "steered"
     msg = wire.get("assistant_message", "") or ""

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "6edeafa67d92a27c04a819d21adc067e2eef03e146b78f1e75d52910fbedb4d2",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./cleanup.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"PostToolUse\", \"matcher\": \"*\"}, \"id\": \"posttool-cleanup\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

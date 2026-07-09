@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "780a693bd716542aff68bf13a605d51c74e5b2f8949c6e3f39123a53b163267c",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./archiver.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreCompact\", \"matcher\": \"*\"}, \"id\": \"precompact-archive\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

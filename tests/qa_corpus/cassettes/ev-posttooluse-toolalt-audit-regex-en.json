@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "029e0f279facf9cdb8398fbba1998382757fc4fc3c1e1ae905835c41229b51c2",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"prod\\\\.ya?ml\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PostToolUse\", \"matcher\": \"Bash|Edit\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

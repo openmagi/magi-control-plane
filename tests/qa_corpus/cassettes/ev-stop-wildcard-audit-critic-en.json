@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "720a4b842f7be684d7c2403b7872ea31b4b28971d6364e9039e621b6bc0a873e",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"llm_critic\", \"criterion\": \"the answer avoids sycophancy\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"Stop\", \"matcher\": \"*\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

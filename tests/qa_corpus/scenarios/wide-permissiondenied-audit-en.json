@@ -6,8 +6,8 @@
   "style": "canonical",
   "runtime_id": null,
   "engine": "cassette",
-  "stable": true,
-  "known_limitation": false,
+  "stable": false,
+  "known_limitation": true,
   "target_ir": {
     "id": "qa-target",
     "description": "",
@@ -16,12 +16,7 @@
       "event": "PermissionDenied",
       "matcher": "*"
     },
-    "requires": [
-      {
-        "step": "prompt_injection_screen",
-        "verdict": "pass"
-      }
-    ],
+    "requires": [],
     "action": "audit"
   },
   "expected": {
@@ -38,6 +33,7 @@
   "provenance": {
     "source": "lane2-wide-event",
     "generated_by": "hand",
-    "reviewed": true
+    "reviewed": true,
+    "known_limitation_note": "Wizard requires a non-empty requires list to reach ready_to_save; no builtin verifier fires at this wide-event lifecycle; emit-signal (requires=[]) cannot be authored through the wizard. Candidate flow gap: wizard completeness check does not support the emit-signal archetype (requires=[], action=audit)."
   }
 }

@@ -6,8 +6,8 @@
   "style": "canonical",
   "runtime_id": "codex",
   "engine": "cassette",
-  "stable": true,
-  "known_limitation": false,
+  "stable": false,
+  "known_limitation": true,
   "target_ir": null,
   "expected": {
     "outcome": "steered",
@@ -23,6 +23,7 @@
   "provenance": {
     "source": "audit-S47",
     "generated_by": "hand",
-    "reviewed": true
+    "reviewed": true,
+    "known_limitation_note": "Scenario expects outcome='steered' with feasibility_code='codex_matcher_inert'. But the flow emits ready_to_save=True alongside the codex_matcher_inert feasibility warning, so the runner saves the policy and reports outcome='saved'. Candidate runner gap: when feasibility.class=silent_noop AND ready_to_save=True, the runner should classify as 'steered' rather than saving. Same pattern as s7-block-citations-stop-en and s8-pii-stop-block-ko (enforce_downgraded_to_audit)."
   }
 }

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "16deb003cfd5c28b9ec6a7e302aaea90e138907047ce8016558ae71415bf3a80",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"prompt_injection_screen\", \"verdict\": \"pass\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"UserPromptSubmit\", \"matcher\": \"*\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}
