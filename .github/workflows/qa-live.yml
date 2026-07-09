@@ -1,0 +1,79 @@
+name: QA live lane (manual)
+
+# Trigger: manual dispatch only.
+# This workflow exercises real LLM calls and is therefore NOT run on push,
+# PR, or schedule.  It is a signal tool, not a gate.
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "Max live LLM calls (default: 10)"
+        required: false
+        default: "10"
+      only:
+        description: "fnmatch glob to filter scenario ids (leave empty for all)"
+        required: false
+        default: ""
+
+jobs:
+  qa-live:
+    name: QA live lane
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check for ANTHROPIC_API_KEY
+        id: check_key
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "no key configured, live lane skipped"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Skip (no key)
+        if: steps.check_key.outputs.skip == 'true'
+        run: |
+          echo "ANTHROPIC_API_KEY secret is not configured for this repository."
+          echo "To enable the live lane, add ANTHROPIC_API_KEY as a repository secret."
+          echo "Skipping cleanly."
+
+      - name: Checkout
+        if: steps.check_key.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.check_key.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.check_key.outputs.skip != 'true'
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Run live lane
+        if: steps.check_key.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAGI_CP_LLM_COMPILER: "anthropic"
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          ONLY_ARG=""
+          if [ -n "${{ github.event.inputs.only }}" ]; then
+            ONLY_ARG="--only ${{ github.event.inputs.only }}"
+          fi
+          PYTHONPATH=src python scripts/qa/run_live.py \
+            --budget "${{ github.event.inputs.budget }}" \
+            $ONLY_ARG \
+            --output-dir .qa-report-live
+
+      - name: Upload live report
+        if: steps.check_key.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-live-report-${{ github.run_id }}
+          path: .qa-report-live/
+          if-no-files-found: warn
