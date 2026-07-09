@@ -1097,12 +1097,16 @@ def _extract_intent_from_text(user_text: str) -> dict[str, Any]:
 
     if explicit_kind == "none":
         # Q101 — operator explicitly opted out of any verification
-        # predicate ("그냥 트리거만", "no check needed"). Drop any
-        # requires row a verifier-default might have just seeded so
-        # the merged draft carries only the trigger + action / archetype
-        # intent. The marker is kept on the extracted dict only; merge
-        # does not write it onto the draft.
-        out.pop("requires", None)
+        # predicate ("그냥 트리거만", "no check needed"). This is the
+        # record-only ("emit signal") archetype: fire the trigger,
+        # record to the ledger, run NO verifier. Emit the EXPLICIT
+        # none signal - an empty `requires: []` list - so the merge and
+        # completeness gate recognise a deliberate record-only draft
+        # (see `_is_record_only_draft`). Record-only is coherent only
+        # with action=audit, so seed audit when the user did not name a
+        # stronger action; a "none + block" can never reach ready_to_save.
+        out["requires"] = []
+        out.setdefault("action", "audit")
         out["__condition_kind_none__"] = True
 
     explicit_event = _scan_first(user_text, _LIFECYCLE_KEYWORDS)
@@ -1188,8 +1192,19 @@ def _merge_extracted_into_draft(draft: dict[str, Any],
     if not extracted:
         return
 
+    # Record-only ("emit signal") archetype: the extractor recognised an
+    # explicit "no check" intent ("검사 없이" / "no check needed") and set
+    # the marker. Honour it by writing the EXPLICIT none signal - an empty
+    # `requires: []` list - even when a verifier-default row was seeded
+    # earlier this turn, and pin action=audit (a "no check" is coherent
+    # only with record). The marker itself never lands on the wire draft;
+    # trigger event/matcher from the same turn still merge below.
+    _record_only = bool(extracted.get("__condition_kind_none__"))
+    if _record_only:
+        draft["requires"] = []
+        draft.setdefault("action", "audit")
     # requires: only set if draft has no requires row yet.
-    if "requires" in extracted and not draft.get("requires"):
+    elif "requires" in extracted and not draft.get("requires"):
         draft["requires"] = extracted["requires"]
 
     # trigger event + matcher: set per-field when missing.
@@ -1535,6 +1550,18 @@ def _question_for_field(field: FieldName, ko: bool) -> Question:
                         if ko else "Reference a registered verifier by name."
                     ),
                 ),
+                QuestionOption(
+                    value="none",
+                    label=(
+                        "검사 없이 기록만"
+                        if ko else "Just record it, no check"
+                    ),
+                    hint=(
+                        "조건 없이 트리거 시점만 기록합니다."
+                        if ko else
+                        "Record the trigger with no verification."
+                    ),
+                ),
             ],
         )
     if field == "on_missing":
@@ -1678,6 +1705,36 @@ def _question_for_requires_body(draft: dict[str, Any], ko: bool) -> Question:
 # two vocabularies meet.
 _ON_MISSING_VALUES = ("block", "ask", "audit")
 _REQUIRES_KINDS = ("regex", "llm_critic", "shacl", "step")
+
+
+def _is_record_only_draft(draft: dict[str, Any]) -> bool:
+    """True iff the draft is the audit-only "emit signal / record only"
+    archetype: fire the trigger, record to the ledger, run NO verifier.
+
+    The none-signal is deliberately an EXPLICIT empty `requires` list
+    (the key is PRESENT and equal to `[]`) - NOT an absent requires key.
+    An absent requires is a genuinely half-built draft (the operator has
+    not yet chosen a check kind) and must keep reporting `requires`
+    missing; only an explicit "record only, no check" choice (operator
+    picks q_requires="none", or the extractor recognises "검사 없이" /
+    "no check needed") writes the empty list. This asymmetry is the
+    safety rule: it CANNOT let an unintended empty-requires draft save,
+    because the empty list only ever lands from a deliberate none signal.
+
+    Record-only is coherent ONLY with `action == "audit"` - a "no check"
+    with block/ask is nonsensical (block on what?), so we require audit
+    here. The answer + extractor paths coerce action to audit whenever
+    they set the empty-list none signal, so a "none + block" draft can
+    never reach this predicate (and therefore never reaches ready_to_save
+    as a contradiction).
+    """
+    requires = draft.get("requires")
+    if not (isinstance(requires, list) and len(requires) == 0):
+        return False
+    if "requires" not in draft:  # defensive: absent != explicit []
+        return False
+    action = draft.get("action") or draft.get("on_missing")
+    return isinstance(action, str) and action == "audit"
 
 
 # ── draft helpers ─────────────────────────────────────────────────────
@@ -1836,7 +1893,17 @@ def _missing_fields_for_draft(draft: dict[str, Any] | None) -> list[FieldName]:
     if not (isinstance(matcher, str) and matcher.strip()):
         missing.append("matcher")
     requires = draft.get("requires")
-    if not (isinstance(requires, list) and len(requires) > 0):
+    # requires is satisfied when EITHER a non-empty valid verifier list
+    # is present OR the draft is the explicit record-only archetype
+    # (an EXPLICIT empty `requires: []` + action=audit; see
+    # `_is_record_only_draft`). We do NOT let an absent-and-unspecified
+    # requires pass silently: only a deliberate none signal (operator
+    # chose q_requires="none", or the extractor mapped "검사 없이" /
+    # "no check needed") writes the empty list, so a half-built draft
+    # keeps reporting `requires` missing and cannot save with no verifier.
+    if _is_record_only_draft(draft):
+        pass  # record-only: no verifier, no body follow-up.
+    elif not (isinstance(requires, list) and len(requires) > 0):
         missing.append("requires")
     elif _requires_first_body_is_empty(draft):
         missing.append("requires_body")
@@ -2042,6 +2109,19 @@ def _apply_answer_to_draft(draft: dict[str, Any], field: FieldName,
         return draft
     if field == "requires":
         kind = value.strip().lower()
+        if kind == "none":
+            # Record-only ("emit signal") archetype: the operator chose
+            # "no check". Write the EXPLICIT none signal - an empty
+            # `requires: []` list - so the completeness gate recognises a
+            # deliberate record-only draft (see `_is_record_only_draft`).
+            # A "no check" is coherent only with action=audit (block/ask
+            # on nothing is nonsensical), so coerce action to audit here;
+            # this guarantees a "none + block" combination can never reach
+            # ready_to_save. No requires_body follow-up: there is no body.
+            draft["requires"] = []
+            draft["action"] = "audit"
+            draft.pop("on_missing", None)
+            return draft
         if kind not in _REQUIRES_KINDS:
             return draft
         # Seed a single EvidenceReq of the chosen kind with the body
