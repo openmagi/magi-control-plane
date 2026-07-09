@@ -59,6 +59,12 @@ equal the `id` field.
     `Stop/*/block`, `Stop/*/ask`, `Stop/Bash/audit` (audit at Stop is
     wildcard-only), `PreToolUse/*/block` (block at PreToolUse needs
     tool/mcp_tool/tool_alt).
+- `compound_gate_matcher` (string, optional): for a compound
+  (`archetype_compound`) scenario whose saved policy is expanded MEMBER-WISE
+  (Section 6.3) - so `target_ir` is null and the O1 round-trip oracle does not
+  apply - this supplies the legal gated-tool matcher the scripted answerer
+  uses to answer the compound `q_matcher`. Only valid when `target_ir` is null.
+  The schema test rejects it alongside a non-null `target_ir`.
 - `expected` (object):
   - `outcome` (enum): one of
     `saved, steered, infeasible, pack_cta, handoff_cta, rejected_422`.

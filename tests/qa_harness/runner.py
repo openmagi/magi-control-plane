@@ -223,7 +223,11 @@ def run_scenario(
         record.oracle_failures.append(exc)
 
     c = client or _make_client(llm_compiler=llm_compiler)
-    answerer = ScriptedAnswerer(target_ir, expected_outcome=expected_outcome)
+    answerer = ScriptedAnswerer(
+        target_ir,
+        expected_outcome=expected_outcome,
+        compound_gate_matcher=scenario.get("compound_gate_matcher"),
+    )
 
     # Conversation state.
     history: list[dict[str, str]] = [{"role": "user", "content": phrasing_text}]
@@ -289,6 +293,15 @@ def run_scenario(
     # ---------------------------------------------------------------------------
     # Normal authoring / non-authoring flow.
     # ---------------------------------------------------------------------------
+    # Single-post-per-iteration conversation loop. Each iteration posts ONE
+    # compile-interactive call (carrying any pending answers dict from the
+    # previous answerer move), runs the per-turn oracles, checks for a
+    # terminal (ready_to_save / steer), and otherwise consults the answerer
+    # for the next move. A pill move sets `pending_answers` for the NEXT post;
+    # a userText move appends to history. This flat loop applies EVERY
+    # answerer move in order (the previous nested-follow-up form silently
+    # dropped a second consecutive pill answer).
+    pending_answers: dict[str, str] | None = None
     while True:
         # O5: pre-check turn budget.
         if turn_count >= max_turns:
@@ -298,15 +311,15 @@ def run_scenario(
                 _fail(e)
             break
 
-        # Post the compile turn (no answers - answers are sent in a follow-up
-        # post below if the answerer returns a pill move).
         status, wire = _post_compile(
             c,
             history=list(history),
             draft_so_far=draft_so_far,
-            answers=None,
+            answers=pending_answers,
             runtime_id=runtime_id,
         )
+        posted_answers = pending_answers
+        pending_answers = None
         turn_count += 1
 
         # O8: status discipline.
@@ -324,7 +337,7 @@ def run_scenario(
         record.turns.append(({
             "history": list(history),
             "draft_so_far": draft_so_far,
-            "answers": None,
+            "answers": posted_answers,
         }, wire))
 
         # Append assistant_message to history.
@@ -360,7 +373,21 @@ def run_scenario(
                 check_o2_save_contradiction(True, save_status)
             except OracleFailure as e:
                 _fail(e)
-            if target_ir is not None and draft is not None and 200 <= save_status < 300:
+            # O1 is the SINGLE-POLICY round-trip oracle (policy_from_dict on
+            # the saved dict). It does not apply to a compound (evidence_gate)
+            # draft: a compound is expanded MEMBER-WISE at save time (design
+            # Section 6.3) and policy_from_dict rejects the compound wrapper
+            # ("unknown policy type: evidence_gate"). The compound save is
+            # instead guarded by O2 (the POST /policies/compound 2xx above)
+            # and the compound expansion's own unit coverage. Skip O1 for
+            # compound drafts - running it would be a category error, not a
+            # real equivalence check.
+            if (
+                not is_compound
+                and target_ir is not None
+                and draft is not None
+                and 200 <= save_status < 300
+            ):
                 try:
                     check_o1_round_trip(target_ir, draft)
                 except OracleFailure as e:
@@ -382,102 +409,16 @@ def run_scenario(
             break
 
         if "answers" in move:
-            # Pill move: send the answers in a separate POST (same turn slot).
+            # Pill move: append the label bubble to history and stage the
+            # answers dict for the NEXT post (applied at the top of the loop).
             label_bubble = move.get("label_bubble", "")
             if label_bubble:
                 history.append({"role": "user", "content": label_bubble})
-
-            if turn_count >= max_turns:
-                try:
-                    check_o5_turn_bound(turn_count + 1, max_turns)
-                except OracleFailure as e:
-                    _fail(e)
-                break
-
-            status2, wire2 = _post_compile(
-                c,
-                history=list(history),
-                draft_so_far=draft_so_far,
-                answers=move["answers"],
-                runtime_id=runtime_id,
-            )
-            turn_count += 1
-
-            try:
-                check_o8_status_discipline(status2, is_rejected_422_scenario=is_rejected_422)
-            except OracleFailure as e:
-                _fail(e)
-
-            if status2 != 200:
-                record.outcome = "rejected_422"
-                break
-
-            last_wire = wire2
-            wire_transcript.append(wire2)
-            record.turns.append(({
-                "history": list(history),
-                "draft_so_far": draft_so_far,
-                "answers": move["answers"],
-            }, wire2))
-
-            asst_msg2 = wire2.get("assistant_message", "") or ""
-            if asst_msg2:
-                history.append({"role": "assistant", "content": asst_msg2})
-            draft_so_far = wire2.get("draft")
-
-            try:
-                check_o6_per_turn(wire2, language=language)
-            except OracleFailure as e:
-                _fail(e)
-            try:
-                check_o3_dead_end(wire2)
-            except OracleFailure as e:
-                _fail(e)
-                break
-            try:
-                check_o4_loop(wire_transcript)
-            except OracleFailure as e:
-                _fail(e)
-                break
-
-            if wire2.get("ready_to_save"):
-                draft2 = wire2.get("draft")
-                is_compound2 = wire2.get("compound", False)
-                save_status2, save_body2 = _attempt_save(c, draft2, is_compound2)
-                record.save_status = save_status2
-                record.save_body = save_body2
-                try:
-                    check_o2_save_contradiction(True, save_status2)
-                except OracleFailure as e:
-                    _fail(e)
-                if target_ir is not None and draft2 is not None and 200 <= save_status2 < 300:
-                    try:
-                        check_o1_round_trip(target_ir, draft2)
-                    except OracleFailure as e:
-                        _fail(e)
-                record.outcome = "saved"
-                break
-
-            steer2 = _has_steer_terminal(wire2)
-            if steer2 is not None:
-                record.outcome = _classify_steer(steer2, wire2)
-                break
-
-            # Continue the outer loop with wire2 as the effective last state.
-            # The outer loop will now call the answerer on wire2.
-            last_wire = wire2
-            # Update answerer state check: feed wire2 back to answerer.
-            move2 = answerer.next_move(wire2)
-            if "stop" in move2:
-                record.outcome = _classify_steer(move2["stop"], wire2)
-                break
-            if "userText" in move2:
-                history.append({"role": "user", "content": move2["userText"]})
-            # If another pill, the outer loop handles it next iteration.
-            # Continue outer loop.
+            pending_answers = move["answers"]
+            # Continue outer loop; the staged answers are posted next iteration.
 
         elif "userText" in move:
-            # Free-text move: append to history, outer loop sends next turn.
+            # Free-text move: append to history, next iteration sends the turn.
             history.append({"role": "user", "content": move["userText"]})
             # Continue outer loop.
 
