@@ -16,7 +16,8 @@ magi-cp cloud                run the FastAPI cloud server
 magi-cp mcp                  stdio MCP server (Claude Desktop integration)
 magi-cp keys                 Ed25519 signing-key lifecycle
 magi-cp share <sessionId>    package a Claude Code run as a public share link
-magi-cp install              install the runtime adapter surface (Codex / Claude Code)
+magi-cp install              install the runtime adapter surface (Codex / Claude Code / gjc)
+magi-cp doctor               run installation health checks for all runtimes
 ```
 
 ## gate
@@ -32,8 +33,9 @@ echo '{"tool_name":"Bash","tool_input":{"command":"FILE_COURT_M1_payload"}}' | m
 The gate always exits `0`. The decision lives in the JSON on stdout: an
 allow, or a `permissionDecision:"deny"` (equivalently a top-level
 `decision:"block"`). A cloud-unreachable gate is a fail-closed deny, also
-at exit `0`. The runtime auto-detects the host (Claude Code vs Codex);
-force it with `MAGI_CP_RUNTIME=cc|codex`.
+at exit `0`. The runtime auto-detects the host from the payload; force it
+with `MAGI_CP_RUNTIME=cc|codex|gjc|hermes` (or pass `--runtime <id>` as the
+managed configs do). See [Runtimes](./runtimes.md).
 
 Reads env: `MAGI_CP_API_KEY`, `MAGI_CP_CLOUD_URL`, `MAGI_CP_LOCAL_DIR`,
 `MAGI_CP_AUTO_ACTIVATE_PACKS`. The gate opens no outbound LLM connection;
@@ -146,10 +148,25 @@ success / dry-run; `1` transcript not found / upload or network failure;
 
 ## install
 
-Install the runtime adapter surface (managed-settings + gate shim for
-Claude Code, or the Codex profile + `requirements.toml`). The one-line
-installer calls this for you; run it directly to (re)wire a specific
-runtime.
+Install the runtime adapter surface for a specific runtime. The one-line
+installer calls this for you; run it directly to (re)wire a runtime.
+
+```bash
+magi-cp install --runtime codex   # Codex profile + /etc/codex/requirements.toml
+magi-cp install --runtime gjc      # Gajae-Code frozen shim bundle
+```
+
+`--runtime cc` (default) / `both` wire the Claude Code managed-settings +
+gate shim. See [Runtimes](./runtimes.md) for what each runtime installs.
+
+## doctor
+
+Run installation health checks across the installed runtimes (managed
+config present, shim wired, a fixture round-trips through the gate).
+
+```bash
+magi-cp doctor
+```
 
 ## Exit codes
 

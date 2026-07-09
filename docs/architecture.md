@@ -104,9 +104,12 @@ default-on (`MAGI_CP_PACK_CENTRIC_RUNTIME=1`).
 
 ## Runtimes
 
-The gate speaks two host runtimes: Claude Code (the primary hook-based
-surface) and Codex (a native permission-lowering adapter). The gate
-auto-detects which one from the hook payload. See [Runtimes](./runtimes.md).
+The gate enforces one Policy IR across four host runtimes: Claude Code
+(the primary hook-based surface), Codex (a native permission-lowering
+adapter), Gajae-Code (`gjc`, a frozen-shim adapter), and Hermes (a
+shell-hook adapter). The gate auto-detects which one from the hook
+payload, or takes an explicit `MAGI_CP_RUNTIME` override. See
+[Runtimes](./runtimes.md).
 
 ## Why fail-closed
 
