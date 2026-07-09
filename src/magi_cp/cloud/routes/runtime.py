@@ -32,7 +32,7 @@ def attach(
     All coverage reads reuse ``HookRuntime.coverage_report`` (P1) so the
     dashboard never re-derives coverage semantics.
     """
-    from ...config import codex_runtime_enabled
+    from ...config import codex_runtime_enabled, gjc_runtime_enabled
     from ...policy.pack import builtin_pack_spec_by_id, _builtin_member_ids
     from ...policy.pack_membership import (
         build_group_rule_index, expand_pack_member_ids,
@@ -42,7 +42,7 @@ def attach(
     from ...runtime.trait import coverage_cell
     from ..tenants import TenantRepo
 
-    _KNOWN_RUNTIMES = ("claude-code", "codex")
+    _KNOWN_RUNTIMES = ("claude-code", "codex", "gjc")
 
     def _canonical_runtime(runtime_id: str) -> str | None:
         """Map a URL runtime token onto a canonical id, or None when
@@ -52,6 +52,8 @@ def attach(
             return "claude-code"
         if key == "codex":
             return "codex"
+        if key in ("gjc", "gajae-code", "gajae_code"):
+            return "gjc"
         return None
 
     def _policy_ir_by_id(policy_id: str):
@@ -174,6 +176,7 @@ def attach(
             "tenant_id": tenant_id,
             "runtime_id": current,
             "codex_enabled": codex_runtime_enabled(),
+            "gjc_enabled": gjc_runtime_enabled(),
             "runtimes": [_runtime_rollup(r) for r in _KNOWN_RUNTIMES],
         }
 
@@ -207,6 +210,12 @@ def attach(
             raise HTTPException(
                 403,
                 "codex runtime disabled: MAGI_CP_CODEX_RUNTIME_ENABLED is set "
+                "to an explicit falsy value (unset it to re-enable; default ON)",
+            )
+        if canonical == "gjc" and not gjc_runtime_enabled():
+            raise HTTPException(
+                403,
+                "gjc runtime disabled: MAGI_CP_GJC_RUNTIME_ENABLED is set "
                 "to an explicit falsy value (unset it to re-enable; default ON)",
             )
         TenantRepo(engine).set_runtime(tenant_id, runtime_id=canonical)
