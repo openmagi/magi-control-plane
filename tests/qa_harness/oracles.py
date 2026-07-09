@@ -456,5 +456,5 @@ def check_o8_status_discipline(
     if status_code == 422 and not is_rejected_422_scenario:
         raise OracleFailure(
             "O8",
-            f"422 in non-rejected_422 scenario (unexpected validation error)",
+            "422 in non-rejected_422 scenario (unexpected validation error)",
         )
