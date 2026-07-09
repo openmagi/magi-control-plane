@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "7df0ff722d71959093481688db6bf237a5b7457504992315fc90c8b4444ae940",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

@@ -6,8 +6,8 @@
   "style": "canonical",
   "runtime_id": null,
   "engine": "cassette",
-  "stable": true,
-  "known_limitation": false,
+  "stable": false,
+  "known_limitation": true,
   "target_ir": {
     "id": "qa-target",
     "description": "",
@@ -38,6 +38,7 @@
   "provenance": {
     "source": "lane1-grid",
     "generated_by": "hand",
-    "reviewed": true
+    "reviewed": true,
+    "known_limitation_note": "The server emits type='evidence_gate' for this llm_critic+MCP-tool combination instead of a standard EvidencePolicy. The O1 oracle's policy_from_dict raises 'unknown policy type: evidence_gate'. Candidate live issue: the target_ir specifies requires=[{kind:llm_critic, criterion:...}] which should produce an EvidencePolicy, but the server routes this to a different evidence_gate archetype. O1 cannot verify the round-trip until policy_from_dict supports evidence_gate."
   }
 }

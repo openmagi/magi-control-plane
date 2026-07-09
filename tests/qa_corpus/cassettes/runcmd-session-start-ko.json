@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "caedcef22a7170712e9f327a5440b2ef802b4a71e284fef6b11eab6703378907",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./bootstrap.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"SessionStart\", \"matcher\": \"*\"}, \"id\": \"session-start-bootstrap\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

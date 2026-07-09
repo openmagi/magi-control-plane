@@ -10,7 +10,7 @@
   "known_limitation": false,
   "target_ir": null,
   "expected": {
-    "outcome": "steered",
+    "outcome": "infeasible",
     "feasibility_code": null,
     "max_turns": 8
   },
@@ -23,6 +23,7 @@
   "provenance": {
     "source": "audit-S42",
     "generated_by": "hand",
-    "reviewed": true
+    "reviewed": true,
+    "note": "Expected outcome updated from 'steered' to 'infeasible' after runner fix (PR-D): _classify_steer now correctly maps not-expressible class to infeasible."
   }
 }

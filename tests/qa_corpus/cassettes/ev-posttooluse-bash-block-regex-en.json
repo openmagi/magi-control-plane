@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "395fa9d1d239e4397a1fabbb3f3306018bcf1356d1964488d560ff59fa75724e",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"AKIA[0-9A-Z]{16}\"}]}, \"questions\": []}"
+    },
+    {
+      "key": "47677f7ca351fc0515132fb7aefd2f099d7aef469caec13126244dc39a6e65e6",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "593cf44e5f664b783a3e982e9a7dfdb9dacbec4e38408d8fe8e648e6033e473a",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

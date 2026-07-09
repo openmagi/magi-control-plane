@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "b0a1fb415fbf8011b98495aa9ba97cf9e815413394ebaa32452b14ad7d268adc",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": [{\"id\": \"q_criterion\", \"text\": \"What is the criterion?\"}]}"
+    },
+    {
+      "key": "8c2a993507a0928ff12599017015c1357971366e64b315fe5cf01b1783e81b67",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"llm_critic\", \"criterion\": \"the trade looks risky\"}]}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "a45eade7f661a4687530526e5a03bbf41d87ea00042cdad3fca08cccdf4d0067",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./lint.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"*\"}, \"id\": \"prelint\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

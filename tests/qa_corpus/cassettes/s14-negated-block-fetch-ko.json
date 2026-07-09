@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "c32a5e5ec9e7bc41cd82f9e0c881856dfd2d32bd78eed0b40518cceeab81f96d",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"source_allowlist\", \"verdict\": \"pass\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"WebFetch\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "33f7de6fd907bdbb4359693c9e082a2e1f6ca2313fc7ebf7ffcd95a0b189c71b",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./summarizer.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"Stop\", \"matcher\": \"*\"}, \"id\": \"prefinal-summary\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

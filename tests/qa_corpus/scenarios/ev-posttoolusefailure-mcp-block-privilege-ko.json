@@ -6,8 +6,8 @@
   "style": "canonical",
   "runtime_id": null,
   "engine": "cassette",
-  "stable": true,
-  "known_limitation": false,
+  "stable": false,
+  "known_limitation": true,
   "target_ir": {
     "id": "qa-target",
     "description": "",

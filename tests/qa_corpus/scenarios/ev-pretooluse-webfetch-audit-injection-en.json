@@ -13,7 +13,7 @@
     "description": "",
     "trigger": {
       "host": "claude-code",
-      "event": "PreToolUse",
+      "event": "PostToolUse",
       "matcher": "WebFetch"
     },
     "requires": [

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "267027c31ff9496f976df73d949392a167892cc043752523540ede542a84aab0",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"shacl\", \"shape_ttl\": \"@prefix ex: <http://example/> .\\nex:Answer a ex:Shape .\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"Stop\", \"matcher\": \"*\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

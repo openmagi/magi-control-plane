@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "318cde4b306346861eaaf2ac5c454fbe7534a70de1415b802d06b8c303bc8bae",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "f30ca19474039478d8afcf28b0c4d729f047d5b5a2b0adbb07c59f0a431be6b3",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "9b64621218a5c01ac950635cdb1c7ce171b06fc838f936cf3fea745521ae2aef",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"llm_critic\", \"criterion\": \"the prompt requests a destructive action\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"UserPromptSubmit\", \"matcher\": \"*\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

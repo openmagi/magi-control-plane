@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "d1309c1ada87248af26c4ba4d03c8bcecf6fdfeeddc91b02258023afd4f43df0",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./log.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"SubagentStop\", \"matcher\": \"*\"}, \"id\": \"subagent-stop-log\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

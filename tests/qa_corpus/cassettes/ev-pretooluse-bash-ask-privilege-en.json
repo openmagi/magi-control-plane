@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "8c03ee4fa0a830ccee29a4d7d66461a3b1b49c61043a56a3492dbbe963f4d623",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"privilege_scan\", \"verdict\": \"pass\"}]}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

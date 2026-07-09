@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "ec185b92e5f250c4acbcfef10d2d1a472f494f9af481c9885b65797ec01f414d",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "d01e4c6d3fefcc52cde885f5563b89cb4c50cfc27dd2ccf2a17e05c21d34dfe5",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "7fe8d017b92a5d99ae5c4e81b1a860542c6bff901433d6a91f23525958aac266",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

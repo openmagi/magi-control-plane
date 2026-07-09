@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "8be8c5fb02630abf67de865a4a1f1162797bed67ff675abe5ed133d3f32c2510",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./cleanup.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"SessionEnd\", \"matcher\": \"*\"}, \"id\": \"session-end-cleanup\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

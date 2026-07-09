@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "4a81a8d9c4f892e2910dbb955041f66e22c2171dbea3223751ff9e87b2e50e41",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"\\\\d{6}-\\\\d{7}\"}]}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}
