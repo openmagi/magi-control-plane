@@ -112,3 +112,69 @@ sha256(canonical_JSON(nonce-normalised messages)), so changing the system
 prompt text requires re-recording.  The `_make_fence_nonce()` monkeypatch in
 `tests/conftest.py` (fixture `qa_nonce_counter`) pins the nonce to a
 deterministic counter so authored cassettes remain stable across runs.
+
+## QA report and baseline gate (PR-E)
+
+### What the report contains
+
+After every pytest run that includes `tests/test_qa_corpus_replay.py`, the
+`conftest.py` session hook writes `.qa-report/summary.{json,md}` (gitignored).
+The report includes:
+
+- Pass rate by category, language, and engine.
+- Dead-end (O3), loop (O4), and contradiction (O2/I2) counts.
+- Per-oracle failure table with affected scenario ids.
+- Drift vs the committed `tests/qa_corpus/baseline.json` snapshot:
+  regressions (hard CI blocker), improvements, and new scenarios.
+
+### How the baseline gate works
+
+`tests/qa_corpus/baseline.json` is a committed snapshot:
+```json
+{
+  "<scenario_id>": {
+    "stable": true,
+    "outcome": "saved",
+    "passed": true,
+    "oracle_fingerprint": "<16-char sha256 prefix>"
+  },
+  ...
+}
+```
+
+`tests/test_qa_baseline.py::test_baseline_drift_gate` reads
+`.qa-report/summary.json` (written by the conftest hook during the same
+pytest session) and calls `check_drift(baseline, current)`.  If any
+`stable=true` scenario that was passing in baseline is now failing, the
+test hard-fails with a clear message identifying which scenario regressed
+and which oracle fired.
+
+Quarantined scenarios (`stable=false`) are xfail/report-only and do not
+block CI.
+
+### oracle_fingerprint
+
+A 16-character sha256 prefix of the sorted set of failing oracle ids
+(e.g. `["O3"]`).  An empty failure list (all oracles passed) produces a
+stable fingerprint of `"4f53cda18c2baa0c"`.  A change in WHICH oracle
+fails (not just pass/fail) is therefore visible as a fingerprint change in
+the report's drift section.
+
+### Regenerating the baseline
+
+After a legitimate corpus change (new scenario, scenario fix, or intentional
+behavior change), regenerate the baseline:
+
+```
+MAGI_CP_QA_UPDATE_BASELINE=1 PYTHONPATH=src python3 -m pytest \
+    tests/test_qa_corpus_replay.py tests/test_qa_baseline.py -q
+```
+
+This runs the replay tests, writes `.qa-report/summary.json`, then writes a
+new `tests/qa_corpus/baseline.json` from that summary (instead of asserting
+against the old one).  Commit both the corpus change and the updated
+baseline in the same PR.
+
+The regeneration path mirrors the cassette re-record pattern
+(`MAGI_CP_QA_RECORD=1`): an env var gates an explicit update, never a
+silent drift.
