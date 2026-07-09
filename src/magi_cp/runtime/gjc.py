@@ -205,12 +205,13 @@ class GjcDriver:
     def emit_managed_config(self, ir: list) -> ManagedConfigBundle:  # type: ignore[override]
         """Policy IR -> managed config bundle (gjc plugin manifest + shim).
 
-        Full implementation in U4 (gjc_bundle_emitter). Stub raises to keep
-        the trait satisfied without silently returning an empty bundle.
+        Delegates to ``policy/gjc_bundle_emitter.compile_to_gjc_bundle``,
+        which is the sibling of ``codex_toml_emitter.compile_to_codex_requirements``
+        (design brief §6.1, §11.1 U4).
         """
-        raise NotImplementedError(
-            "emit_managed_config not yet implemented for gjc (U4 / PR-2)"
-        )
+        from ..policy.gjc_bundle_emitter import compile_to_gjc_bundle  # noqa: PLC0415
+
+        return compile_to_gjc_bundle(ir)
 
     def coverage_report(self, ir: list):  # type: ignore[override]
         """Per-policy gjc coverage report.
