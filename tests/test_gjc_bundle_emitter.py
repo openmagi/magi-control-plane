@@ -91,44 +91,76 @@ def test_manifest_byte_stable_reordered_ir() -> None:
 
 
 def test_empty_ir_produces_manifest() -> None:
-    """(a) empty IR still produces a valid manifest (hooks are static; IR only drives tool-map)."""
+    """(a) empty IR still produces a valid manifest (hooks are static; IR only drives tool-map).
+
+    After the install-blocking bug fix, the manifest carries 36 hooks:
+    34 tool_call (one per gjc builtin tool, with target+phase) + 2 session.
+    """
     bundle = compile_to_gjc_bundle([])
     assert "gajae-plugin.json" in bundle.files
     manifest = json.loads(bundle.files["gajae-plugin.json"])
-    assert "hooks" in manifest and len(manifest["hooks"]) == 3
+    assert "hooks" in manifest and len(manifest["hooks"]) == 36, (
+        f"Expected 36 hooks (34 tool_call + 2 session), got {len(manifest['hooks'])}"
+    )
 
 
 # ── (b) manifest sha256 == hash of emitted shim bytes ──────────────────
 
-_SHIM_FILE_KEYS = [
-    ("magi-gate-tool-call", "hooks/magi-gate-tool-call.ts"),
+# After fanout, tool_call entries have names like "magi-gate-tool-call-bash".
+# We test session entries by exact name, and tool_call entries as a group.
+_SESSION_SHIM_FILE_KEYS = [
     ("magi-gate-session-start", "hooks/magi-gate-session-start.ts"),
     ("magi-gate-session-shutdown", "hooks/magi-gate-session-shutdown.ts"),
 ]
 
 
-@pytest.mark.parametrize("hook_name,file_key", _SHIM_FILE_KEYS)
-def test_manifest_sha256_matches_shim_bytes(hook_name: str, file_key: str) -> None:
-    """(b) manifest sha256 for each hook == hashlib.sha256 of the emitted shim file content."""
+@pytest.mark.parametrize("hook_name,file_key", _SESSION_SHIM_FILE_KEYS)
+def test_manifest_sha256_matches_session_shim_bytes(hook_name: str, file_key: str) -> None:
+    """(b) manifest sha256 for each session hook == hashlib.sha256 of the emitted shim bytes."""
     bundle = compile_to_gjc_bundle(_GOLDEN_IR)
     manifest = json.loads(bundle.files["gajae-plugin.json"])
-    # Find the hook entry by name
     hook_entry = next(
         (h for h in manifest["hooks"] if h["name"] == hook_name),
         None,
     )
-    assert hook_entry is not None, f"Hook {hook_name!r} not found in manifest"
+    assert hook_entry is not None, f"Session hook {hook_name!r} not found in manifest"
     declared_sha256: str = hook_entry["sha256"]
     assert declared_sha256 != "<computed>", (
         f"Hook {hook_name!r} sha256 is still the template placeholder"
     )
-    # The emitted shim bytes must hash to the declared value
     shim_bytes: bytes = bundle.files[file_key].encode("utf-8")
     computed = hashlib.sha256(shim_bytes).hexdigest()
     assert computed == declared_sha256, (
         f"Hook {hook_name!r}: manifest sha256={declared_sha256!r} "
         f"but hashlib.sha256(shim_bytes)={computed!r}"
     )
+
+
+def test_manifest_sha256_matches_tool_call_shim_bytes() -> None:
+    """(b) all magi-gate-tool-call-* hooks declare sha256 == hashlib.sha256(tool_call shim bytes).
+
+    After fanout, 34 entries share the same shim file; all must carry the
+    same correct hash.
+    """
+    bundle = compile_to_gjc_bundle(_GOLDEN_IR)
+    manifest = json.loads(bundle.files["gajae-plugin.json"])
+    shim_key = "hooks/magi-gate-tool-call.ts"
+    expected_sha256 = hashlib.sha256(
+        bundle.files[shim_key].encode("utf-8")
+    ).hexdigest()
+
+    tool_call_hooks = [
+        h for h in manifest["hooks"] if h["name"].startswith("magi-gate-tool-call-")
+    ]
+    assert len(tool_call_hooks) == 34, (
+        f"Expected 34 tool_call hooks, got {len(tool_call_hooks)}"
+    )
+    for hook in tool_call_hooks:
+        declared = hook["sha256"]
+        assert declared == expected_sha256, (
+            f"Hook {hook['name']!r}: sha256={declared!r} does not match "
+            f"tool_call shim sha256={expected_sha256!r}"
+        )
 
 
 def test_manifest_sha256_is_hex_string() -> None:
@@ -241,23 +273,62 @@ def test_manifest_passes_schema_validation() -> None:
     assert not errors, f"Manifest failed schema validation: {errors}"
 
 
-def test_manifest_hooks_have_no_phase_field() -> None:
-    """(d) phase is omitted (§6.1 note: 'inert in adapter, sdk.ts:757-765')."""
+def test_manifest_tool_call_hooks_have_phase_before() -> None:
+    """(d) all tool_call hooks carry phase=='before' (required by gjc compiler.ts:236-246).
+
+    After the install-blocking bug fix, tool_call hooks require both
+    target and phase; 'before' is the correct value for pre-execution gates.
+    """
     bundle = compile_to_gjc_bundle(_GOLDEN_IR)
     manifest = json.loads(bundle.files["gajae-plugin.json"])
-    for hook in manifest["hooks"]:
-        assert "phase" not in hook, (
-            f"Hook {hook['name']!r} has unexpected 'phase' field: {hook}"
+    tool_call_hooks = [h for h in manifest["hooks"] if h["event"] == "tool_call"]
+    assert tool_call_hooks, "No tool_call hooks found in manifest"
+    for hook in tool_call_hooks:
+        assert hook.get("phase") == "before", (
+            f"tool_call hook {hook['name']!r} has phase={hook.get('phase')!r}, "
+            "expected 'before'"
         )
 
 
-def test_manifest_hooks_have_no_target_field() -> None:
-    """(d) target is absent — governs every tool (§6.1)."""
+def test_manifest_session_hooks_have_no_phase_field() -> None:
+    """(d) session_start / session_shutdown hooks do NOT have a phase field."""
     bundle = compile_to_gjc_bundle(_GOLDEN_IR)
     manifest = json.loads(bundle.files["gajae-plugin.json"])
-    for hook in manifest["hooks"]:
+    session_hooks = [
+        h for h in manifest["hooks"]
+        if h["event"] in ("session_start", "session_shutdown")
+    ]
+    assert len(session_hooks) == 2, f"Expected 2 session hooks, got {len(session_hooks)}"
+    for hook in session_hooks:
+        assert "phase" not in hook, (
+            f"Session hook {hook['name']!r} should not have a 'phase' field: {hook}"
+        )
+
+
+def test_manifest_tool_call_hooks_have_target_field() -> None:
+    """(d) all tool_call hooks carry a non-empty 'target' field (gjc install requirement)."""
+    bundle = compile_to_gjc_bundle(_GOLDEN_IR)
+    manifest = json.loads(bundle.files["gajae-plugin.json"])
+    tool_call_hooks = [h for h in manifest["hooks"] if h["event"] == "tool_call"]
+    assert tool_call_hooks, "No tool_call hooks found in manifest"
+    for hook in tool_call_hooks:
+        assert "target" in hook and hook["target"], (
+            f"tool_call hook {hook['name']!r} is missing a non-empty 'target' field"
+        )
+
+
+def test_manifest_session_hooks_have_no_target_field() -> None:
+    """(d) session_start / session_shutdown hooks do NOT have a 'target' field."""
+    bundle = compile_to_gjc_bundle(_GOLDEN_IR)
+    manifest = json.loads(bundle.files["gajae-plugin.json"])
+    session_hooks = [
+        h for h in manifest["hooks"]
+        if h["event"] in ("session_start", "session_shutdown")
+    ]
+    assert len(session_hooks) == 2, f"Expected 2 session hooks, got {len(session_hooks)}"
+    for hook in session_hooks:
         assert "target" not in hook, (
-            f"Hook {hook['name']!r} has unexpected 'target' field: {hook}"
+            f"Session hook {hook['name']!r} should not have a 'target' field"
         )
 
 
@@ -320,3 +391,55 @@ def test_emit_managed_config_returns_same_as_compile() -> None:
     via_driver = driver.emit_managed_config(_GOLDEN_IR)
     assert via_driver.files == direct.files
     assert via_driver.context_templates == direct.context_templates
+
+
+# ── Fanout completeness (install-blocking bug regression guard) ─────────
+
+
+def test_fanout_completeness_all_builtin_tools_have_hook() -> None:
+    """Every tool in _GJC_BUILTIN_TOOLS has a corresponding tool_call hook with
+    target==tool and phase=='before'.  No target-less tool_call entries allowed.
+
+    This is the regression guard for the install-blocking bug:
+    gjc compiler.ts:236-246 rejects target-less tool_call hooks.  If _GJC_BUILTIN_TOOLS
+    gains a new entry, the emitter must emit a hook for it automatically, and this
+    test will pass without modification.  If the emitter stops fanning out, this test
+    fails immediately.
+    """
+    from magi_cp.runtime.gjc import _GJC_BUILTIN_TOOLS
+
+    bundle = compile_to_gjc_bundle(_GOLDEN_IR)
+    manifest = json.loads(bundle.files["gajae-plugin.json"])
+    tool_call_hooks = [h for h in manifest["hooks"] if h["event"] == "tool_call"]
+
+    # Index by target value for easy lookup
+    by_target: dict[str, dict] = {}
+    for hook in tool_call_hooks:
+        # Assert no target-less tool_call entries exist
+        assert "target" in hook, (
+            f"Found a target-less tool_call hook: {hook['name']!r} — "
+            "install-blocking bug regression detected"
+        )
+        by_target[hook["target"]] = hook
+
+    # Every tool in the SSOT must have exactly one hook
+    missing = _GJC_BUILTIN_TOOLS - set(by_target.keys())
+    assert not missing, (
+        f"Missing tool_call hooks for tools: {sorted(missing)!r}. "
+        "The emitter must fan out a hook per _GJC_BUILTIN_TOOLS entry."
+    )
+
+    # No extra hooks beyond the SSOT
+    extra = set(by_target.keys()) - _GJC_BUILTIN_TOOLS
+    assert not extra, (
+        f"tool_call hooks for unknown tools (not in _GJC_BUILTIN_TOOLS): {sorted(extra)!r}"
+    )
+
+    # All tool_call hooks have phase=="before"
+    wrong_phase = [
+        hook["name"] for hook in tool_call_hooks
+        if hook.get("phase") != "before"
+    ]
+    assert not wrong_phase, (
+        f"tool_call hooks with wrong/missing phase (expected 'before'): {wrong_phase!r}"
+    )

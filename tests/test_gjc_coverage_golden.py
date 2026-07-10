@@ -38,59 +38,18 @@ from magi_cp.policy.ir import (
     SubagentPolicy,
     Trigger,
 )
-from magi_cp.runtime.gjc import GjcDriver, _GJC_TO_CC_TOOL
+from magi_cp.runtime.gjc import GjcDriver, _GJC_BUILTIN_TOOLS, _GJC_TO_CC_TOOL
 from magi_cp.runtime.trait import CoverageReport, coverage_cell
 
 _GOLDEN_PATH = (
     Path(__file__).parent / "goldens" / "gjc_coverage_report_golden.json"
 )
 
-# ── Vendored gjc BUILTIN_TOOLS list ─────────────────────────────────────────
-#
-# Source: packages/coding-agent/src/tools/index.ts:383-418
-# gjc v0.9.0 commit faf917e0c2e8ea01c4410548652873bab5aa293b.
-#
-# This list is intentionally STATIC: it must be updated by a human
-# whenever gjc adds a new tool.  The drift test below fails CI when the
-# vendored list diverges from ``_GJC_TO_CC_TOOL`` (a name that is
-# neither mapped nor listed here = the table has gone stale or gjc added
-# a tool that the implementer forgot to classify).
-_GJC_BUILTIN_TOOLS: frozenset[str] = frozenset({
-    "read",
-    "bash",
-    "edit",
-    "ast_grep",
-    "ast_edit",
-    "render_mermaid",
-    "ask",
-    "debug",
-    "bisect",
-    "eval",
-    "calc",
-    "ssh",
-    "github",
-    "find",
-    "search",
-    "lsp",
-    "browser",
-    "computer",
-    "checkpoint",
-    "rewind",
-    "task",
-    "subagent",
-    "job",
-    "monitor",
-    "cron",
-    "recipe",
-    "irc",
-    "todo_write",
-    "web_search",
-    "search_tool_bm25",
-    "telegram_send",
-    "write",
-    "skill",
-    "goal",
-})
+# ``_GJC_BUILTIN_TOOLS`` is imported from ``magi_cp.runtime.gjc`` (the SSOT).
+# The emitter fans the tool_call hook out over exactly that set, and the
+# drift test below fails CI when the set diverges from ``_GJC_TO_CC_TOOL``
+# (a name that is neither mapped nor listed there = the table has gone
+# stale or gjc added a tool that the implementer forgot to classify).
 
 
 # ── Fixture helpers ──────────────────────────────────────────────────────────

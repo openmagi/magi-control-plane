@@ -1,25 +1,291 @@
 {
-  "name": "magi-cp-gate",
-  "version": "1",
   "description": "Magi Control Plane enforcement gate (frozen dispatcher; policy lives in magi-cp)",
   "hooks": [
     {
-      "name": "magi-gate-tool-call",
       "event": "tool_call",
+      "name": "magi-gate-tool-call-ask",
       "path": "hooks/magi-gate-tool-call.ts",
-      "sha256": "<computed>"
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "ask"
     },
     {
-      "name": "magi-gate-session-start",
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-ast_edit",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "ast_edit"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-ast_grep",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "ast_grep"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-bash",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "bash"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-bisect",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "bisect"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-browser",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "browser"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-calc",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "calc"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-checkpoint",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "checkpoint"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-computer",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "computer"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-cron",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "cron"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-debug",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "debug"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-edit",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "edit"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-eval",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "eval"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-find",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "find"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-github",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "github"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-goal",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "goal"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-irc",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "irc"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-job",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "job"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-lsp",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "lsp"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-monitor",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "monitor"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-read",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "read"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-recipe",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "recipe"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-render_mermaid",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "render_mermaid"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-rewind",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "rewind"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-search",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "search"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-search_tool_bm25",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "search_tool_bm25"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-skill",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "skill"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-ssh",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "ssh"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-subagent",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "subagent"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-task",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "task"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-telegram_send",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "telegram_send"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-todo_write",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "todo_write"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-web_search",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "web_search"
+    },
+    {
+      "event": "tool_call",
+      "name": "magi-gate-tool-call-write",
+      "path": "hooks/magi-gate-tool-call.ts",
+      "phase": "before",
+      "sha256": "<computed>",
+      "target": "write"
+    },
+    {
       "event": "session_start",
+      "name": "magi-gate-session-start",
       "path": "hooks/magi-gate-session-start.ts",
       "sha256": "<computed>"
     },
     {
-      "name": "magi-gate-session-shutdown",
       "event": "session_shutdown",
+      "name": "magi-gate-session-shutdown",
       "path": "hooks/magi-gate-session-shutdown.ts",
       "sha256": "<computed>"
     }
-  ]
+  ],
+  "name": "magi-cp-gate",
+  "version": "1"
 }
