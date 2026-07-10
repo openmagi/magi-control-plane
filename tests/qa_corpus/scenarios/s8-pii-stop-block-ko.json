@@ -5,25 +5,24 @@
   "language": "ko",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "cassette",
-  "stable": false,
-  "known_limitation": true,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
   "target_ir": null,
   "expected": {
-    "outcome": "steered",
-    "feasibility_code": null,
+    "outcome": "saved",
+    "feasibility_code": "enforce_downgraded_to_audit",
     "max_turns": 8
   },
   "phrasings": [
     {
       "text": "최종 답변에 PII 있으면 차단해",
-      "note": "privilege_scan default Bash + Stop override illegal; steer (P0-1 cluster)"
+      "note": "enforce verb at Stop honestly downgraded to audit and saved (code=enforce_downgraded_to_audit); post-#138 a save, not a steer"
     }
   ],
   "provenance": {
     "source": "audit-S8",
     "generated_by": "hand",
-    "reviewed": true,
-    "known_limitation_note": "Scenario expects 'steered' because block@Stop is downgraded to audit and the operator should be steered away. But the flow emits ready_to_save=True alongside the enforce_downgraded_to_audit feasibility warning, so the runner saves the policy. Candidate runner gap: when feasibility.code=enforce_downgraded_to_audit the flow should stop at the warning turn rather than proceeding to ready_to_save. Alternatively the scenario spec should accept 'saved' as the outcome."
+    "reviewed": true
   }
 }

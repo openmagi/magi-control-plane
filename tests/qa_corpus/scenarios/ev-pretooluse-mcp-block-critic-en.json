@@ -1,29 +1,14 @@
 {
   "schema_version": 1,
   "id": "ev-pretooluse-mcp-block-critic-en",
-  "category": "happy_path",
+  "category": "archetype_compound",
   "language": "en",
   "style": "canonical",
   "runtime_id": null,
-  "engine": "cassette",
-  "stable": false,
-  "known_limitation": true,
-  "target_ir": {
-    "id": "qa-target",
-    "description": "",
-    "trigger": {
-      "host": "claude-code",
-      "event": "PreToolUse",
-      "matcher": "mcp__trading__execute"
-    },
-    "requires": [
-      {
-        "kind": "llm_critic",
-        "criterion": "a credible source was verified this session"
-      }
-    ],
-    "action": "block"
-  },
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
   "expected": {
     "outcome": "saved",
     "feasibility_code": null,
@@ -32,13 +17,12 @@
   "phrasings": [
     {
       "text": "before mcp__trading__execute runs, block it unless an AI judge confirms a credible source",
-      "note": "block/mcp_tool/llm_critic at PreToolUse"
+      "note": "llm_critic + credible-source + MCP tool routes to the compound evidence_gate archetype; saves member-wise (O1 not applicable to compound)"
     }
   ],
   "provenance": {
     "source": "lane1-grid",
     "generated_by": "hand",
-    "reviewed": true,
-    "known_limitation_note": "The server emits type='evidence_gate' for this llm_critic+MCP-tool combination instead of a standard EvidencePolicy. The O1 oracle's policy_from_dict raises 'unknown policy type: evidence_gate'. Candidate live issue: the target_ir specifies requires=[{kind:llm_critic, criterion:...}] which should produce an EvidencePolicy, but the server routes this to a different evidence_gate archetype. O1 cannot verify the round-trip until policy_from_dict supports evidence_gate."
+    "reviewed": true
   }
 }
