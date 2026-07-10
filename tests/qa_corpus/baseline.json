@@ -1,0 +1,590 @@
+{
+  "adv-empty-hi-s51-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "adv-injection-in-body-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "adv-injection-s50-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "adv-invalid-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "adv-junk-json-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "rejected_422",
+    "passed": true,
+    "stable": true
+  },
+  "adv-lowercase-matcher-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "adv-malformed-answers-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "rejected_422",
+    "passed": true,
+    "stable": true
+  },
+  "adv-oversized-s52-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "rejected_422",
+    "passed": true,
+    "stable": true
+  },
+  "compound-bare-tool-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "compound-correction-cue-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "compound-fetch-refusal-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "compound-gate-ask-tool-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "compound-gate-block-mcp-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "compound-mcp-audit-reuse-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttoolbatch-wildcard-block-shacl-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttooluse-bash-audit-privilege-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttooluse-bash-block-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttooluse-mcp-audit-critic-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttooluse-toolalt-audit-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-posttoolusefailure-mcp-block-privilege-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-bash-ask-privilege-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-bash-audit-regex-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-bash-block-privilege-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-bash-block-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-mcp-ask-critic-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-mcp-block-critic-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-toolalt-ask-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-toolalt-block-privilege-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-webfetch-audit-injection-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-pretooluse-webfetch-block-allowlist-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-stop-wildcard-audit-citation-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-stop-wildcard-audit-critic-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-stop-wildcard-audit-shacl-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-stop-wildcard-audit-structured-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-userpromptsubmit-wildcard-ask-critic-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ev-userpromptsubmit-wildcard-audit-injection-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-after-tool-use-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-before-tool-use-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-pre-compact-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-pre-final-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-session-end-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-session-start-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-subagent-stop-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s10-posttool-ask-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s11-log-pii-final-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s12-prevent-rrn-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s13-negated-block-fetch-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s14-negated-block-fetch-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s15-negated-overtrigger-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s16-log-citation-stop-word-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s23-permissionrequest-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s24-sessionstart-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s25-precompact-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s26-inject-sessionstart-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s27-inject-final-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s28-rewrite-prompt-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s37-rate-limit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "infeasible",
+    "passed": true,
+    "stable": true
+  },
+  "s38-token-limit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "infeasible",
+    "passed": true,
+    "stable": true
+  },
+  "s39-undo-edit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "infeasible",
+    "passed": true,
+    "stable": true
+  },
+  "s40-yesterday-hijack-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "s41-rollback-hijack-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "infeasible",
+    "passed": true,
+    "stable": true
+  },
+  "s42-retract-hijack-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "infeasible",
+    "passed": true,
+    "stable": true
+  },
+  "s45-research-mode-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "pack_cta",
+    "passed": true,
+    "stable": true
+  },
+  "s46-coding-session-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "pack_cta",
+    "passed": true,
+    "stable": true
+  },
+  "s47-codex-webfetch-block-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s48-codex-dangerous-bash-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s49-codex-citation-stop-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s6-citation-stop-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s7-block-citations-stop-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s8-pii-stop-block-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "s9-fetch-ask-injection-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
+    "passed": true,
+    "stable": true
+  },
+  "wide-cwdchanged-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-elicitation-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-elicitationresult-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-filechanged-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-instructionsloaded-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-messagedisplay-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-notification-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-permissiondenied-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-permissionrequest-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-postcompact-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-posttoolbatch-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-posttooluse-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-posttoolusefailure-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-precompact-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-pretooluse-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-sessionend-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-sessionstart-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-stop-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-stopfailure-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-subagentstart-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-subagentstop-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-taskcompleted-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-taskcreated-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-teammateidle-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-userpromptexpansion-audit-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-userpromptsubmit-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-worktreecreate-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  }
+}
