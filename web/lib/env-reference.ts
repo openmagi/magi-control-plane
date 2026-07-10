@@ -388,6 +388,14 @@ export const ENV_REFERENCE: ReadonlyArray<EnvVarEntry> = [
     en: "Where managed-settings.json is written. Defaults to CC's standard location.",
   },
   {
+    name: "MAGI_CP_NO_BROWSER",
+    group: "local",
+    default: "(unset)",
+    allowed: "1 to disable",
+    ko: "설치 완료 후 대시보드를 브라우저에 자동으로 여는 동작을 끕니다. 헤드리스/SSH 설치에서는 자동으로 건너뜁니다.",
+    en: "Disable auto-opening the dashboard in the browser after install. Headless / bare-SSH installs skip it automatically anyway.",
+  },
+  {
     name: "MAGI_CP_ENDPOINT_ID",
     group: "local",
     default: "(generated)",
