@@ -29,6 +29,31 @@ warn()   { printf "\033[1;33m!\033[0m %s\n" "$1" >&2; }
 fail()   { printf "\033[1;31m✗\033[0m %s\n" "$1" >&2; exit 1; }
 banner() { printf "\033[1;36m▸\033[0m %s\n" "$1"; }
 
+# Best-effort cross-platform "open this URL in the default browser". Silent
+# and never fatal: a headless box, a bare SSH session, or a missing opener
+# just leaves the printed URL for the operator to click. Set
+# MAGI_CP_NO_BROWSER=1 to skip entirely.
+open_url() {
+  local url="$1"
+  [ -n "${MAGI_CP_NO_BROWSER:-}" ] && return 0
+  # Headless Linux (no X/Wayland display, and not WSL) => don't try.
+  if [ "$(uname -s)" = "Linux" ] \
+     && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] \
+     && ! grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+    return 0
+  fi
+  if command -v open >/dev/null 2>&1; then            # macOS
+    open "$url" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then      # Linux desktop
+    xdg-open "$url" >/dev/null 2>&1 || true
+  elif command -v wslview >/dev/null 2>&1; then       # WSL (wslu)
+    wslview "$url" >/dev/null 2>&1 || true
+  elif command -v cmd.exe >/dev/null 2>&1; then       # WSL fallback
+    cmd.exe /c start "" "$url" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 SITE_URL="${MAGI_CP_SITE_URL:-https://cp.openmagi.ai}"
 INSTALL_DIR="${MAGI_CP_INSTALL_DIR:-$HOME/.magi/control-plane}"
 
@@ -408,7 +433,8 @@ cat <<EOF
   Repo:       $INSTALL_DIR
   Env:        ~/.config/magi-cp/env (0600)
 
-  Open the dashboard URL in your browser to start.
+  Opening the dashboard in your browser now. If it doesn't pop up,
+  open the URL above (set MAGI_CP_NO_BROWSER=1 to disable auto-open).
 
   Useful:
     Stop:   cd $INSTALL_DIR && docker compose down
@@ -426,4 +452,14 @@ if ! grep -qE '^ANTHROPIC_API_KEY=.+' "$ENV_FILE" 2>/dev/null; then
   printf "  To enable: edit %s and uncomment the LLM provider lines\n" "$ENV_FILE"
   printf "  (ANTHROPIC_API_KEY + OPENAI_API_KEY), then:\n"
   printf "    cd %s && docker compose up -d --force-recreate\n\n" "$INSTALL_DIR"
+fi
+
+# ── auto-open the dashboard ─────────────────────────────────────────────
+# Many operators don't realise there's a web dashboard at all; pop it open
+# once install succeeds so the first thing they see is the UI. Guarded to
+# the dashboard actually being ready (the wait above `fail`s otherwise, so
+# reaching here means it is); silent + non-fatal, opt out with
+# MAGI_CP_NO_BROWSER=1.
+if [ "${DASH_OK:-0}" = "1" ]; then
+  open_url "http://localhost:$DASH_PORT"
 fi
