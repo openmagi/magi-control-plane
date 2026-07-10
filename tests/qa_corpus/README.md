@@ -178,3 +178,110 @@ baseline in the same PR.
 The regeneration path mirrors the cassette re-record pattern
 (`MAGI_CP_QA_RECORD=1`): an env var gates an explicit update, never a
 silent drift.
+
+## Live lane (PR-F)
+
+### Overview
+
+The live lane runs corpus scenarios against the REAL compiler LLM (no
+cassettes) to validate that actual model behaviour still reaches expected
+outcomes.  It is a **signal tool, not a gate**: failures mean "investigate",
+not "block".
+
+### Running the live lane
+
+```
+# Default: up to 5 live LLM calls, uses claude CLI
+PYTHONPATH=src python scripts/qa/run_live.py
+
+# Larger budget, subset of scenarios
+PYTHONPATH=src python scripts/qa/run_live.py --budget 20 --only 's47-*'
+
+# Use Anthropic API instead of claude CLI
+MAGI_CP_LLM_COMPILER=anthropic ANTHROPIC_API_KEY=sk-... \
+    PYTHONPATH=src python scripts/qa/run_live.py --budget 20
+```
+
+Requirements:
+- `claude` CLI installed and logged in (`claude login`), OR
+- `MAGI_CP_LLM_COMPILER=anthropic` + `ANTHROPIC_API_KEY` set.
+
+If neither is available the script exits with an actionable message and
+a non-zero exit code.
+
+### Report
+
+The live lane writes `.qa-report-live/summary.{json,md}` in the same
+format as the CI report.  The report is labelled
+`live lane (non-deterministic)` so it is easy to distinguish from CI
+output.
+
+### GitHub Actions workflow
+
+`.github/workflows/qa-live.yml` provides a manual `workflow_dispatch`
+trigger.  It is NOT run on push, PR, or schedule.  If the
+`ANTHROPIC_API_KEY` secret is absent the job skips cleanly with a message.
+
+### Why CI stays cassette-deterministic
+
+Live calls are slow (approximately 10 s each), cost real subscription
+usage, and produce non-deterministic output.  CI uses cassette replay
+(`engine=cassette`) or the infinite-empty fake (`engine=fake_empty`) so
+every run is fast, free, and deterministic.  The live lane is an optional
+offline validation step.
+
+## Phrasing generation flow (PR-F)
+
+### Overview
+
+``scripts/qa/gen_phrasings.py`` calls the LLM to generate additional
+natural-language phrasings of each scenario's ``target_ir`` intent, in
+KO/EN x terse/verbose/ambiguous styles (Section 5.2 of the design doc).
+
+Generated phrasings are written to the scenario JSON's ``phrasings``
+array with ``provenance.generated_by="llm-expand"`` and
+``provenance.reviewed=false``.  They are proposed EDITS for human review,
+not finished corpus entries.
+
+### Generating phrasings
+
+```
+# Dry-run first (no LLM calls, no writes)
+PYTHONPATH=src python scripts/qa/gen_phrasings.py --dry-run
+
+# Generate for a subset (budget: 5 calls default)
+PYTHONPATH=src python scripts/qa/gen_phrasings.py --only 's47-*'
+
+# All scenarios, larger budget
+PYTHONPATH=src python scripts/qa/gen_phrasings.py --budget 30
+```
+
+### Review and recording flow
+
+After generating:
+
+1. **Review the diff**: `git diff tests/qa_corpus/scenarios/`
+2. **Edit phrasings** as needed - fix style, correct meaning, delete bad
+   ones.  Change `reviewed: false` to `reviewed: true` for accepted entries.
+3. **Re-record cassettes** for any new `engine=cassette` phrasing:
+   ```
+   MAGI_CP_QA_RECORD=1 PYTHONPATH=src python scripts/qa/record.py
+   ```
+4. **Run CI** to verify the full suite passes:
+   ```
+   PYTHONPATH=src python3 -m pytest tests -q
+   ```
+5. Commit the scenario JSON changes and any new cassette files in the
+   same PR.
+
+### Schema validation
+
+Each generated phrasing is validated against the corpus schema (via
+``corpus.validate_scenario``) before being written.  Malformed LLM output
+is dropped with a warning and never written to disk.
+
+### This script is NEVER run in CI
+
+``gen_phrasings.py`` makes live LLM calls and produces non-deterministic
+output.  It is excluded from the CI suite and from the cassette replay.
+Only human-reviewed, cassette-backed phrasings reach the CI lane.
