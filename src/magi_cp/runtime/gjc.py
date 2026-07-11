@@ -73,6 +73,57 @@ _GJC_TO_CC_TOOL: dict[str, str] = {
     "subagent":  "Task",
 }
 
+# ── Canonical gjc BUILTIN_TOOLS SSOT (§4.4 / emitter fanout) ───────────────
+#
+# Source: packages/coding-agent/src/tools/index.ts:383-418 (gjc v0.9.0).
+#
+# This frozenset is the single source of truth shared by:
+#   - the bundle emitter (gjc_bundle_emitter.py): fans out one tool_call hook
+#     per entry so gjc plugin install does not reject the manifest (install-
+#     blocking bug: compiler.ts:236-246 requires target+phase on tool_call).
+#   - the coverage golden test (test_gjc_coverage_golden.py): imports this
+#     instead of defining its own copy; the drift check guards the emitter
+#     fanout surface.
+#
+# Update this set whenever gjc adds a new tool; the drift check in
+# test_gjc_coverage_golden.py will fail CI otherwise.
+_GJC_BUILTIN_TOOLS: frozenset[str] = frozenset({
+    "read",
+    "bash",
+    "edit",
+    "ast_grep",
+    "ast_edit",
+    "render_mermaid",
+    "ask",
+    "debug",
+    "bisect",
+    "eval",
+    "calc",
+    "ssh",
+    "github",
+    "find",
+    "search",
+    "lsp",
+    "browser",
+    "computer",
+    "checkpoint",
+    "rewind",
+    "task",
+    "subagent",
+    "job",
+    "monitor",
+    "cron",
+    "recipe",
+    "irc",
+    "todo_write",
+    "web_search",
+    "search_tool_bm25",
+    "telegram_send",
+    "write",
+    "skill",
+    "goal",
+})
+
 # ── gjc_event -> canonical hook_event_name mapping (§4.4) ───────────────────
 _GJC_EVENT_TO_CANONICAL: dict[str, str] = {
     "tool_call":              "PreToolUse",
@@ -462,6 +513,7 @@ def run_gjc_gate(raw_stripped: str) -> int:
 __all__ = [
     "GjcDriver",
     "GJC_LIVE_EVENTS",
+    "_GJC_BUILTIN_TOOLS",
     "_GJC_TO_CC_TOOL",
     "_coverage_status_for_gjc",
     "run_gjc_gate",

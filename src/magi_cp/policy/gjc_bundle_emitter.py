@@ -49,21 +49,39 @@ _SHA256_SESSION_SHUTDOWN: str = hashlib.sha256(_SHIM_SESSION_SHUTDOWN_TEXT.encod
 def _emit_manifest() -> str:
     """Emit the ``gajae-plugin.json`` manifest as a byte-stable JSON string.
 
-    The manifest is independent of the Policy IR: hooks are static (a
-    target-less hook covers every tool; the gate decides). The sha256 values
-    are the stable hashes of the vendored shim bytes (pinned at import time).
+    The manifest is independent of the Policy IR: hooks are static (the gate
+    decides).  The sha256 values are the stable hashes of the vendored shim
+    bytes (pinned at import time).
+
+    **Fanout:** gjc's plugin compiler (compiler.ts:236-246) REJECTS a
+    ``tool_call`` hook that lacks both ``target`` AND ``phase``, raising
+    ``invalid_hook``.  A single target-less hook would also silently never
+    fire for any tool (the runtime bridge matches ``toolName !== target``
+    exactly).  We therefore emit ONE entry per tool in
+    ``_GJC_BUILTIN_TOOLS`` with ``"phase":"before"``, sorted for byte
+    stability.  The ``session_start`` / ``session_shutdown`` hooks remain
+    target-less (the compiler allows that for session events).
 
     Keys are sorted; separators are pinned; newline-terminated.
     """
+    # Import locally to mirror the existing _emit_tool_map() pattern and avoid
+    # pulling the driver on every gate hot path.
+    from ..runtime.gjc import _GJC_BUILTIN_TOOLS  # noqa: PLC0415
+
+    tool_call_hooks = [
+        {
+            "event": "tool_call",
+            "name": f"magi-gate-tool-call-{tool}",
+            "path": _SHIM_TOOL_CALL_KEY,
+            "phase": "before",
+            "sha256": _SHA256_TOOL_CALL,
+            "target": tool,
+        }
+        for tool in sorted(_GJC_BUILTIN_TOOLS)
+    ]
     manifest = {
         "description": "Magi Control Plane enforcement gate (frozen dispatcher; policy lives in magi-cp)",
-        "hooks": [
-            {
-                "event": "tool_call",
-                "name": "magi-gate-tool-call",
-                "path": _SHIM_TOOL_CALL_KEY,
-                "sha256": _SHA256_TOOL_CALL,
-            },
+        "hooks": tool_call_hooks + [
             {
                 "event": "session_start",
                 "name": "magi-gate-session-start",

@@ -220,38 +220,64 @@ def test_shim_event_matches_manifest_template(fname: str, expected_event: str) -
 
 
 def test_manifest_template_hook_count() -> None:
-    """(c) manifest template declares exactly 3 hooks (one per shim module)."""
+    """(c) manifest template declares exactly 36 hooks (34 tool_call + 2 session).
+
+    After the install-blocking bug fix (compiler.ts:236-246 rejects a
+    target-less tool_call hook), the emitter fans out one hook per gjc
+    builtin tool (34 tools) plus the two target-less session hooks = 36.
+    """
     p = _ASSETS / _TMPL
     if not p.exists():
         pytest.skip(f"{_TMPL} not yet created")
     src = p.read_text(encoding="utf-8")
     # Count "event" keys in the hooks array (rough but sufficient for the golden)
     event_count = src.count('"event"')
-    assert event_count == 3, (
-        f"Manifest template has {event_count} hook event declarations, expected 3"
+    assert event_count == 36, (
+        f"Manifest template has {event_count} hook event declarations, expected 36 "
+        "(34 tool_call + 2 session)"
     )
 
 
-def test_manifest_template_no_target_field() -> None:
-    """(c) manifest hooks have NO 'target' field — governs every tool (§6.1)."""
+def test_manifest_template_target_and_phase_contract() -> None:
+    """(c) tool_call hooks MUST have 'target' + 'phase':'before'; session hooks must NOT.
+
+    After the install-blocking bug fix:
+    - All 34 tool_call hooks carry 'target' (tool name) and 'phase':'before'.
+    - The 2 session hooks (session_start, session_shutdown) remain target-less.
+    """
     p = _ASSETS / _TMPL
     if not p.exists():
         pytest.skip(f"{_TMPL} not yet created")
-    src = p.read_text(encoding="utf-8")
-    assert '"target"' not in src, (
-        "Manifest template contains 'target' — hooks must be target-less to govern every tool"
-    )
+    import json as _json
+    tmpl_data = _json.loads(p.read_text(encoding="utf-8"))
+    hooks = tmpl_data.get("hooks", [])
+    for hook in hooks:
+        event = hook.get("event", "")
+        if event == "tool_call":
+            assert "target" in hook, (
+                f"tool_call hook {hook.get('name')!r} is missing 'target' field — "
+                "gjc compiler rejects target-less tool_call hooks (install-blocking bug)"
+            )
+            assert hook.get("phase") == "before", (
+                f"tool_call hook {hook.get('name')!r} has phase={hook.get('phase')!r}, "
+                "expected 'before'"
+            )
+        else:
+            # session_start / session_shutdown must remain target-less
+            assert "target" not in hook, (
+                f"Session hook {hook.get('name')!r} should not have a 'target' field"
+            )
 
 
 def test_manifest_template_sha256_placeholder() -> None:
-    """(c) manifest template has 3 '<computed>' sha256 placeholders (one per hook)."""
+    """(c) manifest template has 36 '<computed>' sha256 placeholders (one per hook)."""
     p = _ASSETS / _TMPL
     if not p.exists():
         pytest.skip(f"{_TMPL} not yet created")
     src = p.read_text(encoding="utf-8")
     count = src.count("<computed>")
-    assert count == 3, (
-        f"Manifest template has {count} '<computed>' sha256 placeholder(s), expected 3"
+    assert count == 36, (
+        f"Manifest template has {count} '<computed>' sha256 placeholder(s), expected 36"
     )
 
 
