@@ -38,7 +38,6 @@ CATEGORY_ENUM = frozenset(
         "malformed",
         "out_of_scope",
         "infeasible_runtime",
-        "wrong_language",
         "archetype_run_command",
         "archetype_compound",
         "pack_shaped",

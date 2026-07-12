@@ -23,7 +23,7 @@ equal the `id` field.
 - `category` (enum): one of
   `happy_path, wide_event, negated_enforce, enforce_verb, overtrigger_bait,
   ambiguous, adversarial_injection, malformed, out_of_scope, infeasible_runtime,
-  wrong_language, archetype_run_command, archetype_compound, pack_shaped`.
+  archetype_run_command, archetype_compound, pack_shaped`.
 - `language` (enum): `ko` or `en`. The language the phrasings are written in.
 - `style` (string): phrasing register. Seeds use `canonical`; LLM expansion
   (PR-F) adds `terse`, `verbose`, `ambiguous`.
