@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "corr-block-at-stop-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "Stop",
+      "matcher": "*"
+    },
+    "requires": [],
+    "action": "audit"
+  },
+  "corrections": [
+    {
+      "after_turn": 1,
+      "answers": {"q_lifecycle": "pre_final"},
+      "label_bubble": "Just before the final answer"
+    }
+  ],
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 10
+  },
+  "phrasings": [
+    {
+      "text": "just log this, no check needed",
+      "note": "no lifecycle extracted from generic phrasing; turn-1 correction overrides q_lifecycle to pre_final (Stop/*); guards lifecycle pill override mid-flow for record-only Stop archetype"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G2",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

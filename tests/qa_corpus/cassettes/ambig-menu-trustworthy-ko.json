@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "107d8da10239ad67485f6b68c79dffb77cf1bc70ab3cce4e017cf51a0e6303be",
+      "messages_digest_preview": "KO turn 1 - disambiguation extractor resolves WebFetch from 'web search', asks q_lifecycle + q_requires",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "b5061b4402aab1d04ee03075e2b2aa796a7ac05c007b9172ee2e5b4557d67961",
+      "messages_digest_preview": "KO turn 2 - after q_lifecycle pill, asks q_requires + q_id",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "e1db56b8bf8321ee8260de77b94ceb9fd3366e9ad5e52ad9237b0aa99bb12d83",
+      "messages_digest_preview": "KO turn 3 - after q_requires=step pill, asks q_requires_body + q_id",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "a38b64095f251f764a5a2621132d8b2cbb634ff6ac38f2227d152978c6ddca11",
+      "messages_digest_preview": "KO turn 4 - after source_allowlist userText (body answer), LLM needs to merge the step",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "5f1e87b7219fdbf30c6bd63b9d5d398228067b939367f9dc8aa680662ab49060",
+      "messages_digest_preview": "KO turn 5 - LLM sets step=source_allowlist in requires, action=audit already set; ready_to_save via auto-id",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"source_allowlist\", \"verdict\": \"pass\"}]}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

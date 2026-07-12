@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "af1d95df04109ce98aa4b68f9743550866f5d144e94934a6c229738e43ca553e",
+      "messages_digest_preview": "make sure we use trustworthy sources (turn 1 - extractor resolves matcher=WebFetch, disambiguation menu fires)",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "7d9d3d61aee740b566488b394ae3011878fc2d9842e9a8e645e9ae9f39e1c004",
+      "messages_digest_preview": "turn 2 - after q_lifecycle pill (before_tool_use), q_matcher still pending",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "8a410199ba429d45d4eb9c94c64cb8d2947177a5a9f663fa513ef38ada431205",
+      "messages_digest_preview": "turn 3 - after WebFetch userText for q_matcher, asks q_requires + q_on_missing",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "c9fd564a1e575d11256ae31c5e80f285f5e2eee0cd91ba262e906c7a88ebea06",
+      "messages_digest_preview": "turn 4 - after q_requires=step pill, asks q_requires_body",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    },
+    {
+      "key": "6d87f2f1623638e04ec394f97ee2da72e649631076e8180834a45078ae549492",
+      "messages_digest_preview": "turn 5 - after source_allowlist userText, LLM sets step field in requires",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"source_allowlist\", \"verdict\": \"pass\"}]}, \"questions\": []}"
+    },
+    {
+      "key": "5b3a31f65422f9b0d4ba39f84f6ac3d39a569a8c47a499d8250cfa77453eb7dd",
+      "messages_digest_preview": "turn 6 - after q_on_missing=audit pill, auto-id fills, ready_to_save",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

@@ -227,6 +227,7 @@ def run_scenario(
         target_ir,
         expected_outcome=expected_outcome,
         compound_gate_matcher=scenario.get("compound_gate_matcher"),
+        corrections=scenario.get("corrections"),
     )
 
     # Conversation state.
@@ -466,6 +467,14 @@ def _classify_steer(reason: str, wire: dict[str, Any]) -> str:
             or "not-expressible" in feas_class
         ):
             return "infeasible"
+        # magi_agent_only codes (e.g. magi_evidence_catalog) get a handoff CTA
+        # when the feasibility wire includes a magi_agent_handoff alternative.
+        alternatives = feas.get("alternatives") or []
+        if any(
+            isinstance(a, dict) and a.get("kind") == "magi_agent_handoff"
+            for a in alternatives
+        ):
+            return "handoff_cta"
         return "steered"
     msg = wire.get("assistant_message", "") or ""
     if "/policy-packs/" in msg:
