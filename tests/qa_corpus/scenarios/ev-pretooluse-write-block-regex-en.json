@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "ev-pretooluse-write-block-regex-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Write"
+    },
+    "requires": [
+      {
+        "kind": "regex",
+        "pattern": "(?:password|secret|api_key)\\s*=\\s*\\S{6,}"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block Write tool calls that match a credential leak pattern like password= or secret=",
+      "note": "P2-G5 Write tool (named_tool matcher class) + regex; exercises builtin tool outside {Bash, WebFetch, Edit}"
+    }
+  ],
+  "provenance": {
+    "source": "p2-gap-g5",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

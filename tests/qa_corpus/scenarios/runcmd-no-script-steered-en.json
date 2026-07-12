@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "runcmd-no-script-steered-en",
+  "category": "archetype_run_command",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "steered",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "run my custom checker before tool use",
+      "note": "P2-G2 run_command with no script uploaded; expect steered (no ready_to_save)"
+    }
+  ],
+  "provenance": {
+    "source": "p2-gap-g2",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

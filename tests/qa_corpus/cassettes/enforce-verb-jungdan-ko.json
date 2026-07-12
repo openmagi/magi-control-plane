@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "93e69f0687c52f76ec52cf658fb4f4ba2f9263eafca84922e34abc47948bf1e2",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"step\", \"step\": \"secret_scan\", \"verdict\": \"pass\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"Bash\"}, \"action\": \"block\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

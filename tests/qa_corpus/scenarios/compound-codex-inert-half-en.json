@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "compound-codex-inert-half-en",
+  "category": "archetype_compound",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": "codex",
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "require a verified source before mcp__security__verify_source runs; ask for approval if the source is not credible",
+      "note": "P2-G3 compound evidence_gate; runtime_id=codex (inert half: codex member feasibility finding expected); compound_gate_matcher drives q_matcher via answers path"
+    }
+  ],
+  "provenance": {
+    "source": "p2-gap-g3",
+    "generated_by": "hand",
+    "reviewed": true
+  },
+  "compound_gate_matcher": "mcp__security__verify_source"
+}
