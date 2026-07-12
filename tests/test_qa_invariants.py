@@ -49,13 +49,17 @@ from magi_cp.policy.nl_compiler_interactive import (  # noqa: E402
     InteractiveInputError,
     MAX_QUESTIONS_PER_TURN,
     _PLAIN_LANGUAGE_RULES,
+    _LIFECYCLE_KEYWORDS,
     _evidence_legal_events,
     _run_command_legal_events,
     _sanitize_draft_so_far,
     step_compile,
 )
 from magi_cp.policy.ir import policy_from_dict  # noqa: E402
+from magi_cp.policy.matrix import MatcherClass, supported_events  # noqa: E402
 from magi_cp.cloud.nl_compiler import PrecheckError  # noqa: E402
+from qa_harness.answerer import _EVENT_TO_LIFECYCLE  # noqa: E402
+from qa_harness.strategies import _EVIDENCE_TRIPLES, _st_matcher_for_class  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +184,18 @@ def _call_step(
         answers=answers,
         runtime_id=runtime_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Vocab-sync support: events with no NL extractor vocabulary.
+# 3 events with no extractor vocabulary per the 2026-07-09 coverage audit;
+# conversationally unreachable, no honest steer. A NEW unreachable event
+# failing this must be added here consciously or given vocab.
+# ---------------------------------------------------------------------------
+
+KNOWN_UNREACHABLE_EVENTS: frozenset[str] = frozenset(
+    {"ConfigChange", "Setup", "WorktreeRemove"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -992,3 +1008,154 @@ class TestExampleBased:
             assert isinstance(text, str) and text, (
                 f"render_capability_boundary({rt!r}) returned empty text"
             )
+
+
+# ---------------------------------------------------------------------------
+# I_VocabSync (event-reachability / vocab-sync) - pure example-based.
+# Every vocab key maps to a supported event; every supported event either
+# has a vocab key or is in KNOWN_UNREACHABLE_EVENTS.
+# Traces to: 2026-07-09 coverage audit (conversationally unreachable events).
+# ---------------------------------------------------------------------------
+
+class TestIVocabSync:
+    """Invariant: event-reachability / vocab-sync.
+
+    (a) Every vocab key in _LIFECYCLE_KEYWORDS is a member of supported_events().
+        Catch: a vocab entry points to a renamed or removed event.
+
+    (b) Every event in supported_events() is either a vocab key OR explicitly
+        listed in KNOWN_UNREACHABLE_EVENTS. A new event added to the matrix
+        without a vocab entry must be consciously added to KNOWN_UNREACHABLE_EVENTS
+        or given vocabulary - this assertion catches the omission.
+    """
+
+    def test_vocab_keys_in_supported_events(self) -> None:
+        """Every vocab key must map to a real supported event."""
+        vocab_keys = {k for k, _ in _LIFECYCLE_KEYWORDS}
+        all_supported = set(supported_events())
+        unknown = vocab_keys - all_supported
+        assert not unknown, (
+            f"Vocab keys not in supported_events(): {sorted(unknown)!r}. "
+            f"A vocab entry points to a renamed or removed event."
+        )
+
+    def test_supported_events_vocab_covered(self) -> None:
+        """Every supported event is vocab-reachable or explicitly unreachable."""
+        vocab_keys = {k for k, _ in _LIFECYCLE_KEYWORDS}
+        all_supported = set(supported_events())
+        uncovered = all_supported - vocab_keys - KNOWN_UNREACHABLE_EVENTS
+        assert not uncovered, (
+            f"Supported events with no vocab and not in KNOWN_UNREACHABLE_EVENTS: "
+            f"{sorted(uncovered)!r}. "
+            f"Add vocab to _LIFECYCLE_KEYWORDS or add to KNOWN_UNREACHABLE_EVENTS "
+            f"with a justifying comment."
+        )
+
+
+# ---------------------------------------------------------------------------
+# I_EvidenceTripleCompletability - Hypothesis property.
+# Every (event, matcher, action) evidence triple in the vocab-event subset
+# can reach ready_to_save=True through the answers channel without any LLM.
+# Traces to: 2026-07-09 coverage audit, compiler Q&A completability.
+# ---------------------------------------------------------------------------
+
+def _drive_to_ready(
+    event: str,
+    matcher: str,
+    action: str,
+    *,
+    max_turns: int = 15,
+) -> tuple[bool, int, Any]:
+    """Drive step_compile to ready_to_save for one evidence triple.
+
+    Uses the answers dict channel exclusively (no userText / history mutation).
+    Pre-seeds a minimal draft so the only missing fields are verified via Q&A.
+
+    Returns (success, turns_used, last_feasibility_or_None).
+    """
+    provider = _InfiniteFakeLlmProvider([])
+    draft: dict[str, Any] = {
+        "trigger": {"host": "claude-code", "event": event, "matcher": matcher},
+        "requires": [{"kind": "regex", "pattern": r"\btest\b"}],
+        "action": action,
+        "id": "qa-inv2",
+        "description": "test",
+    }
+    wire = step_compile(provider, history=[], draft_so_far=draft, answers=None)
+    if wire["ready_to_save"]:
+        return True, 0, None
+
+    for turn in range(max_turns):
+        questions = wire.get("questions") or []
+        if not questions:
+            return False, turn + 1, wire.get("feasibility")
+
+        answers: dict[str, str] = {}
+        for q in questions:
+            qid = q["id"]
+            if qid == "q_lifecycle":
+                lifecycle_val = _EVENT_TO_LIFECYCLE.get(event)
+                if lifecycle_val:
+                    answers[qid] = lifecycle_val
+                # Wide events: q_lifecycle should not be asked; skip if it is.
+            elif qid == "q_matcher":
+                answers[qid] = matcher
+            elif qid == "q_requires":
+                answers[qid] = "regex"
+            elif qid == "q_requires_body":
+                answers[qid] = r"\btest\b"
+            elif qid == "q_on_missing":
+                answers[qid] = action
+            elif qid == "q_id":
+                answers[qid] = "qa-inv2"
+
+        wire = step_compile(
+            provider,
+            history=[],
+            draft_so_far=wire["draft"],
+            answers=answers or None,
+        )
+        if wire["ready_to_save"]:
+            return True, turn + 2, None
+
+    return False, max_turns, wire.get("feasibility")
+
+
+# Vocab-filtered triples: exclude the 3 known-unreachable events so
+# Hypothesis only samples conversationally reachable combinations.
+_VOCAB_EVIDENCE_TRIPLES: list[tuple[str, MatcherClass, str]] = [
+    (ev, mc, act)
+    for ev, mc, act in _EVIDENCE_TRIPLES
+    if ev not in KNOWN_UNREACHABLE_EVENTS
+]
+
+
+class TestIEvidenceTripleCompletability:
+    """Invariant: every vocab-event evidence triple can reach ready_to_save=True.
+
+    Drives step_compile with a FakeLlm returning empty draft_updates and
+    answers all questions via the answers dict channel. If a triple cannot
+    reach ready_to_save within the turn cap, it is reported as a candidate
+    product finding (the compiler cannot complete that Q&A flow).
+
+    Traces to: 2026-07-09 coverage audit, compiler Q&A completability.
+    Scoped to events in _LIFECYCLE_KEYWORDS (vocab-reachable, KNOWN_UNREACHABLE
+    excluded).
+    """
+
+    @given(
+        triple=st.sampled_from(_VOCAB_EVIDENCE_TRIPLES).flatmap(
+            lambda t: _st_matcher_for_class(t[1]).map(lambda m: (t[0], m, t[2]))
+        )
+    )
+    def test_evidence_triple_reaches_ready_to_save(
+        self, triple: tuple[str, MatcherClass, str]
+    ) -> None:
+        event, matcher, action = triple
+        success, turns, feasibility = _drive_to_ready(event, matcher, action)
+        assert success, (
+            f"Evidence triple (event={event!r}, matcher={matcher!r}, action={action!r}) "
+            f"did not reach ready_to_save within 15 turns. "
+            f"turns_used={turns}, last_feasibility={feasibility!r}. "
+            f"Candidate product finding: compiler cannot complete this Q&A flow."
+        )
