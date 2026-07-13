@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "4c5cb7d4e88495b8a9d0e290221592eb5840d655e76e76472a86cab958a694a6",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"(?:password|secret|api_key)\\\\s*=\\\\s*\\\\S{6,}\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"Write\"}, \"action\": \"block\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

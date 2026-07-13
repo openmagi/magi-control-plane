@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "ambig-menu-trustworthy-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "WebFetch"
+    },
+    "requires": [
+      {
+        "kind": "step",
+        "step": "source_allowlist",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 12
+  },
+  "phrasings": [
+    {
+      "text": "make sure we use trustworthy sources",
+      "note": "S18 EN: ambiguous 'trustworthy sources' triggers disambiguation menu; scripted answerer picks source_allowlist step via q_requires_body; guards _DISAMBIG_MENU_EN emission and source_allowlist routing"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G3",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

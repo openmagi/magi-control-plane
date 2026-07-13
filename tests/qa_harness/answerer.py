@@ -51,6 +51,7 @@ class ScriptedAnswerer:
         *,
         expected_outcome: str,
         compound_gate_matcher: str | None = None,
+        corrections: list[dict[str, Any]] | None = None,
     ) -> None:
         self._target = target_ir
         self._expected_outcome = expected_outcome
@@ -63,6 +64,13 @@ class ScriptedAnswerer:
         self._compound_gate_matcher = compound_gate_matcher
         # Track answered question ids to detect repeated asks.
         self._answered: set[str] = set()
+        # Multi-turn correction support: a list of {"after_turn": N, "text": "..."}.
+        # After turn N the answerer injects the correction as a userText move
+        # (before handling any questions that turn).  Corrections fire at most once.
+        self._corrections: list[dict[str, Any]] = list(corrections or [])
+        self._corrections_fired: set[int] = set()
+        # Turn counter: incremented each time next_move is called.
+        self._turn_count: int = 0
 
     def next_move(
         self,
@@ -76,6 +84,24 @@ class ScriptedAnswerer:
         - ``{"userText": text}`` for free-text questions / corrections.
         - ``{"stop": reason}`` when no action can be taken.
         """
+        self._turn_count += 1
+
+        # Multi-turn correction: if any correction fires after this turn,
+        # inject it as a move before processing questions.
+        # Supports two correction shapes:
+        #   {"after_turn": N, "text": "..."}         -- userText move
+        #   {"after_turn": N, "answers": {...}, "label_bubble": "..."} -- pill move
+        for correction in self._corrections:
+            after = correction.get("after_turn", 0)
+            if after == self._turn_count and self._turn_count not in self._corrections_fired:
+                self._corrections_fired.add(self._turn_count)
+                if "answers" in correction:
+                    return {
+                        "answers": correction["answers"],
+                        "label_bubble": correction.get("label_bubble", ""),
+                    }
+                return {"userText": correction["text"]}
+
         questions = wire.get("questions") or []
         ready = wire.get("ready_to_save", False)
         feasibility = wire.get("feasibility")

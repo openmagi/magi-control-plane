@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "corr-enforce-window-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PostToolUse",
+      "matcher": "WebFetch"
+    },
+    "requires": [],
+    "action": "audit"
+  },
+  "corrections": [
+    {
+      "after_turn": 1,
+      "answers": {"q_lifecycle": "after_tool_use"},
+      "label_bubble": "After tool runs"
+    }
+  ],
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 10
+  },
+  "phrasings": [
+    {
+      "text": "log WebFetch calls",
+      "note": "no lifecycle extracted; extractor sets matcher=WebFetch; turn-1 correction picks after_tool_use (PostToolUse) for the enforcement window; guards enforcement-window lifecycle correction mid-flow"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G2",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "wide-userpromptsubmit-block-regex-en",
+  "category": "wide_event",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "UserPromptSubmit",
+      "matcher": "*"
+    },
+    "requires": [
+      {
+        "kind": "regex",
+        "pattern": "\\d{6}-\\d{7}"
+      }
+    ],
+    "action": "block"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "block any user prompt that contains a resident registration number pattern",
+      "note": "P2-G1 wide event UserPromptSubmit/*/block with regex matcher"
+    }
+  ],
+  "provenance": {
+    "source": "p2-gap-g1",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

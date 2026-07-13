@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "r305-cite-before-finalize-en",
+  "category": "overtrigger_bait",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": false,
+  "known_limitation": true,
+  "target_ir": null,
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 8
+  },
+  "phrasings": [
+    {
+      "text": "ensure the answer cites a credible source before finalizing",
+      "note": "single-policy citation_verify intent captured by compound evidence gate router (_looks_like_evidence_gate_intent: 'before' gate cue + 'credible source' noun); tripwire for compound misroute"
+    }
+  ],
+  "provenance": {
+    "source": "audit-R3-05",
+    "generated_by": "hand",
+    "reviewed": true
+  },
+  "known_limitation_note": "The single-policy citation_verify intent ('cite a credible source before finalizing') is captured by the compound evidence gate router because _looks_like_evidence_gate_intent fires on 'before' (gate cue) + 'credible source' (evidence noun). The correct target for this phrasing is a single Stop/*/audit policy with a citation_verify verifier step, NOT the compound evidence_gate archetype. Tripwire pinned to the current compound outcome. Un-quarantines when _looks_like_evidence_gate_intent is tightened to not steal single-verifier 'cite a source' intents lacking an explicit gated tool."
+}

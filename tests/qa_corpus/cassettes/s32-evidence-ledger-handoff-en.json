@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "253120ce0c72c9d3e8d282f94683f4fd98c9008f4ea58022b9d3581beaea30be",
+      "messages_digest_preview": "only if the evidence ledger shows the tests actually ran",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

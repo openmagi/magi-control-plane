@@ -17,6 +17,12 @@
     "passed": true,
     "stable": true
   },
+  "adv-injection-s51-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
   "adv-invalid-regex-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "steered",
@@ -47,7 +53,25 @@
     "passed": true,
     "stable": true
   },
+  "ambig-menu-trustworthy-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "ambig-menu-trustworthy-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
   "compound-bare-tool-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "compound-codex-inert-half-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
     "passed": true,
@@ -78,6 +102,36 @@
     "stable": true
   },
   "compound-mcp-audit-reuse-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "corr-audit-to-block-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "corr-block-at-stop-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "corr-block-to-ask-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "corr-enforce-window-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "enforce-verb-jungdan-ko": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
     "passed": true,
@@ -179,6 +233,12 @@
     "passed": true,
     "stable": true
   },
+  "ev-pretooluse-write-block-regex-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
   "ev-stop-wildcard-audit-citation-ko": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
@@ -215,6 +275,12 @@
     "passed": true,
     "stable": true
   },
+  "r305-cite-before-finalize-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": false,
+    "stable": false
+  },
   "runcmd-after-tool-use-ko": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
@@ -224,6 +290,12 @@
   "runcmd-before-tool-use-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-no-script-steered-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "steered",
     "passed": true,
     "stable": true
   },
@@ -252,6 +324,12 @@
     "stable": true
   },
   "runcmd-subagent-stop-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "runcmd-task-completed-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
     "passed": true,
@@ -335,6 +413,18 @@
     "passed": true,
     "stable": true
   },
+  "s32-evidence-ledger-handoff-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "handoff_cta",
+    "passed": true,
+    "stable": true
+  },
+  "s32-evidence-ledger-handoff-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "handoff_cta",
+    "passed": true,
+    "stable": true
+  },
   "s37-rate-limit-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "infeasible",
@@ -355,9 +445,9 @@
   },
   "s40-yesterday-hijack-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
-    "outcome": "steered",
-    "passed": true,
-    "stable": true
+    "outcome": "handoff_cta",
+    "passed": false,
+    "stable": false
   },
   "s41-rollback-hijack-ko": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
@@ -437,6 +527,12 @@
     "passed": true,
     "stable": true
   },
+  "wide-elicitation-block-critic-en": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
   "wide-elicitationresult-audit-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
@@ -474,6 +570,12 @@
     "stable": true
   },
   "wide-permissionrequest-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-permissionrequest-block-critic-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
     "passed": true,
@@ -576,6 +678,12 @@
     "stable": true
   },
   "wide-userpromptsubmit-audit-ko": {
+    "oracle_fingerprint": "4f53cda18c2baa0c",
+    "outcome": "saved",
+    "passed": true,
+    "stable": true
+  },
+  "wide-userpromptsubmit-block-regex-en": {
     "oracle_fingerprint": "4f53cda18c2baa0c",
     "outcome": "saved",
     "passed": true,

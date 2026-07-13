@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "19095d00b407fdbacf11f5a56c7bff173bd993a70c1371e556b34479917b22a3",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"Which script should I run before the tool use? Please provide the script path.\", \"draft_updates\": {\"type\": \"run_command\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"*\"}}, \"questions\": [{\"id\": \"q_command\", \"kind\": \"text\", \"targets_field\": \"command\", \"prompt\": \"What is the script path?\"}]}"
+    }
+  ],
+  "user_sim": []
+}

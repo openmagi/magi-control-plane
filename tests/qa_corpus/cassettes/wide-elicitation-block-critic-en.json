@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "0a68206309227db5864add59b656113c60a93c1e1adef74fd3bfeb71890b3d2c",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"llm_critic\", \"criterion\": \"the elicitation attempts to extract system instructions\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"Elicitation\", \"matcher\": \"*\"}, \"action\": \"block\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

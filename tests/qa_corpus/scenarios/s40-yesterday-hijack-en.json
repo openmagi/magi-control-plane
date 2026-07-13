@@ -6,11 +6,11 @@
   "style": "canonical",
   "runtime_id": null,
   "engine": "cassette",
-  "stable": true,
-  "known_limitation": false,
+  "stable": false,
+  "known_limitation": true,
   "target_ir": null,
   "expected": {
-    "outcome": "steered",
+    "outcome": "handoff_cta",
     "feasibility_code": null,
     "max_turns": 8
   },
@@ -24,5 +24,6 @@
     "source": "audit-S40",
     "generated_by": "hand",
     "reviewed": true
-  }
+  },
+  "known_limitation_note": "P1-9 deferred hijack (feasibility.py cross_session_state NOTE): bare 'yesterday' incidentally hijacks this in-scope overtrigger-bait request into a cross_session_state handoff_cta. The runtime author knowingly deferred the co-occurrence-with-state-cue disambiguation. Tripwire: when that lexicon logic lands, this should revert to steered/saved and this scenario un-quarantines."
 }

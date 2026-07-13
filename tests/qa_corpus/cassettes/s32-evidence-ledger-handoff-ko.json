@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "9f5c61c2077b922974c8bbc1762adf914b4f05a2a65031009a2664f900b3a1f9",
+      "messages_digest_preview": "증거 원장을 보고 판단해줘",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

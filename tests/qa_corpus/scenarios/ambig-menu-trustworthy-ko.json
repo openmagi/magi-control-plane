@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "ambig-menu-trustworthy-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "cassette",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "WebFetch"
+    },
+    "requires": [
+      {
+        "kind": "step",
+        "step": "source_allowlist",
+        "verdict": "pass"
+      }
+    ],
+    "action": "audit"
+  },
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 12
+  },
+  "phrasings": [
+    {
+      "text": "리서치 목적으로 외부 web search를 할 때 신뢰할 수 있는 출처인지를 검사하고 로그를 남기고 싶어",
+      "note": "S17 KO: '신뢰할 수 있는 출처' is AMBIGUOUS -> disambiguation menu KO; scripted answerer resolves to source_allowlist step; guards _DISAMBIG_MENU_KO emission and KO trustworthy routing"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G3",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

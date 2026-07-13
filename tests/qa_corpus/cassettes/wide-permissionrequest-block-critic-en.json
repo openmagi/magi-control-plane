@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "da9203dc6a13a5a89ff92fbda78cc36d8bd22990d8ff5984586a8107348e4299",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"llm_critic\", \"criterion\": \"the permission request targets a sensitive system path outside the project\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PermissionRequest\", \"matcher\": \"*\"}, \"action\": \"block\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

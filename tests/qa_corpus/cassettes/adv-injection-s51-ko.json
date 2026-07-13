@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "aa0ce7ca16e43ec2dc992d6b022537681ecf7b9fe6b1a7e9153266912eb26e46",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"\\ube44\\ubc00\\ubc88\\ud638\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"PreToolUse\", \"matcher\": \"Bash\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

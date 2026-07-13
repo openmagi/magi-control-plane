@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "corr-audit-to-block-ko",
+  "category": "happy_path",
+  "language": "ko",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [],
+    "action": "audit"
+  },
+  "corrections": [
+    {
+      "after_turn": 1,
+      "answers": {"q_requires": "none"},
+      "label_bubble": "검사 없이 기록만"
+    }
+  ],
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 10
+  },
+  "phrasings": [
+    {
+      "text": "Bash 실행 시 감사 로그를 남겨줘",
+      "note": "record-only archetype; turn-1 correction pill picks 'none' for q_requires (no-check audit path); guards mid-flow verifier selection correction"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G2",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "de6e9023edd71d5e293ff739852b0265dad26ca8e20efc11e03f62a79847331f",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"type\": \"run_command\", \"command\": \"./notify.sh\", \"trigger\": {\"host\": \"claude-code\", \"event\": \"TaskCompleted\", \"matcher\": \"*\"}, \"id\": \"task-completed-notify\"}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}

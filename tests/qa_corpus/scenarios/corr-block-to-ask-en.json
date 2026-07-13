@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "corr-block-to-ask-en",
+  "category": "happy_path",
+  "language": "en",
+  "style": "canonical",
+  "runtime_id": null,
+  "engine": "fake_empty",
+  "stable": true,
+  "known_limitation": false,
+  "target_ir": {
+    "id": "qa-target",
+    "description": "",
+    "trigger": {
+      "host": "claude-code",
+      "event": "PreToolUse",
+      "matcher": "Bash"
+    },
+    "requires": [],
+    "action": "audit"
+  },
+  "corrections": [
+    {
+      "after_turn": 1,
+      "answers": {"q_requires": "none"},
+      "label_bubble": "No check, just record"
+    }
+  ],
+  "expected": {
+    "outcome": "saved",
+    "feasibility_code": null,
+    "max_turns": 10
+  },
+  "phrasings": [
+    {
+      "text": "block Bash execution",
+      "note": "extractor sets action=block + matcher=Bash; turn-1 correction picks q_requires=none (record-only path forces action=audit); guards mid-flow pivot from block to record-only audit via q_requires correction"
+    }
+  ],
+  "provenance": {
+    "source": "coverage-gap-P1-G2",
+    "generated_by": "hand",
+    "reviewed": true
+  }
+}

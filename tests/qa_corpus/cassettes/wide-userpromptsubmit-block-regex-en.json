@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": null,
+  "model": null,
+  "generated_by": "authored",
+  "compiler": [
+    {
+      "key": "33aff30363acf04fb497dca7a6a5ce83780d53208f585cd8af636dcb15953553",
+      "messages_digest_preview": "",
+      "response": "{\"assistant_message\": \"\", \"draft_updates\": {\"requires\": [{\"kind\": \"regex\", \"pattern\": \"\\\\d{6}-\\\\d{7}\"}], \"trigger\": {\"host\": \"claude-code\", \"event\": \"UserPromptSubmit\", \"matcher\": \"*\"}}, \"questions\": []}"
+    }
+  ],
+  "user_sim": []
+}
